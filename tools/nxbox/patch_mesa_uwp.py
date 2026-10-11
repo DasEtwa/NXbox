@@ -118,6 +118,211 @@ def patch(root: Path) -> None:
     patch_buffer_staging(root)
     patch_perf_waits(root)
     patch_geometry_diag(root)
+    patch_list_restart(root)
+    patch_draw_diag(root)
+
+
+def patch_list_restart(root: Path) -> None:
+    """D3D12 strip-cut cannot implement restart on point/line/triangle lists."""
+    driver = root / "src/gallium/drivers/d3d12"
+    path = driver / "d3d12_context.cpp"
+    source = path.read_text()
+    old = "   cfg.restart_primtypes_mask = cfg.primtypes_mask;"
+    new = """   /* D3D12 strip-cut applies only to strip topologies. Split list restarts in software. */
+   cfg.restart_primtypes_mask = (1 << MESA_PRIM_LINE_STRIP) | (1 << MESA_PRIM_TRIANGLE_STRIP);"""
+    if source.count(old) != 1:
+        raise RuntimeError("Pinned Mesa primitive restart configuration mismatch")
+    path.write_text(source.replace(old, new, 1))
+    path = driver / "d3d12_draw.cpp"
+    source = path.read_text()
+    old = """       (dinfo->primitive_restart && dinfo->restart_index != 0xffff &&
+        dinfo->restart_index != 0xffffffff)) {"""
+    new = """       (dinfo->primitive_restart &&
+        ((dinfo->mode == MESA_PRIM_POINTS || dinfo->mode == MESA_PRIM_LINES ||
+          dinfo->mode == MESA_PRIM_TRIANGLES) ||
+         (dinfo->restart_index != 0xffff && dinfo->restart_index != 0xffffffff)))) {"""
+    if source.count(old) != 1:
+        raise RuntimeError("Pinned Mesa primitive restart draw mismatch")
+    path.write_text(source.replace(old, new, 1))
+
+
+def patch_draw_diag(root: Path) -> None:
+    """Instrument the completed patch chain so no injected driver exit is missed."""
+    driver = root / "src/gallium/drivers/d3d12"
+    helper = Path(__file__).resolve().parent
+    (driver / "nxbox_draw_diag.h").write_text((helper / "mesa_draw_diag.h").read_text())
+    path = driver / "d3d12_draw.cpp"
+    source = path.read_text()
+    include = '#include "d3d12_context.h"\n'
+    if source.count(include) != 1:
+        raise RuntimeError("Pinned Mesa draw diagnostic include mismatch")
+    source = source.replace(include, include + '#include "nxbox_draw_diag.h"\n', 1)
+    start = source.index("void\nd3d12_draw_vbo(")
+    end = source.index("\nstatic ", start)
+    body = source[start:end]
+    body = body.replace("{\n", "{\n   NxboxDrawScope nxbox_draw_scope;\n", 1)
+    # Keep delegation distinct from a terminal drop. Descendant draws have their own scopes.
+    for call in (
+        "util_draw_multi(pctx, dinfo, drawid_offset, indirect, draws, num_draws);",
+        "util_primconvert_draw_vbo(ctx->primconvert, dinfo, drawid_offset, indirect, draws, num_draws);",
+    ):
+        if body.count(call) != 1:
+            raise RuntimeError(f"Pinned Mesa draw forwarding mismatch: {call}")
+        body = body.replace(call, "nxbox_draw_scope.forwarded();\n      " + call, 1)
+    body = body.replace("return;", "{ nxbox_draw_scope.skip(__LINE__); return; }")
+    anchor = "   if (!prim_supported((enum mesa_prim)dinfo->mode) ||"
+    observer = r"""
+   if (nxbox_draw_diag_enabled()) {
+      const auto *rast = ctx->gfx_pipeline_state.rast;
+      const auto *blend = ctx->gfx_pipeline_state.blend;
+      const auto *zsa = ctx->gfx_pipeline_state.zsa;
+      nxbox_draw_diag_count(NXBOX_DRAW_LOGIC, blend && blend->desc.RenderTarget[0].LogicOpEnable);
+      nxbox_draw_diag_count(NXBOX_DRAW_DUAL, blend && blend->is_dual_src);
+      nxbox_draw_diag_count(NXBOX_DRAW_CONSTANT, blend && blend->blend_factor_flags);
+      nxbox_draw_diag_count(NXBOX_DRAW_INDEPENDENT, blend && blend->desc.IndependentBlendEnable);
+      nxbox_draw_diag_count(NXBOX_DRAW_A2C, blend && blend->desc.AlphaToCoverageEnable);
+      nxbox_draw_diag_count(NXBOX_DRAW_CLIP, rast && rast->base.clip_plane_enable);
+      nxbox_draw_diag_count(NXBOX_DRAW_POINTS, dinfo->mode == MESA_PRIM_POINTS);
+      nxbox_draw_diag_count(NXBOX_DRAW_POINT_SPRITES, rast && rast->base.sprite_coord_enable &&
+                            dinfo->mode == MESA_PRIM_POINTS);
+      nxbox_draw_diag_count(NXBOX_DRAW_STENCIL, zsa && zsa->desc.StencilEnable);
+      nxbox_draw_diag_count(NXBOX_DRAW_DEPTH_BOUNDS, zsa && zsa->desc.DepthBoundsTestEnable);
+      nxbox_draw_diag_count(NXBOX_DRAW_DEPTH_CLAMP, rast && !rast->desc.DepthClipEnable);
+      nxbox_draw_diag_count(NXBOX_DRAW_RESTART, dinfo->primitive_restart);
+      nxbox_draw_diag_count(NXBOX_DRAW_INSTANCED, dinfo->instance_count > 1 || dinfo->start_instance);
+      nxbox_draw_diag_count(NXBOX_DRAW_GS, ctx->gfx_stages[PIPE_SHADER_GEOMETRY] != NULL);
+      nxbox_draw_diag_count(NXBOX_DRAW_SO, ctx->gfx_pipeline_state.num_so_targets != 0);
+      nxbox_draw_diag_count(NXBOX_DRAW_SAMPLE_MASK, ctx->gfx_pipeline_state.sample_mask != ~0u);
+      nxbox_draw_diag_count(NXBOX_DRAW_SCISSOR, rast && rast->base.scissor);
+      nxbox_draw_diag_count(NXBOX_DRAW_PREDICATION, ctx->current_predication != NULL);
+      nxbox_draw_diag_count(NXBOX_DRAW_DISCARD, rast && rast->base.rasterizer_discard);
+      bool unusual_viewport = false;
+      for (unsigned i = 0; i < ctx->num_viewports; ++i) {
+         const auto &vp = ctx->viewports[i];
+         unusual_viewport |= vp.TopLeftX < 0 || vp.TopLeftY < 0 || vp.Width <= 0 || vp.Height <= 0 ||
+                             vp.Width > ctx->fb.width || vp.Height > ctx->fb.height;
+      }
+      nxbox_draw_diag_count(NXBOX_DRAW_VIEWPORT, unusual_viewport);
+   }
+"""
+    if body.count(anchor) != 1:
+        raise RuntimeError("Pinned Mesa draw diagnostic state mismatch")
+    body = body.replace(anchor, observer + anchor, 1)
+    anchor = "   ctx->state_dirty &= D3D12_DIRTY_COMPUTE_MASK;"
+    if body.count(anchor) != 1:
+        raise RuntimeError("Pinned Mesa issued draw diagnostic mismatch")
+    body = body.replace(
+        anchor,
+        "   if (!nxbox_sync_stopped().load() && !nxbox_device_lost.load())\n"
+        "      nxbox_draw_scope.issued();\n"
+        "   else\n"
+        "      nxbox_draw_scope.skip(__LINE__);\n" + anchor,
+        1,
+    )
+    source = source[:start] + body + source[end:]
+    path.write_text(source)
+
+    # GLSL and SPIR-V both reach this final link-status check, including separable programs.
+    path = root / "src/mesa/state_tracker/st_glsl_to_nir.cpp"
+    source = path.read_text()
+    include = '#include "st_nir.h"\n'
+    source = source.replace(
+        include,
+        include
+        + '#ifdef _WIN32\n#include <windows.h>\n#include "../../gallium/drivers/d3d12/nxbox_draw_diag.h"\n#endif\n',
+        1,
+    )
+    anchor = "   if (prog->data->LinkStatus != LINKING_FAILURE)\n"
+    if source.count(anchor) != 1:
+        raise RuntimeError("Pinned Mesa link diagnostic mismatch")
+    source = source.replace(
+        anchor,
+        """#ifdef _WIN32
+   if (prog->data->LinkStatus == LINKING_FAILURE) {
+      nxbox_draw_diag_count(NXBOX_DRAW_LINK_FAIL);
+      if (nxbox_draw_diag_enabled()) {
+         char text[1024];
+         snprintf(text, sizeof(text), "program=%u %s", prog->Name,
+                  prog->data->InfoLog ? prog->data->InfoLog : "no info log");
+         SetEnvironmentVariableA("NXBOX_GL_LINK_FAIL_LAST", text);
+      }
+   }
+#endif
+"""
+        + anchor,
+        1,
+    )
+    path.write_text(source)
+
+    path = driver / "d3d12_compiler.cpp"
+    source = path.read_text()
+    source = source.replace(
+        '#include "d3d12_context.h"\n',
+        '#include "d3d12_context.h"\n#include "nxbox_draw_diag.h"\n',
+        1,
+    )
+    anchor = '      debug_printf("D3D12: nir_to_dxil failed\\n");'
+    if source.count(anchor) != 1:
+        raise RuntimeError("Pinned Mesa DXIL diagnostic mismatch")
+    source = source.replace(
+        anchor, "      nxbox_draw_diag_count(NXBOX_DRAW_DXIL_FAIL);\n" + anchor, 1
+    )
+    path.write_text(source)
+
+    path = root / "src/mesa/main/draw.c"
+    source = path.read_text()
+    (path.parent / "nxbox_gl_draw_diag.h").write_text((helper / "mesa_gl_draw_diag.h").read_text())
+    source = '#include "nxbox_gl_draw_diag.h"\n' + source
+    # These five returns follow successful submission/forwarding, rather than dropping work.
+    forwarded_lines = {1689, 2333, 2390, 2475, 2591}
+    lines = source.splitlines(keepends=True)
+    for original_line, line in enumerate(lines, 0):
+        if original_line > 1100 and "return;" in line and original_line not in forwarded_lines:
+            lines[original_line] = line.replace(
+                "return;", "{ nxbox_gl_draw_skip(__func__, __LINE__); return; }"
+            )
+    path.write_text("".join(lines))
+
+    # Conversion may drop a draw before d3d12_draw_vbo is called again.
+    for relative in ("indices/u_primconvert.c", "util/u_vbuf.c"):
+        path = root / "src/gallium/auxiliary" / relative
+        source = path.read_text()
+        key = "PRIMCONVERT" if relative.startswith("indices") else "VBUF"
+        header = path.parent / "nxbox_gl_draw_diag.h"
+        header.write_text((helper / "mesa_gl_draw_diag.h").read_text())
+        prelude = (
+            f'#define NXBOX_DRAW_SKIP_KEY "NXBOX_{key}_DRAW_SKIP_TOTAL"\n'
+            f'#define NXBOX_DRAW_SKIP_LAST_KEY "NXBOX_{key}_DRAW_SKIP_LAST"\n'
+            '#include "nxbox_gl_draw_diag.h"\n'
+        )
+        if key == "PRIMCONVERT":
+            for old in (
+                "   if (!primconvert_init_draw(pc, info, draw, &new_info, &new_draw))\n      return;",
+                "   if (!primconvert_init_draw(pc, &dinfo, draws, &new_info, &new_draw))\n      return;",
+            ):
+                if source.count(old) != 1:
+                    raise RuntimeError("Pinned Mesa primconvert drop diagnostic mismatch")
+                source = source.replace(
+                    old,
+                    old.replace("return;", "{ nxbox_gl_draw_skip(__func__, __LINE__); return; }"),
+                    1,
+                )
+        source = source.replace(
+            "goto cleanup;", "{ nxbox_gl_draw_skip(__func__, __LINE__); goto cleanup; }"
+        )
+        path.write_text(prelude + source)
+
+    path = root / "src/gallium/winsys/d3d12/wgl/d3d12_wgl_framebuffer_uwp.cpp"
+    source = path.read_text()
+    include = '#include "d3d12/d3d12_screen.h"\n'
+    if source.count(include) != 1:
+        raise RuntimeError("Pinned Mesa present diagnostic include mismatch")
+    source = source.replace(include, include + '#include "d3d12/nxbox_draw_diag.h"\n', 1)
+    anchor = '   const char *nxbox_interval = getenv("NXBOX_PRESENT_INTERVAL");\n'
+    if source.count(anchor) != 1:
+        raise RuntimeError("Pinned Mesa present diagnostic mismatch")
+    source = source.replace(anchor, "   nxbox_draw_diag_frame();\n" + anchor, 1)
+    path.write_text(source)
 
 
 def patch_null_pso(root: Path) -> None:

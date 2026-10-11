@@ -16,6 +16,7 @@
 #include "common/assert.h"
 #include "common/logging.h"
 #include "common/math_util.h"
+#include "common/nxbox_draw_guest_diag.h"
 #include "common/scope_exit.h"
 #include "common/settings.h"
 #include "video_core/control/channel_state.h"
@@ -244,6 +245,24 @@ void RasterizerOpenGL::PrepareDraw(bool is_indexed, Func&& draw_func) {
         return;
 
     SyncState();
+
+#ifdef NXBOX_UWP
+    // Mesa does not advertise NV_viewport_swizzle. Observe the guest request before it is lost.
+    bool viewport_swizzle = false;
+    if (nxbox_guest_draw_diag_enabled() && maxwell3d->regs.viewport_scale_offset_enabled) {
+        for (const auto& viewport : maxwell3d->regs.viewport_transform) {
+            if (viewport.scale_x == 0.0f || viewport.scale_y == 0.0f) {
+                continue;
+            }
+            const auto& swizzle = viewport.swizzle;
+            viewport_swizzle |= swizzle.x != Maxwell::ViewportSwizzle::PositiveX ||
+                                swizzle.y != Maxwell::ViewportSwizzle::PositiveY ||
+                                swizzle.z != Maxwell::ViewportSwizzle::PositiveZ ||
+                                swizzle.w != Maxwell::ViewportSwizzle::PositiveW;
+        }
+    }
+    nxbox_record_guest_viewport_swizzle(viewport_swizzle);
+#endif
 
     const auto& draw_state = maxwell3d->draw_manager.draw_state;
 

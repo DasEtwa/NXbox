@@ -339,6 +339,7 @@ struct Context {struct {unsigned nr_cbufs=1; d3d12_surface *cbufs[1];} fb;
  void *nxbox_journal=nullptr; unsigned expected=61;};
 unsigned d3d12_rtv_format(Context *ctx,unsigned) {return ctx->expected;}
 unsigned draws=0,rejections=0;
+struct DrawScope {void skip(unsigned) {}} nxbox_draw_scope;
 void nxbox_journal_add(void *,const char *,const char *,unsigned,unsigned,unsigned) {++rejections;}
 void debug_printf(const char *,unsigned,unsigned,unsigned) {}
 void draw(Context *ctx,unsigned mode) {unsigned conversion_modes[]={mode};

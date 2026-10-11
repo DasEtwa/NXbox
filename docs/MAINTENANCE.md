@@ -185,6 +185,8 @@ Eden. Each entry below describes one file; generated caches are identified separ
   unsubmitted-fence checks.
 - `tools/nxbox/mesa_perf_waits.h` — Defines async-submit and GPU-only stream-output wait policies
   plus sampled performance counters.
+- `tools/nxbox/mesa_draw_diag.h` — Counts graphics exits, state features and shader failures between presentations.
+- `tools/nxbox/mesa_gl_draw_diag.h` — Records GL validation and vertex/primitive conversion drops before the driver.
 - `tools/nxbox/mesa_sync_batch.h` — Implements synchronous submission helpers, command journaling
   and copy/clear safety wrappers.
 - `tools/nxbox/__pycache__/patch_mesa_uwp.cpython-314.pyc` — Tracked generated Python bytecode; the
@@ -262,6 +264,7 @@ Eden. Each entry below describes one file; generated caches are identified separ
   failure handling and retained completion requirements.
 - `tests/port/test_mesa_geometry_diag.py` — Compiles the generated draw observer and checks UBO
   alignment/size counters, opt-in gating, first-range retention and report sampling.
+- `tests/port/test_mesa_draw_diag.py` — Executes list-restart routing/scanning and frame diagnostic gating, reset and state observation.
 - `tests/port/test_mesa_full_chain.py` — Checks the whole patch chain, including pristine pinned
   sources and CRLF handling.
 - `tests/port/test_mesa_heap_policy.py` — Checks heap properties and feature-gated residency policy.
@@ -393,6 +396,7 @@ Related support files used by these paths (without those search markers):
 - `src/common/demand_commit.h` — Defines portable demand-commit policy exercised by host tests.
 - `src/common/nxbox_gl_readback.h` — Preserves pixel-pack-buffer state around diagnostic GL
   readback.
+- `src/common/nxbox_draw_guest_diag.h` — Counts nonidentity guest viewport swizzles before GL extension omission.
 - `src/common/sparse_memory.cpp` — Implements Windows sparse reservation and first-touch chunk
   commitment.
 - `src/common/sparse_memory.h` — Declares sparse allocation/free and committed-byte reporting.
@@ -438,6 +442,8 @@ calls every `patch_*` function in the order below. Helper destinations are under
 | 28    | `patch_buffer_staging`        | Routes eligible busy-buffer discard writes through upload staging instead of waiting.                | —                                                                                      |
 | 29 | `patch_perf_waits` | Removes diagnostic submission drains and GPU-only SO drains by default; keeps profiler and required completion waits. | mesa_perf_waits.h → nxbox_perf_waits.h |
 | 30 | `patch_geometry_diag` | Observes final IA/CBV state once per issued graphics draw, after vertex and primitive conversion. | src/common/nxbox_geometry_diag.h → nxbox_geometry_diag.h |
+| 31 | `patch_list_restart` | Splits restart in point/line/triangle lists through the existing primitive converter. | — |
+| 32 | `patch_draw_diag` | Counts final-chain driver exits, GL/converter drops, link/DXIL failures and state features per presentation. | mesa_draw_diag.h → nxbox_draw_diag.h; mesa_gl_draw_diag.h → nxbox_gl_draw_diag.h (GL/auxiliary) |
 
 `NXBOX_MESA_SKIP` is a **patch-time** comma-separated setting, not a console switch. The code
 supports `query`, `pso`, `dxil` and `fence`; the CI input description advertises only query/fence.
@@ -477,6 +483,7 @@ identifies the generator function and names the generated Mesa reader where usef
 | `NXBOX_DISABLE_DLC`            | Unset                                                 | Hex title ID appends DLC to that title’s disabled add-ons.                                                                                               | Yes         | src/eden_uwp/game_session.cpp:RunGame                                                                       |
 | `NXBOX_DRAW_BUCKETS`           | Off                                                   | `n,k` drops draws whose combined VS/PS hash is k modulo n; n must be at least 2.                                                                         | Yes         | patch_mesa_uwp.py:patch_bisect_switches → d3d12_draw.cpp:nxbox_draw_bucket_skip                             |
 | `NXBOX_DRAW_BUCKET_LOG`        | Unset                                                 | File for bounded skipped-hash reports; frontend sets LocalState\bucket.txt and removes its previous copy when DRAW_BUCKETS is present.                   | Yes         | patch_bisect_switches → d3d12_draw.cpp; src/eden_uwp/mesa_window.cpp                                        |
+| `NXBOX_DRAW_DIAG` | Off | Exact `1` logs graphics exits, GL/converter drops, shader link/DXIL failures and state feature counts every presented frame. Includes guest viewport swizzle requests before unsupported GL omission. See [SM3DW text investigation](sm3dw-text.md). | Yes | patch_mesa_uwp.py:patch_draw_diag; mesa_draw_diag.h; mesa_gl_draw_diag.h; gl_rasterizer.cpp; mesa_window.cpp |
 | `NXBOX_FRAME_DUMP`             | Off                                                   | Leading `1` sets FRAME_DUMP_DIR to LocalState\framedump.                                                                                                 | Yes         | src/eden_uwp/mesa_window.cpp:MesaRuntime::Initialize                                                        |
 | `NXBOX_FRAME_DUMP_DIR`         | Unset                                                 | Nonempty directory writes composed-frame PPM probes every 150 frames.                                                                                    | Yes         | src/video_core/renderer_opengl/renderer_opengl.cpp:DumpProbeFrame                                           |
 | `NXBOX_GPU_PROFILE`            | Off                                                   | Exact `1` adds GPU timestamps to journaled main-list commands; needs SYNC_BATCH enabled and JOURNAL=1 for useful command attribution.                    | Yes         | tools/nxbox/mesa_gpu_profile.h:nxbox_profile_on                                                             |

@@ -262,6 +262,28 @@ public:
             throw std::runtime_error("Mesa presentation failed");
         }
         NxboxStall::last_present_tick_ms.store(GetTickCount64(), std::memory_order_relaxed);
+        static const bool draw_diag = [] {
+            char value[4]{};
+            return GetEnvironmentVariableA("NXBOX_DRAW_DIAG", value, sizeof(value)) == 1 &&
+                   value[0] == '1';
+        }();
+        if (draw_diag) {
+            char report[2048]{};
+            if (GetEnvironmentVariableA("NXBOX_D3D12_DRAW_DIAG", report, sizeof(report))) {
+                Diagnostic(std::string("D3D12_DRAW_DIAG ") + report);
+            }
+            static std::array<std::string, 5> last_details;
+            const std::array names{"NXBOX_DRAW_SKIP_LAST", "NXBOX_GL_DRAW_SKIP_LAST",
+                                   "NXBOX_GL_LINK_FAIL_LAST", "NXBOX_PRIMCONVERT_DRAW_SKIP_LAST",
+                                   "NXBOX_VBUF_DRAW_SKIP_LAST"};
+            for (size_t i = 0; i < names.size(); ++i) {
+                if (GetEnvironmentVariableA(names[i], report, sizeof(report)) &&
+                    last_details[i] != report) {
+                    last_details[i] = report;
+                    Diagnostic(std::string(names[i]) + " " + report);
+                }
+            }
+        }
     }
 
 private:
