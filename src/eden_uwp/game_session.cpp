@@ -299,7 +299,9 @@ void ApplyEdenSettingsFile(const std::filesystem::path& settings_file) {
         bool applied = false;
         for (auto& [category, settings] : Settings::values.linkage.by_category) {
             for (Settings::BasicSetting* setting : settings) {
-                if (setting->GetLabel() == label) {
+                // Preserve Eden's canonical "backend" label and accept the member name for NXbox.
+                if (setting->GetLabel() == label ||
+                    (label == "renderer_backend" && setting->GetLabel() == "backend")) {
                     setting->LoadString(value);
                     applied = true;
                 }
@@ -712,14 +714,16 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
     }
     Common::Log::Initialize();
     FileSys::ResetRomfsVerification();
-    Settings::values.renderer_backend = Settings::RendererBackend::OpenGL_GLSL;
+    Settings::values.renderer_backend = window.UsesNativeD3D12()
+                                            ? Settings::RendererBackend::D3D12
+                                            : Settings::RendererBackend::OpenGL_GLSL;
     // NXBOX_SHADER_BACKEND=spirv feeds Mesa SPIR-V instead of GLSL text, which skips the GLSL front
     // end and the intermediate representation it keeps for every program.
     // It is the default: it costs about 40% less memory per program, which is what keeps Breath of
     // the Wild under the 5 GiB limit. NXBOX_SHADER_BACKEND=glsl restores the GLSL text path.
     {
         const char* backend = std::getenv("NXBOX_SHADER_BACKEND");
-        if (backend == nullptr || _stricmp(backend, "glsl") != 0) {
+        if (!window.UsesNativeD3D12() && (backend == nullptr || _stricmp(backend, "glsl") != 0)) {
             Settings::values.renderer_backend = Settings::RendererBackend::OpenGL_SPIRV;
         }
     }
@@ -810,6 +814,17 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
             Diagnostic(fmt::format("RESOLUTION title=unknown resolution_setup={}",
                                    static_cast<int>(Settings::values.resolution_setup.GetValue())));
         }
+    }
+    // The window API is selected before guest loading and cannot change while owning CoreWindow.
+    // The environment override wins over later settings-file application.
+    const char* renderer_override = std::getenv("NXBOX_RENDERER");
+    if (renderer_override && _stricmp(renderer_override, "d3d12") == 0) {
+        Settings::values.renderer_backend = Settings::RendererBackend::D3D12;
+    }
+    if (window.UsesNativeD3D12() !=
+        (Settings::values.renderer_backend.GetValue() == Settings::RendererBackend::D3D12)) {
+        throw std::runtime_error("Renderer backend changed after window creation; use global "
+                                 "renderer_backend or NXBOX_RENDERER and restart");
     }
     // Apply after global and per-title settings, before renderer/cache construction.
     if (NxboxUpload::ForceAstcSync()) {

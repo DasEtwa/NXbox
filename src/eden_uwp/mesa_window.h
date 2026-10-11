@@ -22,6 +22,9 @@ public:
     bool IsShown() const override;
     void OnFrameDisplayed() override;
     u64 FrameCount() const;
+    bool UsesNativeD3D12() const {
+        return native_d3d12;
+    }
     // Frontend-only splash blit, before the GPU thread starts. With bootstrap=false the caller
     // owns the current renderer context. No second CoreWindow swap chain is created.
     void PresentLaunchFrame(const Ui::Pixels& pixels, bool bootstrap = false);
@@ -29,6 +32,7 @@ public:
 private:
     winrt::Windows::UI::Core::CoreWindow window;
     std::shared_ptr<MesaRuntime> runtime;
+    bool native_d3d12{};
     std::atomic<u64> frames{0};
     mutable std::atomic<int> shared_contexts_created{0};
 };

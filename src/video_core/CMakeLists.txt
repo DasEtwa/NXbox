@@ -489,6 +489,17 @@ endif()
 # NXbox: Xbox/UWP-specific limits (5 GiB process budget shared with the guest heap).
 if (CMAKE_SYSTEM_NAME STREQUAL "WindowsStore")
     target_compile_definitions(video_core PRIVATE NXBOX_UWP=1)
+    if (WIN32)
+        target_sources(video_core PRIVATE
+            renderer_d3d12/renderer_d3d12.cpp
+            renderer_d3d12/renderer_d3d12.h
+            renderer_d3d12/d3d12_rasterizer.cpp
+            renderer_d3d12/d3d12_rasterizer.h
+            renderer_d3d12/backend_selection.h
+        )
+        target_compile_definitions(video_core PRIVATE HAS_D3D12=1)
+        target_link_libraries(video_core PRIVATE d3d12 dxgi)
+    endif()
 endif()
 
 create_target_directory_groups(video_core)

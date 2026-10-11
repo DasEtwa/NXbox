@@ -133,6 +133,17 @@ Eden. Each entry below describes one file; generated caches are identified separ
 - `src/eden_uwp/vma_impl.cpp` — Provides the Vulkan Memory Allocator implementation translation
   unit.
 
+### Native D3D12 renderer: src/video_core/renderer_d3d12
+
+- `renderer_d3d12.cpp` / `renderer_d3d12.h` — Own the opt-in P1 device, direct queue,
+  fence, CoreWindow swapchain and test clear/present path.
+- `d3d12_rasterizer.cpp` / `d3d12_rasterizer.h` — Implement the rasterizer interface
+  with explicit P1 guest-rendering stubs and CPU fallback behavior.
+- `backend_selection.h` — Defines portable environment/settings selection precedence.
+- `docs/d3d12-backend.md` — Maps Vulkan ownership and VideoCommon contracts to D3D12,
+  shader conversion and P1–P6 acceptance criteria.
+- `tests/port/test_d3d12_backend.py` — Checks native selection and stable backend numbers.
+
 ### Build and Mesa tooling: tools/nxbox
 
 - `tools/nxbox/build-graphics.cmd` — Selects the Visual Studio x64 UWP toolchain and builds the
@@ -472,8 +483,8 @@ experiment. `fast_poll()` rewrites helper `Sleep(1)` calls to SwitchToThread/Yie
 
 ## Runtime environment switches
 
-`MesaRuntime::Initialize` in `src/eden_uwp/mesa_window.cpp` loads `LocalState\nxbox_env.txt` before
-loading Mesa. Use `NAME=value`, one per line; empty lines and lines beginning with `#` are ignored.
+`MesaWindow` construction in `src/eden_uwp/mesa_window.cpp` loads `LocalState\nxbox_env.txt` before
+choosing the native D3D12 or Mesa path. Use `NAME=value`, one per line; empty lines and lines beginning with `#` are ignored.
 Restart the process after editing: many readers cache their first value. Defaults below describe
 NXbox with no override. **Diagnostic** means instrumentation or an experimental
 bisection/workaround; such switches can alter output, timing or memory use.

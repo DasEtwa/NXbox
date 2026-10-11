@@ -15,6 +15,9 @@
 #include "video_core/host1x/host1x.h"
 #include "video_core/renderer_base.h"
 #include "video_core/renderer_null/renderer_null.h"
+#ifdef HAS_D3D12
+#include "video_core/renderer_d3d12/renderer_d3d12.h"
+#endif
 #ifdef HAS_OPENGL
 #include "video_core/renderer_opengl/renderer_opengl.h"
 #endif
@@ -34,6 +37,10 @@ std::unique_ptr<VideoCore::RendererBase> CreateRenderer(Core::System& system, Co
 #endif
     case Settings::RendererBackend::Vulkan:
         return std::make_unique<Vulkan::RendererVulkan>(emu_window, device_memory, gpu, std::move(context));
+#ifdef HAS_D3D12
+    case Settings::RendererBackend::D3D12:
+        return std::make_unique<D3D12::RendererD3D12>(emu_window, gpu, std::move(context));
+#endif
     case Settings::RendererBackend::Null:
         return std::make_unique<Null::RendererNull>(emu_window, gpu, std::move(context));
     default:

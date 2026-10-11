@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "common/nxbox_stall.h"
 #include "common/scope_exit.h"
+#include "common/settings.h"
 #include "eden_uwp/diagnostic.h"
 #include "eden_uwp/mesa_window.h"
 #include "eden_uwp/ui/renderer.h"
+#include "video_core/renderer_d3d12/backend_selection.h"
 
 #include <algorithm>
 #include <array>
@@ -21,6 +23,27 @@ using namespace winrt::Windows::UI::Core;
 
 namespace EdenXbox {
 namespace {
+void LoadRuntimeEnvironment() {
+    const auto env_file =
+        std::filesystem::path(winrt::to_string(
+            winrt::Windows::Storage::ApplicationData::Current().LocalFolder().Path())) /
+        "nxbox_env.txt";
+    std::ifstream env_in(env_file);
+    std::string line;
+    while (std::getline(env_in, line)) {
+        while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) {
+            line.pop_back();
+        }
+        const auto eq = line.find('=');
+        if (line.empty() || line[0] == '#' || eq == std::string::npos) {
+            continue;
+        }
+        const std::string key = line.substr(0, eq);
+        const std::string value = line.substr(eq + 1);
+        _putenv_s(key.c_str(), value.c_str());
+        Diagnostic("ENV " + key + "=" + value);
+    }
+}
 HMODULE loader_library = nullptr;
 void* ResolveGL(const char* name) {
     auto address = GetProcAddress(loader_library, name);
@@ -94,21 +117,6 @@ struct MesaRuntime {
                 std::filesystem::path(winrt::to_string(
                     winrt::Windows::Storage::ApplicationData::Current().LocalFolder().Path())) /
                 "nxbox_env.txt";
-            std::ifstream env_in(env_file);
-            std::string line;
-            while (std::getline(env_in, line)) {
-                while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) {
-                    line.pop_back();
-                }
-                const auto eq = line.find('=');
-                if (line.empty() || line[0] == '#' || eq == std::string::npos) {
-                    continue;
-                }
-                const std::string key = line.substr(0, eq);
-                const std::string value = line.substr(eq + 1);
-                _putenv_s(key.c_str(), value.c_str());
-                Diagnostic("ENV " + key + "=" + value);
-            }
             // Mesa's per-call API ring and per-command journal format strings for every D3D12 call
             // and command (about 30% of the render thread): off unless asked for.
             for (const char* name : {"NXBOX_API_RING", "NXBOX_JOURNAL"}) {
@@ -293,29 +301,43 @@ private:
     GLuint vertex_array = 0;
 };
 
-MesaWindow::MesaWindow(const CoreWindow& window_, u32 width, u32 height)
-    : window(window_), runtime(std::make_shared<MesaRuntime>()) {
+MesaWindow::MesaWindow(const CoreWindow& window_, u32 width, u32 height) : window(window_) {
+    // Load before choosing a graphics API: the native path must never load Mesa or create WGL.
+    LoadRuntimeEnvironment();
+    const char* override_value = std::getenv("NXBOX_RENDERER");
+    native_d3d12 = D3D12::UseNativeBackend(Settings::values.renderer_backend.GetValue() ==
+                                               Settings::RendererBackend::D3D12,
+                                           override_value ? override_value : "");
+    window_info.type = Core::Frontend::WindowSystemType::Windows;
+    window_info.render_surface = get_abi(window);
+    window_info.render_surface_scale = 1.0f;
+    UpdateCurrentFramebufferLayout(width, height);
+    if (native_d3d12) {
+        Settings::values.renderer_backend = Settings::RendererBackend::D3D12;
+        Diagnostic("RENDERER D3D12 P1 native context; guest rendering is stubbed");
+        return;
+    }
+    runtime = std::make_shared<MesaRuntime>();
     runtime->Initialize(window);
     loader_library = runtime->library;
     if (!gladLoadGLLoader(ResolveGL)) {
         throw std::runtime_error("Cannot load OpenGL entry points");
     }
     runtime->make_current(nullptr, nullptr);
-    window_info.type = Core::Frontend::WindowSystemType::Windows;
-    window_info.render_surface = get_abi(window);
-    window_info.render_surface_scale = 1.0f;
     // Build shader-cache pipelines on the emulator's own context: shared worker contexts hang P5R
     // on Mesa d3d12 (the same failure as use_asynchronous_shaders).
     strict_context_required = true;
     // Mesa's WGL on the Xbox cannot make a second context current (no surfaceless contexts, and the
     // window DC would need a second swap chain), so precompile on the renderer's own context.
     precompile_on_current_context = true;
-    UpdateCurrentFramebufferLayout(width, height);
 }
 
 MesaWindow::~MesaWindow() = default;
 
 std::unique_ptr<Core::Frontend::GraphicsContext> MesaWindow::CreateSharedContext() const {
+    if (native_d3d12) {
+        return std::make_unique<Core::Frontend::GraphicsContext>();
+    }
     auto create = [this] {
         const auto function = runtime->Function<HANDLE(WINAPI*)(HDC, HANDLE, const int*)>(
             "wglCreateContextAttribsARB");
@@ -356,6 +378,10 @@ std::unique_ptr<Core::Frontend::GraphicsContext> MesaWindow::CreateSharedContext
 }
 
 void MesaWindow::PresentLaunchFrame(const Ui::Pixels& pixels, bool bootstrap) {
+    if (native_d3d12) {
+        // TODO(P2): upload the splash through the native renderer, with one swapchain owner.
+        return;
+    }
     if (bootstrap && !runtime->make_current(runtime->dc, runtime->context)) {
         throw std::runtime_error("Cannot activate launch context");
     }
