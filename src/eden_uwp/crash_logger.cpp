@@ -10,6 +10,7 @@
 #include <windows.h>
 
 #include <fileapifromapp.h>
+#include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.ApplicationModel.Core.h>
 #include <winrt/Windows.ApplicationModel.h>
 #include <winrt/Windows.Storage.h>
