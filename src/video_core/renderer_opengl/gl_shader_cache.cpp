@@ -15,11 +15,12 @@
 #include <unordered_set>
 
 #include "common/alignment.h"
-#include "common/nxbox_stall.h"
 #include "common/assert.h"
 #include "common/fs/fs.h"
 #include "common/fs/path_util.h"
 #include "common/logging.h"
+#include "common/nxbox_shader_probe_uwp.h"
+#include "common/nxbox_stall.h"
 #include "common/nxbox_upload_diag.h"
 #include "common/settings.h"
 #include "common/thread_worker.h"
@@ -30,7 +31,6 @@
 #include "shader_recompiler/frontend/maxwell/control_flow.h"
 #include "shader_recompiler/frontend/maxwell/translate_program.h"
 #include "shader_recompiler/profile.h"
-#include "video_core/engines/maxwell_3d.h"
 #include "video_core/engines/kepler_compute.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/memory_manager.h"
@@ -567,6 +567,9 @@ std::unique_ptr<GraphicsPipeline> ShaderCache::CreateGraphicsPipeline(
     NxboxStall::Scope stall_scope{NxboxStall::Kind::Shader};
     auto hash = key.Hash();
     LOG_INFO(Render_OpenGL, "{:#016x}", hash);
+#ifdef NXBOX_UWP
+    const bool dump_pipeline = NxboxShaderProbe::Settings().Dump(hash, key.unique_hashes);
+#endif
     size_t env_index{};
     u32 total_storage_buffers{};
     std::array<Shader::IR::Program, Maxwell::MaxShaderProgram> programs;
@@ -656,6 +659,47 @@ std::unique_ptr<GraphicsPipeline> ShaderCache::CreateGraphicsPipeline(
         }
         previous_program = &program;
     }
+#ifdef NXBOX_UWP
+    if (dump_pipeline) {
+        const auto prefix = NxboxShaderProbe::Hex(hash);
+        NxboxShaderProbe::WriteDump(prefix + ".key.bin", &key, key.Size());
+        std::string manifest = "pipeline=" + prefix + "\nstages=va,vb,tcs,tes,gs,fs\n";
+        std::size_t environment_index = 0;
+        for (std::size_t i = 0; i < key.unique_hashes.size(); ++i) {
+            if (key.unique_hashes[i] == 0) {
+                continue;
+            }
+            const auto& env = *envs[environment_index++];
+            std::vector<u64> code;
+            u32 code_address{};
+            if (const auto* live = dynamic_cast<const GenericEnvironment*>(&env)) {
+                code = live->GuestCode();
+                code_address = live->GuestCodeAddress();
+            } else if (const auto* cached = dynamic_cast<const FileEnvironment*>(&env)) {
+                code = cached->GuestCode();
+                code_address = cached->GuestCodeAddress();
+            }
+            const auto name = prefix + "_s" + std::to_string(i) + "_" +
+                              NxboxShaderProbe::Hex(key.unique_hashes[i]);
+            NxboxShaderProbe::WriteDump(name + ".maxwell.bin", code.data(),
+                                        code.size() * sizeof(u64));
+            manifest += name + " address=" + std::to_string(code_address) +
+                        " start=" + std::to_string(env.StartAddress()) +
+                        " bytes=" + std::to_string(code.size() * sizeof(u64)) + "\n";
+        }
+        for (std::size_t i = 0; i < sources.size(); ++i) {
+            const auto name = prefix + "_host_s" + std::to_string(i + 1);
+            if (!sources[i].empty()) {
+                NxboxShaderProbe::WriteText(name + (use_glasm ? ".glasm" : ".glsl"), sources[i]);
+            }
+            if (!sources_spirv[i].empty()) {
+                NxboxShaderProbe::WriteDump(name + ".spv", sources_spirv[i].data(),
+                                            sources_spirv[i].size() * sizeof(u32));
+            }
+        }
+        NxboxShaderProbe::WriteText(prefix + ".txt", manifest);
+    }
+#endif
     auto* const thread_worker{use_shader_workers ? workers.get() : nullptr};
     return std::make_unique<GraphicsPipeline>(device, texture_cache, buffer_cache, program_manager,
                                               state_tracker, thread_worker, &shader_notify, sources,

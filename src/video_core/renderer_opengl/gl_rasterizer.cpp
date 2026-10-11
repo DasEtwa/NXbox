@@ -17,6 +17,7 @@
 #include "common/logging.h"
 #include "common/math_util.h"
 #include "common/nxbox_draw_guest_diag.h"
+#include "common/nxbox_shader_probe_uwp.h"
 #include "common/nxbox_upload_diag.h"
 #include "common/scope_exit.h"
 #include "common/settings.h"
@@ -82,7 +83,14 @@ RasterizerOpenGL::RasterizerOpenGL(Core::Frontend::EmuWindow& emu_window_, Tegra
                    program_manager, state_tracker, gpu.ShaderNotify()),
       query_cache(*this, device_memory_), accelerate_dma(buffer_cache, texture_cache),
       fence_manager(*this, gpu, texture_cache, buffer_cache, query_cache),
-      blit_image(program_manager_) {}
+      blit_image(program_manager_) {
+#ifdef NXBOX_UWP
+    nxbox_shader_probe_enabled = NxboxShaderProbe::Settings().DrawEnabled();
+    if (nxbox_shader_probe_enabled) {
+        NxboxShaderProbe::FrameState() = {};
+    }
+#endif
+}
 
 RasterizerOpenGL::~RasterizerOpenGL() = default;
 
@@ -247,6 +255,22 @@ void RasterizerOpenGL::PrepareDraw(bool is_indexed, Func&& draw_func) {
         return;
 
     SyncState();
+
+#ifdef NXBOX_UWP
+    if (nxbox_shader_probe_enabled) {
+        const auto& config = NxboxShaderProbe::Settings();
+        auto& frames = NxboxShaderProbe::FrameState();
+        if (config.SkipEnabled() || (config.ids && frames.frame % config.every == 0)) {
+            const auto& key = pipeline->Key();
+            const auto hash = key.Hash();
+            const bool skip = config.Skip(hash);
+            frames.Record(config, hash, key.unique_hashes, skip);
+            if (skip) {
+                return;
+            }
+        }
+    }
+#endif
 
 #ifdef NXBOX_UWP
     // Mesa does not advertise NV_viewport_swizzle. Observe the guest request before it is lost.
@@ -687,6 +711,11 @@ void RasterizerOpenGL::FlushCommands() {
 }
 
 void RasterizerOpenGL::TickFrame() {
+#ifdef NXBOX_UWP
+    if (nxbox_shader_probe_enabled) {
+        NxboxShaderProbe::FrameState().End(NxboxShaderProbe::Settings(), EdenXbox::Diagnostic);
+    }
+#endif
     // Ticking a frame means that buffers will be swapped, calling glFlush implicitly.
     num_queued_commands = 0;
 

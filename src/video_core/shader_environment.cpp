@@ -193,6 +193,21 @@ u64 GenericEnvironment::CalculateHash() const {
     return Common::CityHash64(data.get(), size);
 }
 
+#ifdef NXBOX_UWP
+std::vector<u64> GenericEnvironment::GuestCode() const {
+    if (!has_unbound_instructions) {
+        const auto words = (std::min)(code.size(), CachedSizeWords());
+        return {code.begin(), code.begin() + words};
+    }
+    // CFG translation can read beyond the initial linear scan. Capture that range too.
+    const auto begin = GuestCodeAddress();
+    const auto end = (std::max)(cached_highest, read_highest);
+    std::vector<u64> snapshot((static_cast<std::size_t>(end) - begin) / INST_SIZE + 1);
+    gpu_memory->ReadBlock(program_base + begin, snapshot.data(), snapshot.size() * INST_SIZE);
+    return snapshot;
+}
+#endif
+
 void GenericEnvironment::Dump(u64 pipeline_hash, u64 shader_hash) {
     DumpImpl(pipeline_hash, shader_hash, code, read_highest, read_lowest, initial_offset, stage);
 }

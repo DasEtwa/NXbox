@@ -261,6 +261,8 @@ private:
     std::array<GLuint, MAX_TEXTURES> texture_handles{};
     std::array<GLuint, MAX_IMAGES> image_handles{};
 
+    bool nxbox_shader_probe_enabled{};
+
     /// Number of commands queued to the OpenGL driver. Reset on flush.
     size_t num_queued_commands = 0;
     bool has_written_global_memory = false;

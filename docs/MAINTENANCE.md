@@ -810,3 +810,86 @@ now reports each emulated format per draw, instanced attributes/divisors/base in
 disabled clip distances still written by the final vertex stage, asymmetric depth clipping,
 fragment depth writes, unsupported split stencil references/masks and independent blend with MRT.
 `clip` remains the rasterizer enable mask; `clip_disabled_written` detects a different condition.
+
+## Guest graphics shader bisection (no GPU debugger)
+
+For scene-dependent SM3DW black polygons, blue stipple or olive slabs, hold the camera
+and compare the same scene after each launch. A static view staying broken for minutes
+is not evidence of a timer/upload race. These controls identify which guest graphics
+pipelines draw the surfaces; they do not establish whether the eventual fault is in
+Eden translation, Mesa lowering, textures or vertex input.
+
+Put controls in `LocalState\nxbox_env.txt` and fully restart NXbox after each change.
+The frontend already loads these environment variables before renderer construction.
+
+```ini
+NXBOX_SHADER_IDS=1
+NXBOX_SHADER_IDS_EVERY=60
+# Enable one exclusion at a time:
+# NXBOX_SKIP_PIPELINE_HALF=0:0/2
+# NXBOX_SKIP_PIPELINES=0123456789abcdef,1000000000000000-1fffffffffffffff
+# NXBOX_DUMP_SHADERS=0123456789abcdef
+```
+
+`NXBOX_SHADER_IDS_EVERY` is a positive decimal frame interval (default 60). Sampling
+starts at frame 0 and uses the OpenGL rasterizer's presentation `TickFrame` boundary.
+`eden_uwp_diag.txt` receives a header and one compact `SHADER_IDS` line per distinct
+pipeline in that sampled frame, sorted by hash. `p` is the full Eden
+`GraphicsPipelineKey::Hash()` (64-bit CityHash on Xbox x64); `d` counts graphics draw
+invocations reaching GL and `skip` counts deliberate exclusions. `s` lists the six
+unique guest shader hashes in `va,vb,tcs,tes,gs,fs` order; `-` means absent. Counts are
+for that one frame, never accumulated across the interval. Direct, instanced,
+transform-feedback and multi-draw indirect paths share this hook. A multi-draw indirect
+submission counts as one invocation, not the GPU-resolved number of subdraws. Conditional
+rendering can suppress a submitted draw on the GPU. `DrawTexture` blits, compute and
+host presentation shaders have no guest graphics pipeline key and are outside this probe.
+
+`NXBOX_SKIP_PIPELINES` accepts comma-separated hex pipeline hashes or inclusive
+`first-last` hex ranges, with optional `0x` and whitespace. `NXBOX_SKIP_PIPELINE_HALF`
+uses `seed:k/n`: a hexadecimal seed, zero-based decimal bucket `k`, and positive decimal
+bucket count `n`. The bucket is `(pipeline_hash XOR seed) mod n`, so seed 0 is exactly
+hash modulo n. The list and bucket are combined with OR. Malformed settings are logged
+and ignored as a whole; invalid sampling intervals fall back to 60. Skip decisions apply
+to every frame, including unsampled frames, after resource configuration but before GL
+draw/transform feedback. Skipping changes render targets, depth, shader side effects and
+queries, so disappearance of an artifact is evidence of involvement, not proof of a bad
+shader. The sampled set still includes excluded pipelines through their `skip` counts.
+
+Console procedure:
+
+1. Capture a baseline screenshot and sampled pipeline set for the broken scene.
+2. Try `NXBOX_SKIP_PIPELINE_HALF=0:0/2`, then `0:1/2`, restarting and returning to the
+   same camera each time. Compare broken surfaces as well as missing legitimate objects.
+3. Subdivide the implicated bucket: bucket `k` of `n` splits into `k` and `k+n` of
+   `2n` with the same seed. Stop when a small candidate set remains. Confirm candidates
+   individually with `NXBOX_SKIP_PIPELINES` and compare other affected camera views.
+4. Remove exclusions, set `NXBOX_DUMP_SHADERS` to the candidate pipeline hash(es) or
+   per-stage unique shader hash(es), restart and revisit the scene. Stage selection dumps
+   every generated graphics pipeline containing that shader, including its other stages.
+
+Pull `LocalState\shader_dump\` through Device Portal along with the diagnostic log.
+Dumps run during pipeline generation, including disk-cache reconstruction, before host
+compilation takes ownership of the sources. They contain the actual active backend's
+GLSL (`.glsl`), SPIR-V binary (`.spv`, little-endian 32-bit words), or GL assembly
+(`.glasm`), rather than emitting an unused alternative backend. Files are named with
+pipeline hash and stage index; `_host_s1` is vertex, `_host_s2` TCS, `_host_s3` TES,
+`_host_s4` geometry, `_host_s5` fragment. Dual VA/VB is merged into host vertex GLSL;
+both guest binaries remain separate. Generated geometry passthrough can have a host
+source without a guest hash.
+
+Each `_s<0..5>_<shader-hash>.maxwell.bin` is the raw little-endian guest code snapshot,
+including its program header where present, without disassembler padding. The pipeline
+`.txt` manifest records its base guest address, shader start address and byte length;
+`.key.bin` retains the exact key bytes used for hashing, including XFB state when enabled.
+No filename is taken from user input. File success/failure is reported as `SHADER_DUMP`.
+Files overwrite matching names; other captures remain until manually removed. Only
+selected pipelines are dumped, but a widely shared stage can select many pipelines.
+
+With controls off there is no per-draw environment lookup, hashing, allocation, counting,
+locking or I/O; only a cached UWP enable branch remains. Non-UWP builds have no probe
+hooks. Unsampled frames do no ID accounting, and dump-only mode does not instrument
+draws. Enabled ID logging intentionally persists sampled lines through `Diagnostic`;
+use a larger interval to reduce console I/O. Settings are cached for the process lifetime.
+Host selection/accounting regressions are in `tests/port/test_shader_probe.py`; run
+`cd tests/port && python3 -m unittest discover -s . -p 'test_*.py'`. Xbox screenshot
+comparison and a Windows UWP build are still required for end-to-end validation.
