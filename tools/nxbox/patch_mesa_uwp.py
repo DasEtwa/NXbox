@@ -120,6 +120,8 @@ def patch(root: Path) -> None:
     patch_geometry_diag(root)
     patch_list_restart(root)
     patch_draw_diag(root)
+    patch_memstream(root)
+    patch_dxil_unsupported(root)
 
 
 def patch_list_restart(root: Path) -> None:
@@ -3561,6 +3563,72 @@ nxbox_record_geometry_draw(struct d3d12_context *ctx)
     target.write_text(
         (Path(__file__).resolve().parents[2] / "src/common/nxbox_geometry_diag.h").read_text()
     )
+
+
+def patch_memstream(root: Path) -> None:
+    """u_memstream_open overflowed its stack: GetTempPath/GetTempFileName resolve to the W
+    (UNICODE) variants in this build and write up to 520 bytes into a char[MAX_PATH] (0xC0000409
+    stack cookie in the Super Mario 3D World shader log path). The W variants are known to be
+    allowed in the app partition (the original code already compiled against them), so call them
+    explicitly with wchar_t buffers and convert to the char path that fopen/remove need.
+    GetTempPathA/GetTempFileNameA availability under UWP is not guaranteed, hence not used."""
+    path = root / "src/util/memstream.c"
+    source = path.read_text()
+    old = """   char path[MAX_PATH];
+   DWORD dwResult = GetTempPath(MAX_PATH, path);
+   if ((dwResult > 0) && (dwResult < MAX_PATH)) {
+      char *temp = mem->temp;
+      UINT uResult = GetTempFileName(path, "MEMSTREAM", 0, temp);
+      if (uResult != 0) {
+"""
+    new = """   wchar_t path[MAX_PATH];
+   wchar_t wtemp[MAX_PATH];
+   DWORD dwResult = GetTempPathW(MAX_PATH, path);
+   if ((dwResult > 0) && (dwResult < MAX_PATH)) {
+      char *temp = mem->temp;
+      UINT uResult = GetTempFileNameW(path, L"MEMSTREAM", 0, wtemp);
+      if (uResult != 0 &&
+          WideCharToMultiByte(CP_UTF8, 0, wtemp, -1, temp, (int)sizeof(mem->temp), NULL, NULL) > 0) {
+"""
+    if source.count(old) != 1:
+        raise RuntimeError("Pinned Mesa memstream temp path mismatch")
+    path.write_text(source.replace(old, new, 1))
+
+
+def patch_dxil_unsupported(root: Path) -> None:
+    """Publish the first unsupported NIR instruction so the frontend diagnostic can log it."""
+    path = root / "src/microsoft/compiler/nir_to_dxil.c"
+    source = path.read_text()
+    old = """   ralloc_free(instr_str);
+   assert(msg);
+   logger->log(logger->priv, msg);
+"""
+    new = """   ralloc_free(instr_str);
+   assert(msg);
+   nxbox_publish_unsupported(msg);
+   logger->log(logger->priv, msg);
+"""
+    helper = """#ifdef _WIN32
+__declspec(dllimport) unsigned long __stdcall GetEnvironmentVariableA(const char *, char *, unsigned long);
+__declspec(dllimport) int __stdcall SetEnvironmentVariableA(const char *, const char *);
+static void
+nxbox_publish_unsupported(const char *msg)
+{
+   char probe[2];
+   /* First one only: later failures are usually knock-on effects. */
+   if (GetEnvironmentVariableA("NXBOX_DXIL_UNSUPPORTED", probe, sizeof(probe)) == 0)
+      SetEnvironmentVariableA("NXBOX_DXIL_UNSUPPORTED", msg);
+}
+#else
+#define nxbox_publish_unsupported(msg) ((void)0)
+#endif
+
+"""
+    anchor = "static void\nlog_nir_instr_unsupported("
+    if source.count(old) != 1 or source.count(anchor) != 1:
+        raise RuntimeError("Pinned Mesa DXIL unsupported-instruction logger mismatch")
+    source = source.replace(old, new, 1).replace(anchor, helper + anchor, 1)
+    path.write_text(source)
 
 
 if __name__ == "__main__":
