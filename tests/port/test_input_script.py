@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[2]
 CODE = r"""
 #include <cassert>
 #include "eden_uwp/input_script.h"
+#include "eden_uwp/pad_style.h"
 using namespace EdenXbox;
 int main() {
     auto e = ParseInputScript("40.0:A:0.15, 45:plus:0.2,55:LSTICK_RIGHT:3.0,bad,x:A:1,5:B,6:A:0");
@@ -20,6 +21,11 @@ int main() {
     assert(e[3].name == "B" && e[3].hold == 0.15);
     assert(!ScriptEventActive(e[0], 39.9) && ScriptEventActive(e[0], 40.1) && !ScriptEventActive(e[0], 40.2));
     assert(ParseInputScript("").empty());
+    assert(ChoosePadStyle(0) == PadChoice::None);
+    assert(ChoosePadStyle(0x7) == PadChoice::Pro);
+    assert(ChoosePadStyle(0x6) == PadChoice::JoyDual);
+    assert(ChoosePadStyle(0x2) == PadChoice::Handheld);
+    assert(ChoosePadStyle(0x38) == PadChoice::None);
 }
 """
 

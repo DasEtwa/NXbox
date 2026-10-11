@@ -135,6 +135,7 @@ add_library(hid_core STATIC
     hid_core.cpp
     hid_core.h
     hid_result.h
+    hid_diag.h
     hid_types.h
     hid_util.h
     resource_manager.cpp

@@ -19,6 +19,7 @@
 #include "core/hle/service/kernel_helpers.h"
 #include "hid_core/frontend/emulated_controller.h"
 #include "hid_core/hid_core.h"
+#include "hid_core/hid_diag.h"
 #include "hid_core/hid_result.h"
 #include "hid_core/hid_util.h"
 #include "hid_core/resources/applet_resource.h"
@@ -815,6 +816,9 @@ void NPad::UpdateControllerAt(Kernel::KernelCore& kernel, u64 aruid, Core::HID::
         return;
     }
 
+    Service::HID::HidDiag(
+        fmt::format("npad_connect[{}]", static_cast<u32>(npad_id)),
+        fmt::format("style={} aruid={}", static_cast<u32>(type), aruid));
     controller.device->SetNpadStyleIndex(type);
     InitNewlyAddedController(kernel, aruid, npad_id);
 }

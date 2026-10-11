@@ -1014,7 +1014,7 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
             std::this_thread::sleep_for(std::chrono::milliseconds(8));
             continue;
         }
-        gamepad->Poll(*controller);
+        gamepad->Poll(*controller, system.HIDCore().GetSupportedStyleTag());
         const auto now = std::chrono::steady_clock::now();
         // Stutter: the longest gap between two presented frames in each window.
         if (const auto count = window.FrameCount(); count != last_frame_count) {

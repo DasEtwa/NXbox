@@ -15,6 +15,7 @@
 #include "common/settings.h"
 #include "eden_uwp/diagnostic.h"
 #include "eden_uwp/input_script.h"
+#include "eden_uwp/pad_style.h"
 #include "hid_core/frontend/emulated_controller.h"
 #include "hid_core/hid_core.h"
 #include "input_common/input_engine.h"
@@ -84,7 +85,8 @@ public:
         }
     }
 
-    void Poll(Core::HID::EmulatedController& controller) {
+    void Poll(Core::HID::EmulatedController& controller,
+              Core::HID::NpadStyleTag supported = {}) {
         using namespace winrt::Windows::Gaming::Input;
         const auto devices = Gamepad::Gamepads();
         GamepadReading reading{};
@@ -96,6 +98,7 @@ public:
         // no Xbox pad was visible made games re-open the controller-support applet in a loop:
         // Persona 5 Royal every ~5 s, and Breath of the Wild 43 times in 13 s, leaking each
         // applet's events until CreateEvent hit the resource limit and the game stopped.
+        AutoStyle(controller, supported);
         if (!controller.IsConnected()) {
             controller.Connect();
         }
@@ -153,6 +156,43 @@ public:
     }
 
 private:
+    /// NXBOX_PAD_AUTOSTYLE (default on): when the game changes its supported style set, present the
+    /// pad as a type that set allows and signal a fresh connection, so games that look at the
+    /// style only on a connect event (Super Mario 3D World's controller screen) see a valid pad.
+    void AutoStyle(Core::HID::EmulatedController& controller, Core::HID::NpadStyleTag supported) {
+        static const bool enabled = [] {
+            const char* value = std::getenv("NXBOX_PAD_AUTOSTYLE");
+            return value == nullptr || value[0] != '0';
+        }();
+        const auto raw = static_cast<std::uint32_t>(supported.raw);
+        if (!enabled || raw == last_style_raw)
+            return;
+        last_style_raw = raw;
+        using Core::HID::NpadStyleIndex;
+        NpadStyleIndex style;
+        switch (ChoosePadStyle(raw)) {
+        case PadChoice::Pro:
+            style = NpadStyleIndex::Fullkey;
+            break;
+        case PadChoice::JoyDual:
+            style = NpadStyleIndex::JoyconDual;
+            break;
+        case PadChoice::Handheld:
+            style = NpadStyleIndex::Handheld;
+            break;
+        default:
+            return;
+        }
+        controller.Disconnect();
+        controller.SetNpadStyleIndex(style);
+        controller.Connect();
+        Diagnostic("PAD_AUTOSTYLE supported=0x" + std::to_string(raw) +
+                   " style=" + std::to_string(static_cast<int>(style)) +
+                   " connected=" + std::to_string(controller.IsConnected()));
+    }
+
+    std::uint32_t last_style_raw = 0;
+
     /// NXBOX_INPUT_SCRIPT events active now, as key_state bits; the clock starts at the first poll.
     std::uint32_t ScriptedKeys() {
         if (!script_loaded) {

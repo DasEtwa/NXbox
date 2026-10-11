@@ -18,6 +18,7 @@
 #include "core/hle/service/hid/hid_server.h"
 #include "core/hle/service/ipc_helpers.h"
 #include "core/memory.h"
+#include "hid_core/hid_diag.h"
 #include "hid_core/hid_result.h"
 #include "hid_core/hid_util.h"
 #include "hid_core/resource_manager.h"
@@ -647,6 +648,8 @@ Result IHidServer::SetGestureOutputRanges(u32 param1, u32 param2, u32 param3, u3
 
 Result IHidServer::SetSupportedNpadStyleSet(Core::HID::NpadStyleSet supported_style_set,
                                             ClientAppletResourceUserId aruid) {
+    HidDiag("SetSupportedNpadStyleSet",
+            fmt::format("raw=0x{:x} aruid={}", static_cast<u32>(supported_style_set), aruid.pid));
     LOG_DEBUG(Service_HID, "called, supported_style_set={}, applet_resource_user_id={}",
               supported_style_set, aruid.pid);
 
@@ -673,6 +676,13 @@ Result IHidServer::GetSupportedNpadStyleSet(Out<Core::HID::NpadStyleSet> out_sup
 Result IHidServer::SetSupportedNpadIdType(
     ClientAppletResourceUserId aruid,
     InArray<Core::HID::NpadIdType, BufferAttr_HipcPointer> supported_npad_list) {
+    {
+        std::string ids;
+        for (const auto id : supported_npad_list) {
+            ids += fmt::format("{} ", static_cast<u32>(id));
+        }
+        HidDiag("SetSupportedNpadIdType", fmt::format("ids=[{}] aruid={}", ids, aruid.pid));
+    }
     LOG_DEBUG(Service_HID, "called, applet_resource_user_id={}", aruid.pid);
 
     R_RETURN(
@@ -680,6 +690,7 @@ Result IHidServer::SetSupportedNpadIdType(
 }
 
 Result IHidServer::ActivateNpad(ClientAppletResourceUserId aruid) {
+    HidDiag("ActivateNpad", fmt::format("revision=0 aruid={}", aruid.pid));
     LOG_DEBUG(Service_HID, "called, applet_resource_user_id={}", aruid.pid);
 
     auto npad = GetResourceManager()->GetNpad();
@@ -698,6 +709,7 @@ Result IHidServer::DeactivateNpad(ClientAppletResourceUserId aruid) {
 Result IHidServer::AcquireNpadStyleSetUpdateEventHandle(
     OutCopyHandle<Kernel::KReadableEvent> out_event, Core::HID::NpadIdType npad_id,
     ClientAppletResourceUserId aruid, u64 unknown) {
+    HidDiag("AcquireNpadStyleSetUpdateEventHandle", fmt::format("npad={}", static_cast<u32>(npad_id)));
     LOG_DEBUG(Service_HID, "called, npad_id={}, applet_resource_user_id={}, unknown={}", npad_id,
               aruid.pid, unknown);
 
@@ -747,6 +759,7 @@ Result IHidServer::GetPlayerLedPattern(Out<Core::HID::LedPattern> out_led_patter
 
 Result IHidServer::ActivateNpadWithRevision(NpadRevision revision,
                                             ClientAppletResourceUserId aruid) {
+    HidDiag("ActivateNpadWithRevision", fmt::format("revision={} aruid={}", static_cast<u32>(revision), aruid.pid));
     LOG_DEBUG(Service_HID, "called, revision={}, applet_resource_user_id={}", revision, aruid.pid);
 
     GetResourceManager()->GetNpad()->SetRevision(aruid.pid, revision);
@@ -774,6 +787,7 @@ Result IHidServer::GetNpadJoyHoldType(Out<NpadJoyHoldType> out_hold_type,
 
 Result IHidServer::SetNpadJoyAssignmentModeSingleByDefault(Core::HID::NpadIdType npad_id,
                                                            ClientAppletResourceUserId aruid) {
+    HidDiag("JoyAssignment", fmt::format("SingleByDefault npad={}", static_cast<u32>(npad_id)));
     LOG_INFO(Service_HID, "called, npad_id={}, applet_resource_user_id={}", npad_id, aruid.pid);
 
     Core::HID::NpadIdType new_npad_id{};
@@ -785,6 +799,7 @@ Result IHidServer::SetNpadJoyAssignmentModeSingleByDefault(Core::HID::NpadIdType
 Result IHidServer::SetNpadJoyAssignmentModeSingle(Core::HID::NpadIdType npad_id,
                                                   ClientAppletResourceUserId aruid,
                                                   NpadJoyDeviceType npad_joy_device_type) {
+    HidDiag("JoyAssignment", fmt::format("Single npad={} type={}", static_cast<u32>(npad_id), static_cast<u32>(npad_joy_device_type)));
     LOG_INFO(Service_HID, "called, npad_id={}, applet_resource_user_id={}, npad_joy_device_type={}",
              npad_id, aruid.pid, npad_joy_device_type);
 
@@ -796,6 +811,7 @@ Result IHidServer::SetNpadJoyAssignmentModeSingle(Core::HID::NpadIdType npad_id,
 
 Result IHidServer::SetNpadJoyAssignmentModeDual(Core::HID::NpadIdType npad_id,
                                                 ClientAppletResourceUserId aruid) {
+    HidDiag("JoyAssignment", fmt::format("Dual npad={}", static_cast<u32>(npad_id)));
     LOG_DEBUG(Service_HID, "called, npad_id={}, applet_resource_user_id={}", npad_id, aruid.pid);
 
     Core::HID::NpadIdType new_npad_id{};
@@ -830,6 +846,7 @@ Result IHidServer::StopLrAssignmentMode(ClientAppletResourceUserId aruid) {
 
 Result IHidServer::SetNpadHandheldActivationMode(ClientAppletResourceUserId aruid,
                                                  NpadHandheldActivationMode activation_mode) {
+    HidDiag("SetNpadHandheldActivationMode", fmt::format("mode={}", static_cast<u32>(activation_mode)));
     LOG_DEBUG(Service_HID, "called, applet_resource_user_id={}, activation_mode={}", aruid.pid,
               activation_mode);
 
