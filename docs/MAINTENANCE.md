@@ -770,3 +770,14 @@ tracks allocations of at least 2 KiB, despite the older 64 KiB comment in its he
 `common/host_memory.cpp`, `common/sparse_memory.cpp`, `common/sparse_large_vector.cpp`, the Dynarmic
 cache caps, `gl_texture_cache.cpp` and `mesa_heap_policy.h`. The texture-cache thresholds control
 collection, not total process memory; BO creation totals are not live resident bytes.
+
+### Unattended input (NXBOX_INPUT_SCRIPT, NXBOX_HID_DIAG, NXBOX_PAD_AUTOSTYLE)
+
+`NXBOX_INPUT_SCRIPT="start:BUTTON:hold,..."` injects buttons into player 1 (clock starts at the first
+poll). `NXBOX_HID_DIAG=1` logs the guest's HID requests once per change (`NXBOX_HID_DIAG` lines in
+the Eden log). Super Mario 3D World asks for style set 0x1f and npad ids [0] then [0,1,2,3]; its red
+4-slot controller screen is not a style problem: Pro, JoyDual and Handheld all present fine
+(`NXBOX_PAD_AUTOSTYLE` picks Pro by default; `NXBOX_PAD_STYLE=dual|handheld` forces another type).
+What got past that screen was a **long-hold** sequence (L+R held 2 s, then 1 s holds of A, PLUS,
+X, Y, ZL+ZR, MINUS, A, B); the same screen ignored 0.15-0.6 s presses with Pro or JoyDual. Use
+holds of at least 1 s on that screen.
