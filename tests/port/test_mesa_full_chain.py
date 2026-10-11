@@ -252,6 +252,22 @@ int main() {
                 bufmgr = (driver / "d3d12_bufmgr.cpp").read_text()
                 self.assertIn("nxbox_heap_properties(screen->architecture, heap_type)", bufmgr)
                 screen = (driver / "d3d12_screen.cpp").read_text()
+                alignment = screen.split("   case PIPE_CAP_PRIMITIVE_RESTART:", 1)[1].split(
+                    "      return 1;", 1
+                )[0]
+                self.assertIn("PIPE_CAP_VERTEX_BUFFER_OFFSET_4BYTE_ALIGNED_ONLY", alignment)
+                self.assertEqual(
+                    screen.count("case PIPE_CAP_VERTEX_ELEMENT_SRC_OFFSET_4BYTE_ALIGNED_ONLY:"), 1
+                )
+                conversion = (
+                    root / "src/microsoft/compiler/dxil_nir_lower_vs_vertex_conversion.c"
+                ).read_text()
+                self.assertIn("nir_fmax(b, nir_fmul(b, split, scale_rgb)", conversion)
+                compiler = (driver / "d3d12_compiler.cpp").read_text()
+                self.assertIn("sizeof(expect->vs.format_conversion)))", compiler)
+                self.assertIn(
+                    "nxbox_record_geometry_draw(ctx);", (driver / "d3d12_draw.cpp").read_text()
+                )
                 self.assertIn("D3D12_FEATURE_ARCHITECTURE,", screen)
                 self.assertIn("D3D12_FEATURE_D3D12_OPTIONS7, &nxbox_options7", screen)
                 self.assertIn(

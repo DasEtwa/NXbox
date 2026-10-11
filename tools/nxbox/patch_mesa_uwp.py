@@ -117,6 +117,7 @@ def patch(root: Path) -> None:
     patch_view_cast(root)
     patch_buffer_staging(root)
     patch_perf_waits(root)
+    patch_vertex_fetch(root)
     patch_geometry_diag(root)
     patch_list_restart(root)
     patch_draw_diag(root)
@@ -3501,6 +3502,49 @@ def patch_perf_waits(root: Path) -> None:
     for name, source in sources.items():
         (driver / name).write_text(source)
     target.write_text(Path(__file__).with_name("mesa_perf_waits.h").read_text())
+
+
+def patch_vertex_fetch(root: Path) -> None:
+    """Translate unaligned IA inputs, clamp SNORM and compare complete VS format keys."""
+    driver = root / "src/gallium/drivers/d3d12"
+    replacements = (
+        (
+            driver / "d3d12_screen.cpp",
+            "   case PIPE_CAP_VERTEX_BUFFER_STRIDE_4BYTE_ALIGNED_ONLY:\n",
+            "   /* IA alignment depends on the DXGI format (1/2/4 bytes). Require four\n"
+            "    * conservatively, including formats widened by vertex emulation, so\n"
+            "    * u_vbuf translates the data instead of forwarding invalid views. */\n"
+            "   case PIPE_CAP_VERTEX_BUFFER_OFFSET_4BYTE_ALIGNED_ONLY:\n"
+            "   case PIPE_CAP_VERTEX_BUFFER_STRIDE_4BYTE_ALIGNED_ONLY:\n",
+        ),
+        (
+            root / "src/microsoft/compiler/dxil_nir_lower_vs_vertex_conversion.c",
+            "   return nir_fmul(b, split, scale_rgb);",
+            "   /* The most negative signed code also represents -1, including\n"
+            "    * the two-bit alpha code -2. Scaled formats must remain unclamped. */\n"
+            "   return nir_fmax(b, nir_fmul(b, split, scale_rgb), nir_imm_float(b, -1.0f));",
+        ),
+        (
+            driver / "d3d12_compiler.cpp",
+            "            sel_ctx->ctx->gfx_pipeline_state.ves->num_elements * sizeof(enum pipe_format)))",
+            "            sizeof(expect->vs.format_conversion)))",
+        ),
+    )
+    for path, old, new in replacements:
+        source = path.read_text()
+        # The multiplication occurs in both SNORM and UNORM. Only SNORM clamps.
+        if path.name == "dxil_nir_lower_vs_vertex_conversion.c":
+            start = source.index("from_10_10_10_2_snorm(")
+            end = source.index("from_10_10_10_2_unorm(", start)
+            section = source[start:end]
+            if section.count(old) != 1:
+                raise RuntimeError("Pinned Mesa vertex SNORM conversion anchor mismatch")
+            source = source[:start] + section.replace(old, new, 1) + source[end:]
+        else:
+            if source.count(old) != 1:
+                raise RuntimeError(f"Pinned Mesa vertex fetch anchor mismatch: {path.name}")
+            source = source.replace(old, new, 1)
+        path.write_text(source)
 
 
 def patch_geometry_diag(root: Path) -> None:

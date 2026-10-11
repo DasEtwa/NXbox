@@ -267,6 +267,8 @@ Eden. Each entry below describes one file; generated caches are identified separ
 - `tests/port/test_mesa_draw_diag.py` — Executes list-restart routing/scanning and frame diagnostic gating, reset and state observation.
 - `tests/port/test_mesa_full_chain.py` — Checks the whole patch chain, including pristine pinned
   sources and CRLF handling.
+- `tests/port/test_mesa_vertex_fetch.py` — Checks patch invocation and IA caps, compiles cap labels,
+  and executes packed vertex conversions and VS format-key comparisons on the host.
 - `tests/port/test_mesa_heap_policy.py` — Checks heap properties and feature-gated residency policy.
 - `tests/port/test_mesa_invalid_commands.py` — Checks descriptor capacity, state promotions and
   planar-copy fixes.
@@ -441,9 +443,10 @@ calls every `patch_*` function in the order below. Helper destinations are under
 | 27    | `patch_view_cast`             | Reinterprets equal-size color SRVs via GPU buffers; guards other invalid views.                       | mesa_view_cast.h → nxbox_view_cast.h; mesa_view_cast_copy.h → nxbox_view_cast_copy.h                          |
 | 28    | `patch_buffer_staging`        | Routes eligible busy-buffer discard writes through upload staging instead of waiting.                | —                                                                                      |
 | 29 | `patch_perf_waits` | Removes diagnostic submission drains and GPU-only SO drains by default; keeps profiler and required completion waits. | mesa_perf_waits.h → nxbox_perf_waits.h |
-| 30 | `patch_geometry_diag` | Observes final IA/CBV state once per issued graphics draw, after vertex and primitive conversion. | src/common/nxbox_geometry_diag.h → nxbox_geometry_diag.h |
-| 31 | `patch_list_restart` | Splits restart in point/line/triangle lists through the existing primitive converter. | — |
-| 32 | `patch_draw_diag` | Counts final-chain driver exits, GL/converter drops, link/DXIL failures and state features per presentation. | mesa_draw_diag.h → nxbox_draw_diag.h; mesa_gl_draw_diag.h → nxbox_gl_draw_diag.h (GL/auxiliary) |
+| 30 | `patch_vertex_fetch` | Requires four-byte IA buffer offsets through u_vbuf, clamps packed SNORM and compares the complete VS format-conversion key. | — |
+| 31 | `patch_geometry_diag` | Observes final IA/CBV state once per issued graphics draw, after vertex and primitive conversion. | src/common/nxbox_geometry_diag.h → nxbox_geometry_diag.h |
+| 32 | `patch_list_restart` | Splits restart in point/line/triangle lists through the existing primitive converter. | — |
+| 33 | `patch_draw_diag` | Counts final-chain driver exits, GL/converter drops, link/DXIL failures and state features per presentation. | mesa_draw_diag.h → nxbox_draw_diag.h; mesa_gl_draw_diag.h → nxbox_gl_draw_diag.h (GL/auxiliary) |
 
 `NXBOX_MESA_SKIP` is a **patch-time** comma-separated setting, not a console switch. The code
 supports `query`, `pso`, `dxil` and `fence`; the CI input description advertises only query/fence.
