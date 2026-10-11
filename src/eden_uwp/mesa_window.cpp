@@ -268,7 +268,7 @@ public:
                    value[0] == '1';
         }();
         if (draw_diag) {
-            char report[2048]{};
+            char report[4096]{};
             if (GetEnvironmentVariableA("NXBOX_D3D12_DRAW_DIAG", report, sizeof(report))) {
                 Diagnostic(std::string("D3D12_DRAW_DIAG ") + report);
             }

@@ -267,8 +267,9 @@ Eden. Each entry below describes one file; generated caches are identified separ
 - `tests/port/test_mesa_draw_diag.py` — Executes list-restart routing/scanning and frame diagnostic gating, reset and state observation.
 - `tests/port/test_mesa_full_chain.py` — Checks the whole patch chain, including pristine pinned
   sources and CRLF handling.
+- `tests/port/test_mesa_clip_distance.py` — Executes the pinned NIR disabled-distance stores for all masks and checks final-stage lowering and variant-key integration.
 - `tests/port/test_mesa_vertex_fetch.py` — Checks patch invocation and IA caps, compiles cap labels,
-  and executes packed vertex conversions and VS format-key comparisons on the host.
+  and executes packed/scaled/RGB integer conversions, half-float fallback decoding and VS format-key comparisons on the host.
 - `tests/port/test_mesa_heap_policy.py` — Checks heap properties and feature-gated residency policy.
 - `tests/port/test_mesa_invalid_commands.py` — Checks descriptor capacity, state promotions and
   planar-copy fixes.
@@ -444,9 +445,10 @@ calls every `patch_*` function in the order below. Helper destinations are under
 | 28    | `patch_buffer_staging`        | Routes eligible busy-buffer discard writes through upload staging instead of waiting.                | —                                                                                      |
 | 29 | `patch_perf_waits` | Removes diagnostic submission drains and GPU-only SO drains by default; keeps profiler and required completion waits. | mesa_perf_waits.h → nxbox_perf_waits.h |
 | 30 | `patch_vertex_fetch` | Requires four-byte IA buffer offsets through u_vbuf, clamps packed SNORM and compares the complete VS format-conversion key. | — |
-| 31 | `patch_geometry_diag` | Observes final IA/CBV state once per issued graphics draw, after vertex and primitive conversion. | src/common/nxbox_geometry_diag.h → nxbox_geometry_diag.h |
-| 32 | `patch_list_restart` | Splits restart in point/line/triangle lists through the existing primitive converter. | — |
-| 33 | `patch_draw_diag` | Counts final-chain driver exits, GL/converter drops, link/DXIL failures and state features per presentation. | mesa_draw_diag.h → nxbox_draw_diag.h; mesa_gl_draw_diag.h → nxbox_gl_draw_diag.h (GL/auxiliary) |
+| 31 | `patch_clip_distance` | Masks disabled GL clip-distance outputs in the final vertex-processing stage and keys the enable mask. | — |
+| 32 | `patch_geometry_diag` | Observes final IA/CBV state once per issued graphics draw, after vertex and primitive conversion. | src/common/nxbox_geometry_diag.h → nxbox_geometry_diag.h |
+| 33 | `patch_list_restart` | Splits restart in point/line/triangle lists through the existing primitive converter. | — |
+| 34 | `patch_draw_diag` | Counts final-chain driver exits, GL/converter drops, link/DXIL failures and state features per presentation. | mesa_draw_diag.h → nxbox_draw_diag.h; mesa_gl_draw_diag.h → nxbox_gl_draw_diag.h (GL/auxiliary) |
 
 `NXBOX_MESA_SKIP` is a **patch-time** comma-separated setting, not a console switch. The code
 supports `query`, `pso`, `dxil` and `fence`; the CI input description advertises only query/fence.
@@ -784,3 +786,12 @@ the Eden log). Super Mario 3D World asks for style set 0x1f and npad ids [0] the
 What got past that screen was a **long-hold** sequence (L+R held 2 s, then 1 s holds of A, PLUS,
 X, Y, ZL+ZR, MINUS, A, B); the same screen ignored 0.15-0.6 s presses with Pro or JoyDual. Use
 holds of at least 1 s on that screen.
+
+## Super Mario 3D World geometry follow-up
+
+See [the geometry investigation](sm3dw-geometry.md) for the ranked hypotheses, complete emulated
+vertex-format inventory, source evidence and the next console counters. `NXBOX_DRAW_DIAG=1`
+now reports each emulated format per draw, instanced attributes/divisors/base instance,
+disabled clip distances still written by the final vertex stage, asymmetric depth clipping,
+fragment depth writes, unsupported split stencil references/masks and independent blend with MRT.
+`clip` remains the rasterizer enable mask; `clip_disabled_written` detects a different condition.

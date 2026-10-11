@@ -63,6 +63,44 @@ class VertexFetchTests(unittest.TestCase):
                     "static nir_def *\nlower_vs_vertex_conversion_impl", 1
                 )[0]
             )
+            # Execute the real dispatch as well as its packed helpers.
+            format_names = re.findall(r"PIPE_FORMAT_\w+", conversion)
+            formats = sorted(set(format_names))
+            dispatch = (
+                "static nir_def *\nlower_vs_vertex_conversion_impl"
+                + conversion.split("static nir_def *\nlower_vs_vertex_conversion_impl", 1)[1].split(
+                    "/* Lower emulated vertex attribute input", 1
+                )[0]
+            )
+            helpers += (
+                "\nenum pipe_format { "
+                + ",".join(formats)
+                + " };\n"
+                + r"""
+struct nir_variable { pipe_format format; };
+struct nir_intrinsic_instr { nir_def def; nir_variable *var; };
+using nir_instr=nir_intrinsic_instr;
+nir_intrinsic_instr *nir_instr_as_intrinsic(nir_instr *i) { return i; }
+nir_variable *nir_intrinsic_get_var(nir_intrinsic_instr *i,unsigned) { return i->var; }
+pipe_format get_input_target_format(nir_variable *v,void *) { return v->format; }
+bool util_format_has_alpha(pipe_format f) {
+ return f!=PIPE_FORMAT_R8G8B8_SINT && f!=PIPE_FORMAT_R8G8B8_UINT &&
+        f!=PIPE_FORMAT_R16G16B16_SINT && f!=PIPE_FORMAT_R16G16B16_UINT;
+}
+nir_def *nir_channel(nir_builder *,nir_def *a,unsigned channel) {
+ auto *n=node(); n->u.fill(a->u[channel]); return n;
+}
+nir_def *nir_imm_int(nir_builder *b,int value) { return nir_imm_ivec4(b,value,value,value,value); }
+nir_def *nir_vector_insert_imm(nir_builder *,nir_def *a,nir_def *v,unsigned lane) {
+ auto *n=node(); *n=*a; n->u[lane]=v->u[0]; return n;
+}
+nir_def *nir_u2f32(nir_builder *,nir_def *a) {
+ auto *n=node(); for(unsigned i=0;i<4;++i)n->f[i]=float(a->u[i]); return n;
+}
+#define unreachable(message) abort()
+"""
+                + dispatch
+            )
             compiler = (root / DRIVER / "d3d12_compiler.cpp").read_text()
             compare = compiler.split("switch (expect->stage)", 1)[1].split(
                 "case PIPE_SHADER_GEOMETRY:", 1
@@ -92,9 +130,10 @@ class VertexFetchTests(unittest.TestCase):
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <cstdlib>
 #include <deque>
 struct nir_builder {};
-struct nir_def { std::array<uint32_t,4> u{}; std::array<float,4> f{}; };
+struct nir_def { std::array<uint32_t,4> u{}; std::array<float,4> f{}; unsigned num_components=4; };
 std::deque<nir_def> nodes;
 nir_def *node() { nodes.emplace_back(); return &nodes.back(); }
 nir_def *nir_imm_ivec4(nir_builder *,uint32_t x,uint32_t y,uint32_t z,uint32_t w) {
@@ -154,6 +193,27 @@ int main() {
    assert(std::abs(unorm->f[lane]-float(code)/float(limit-1))<0.000001f);
   }
  }
+ // Scaled formats convert integers numerically; neither signed nor unsigned clamps.
+ for(unsigned bits:{8u,16u}) for(bool sign:{false,true}) {
+  nir_variable var{bits==8 ? (sign?PIPE_FORMAT_R8G8B8A8_SSCALED:PIPE_FORMAT_R8G8B8A8_USCALED)
+                          : (sign?PIPE_FORMAT_R16G16B16A16_SSCALED:PIPE_FORMAT_R16G16B16A16_USCALED)};
+  for(unsigned code=0;code<(1u<<bits);++code) {
+   nodes.clear(); int value=int(code)-(sign && (code&(1u<<(bits-1))) ? int(1u<<bits):0);
+   nir_intrinsic_instr instr; instr.var=&var; instr.def.u.fill(value);
+   auto *result=lower_vs_vertex_conversion_impl(&b,&instr,nullptr);
+   for(unsigned lane=0;lane<4;++lane) assert(result->f[lane]==float(value));
+  }
+ }
+ // RGB integer IA widening preserves RGB and replaces the unrelated fourth lane with integer 1.
+ for(auto format:{PIPE_FORMAT_R8G8B8_SINT,PIPE_FORMAT_R8G8B8_UINT,
+                  PIPE_FORMAT_R16G16B16_SINT,PIPE_FORMAT_R16G16B16_UINT}) {
+  nodes.clear(); nir_variable var{format}; nir_intrinsic_instr instr; instr.var=&var;
+  instr.def.u={uint32_t(-32768),65535,127,0xdeadbeef};
+  auto *result=lower_vs_vertex_conversion_impl(&b,&instr,nullptr);
+  assert(result->u[0]==instr.def.u[0] && result->u[1]==65535 && result->u[2]==127);
+  assert(result->u[3]==1);
+  instr.def.num_components=3; assert(!lower_vs_vertex_conversion_impl(&b,&instr,nullptr));
+ }
  Key a,bkey; a.vs.format_conversion[0]=bkey.vs.format_conversion[0]=1;
  assert(same(&a,&bkey));
  // Same hash and same prefix, but a removed attribute needs no conversion now.
@@ -161,6 +221,71 @@ int main() {
  bkey=a; bkey.vs.format_conversion[0]=3; assert(!same(&a,&bkey));
  bkey=a; bkey.vs.needs_format_emulation=false; assert(!same(&a,&bkey));
  a.vs.needs_format_emulation=false; assert(same(&a,&bkey));
+}
+"""
+            )
+
+    @unittest.skipUnless(SOURCE.is_dir(), "Provide a pristine pinned Mesa checkout")
+    def test_emulated_inventory_and_half_float_fallback(self):
+        formats = (SOURCE / DRIVER / "d3d12_format.c").read_text()
+        emulation = formats.split("d3d12_emulated_vtx_format(enum pipe_format fmt)", 1)[1].split(
+            "unsigned\nd3d12_non_opaque_plane_count", 1
+        )[0]
+        inventory = set(re.findall(r"case (PIPE_FORMAT_\w+):", emulation))
+        expected = {
+            "PIPE_FORMAT_R10G10B10A2_SNORM",
+            "PIPE_FORMAT_R10G10B10A2_SSCALED",
+            "PIPE_FORMAT_R10G10B10A2_USCALED",
+            "PIPE_FORMAT_B10G10R10A2_UNORM",
+            "PIPE_FORMAT_B10G10R10A2_SNORM",
+            "PIPE_FORMAT_B10G10R10A2_SSCALED",
+            "PIPE_FORMAT_B10G10R10A2_USCALED",
+            "PIPE_FORMAT_R8G8B8_SINT",
+            "PIPE_FORMAT_R8G8B8_UINT",
+            "PIPE_FORMAT_R16G16B16_SINT",
+            "PIPE_FORMAT_R16G16B16_UINT",
+            "PIPE_FORMAT_R8G8B8A8_SSCALED",
+            "PIPE_FORMAT_R8G8B8A8_USCALED",
+            "PIPE_FORMAT_R16G16B16A16_SSCALED",
+            "PIPE_FORMAT_R16G16B16A16_USCALED",
+        }
+        self.assertEqual(inventory, expected)
+        diagnostic = (ROOT / "tools/nxbox/patch_mesa_uwp.py").read_text()
+        for name in expected:
+            self.assertIn("{" + name + ", NXBOX_DRAW_FMT_", diagnostic)
+        # Half and BGRA8 use native IA support when available; otherwise u_vbuf translates.
+        for channels in ("R16", "R16G16", "R16G16B16A16"):
+            self.assertIn(f"MAP_FORMAT_FLOAT({channels})", formats)
+        self.assertIn("MAP_FORMAT(B8G8R8A8, UNORM)", formats)
+        vbuf = (SOURCE / "src/gallium/auxiliary/util/u_vbuf.c").read_text()
+        self.assertIn("{ PIPE_FORMAT_R16G16B16_FLOAT,      PIPE_FORMAT_R32G32B32_FLOAT }", vbuf)
+        half = (SOURCE / "src/util/half_float.c").read_text()
+        half = (
+            "float\n_mesa_half_to_float_slow"
+            + half.split("float\n_mesa_half_to_float_slow", 1)[1].split("/**", 1)[0]
+        )
+        with tempfile.TemporaryDirectory(prefix="nxbox-half-") as temporary:
+            runner = safety.MesaRenderSafetyTests()
+            runner.root = Path(temporary)
+            runner.compile_run(
+                "#include <cstdint>\n#include <cmath>\n#include <cassert>\n"
+                "union fi { uint32_t ui; float f; };\n"
+                + half
+                + r"""
+int main() {
+ for(unsigned code=0;code<65536;++code) {
+  unsigned exponent=(code>>10)&31,mantissa=code&1023;
+  float actual=_mesa_half_to_float_slow(code);
+  if(exponent==31) {
+   assert(mantissa?std::isnan(actual):std::isinf(actual));
+  } else {
+   float expected=exponent?std::ldexp(1.0f+float(mantissa)/1024,int(exponent)-15)
+                          :std::ldexp(float(mantissa),-24);
+   if(code&0x8000)expected=-expected;
+   assert(actual==expected);
+   assert(std::signbit(actual)==bool(code&0x8000));
+  }
+ }
 }
 """
             )

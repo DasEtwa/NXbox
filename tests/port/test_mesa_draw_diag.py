@@ -2,6 +2,7 @@
 """Exercise list-restart conversion and frame diagnostic accounting on pinned Mesa."""
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -199,6 +200,7 @@ int main(int argc,char **argv) {
             )[0]
         )
         header = (self.driver / "nxbox_draw_diag.h").read_text().replace("#pragma once", "")
+        format_names = sorted(set(re.findall(r"PIPE_FORMAT_\w+", observer)))
         code = (
             r"""
 #include <cassert>
@@ -212,18 +214,35 @@ unsigned long GetEnvironmentVariableA(const char *key,char *text,unsigned long) 
 void SetEnvironmentVariableA(const char *,const char *text) {report=text;}
 """
             + header
+            + "enum pipe_format { "
+            + ",".join(format_names)
+            + " };\n"
             + r"""
-constexpr unsigned MESA_PRIM_POINTS=0,PIPE_SHADER_GEOMETRY=3;
+constexpr unsigned MESA_PRIM_POINTS=0,PIPE_SHADER_GEOMETRY=3,PIPE_SHADER_FRAGMENT=4,
+ PIPE_SHADER_TESS_CTRL=1,PIPE_SHADER_VERTEX=0,
+ D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA=1,FRAG_RESULT_DEPTH=2;
+#define BITFIELD64_BIT(x) (1ull<<(x))
+struct Element { unsigned InputSlot,InputSlotClass,InstanceDataStepRate; };
+struct d3d12_vertex_elements_state { unsigned num_elements=3; Element elements[3]{{0,1,2},{0,0,0},{1,1,1}};
+ pipe_format format_conversion[3]{PIPE_FORMAT_R10G10B10A2_SNORM,PIPE_FORMAT_R10G10B10A2_SNORM,
+                                PIPE_FORMAT_R16G16B16A16_USCALED}; };
+struct Shader { struct { unsigned clip_distance_array_size=4; uint64_t outputs_written=4; } info; };
+struct Selector { Shader *initial; };
+struct Screen { struct { bool IndependentFrontAndBackStencilRefMaskSupported=false; } opts14; };
+Screen *d3d12_screen(Screen *screen) { return screen; }
 struct Blend {struct {struct {bool LogicOpEnable=true;} RenderTarget[8];
  bool IndependentBlendEnable=true,AlphaToCoverageEnable=true;} desc;
  bool is_dual_src=true; unsigned blend_factor_flags=1;};
 struct Raster {struct {unsigned clip_plane_enable=3,sprite_coord_enable=1;
- bool scissor=true,rasterizer_discard=true;} base;struct {bool DepthClipEnable=false;} desc;};
-struct Depth {struct {bool StencilEnable=true,DepthBoundsTestEnable=true;} desc;};
+ bool scissor=true,rasterizer_discard=true,depth_clip_near=true,depth_clip_far=false;} base;struct {bool DepthClipEnable=false;} desc;};
+struct Depth {struct {bool StencilEnable=true,DepthBoundsTestEnable=true;} desc; bool backface_enabled=true,nxbox_stencil_mask_mismatch=true;};
 struct Viewport {float TopLeftX=-1,TopLeftY=0,Width=1920,Height=1080;};
 struct Context {struct {Blend *blend;Raster *rast;Depth *zsa;
- unsigned num_so_targets=1,sample_mask=0;} gfx_pipeline_state;
- void *gfx_stages[5]{},*current_predication=nullptr;
+ unsigned num_so_targets=1,sample_mask=0;
+ d3d12_vertex_elements_state *ves=nullptr; unsigned num_cbufs=2;} gfx_pipeline_state;
+ Selector *gfx_stages[5]{}; void *current_predication=nullptr,*cmdlist8=nullptr;
+ struct { Screen *screen; } base;
+ struct { unsigned ref_value[2]{1,2}; } stencil_ref;
  unsigned num_viewports=1;Viewport viewports[1];struct {unsigned width=1280,height=720;} fb;};
 struct Info {unsigned mode=MESA_PRIM_POINTS,instance_count=2,start_instance=4;
  bool primitive_restart=true;};
@@ -235,11 +254,19 @@ void observe(Context *ctx,Info *dinfo) {
 int main() {
  Blend blend; Raster raster; Depth depth; Context ctx{}; Info info;
  ctx.gfx_pipeline_state={&blend,&raster,&depth,1,0};
- ctx.current_predication=&ctx;ctx.gfx_stages[3]=&ctx;
+ Screen screen; ctx.base.screen=&screen;
+ Shader shader; Selector selector{&shader}; d3d12_vertex_elements_state ves;
+ ctx.current_predication=&ctx;ctx.gfx_stages[3]=&selector;ctx.gfx_stages[4]=&selector;
+ ctx.gfx_pipeline_state.ves=&ves;
  observe(&ctx,&info);nxbox_draw_diag_frame();
  for(const char *field: {"logic=1","dual=1","clip=1","point_sprites=1","stencil=1",
  "restart=1","gs=1","so=1","constant=1","independent=1","a2c=1","sample_mask=1",
- "depth_bounds=1","depth_clamp=1","viewport=1","scissor=1","predication=1","discard=1"})
+ "depth_bounds=1","depth_clamp=1","viewport=1","scissor=1","predication=1","discard=1",
+ "instance_attr=1","divisor_gt1=1","base_instance=1","instance_slot_conflict=1",
+ "clip_written=1","clip_disabled_written=1","depth_clip_asymmetric=1","frag_depth=1",
+ "stencil_ref_split=1","stencil_ref_unsupported=1","independent_mrt=1",
+ "stencil_mask_split=1","stencil_mask_unsupported=1",
+ "fmt_r10g10b10a2_snorm=1","fmt_r16g16b16a16_uscaled=1","fmt_r8g8b8_sint=0"})
   assert(report.find(field)!=std::string::npos);
  ctx.gfx_pipeline_state={nullptr,nullptr,nullptr,0,~0u};
  observe(&ctx,&info); // Empty state must be safe to inspect.
@@ -247,6 +274,38 @@ int main() {
 """
         )
         self.compile_run(code)
+
+    def test_requested_stencil_masks_survive_capability_fallback(self):
+        context = (self.driver / "d3d12_context.cpp").read_text()
+        assignment = (
+            "dsa->nxbox_stencil_mask_mismatch ="
+            + context.split("dsa->nxbox_stencil_mask_mismatch =", 1)[1].split(";", 1)[0]
+            + ";"
+        )
+        self.compile_run(
+            r"""
+#include <cassert>
+#include <initializer_list>
+struct Stencil { bool enabled; unsigned valuemask,writemask; };
+struct State { Stencil stencil[2]; };
+struct Dsa { bool nxbox_stencil_mask_mismatch; };
+void capture(Dsa *dsa,const State *depth_stencil_alpha) {
+"""
+            + assignment
+            + r"""
+}
+int main() {
+ Dsa dsa{};
+ for(unsigned front=0;front<256;++front) for(unsigned back=0;back<256;++back)
+ for(unsigned enabled=0;enabled<4;++enabled) for(bool split_write:{false,true}) {
+  State state{{{bool(enabled&1),front,255},{bool(enabled&2),back,split_write?0u:255u}}};
+  capture(&dsa,&state);
+  assert(dsa.nxbox_stencil_mask_mismatch==
+         (enabled==3 && (front!=back || split_write)));
+ }
+}
+"""
+        )
 
     def test_counter_storage_is_shared_between_translation_units(self):
         header = (self.driver / "nxbox_draw_diag.h").read_text()

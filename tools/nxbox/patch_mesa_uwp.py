@@ -118,6 +118,7 @@ def patch(root: Path) -> None:
     patch_buffer_staging(root)
     patch_perf_waits(root)
     patch_vertex_fetch(root)
+    patch_clip_distance(root)
     patch_geometry_diag(root)
     patch_list_restart(root)
     patch_draw_diag(root)
@@ -155,6 +156,27 @@ def patch_draw_diag(root: Path) -> None:
     driver = root / "src/gallium/drivers/d3d12"
     helper = Path(__file__).resolve().parent
     (driver / "nxbox_draw_diag.h").write_text((helper / "mesa_draw_diag.h").read_text())
+    path = driver / "d3d12_pipeline_state.h"
+    source = path.read_text()
+    old = "   bool backface_enabled;"
+    if source.count(old) != 1:
+        raise RuntimeError("Pinned Mesa stencil diagnostic state mismatch")
+    path.write_text(source.replace(old, old + "\n   bool nxbox_stencil_mask_mismatch;", 1))
+    path = driver / "d3d12_context.cpp"
+    source = path.read_text()
+    old = "   dsa->desc.DepthWriteMask = (D3D12_DEPTH_WRITE_MASK) depth_stencil_alpha->depth_writemask;"
+    new = (
+        """   // Retain requested masks: the capability fallback above may have replaced them.
+   dsa->nxbox_stencil_mask_mismatch = depth_stencil_alpha->stencil[0].enabled &&
+      depth_stencil_alpha->stencil[1].enabled &&
+      (depth_stencil_alpha->stencil[0].valuemask != depth_stencil_alpha->stencil[1].valuemask ||
+       depth_stencil_alpha->stencil[0].writemask != depth_stencil_alpha->stencil[1].writemask);
+"""
+        + old
+    )
+    if source.count(old) != 1:
+        raise RuntimeError("Pinned Mesa requested stencil mask diagnostic mismatch")
+    path.write_text(source.replace(old, new, 1))
     path = driver / "d3d12_draw.cpp"
     source = path.read_text()
     include = '#include "d3d12_context.h"\n'
@@ -200,6 +222,85 @@ def patch_draw_diag(root: Path) -> None:
       nxbox_draw_diag_count(NXBOX_DRAW_SCISSOR, rast && rast->base.scissor);
       nxbox_draw_diag_count(NXBOX_DRAW_PREDICATION, ctx->current_predication != NULL);
       nxbox_draw_diag_count(NXBOX_DRAW_DISCARD, rast && rast->base.rasterizer_discard);
+      const auto *ves = ctx->gfx_pipeline_state.ves;
+      bool instance_attr = false, divisor_gt1 = false, slot_conflict = false;
+      for (unsigned i = 0; ves && i < ves->num_elements; ++i) {
+         const auto &e = ves->elements[i];
+         instance_attr |= e.InputSlotClass == D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA;
+         divisor_gt1 |= e.InstanceDataStepRate > 1;
+         for (unsigned j = 0; j < i; ++j) {
+            const auto &other = ves->elements[j];
+            slot_conflict |= e.InputSlot == other.InputSlot &&
+                             (e.InputSlotClass != other.InputSlotClass ||
+                              e.InstanceDataStepRate != other.InstanceDataStepRate);
+         }
+      }
+      nxbox_draw_diag_count(NXBOX_DRAW_INSTANCE_ATTR, instance_attr);
+      nxbox_draw_diag_count(NXBOX_DRAW_DIVISOR_GT1, divisor_gt1);
+      nxbox_draw_diag_count(NXBOX_DRAW_BASE_INSTANCE, dinfo->start_instance != 0);
+      nxbox_draw_diag_count(NXBOX_DRAW_INSTANCE_SLOT_CONFLICT, slot_conflict);
+      bool clip_written = false, disabled_clip_written = false;
+      for (int stage = PIPE_SHADER_GEOMETRY; stage >= PIPE_SHADER_VERTEX; --stage) {
+         const auto *sel = ctx->gfx_stages[stage];
+         if (!sel || !sel->initial || stage == PIPE_SHADER_FRAGMENT ||
+             stage == PIPE_SHADER_TESS_CTRL)
+            continue;
+         const unsigned size = sel->initial->info.clip_distance_array_size;
+         const unsigned written = size ? (1u << size) - 1 : 0;
+         clip_written |= written != 0;
+         disabled_clip_written |= (written & ~(rast ? rast->base.clip_plane_enable : 0)) != 0;
+         break; // Only the final vertex-processing stage feeds the rasterizer.
+      }
+      nxbox_draw_diag_count(NXBOX_DRAW_CLIP_WRITTEN, clip_written);
+      nxbox_draw_diag_count(NXBOX_DRAW_CLIP_DISABLED_WRITTEN, disabled_clip_written);
+      nxbox_draw_diag_count(NXBOX_DRAW_DEPTH_CLIP_ASYMMETRIC,
+                            rast && rast->base.depth_clip_near != rast->base.depth_clip_far);
+      const auto *fs = ctx->gfx_stages[PIPE_SHADER_FRAGMENT];
+      nxbox_draw_diag_count(NXBOX_DRAW_FRAG_DEPTH, fs && fs->initial &&
+                                                       (fs->initial->info.outputs_written &
+                                                        BITFIELD64_BIT(FRAG_RESULT_DEPTH)));
+      const bool split_ref = zsa && zsa->desc.StencilEnable && zsa->backface_enabled &&
+                             ctx->stencil_ref.ref_value[0] != ctx->stencil_ref.ref_value[1];
+      nxbox_draw_diag_count(NXBOX_DRAW_STENCIL_MASK_SPLIT,
+                            zsa && zsa->nxbox_stencil_mask_mismatch);
+      nxbox_draw_diag_count(NXBOX_DRAW_STENCIL_MASK_UNSUPPORTED,
+                            zsa && zsa->nxbox_stencil_mask_mismatch &&
+                            !d3d12_screen(ctx->base.screen)->opts14.IndependentFrontAndBackStencilRefMaskSupported);
+      nxbox_draw_diag_count(NXBOX_DRAW_STENCIL_REF_SPLIT, split_ref);
+      nxbox_draw_diag_count(NXBOX_DRAW_STENCIL_REF_UNSUPPORTED,
+                            split_ref &&
+                                (!d3d12_screen(ctx->base.screen)
+                                      ->opts14.IndependentFrontAndBackStencilRefMaskSupported ||
+                                 !ctx->cmdlist8));
+      nxbox_draw_diag_count(NXBOX_DRAW_INDEPENDENT_MRT, blend &&
+                                                            blend->desc.IndependentBlendEnable &&
+                                                            ctx->gfx_pipeline_state.num_cbufs > 1);
+      const struct {
+         enum pipe_format format;
+         NxboxDrawCounter counter;
+      } formats[] = {
+          {PIPE_FORMAT_R10G10B10A2_SNORM, NXBOX_DRAW_FMT_R10G10B10A2_SNORM},
+          {PIPE_FORMAT_R10G10B10A2_SSCALED, NXBOX_DRAW_FMT_R10G10B10A2_SSCALED},
+          {PIPE_FORMAT_R10G10B10A2_USCALED, NXBOX_DRAW_FMT_R10G10B10A2_USCALED},
+          {PIPE_FORMAT_B10G10R10A2_UNORM, NXBOX_DRAW_FMT_B10G10R10A2_UNORM},
+          {PIPE_FORMAT_B10G10R10A2_SNORM, NXBOX_DRAW_FMT_B10G10R10A2_SNORM},
+          {PIPE_FORMAT_B10G10R10A2_SSCALED, NXBOX_DRAW_FMT_B10G10R10A2_SSCALED},
+          {PIPE_FORMAT_B10G10R10A2_USCALED, NXBOX_DRAW_FMT_B10G10R10A2_USCALED},
+          {PIPE_FORMAT_R8G8B8_SINT, NXBOX_DRAW_FMT_R8G8B8_SINT},
+          {PIPE_FORMAT_R8G8B8_UINT, NXBOX_DRAW_FMT_R8G8B8_UINT},
+          {PIPE_FORMAT_R16G16B16_SINT, NXBOX_DRAW_FMT_R16G16B16_SINT},
+          {PIPE_FORMAT_R16G16B16_UINT, NXBOX_DRAW_FMT_R16G16B16_UINT},
+          {PIPE_FORMAT_R8G8B8A8_SSCALED, NXBOX_DRAW_FMT_R8G8B8A8_SSCALED},
+          {PIPE_FORMAT_R8G8B8A8_USCALED, NXBOX_DRAW_FMT_R8G8B8A8_USCALED},
+          {PIPE_FORMAT_R16G16B16A16_SSCALED, NXBOX_DRAW_FMT_R16G16B16A16_SSCALED},
+          {PIPE_FORMAT_R16G16B16A16_USCALED, NXBOX_DRAW_FMT_R16G16B16A16_USCALED},
+      };
+      for (const auto &format : formats) {
+         bool used = false;
+         for (unsigned i = 0; ves && i < ves->num_elements; ++i)
+            used |= ves->format_conversion[i] == format.format;
+         nxbox_draw_diag_count(format.counter, used);
+      }
       bool unusual_viewport = false;
       for (unsigned i = 0; i < ctx->num_viewports; ++i) {
          const auto &vp = ctx->viewports[i];
@@ -3545,6 +3646,47 @@ def patch_vertex_fetch(root: Path) -> None:
                 raise RuntimeError(f"Pinned Mesa vertex fetch anchor mismatch: {path.name}")
             source = source.replace(old, new, 1)
         path.write_text(source)
+
+
+def patch_clip_distance(root: Path) -> None:
+    """Honor GL's clip-distance enable mask at the final vertex-processing stage."""
+    driver = root / "src/gallium/drivers/d3d12"
+    replacements = (
+        (
+            "d3d12_compiler.h",
+            "         unsigned input_clip_size : 4;",
+            "         unsigned input_clip_size : 4;\n         unsigned clip_plane_enable : 8;",
+        ),
+        (
+            "d3d12_compiler.cpp",
+            "   if (key->last_vertex_processing_stage) {",
+            "   if (key->last_vertex_processing_stage) {\n"
+            "      /* D3D12 always clips SV_ClipDistance. GL may disable individual\n"
+            "       * distances even when the shader still writes negative values.\n"
+            "       * Keep earlier stages intact: only the rasterized output is masked. */\n"
+            "      NIR_PASS_V(nir, nir_lower_clip_disable, key->clip_plane_enable);",
+        ),
+        (
+            "d3d12_compiler.cpp",
+            "      key->last_vertex_processing_stage = 1;",
+            "      key->last_vertex_processing_stage = 1;\n"
+            "      key->clip_plane_enable = sel_ctx->ctx->gfx_pipeline_state.rast ?\n"
+            "         sel_ctx->ctx->gfx_pipeline_state.rast->base.clip_plane_enable : 0;",
+        ),
+    )
+    for name, old, new in replacements:
+        path = driver / name
+        source = path.read_text()
+        if source.count(old) != 1:
+            raise RuntimeError(f"Pinned Mesa clip-distance anchor mismatch: {name}")
+        path.write_text(source.replace(old, new, 1))
+    # common_all already participates in equality. Include it in the hash too.
+    path = driver / "d3d12_compiler.cpp"
+    source = path.read_text()
+    old = "   hash += key->n_texture_states;"
+    if source.count(old) != 1:
+        raise RuntimeError("Pinned Mesa common shader-key hash anchor mismatch")
+    path.write_text(source.replace(old, "   hash += key->common_all;\n" + old, 1))
 
 
 def patch_geometry_diag(root: Path) -> None:
