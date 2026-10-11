@@ -3631,6 +3631,30 @@ nxbox_publish_unsupported(const char *msg)
     path.write_text(source)
 
 
+def patch_dxil_shuffle(root: Path) -> None:
+    """Lower shuffle_xor/up/down to plain shuffle (WaveReadLaneAt): nir_to_dxil has no emitter."""
+    path = root / "src/microsoft/compiler/nir_to_dxil.c"
+    source = path.read_text()
+    anchor = "   NIR_PASS_V(s, dxil_nir_lower_system_values);\n"
+    new = anchor + (
+        "   /* NXBOX shuffle lowering */\n"
+        "   for (unsigned nxbox_pass = 0; nxbox_pass < 2; nxbox_pass++) {\n"
+        "      nir_lower_subgroups_options nxbox_subgroup_options = {\n"
+        "         .ballot_bit_size = 32,\n"
+        "         .ballot_components = 4,\n"
+        "         .lower_to_scalar = true,\n"
+        "         .lower_relative_shuffle = true,\n"
+        "         .lower_shuffle_to_32bit = true,\n"
+        "         .lower_boolean_shuffle = true,\n"
+        "      };\n"
+        "      NIR_PASS_V(s, nir_lower_subgroups, &nxbox_subgroup_options);\n"
+        "   }\n"
+    )
+    if source.count(anchor) != 1:
+        raise RuntimeError("Pinned Mesa nir_to_dxil lowering anchor mismatch")
+    path.write_text(source.replace(anchor, new, 1))
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("root", type=Path)
