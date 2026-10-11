@@ -170,7 +170,18 @@ private:
         last_style_raw = raw;
         using Core::HID::NpadStyleIndex;
         NpadStyleIndex style;
-        switch (ChoosePadStyle(raw)) {
+        // NXBOX_PAD_STYLE=pro|dual|handheld forces the preferred type (tests); it only applies
+        // when the game's style set allows it.
+        static const std::string forced = [] {
+            const char* value = std::getenv("NXBOX_PAD_STYLE");
+            return std::string(value != nullptr ? value : "");
+        }();
+        auto choice = ChoosePadStyle(raw);
+        if (forced == "dual" && (raw & (1u << 2)))
+            choice = PadChoice::JoyDual;
+        else if (forced == "handheld" && (raw & (1u << 1)))
+            choice = PadChoice::Handheld;
+        switch (choice) {
         case PadChoice::Pro:
             style = NpadStyleIndex::Fullkey;
             break;
