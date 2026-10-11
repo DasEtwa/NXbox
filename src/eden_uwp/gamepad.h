@@ -3,12 +3,18 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
+#include <string>
+#include <utility>
+#include <vector>
 #include <cstdint>
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Gaming.Input.h>
 #include <winrt/Windows.System.h>
 
 #include "common/settings.h"
+#include "eden_uwp/diagnostic.h"
+#include "eden_uwp/input_script.h"
 #include "hid_core/frontend/emulated_controller.h"
 #include "hid_core/hid_core.h"
 #include "input_common/input_engine.h"
@@ -82,7 +88,7 @@ public:
         using namespace winrt::Windows::Gaming::Input;
         const auto devices = Gamepad::Gamepads();
         GamepadReading reading{};
-        const auto keys = key_state.load(std::memory_order_acquire);
+        const auto keys = key_state.load(std::memory_order_acquire) | ScriptedKeys();
         if (devices.Size() != 0) {
             reading = devices.GetAt(0).GetCurrentReading();
         }
@@ -147,6 +153,54 @@ public:
     }
 
 private:
+    /// NXBOX_INPUT_SCRIPT events active now, as key_state bits; the clock starts at the first poll.
+    std::uint32_t ScriptedKeys() {
+        if (!script_loaded) {
+            script_loaded = true;
+            if (const char* text = std::getenv("NXBOX_INPUT_SCRIPT"); text && *text) {
+                script = ParseInputScript(text);
+                script_active.assign(script.size(), false);
+                script_start = std::chrono::steady_clock::now();
+                Diagnostic("INPUT_SCRIPT loaded events=" + std::to_string(script.size()));
+            }
+        }
+        std::uint32_t bits = 0;
+        const double t =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - script_start).count();
+        for (std::size_t i = 0; i < script.size(); ++i) {
+            const bool active = ScriptEventActive(script[i], t);
+            const int bit = active || script_active[i] ? ScriptBit(script[i].name) : -1;
+            if (active != static_cast<bool>(script_active[i])) {
+                script_active[i] = active;
+                Diagnostic("INPUT_SCRIPT t=" + std::to_string(t) + " btn=" + script[i].name +
+                           (active ? " down" : " up") + (bit < 0 ? " (unknown)" : ""));
+            }
+            if (active && bit >= 0)
+                bits |= 1u << bit;
+        }
+        return bits;
+    }
+
+    static int ScriptBit(const std::string& name) {
+        namespace B = Settings::NativeButton;
+        static const std::pair<const char*, int> table[] = {
+            {"A", B::A},         {"B", B::B},           {"X", B::X},           {"Y", B::Y},
+            {"L", B::L},         {"R", B::R},           {"ZL", B::ZL},         {"ZR", B::ZR},
+            {"PLUS", B::Plus},   {"MINUS", B::Minus},   {"LSTICK", B::LStick}, {"RSTICK", B::RStick},
+            {"DUP", B::DUp},     {"DDOWN", B::DDown},   {"DLEFT", B::DLeft},   {"DRIGHT", B::DRight},
+            {"LSTICK_UP", KeyLeftStickUp},     {"LSTICK_DOWN", KeyLeftStickDown},
+            {"LSTICK_RIGHT", KeyLeftStickRight}, {"LSTICK_LEFT", KeyLeftStickLeft}};
+        for (const auto& [key, bit] : table)
+            if (name == key)
+                return bit;
+        return -1;
+    }
+
+    std::vector<ScriptEvent> script;
+    std::vector<char> script_active;
+    std::chrono::steady_clock::time_point script_start{};
+    bool script_loaded = false;
+
     // Bits 0-15 follow Settings::NativeButton; the rest are left-stick directions.
     static constexpr int KeyLeftStickUp = 16;
     static constexpr int KeyLeftStickDown = 17;
