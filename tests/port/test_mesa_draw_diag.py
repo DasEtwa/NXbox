@@ -187,7 +187,7 @@ int main(int argc,char **argv) {
         ).read_text()
         self.assertEqual(present.count("nxbox_draw_diag_frame();"), 1)
         frontend = (ROOT / "src/eden_uwp/mesa_window.cpp").read_text()
-        self.assertIn('Diagnostic("D3D12_DRAW_DIAG %s", report)', frontend)
+        self.assertIn('Diagnostic(std::string("D3D12_DRAW_DIAG ") + report)', frontend)
         self.assertIn("NXBOX_GL_LINK_FAIL_LAST", frontend)
 
     def test_generated_state_observer_compiles_and_counts(self):
