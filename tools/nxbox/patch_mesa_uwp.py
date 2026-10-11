@@ -116,6 +116,7 @@ def patch(root: Path) -> None:
     patch_resident_create(root)
     patch_view_cast(root)
     patch_buffer_staging(root)
+    patch_upload_ready(root)
     patch_perf_waits(root)
     patch_vertex_fetch(root)
     patch_clip_distance(root)
@@ -3546,6 +3547,34 @@ nxbox_use_staging(struct d3d12_context *ctx, struct d3d12_resource *res, unsigne
     if "#include <stdlib.h>" not in source:
         source = source.replace('#include "d3d12_resource.h"', '#include "d3d12_resource.h"\n#include <stdlib.h>', 1)
     path.write_text(source.replace(anchor, helper).replace(old, new))
+
+
+def patch_upload_ready(root: Path) -> None:
+    """Measure and guard unexpected busy temporary uploads before CPU writes."""
+    driver = root / "src/gallium/drivers/d3d12"
+    path = driver / "d3d12_resource.cpp"
+    source = path.read_text()
+    old = "      ptr = d3d12_bo_map(staging_res->bo, &range);"
+    new = """      /* A fresh staging allocation should never be in flight. Fail safe if it is. */
+      if (NxboxUpload::Enabled() && (usage & PIPE_MAP_WRITE) &&
+          resource_is_busy(ctx, staging_res, true)) {
+         NxboxUpload::Record(NxboxUpload::Event::StagingBusyMap);
+         d3d12_resource_wait_idle(ctx, staging_res, true);
+      }
+      ptr = d3d12_bo_map(staging_res->bo, &range);"""
+    if source.count(old) != 1:
+        raise RuntimeError("Pinned Mesa temporary upload map anchor mismatch")
+    source = source.replace(old, new, 1)
+    anchor = '#include "d3d12_resource.h"'
+    if source.count(anchor) != 1:
+        raise RuntimeError("Pinned Mesa upload diagnostic include anchor mismatch")
+    path.write_text(
+        source.replace(
+            anchor, anchor + '\n#define NXBOX_UPLOAD_DIAG_MESA\n#include "nxbox_upload_diag.h"', 1
+        )
+    )
+    helper = Path(__file__).resolve().parents[2] / "src/common/nxbox_upload_diag.h"
+    (driver / "nxbox_upload_diag.h").write_text(helper.read_text())
 
 
 def patch_perf_waits(root: Path) -> None:

@@ -34,6 +34,7 @@
 #include "common/nxbox_stall.h"
 #include "common/logging.h"
 #include "common/scope_exit.h"
+#include "common/nxbox_upload_diag.h"
 #include "common/settings.h"
 #include "core/core.h"
 #include "core/cpu_manager.h"
@@ -810,6 +811,14 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
                                    static_cast<int>(Settings::values.resolution_setup.GetValue())));
         }
     }
+    // Apply after global and per-title settings, before renderer/cache construction.
+    if (NxboxUpload::ForceAstcSync()) {
+        Settings::values.accelerate_astc.SetValue(Settings::AstcDecodeMode::Cpu);
+    }
+    Diagnostic(fmt::format("UPLOAD_POLICY astc={} asynchronous_shaders={} astc_sync={}",
+                           static_cast<int>(Settings::values.accelerate_astc.GetValue()),
+                           Settings::values.use_asynchronous_shaders.GetValue(),
+                           NxboxUpload::ForceAstcSync()));
     system.GetUserChannel().clear();
     Diagnostic("GAME_LOADING");
     // Same parameters the desktop frontend uses to boot an application. With a zeroed applet id the
@@ -1114,6 +1123,10 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
                 for (std::size_t i = 0; i < std::size(extended_names); ++i) {
                     collect(extended_names[i], extended_last[i]);
                 }
+                static std::string last_upload_ready;
+                collect("NXBOX_GL_UPLOAD_READY", last_upload_ready);
+                static std::string last_mesa_upload_ready;
+                collect("NXBOX_MESA_UPLOAD_READY", last_mesa_upload_ready);
                 static std::string last_srv_swizzle;
                 static std::string last_geometry;
                 collect("NXBOX_D3D12_GEOMETRY", last_geometry);

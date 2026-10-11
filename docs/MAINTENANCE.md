@@ -404,6 +404,21 @@ Related support files used by these paths (without those search markers):
   commitment.
 - `src/common/sparse_memory.h` — Declares sparse allocation/free and committed-byte reporting.
 
+## Upload readiness diagnostics
+
+`NXBOX_UPLOAD_DIAG=1` enables sampled cumulative readiness counters in
+`src/common/nxbox_upload_diag.h`. The frontend collects `NXBOX_GL_UPLOAD_READY` and
+`NXBOX_MESA_UPLOAD_READY`. `NXBOX_ASTC_SYNC=1` overrides both global and per-title ASTC
+settings with synchronous CPU decode before loading the game. `UPLOAD_POLICY` records
+final ASTC and asynchronous-shader settings. See [sm3dw-geometry.md](sm3dw-geometry.md)
+for counter meanings and the converted-texture flush correction.
+
+`patch_upload_ready` runs immediately after `patch_buffer_staging` in `patch()`, installs
+`src/common/nxbox_upload_diag.h` as Mesa's `nxbox_upload_diag.h`, and checks temporary
+upload allocations for unexpected in-flight use only when diagnostics are enabled.
+`tests/port/test_upload_readiness.py` executes the converted flush, diagnostic gating,
+busy-map guard, and asserts exactly one call to the new step from `patch()`.
+
 ## Mesa patch chain
 
 `tools/nxbox/patch_mesa_uwp.py` operates on aerisarn/mesa-uwp commit

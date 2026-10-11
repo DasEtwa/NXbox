@@ -16,6 +16,7 @@
 
 #include "common/bit_util.h"
 #include "common/nxbox_gl_readback.h"
+#include "common/nxbox_upload_diag.h"
 #ifdef NXBOX_UWP
 #include "common/nxbox_stall.h"
 // Declared directly: windows.h in GL code clashes with glad.
@@ -839,7 +840,13 @@ void Image::UploadMemory(GLuint buffer_handle, size_t buffer_offset,
         ScaleDown(true);
     }
     glBindBuffer(GL_PIXEL_UNPACK_BUFFER, buffer_handle);
-    glFlushMappedBufferRange(GL_PIXEL_UNPACK_BUFFER, buffer_offset, unswizzled_size_bytes);
+    // Converted ASTC/BCn data can be much larger than the compressed guest payload.
+    // Publish the entire CPU output before any mip/layer is copied from noncoherent staging.
+    const auto upload_size = VideoCommon::MapSizeBytes(*this);
+    if (upload_size > unswizzled_size_bytes) {
+        NxboxUpload::Record(NxboxUpload::Event::ExpandedFlush);
+    }
+    glFlushMappedBufferRange(GL_PIXEL_UNPACK_BUFFER, buffer_offset, upload_size);
 
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 

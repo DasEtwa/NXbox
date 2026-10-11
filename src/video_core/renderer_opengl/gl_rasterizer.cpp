@@ -17,6 +17,7 @@
 #include "common/logging.h"
 #include "common/math_util.h"
 #include "common/nxbox_draw_guest_diag.h"
+#include "common/nxbox_upload_diag.h"
 #include "common/scope_exit.h"
 #include "common/settings.h"
 #include "video_core/control/channel_state.h"
@@ -229,6 +230,7 @@ void RasterizerOpenGL::PrepareDraw(bool is_indexed, Func&& draw_func) {
     };
     gpu_memory->FlushCaching();
 
+    NxboxUpload::Publish();
     GraphicsPipeline* const pipeline{shader_cache.CurrentGraphicsPipeline()};
     if (!pipeline) {
         return;

@@ -20,6 +20,7 @@
 #include "common/fs/fs.h"
 #include "common/fs/path_util.h"
 #include "common/logging.h"
+#include "common/nxbox_upload_diag.h"
 #include "common/settings.h"
 #include "common/thread_worker.h"
 #include "shader_recompiler/backend/glasm/emit_glasm.h"
@@ -504,6 +505,7 @@ GraphicsPipeline* ShaderCache::BuiltPipeline(GraphicsPipeline* pipeline) const n
     if (pipeline->IsBuilt()) {
         return pipeline;
     }
+    NxboxUpload::Record(NxboxUpload::Event::PipelinePending);
     if (!use_asynchronous_shaders) {
         return pipeline;
     }
@@ -514,6 +516,7 @@ GraphicsPipeline* ShaderCache::BuiltPipeline(GraphicsPipeline* pipeline) const n
     if (draw_state.index_buffer.count <= 6 || draw_state.vertex_buffer.count <= 6) {
         return pipeline;
     }
+    NxboxUpload::Record(NxboxUpload::Event::PipelineSkipped);
     return nullptr;
 }
 

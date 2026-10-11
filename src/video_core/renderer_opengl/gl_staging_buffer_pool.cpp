@@ -13,6 +13,7 @@
 #include "common/alignment.h"
 #include "common/assert.h"
 #include "common/bit_util.h"
+#include "common/nxbox_upload_diag.h"
 #ifdef NXBOX_UWP
 #include "common/nxbox_stall.h"
 #endif
@@ -89,6 +90,7 @@ std::optional<size_t> StagingBuffers::FindBuffer(size_t requested_size) {
                 continue;
             }
             if (!alloc.sync.IsSignaled()) {
+                NxboxUpload::Record(NxboxUpload::Event::StagingBusyAvoided);
                 // Since this fence hasn't been signaled, it's safe to assume all later
                 // fences haven't been signaled either
                 known_unsignaled_index = (std::min)(known_unsignaled_index, alloc.sync_index);

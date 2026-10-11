@@ -14,6 +14,7 @@
 
 #include "common/alignment.h"
 #include "common/nxbox_stall.h"
+#include "common/nxbox_upload_diag.h"
 #include "common/settings.h"
 #include "common/slot_vector.h"
 #include "video_core/control/channel_state.h"
@@ -242,6 +243,19 @@ void TextureCache<P>::FillImageViews(std::span<ImageViewInOut> views, bool compu
             }
         }
     } while (has_deleted_images || (blacklist && has_blacklisted));
+    if (NxboxUpload::Enabled()) {
+        for (const auto& view : views) {
+            const auto& image_view = slot_image_views[view.id];
+            if (view.id == NULL_IMAGE_VIEW_ID || image_view.IsBuffer()) {
+                continue;
+            }
+            const auto& image = slot_images[image_view.image_id];
+            if (VideoCore::Surface::IsPixelFormatASTC(image.info.format) &&
+                True(image.flags & ImageFlagBits::IsDecoding)) {
+                NxboxUpload::Record(NxboxUpload::Event::AstcPendingBinding);
+            }
+        }
+    }
 }
 
 template <class P>
@@ -1366,6 +1380,7 @@ void TextureCache<P>::QueueAsyncDecode(Image& image, ImageId image_id) {
     UNIMPLEMENTED_IF(False(image.flags & ImageFlagBits::Converted));
     LOG_INFO(HW_GPU, "Queuing async texture decode");
 
+    NxboxUpload::Record(NxboxUpload::Event::AstcQueued);
     image.flags |= ImageFlagBits::IsDecoding;
     auto decode = std::make_unique<AsyncDecodeContext>();
     auto* decode_ptr = decode.get();
@@ -1422,6 +1437,7 @@ void TextureCache<P>::TickAsyncDecode() {
         std::memcpy(staging.mapped_span.data(), async_decode->decoded_data.data(),
                     async_decode->decoded_data.size());
         image.UploadMemory(staging, FixSmallVectorADL(async_decode->copies));
+        NxboxUpload::Record(NxboxUpload::Event::AstcUploaded);
         image.flags &= ~ImageFlagBits::IsDecoding;
         has_uploads = true;
         i = async_decodes.erase(i);

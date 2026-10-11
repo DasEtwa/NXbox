@@ -10,6 +10,7 @@
 #include <memory>
 #include <numeric>
 
+#include "common/nxbox_upload_diag.h"
 #include "common/range_sets.inc"
 #include "video_core/buffer_cache/buffer_cache_base.h"
 #include "video_core/guest_memory.h"
@@ -121,6 +122,7 @@ void BufferCache<P>::UnmapGPUMemory(size_t as_id, GPUVAddr gpu_addr, size_t size
 
 template <class P>
 void BufferCache<P>::WriteMemory(DAddr device_addr, u64 size) {
+    NxboxUpload::Record(NxboxUpload::Event::BufferInvalidation);
     if (IsRegionGpuModified(device_addr, size)) {
         ClearDownload(device_addr, size);
         gpu_modified_ranges.Subtract(device_addr, size);
@@ -1765,6 +1767,7 @@ bool BufferCache<P>::SynchronizeBuffer(Buffer& buffer, DAddr device_addr, u32 si
         return true;
     }
     const std::span<BufferCopy> copies_span(upload_copies.data(), upload_copies.size());
+    NxboxUpload::Record(NxboxUpload::Event::BufferUpload);
     UploadMemory(buffer, total_size_bytes, largest_copy, copies_span);
     any_buffer_uploaded = true;
     return false;

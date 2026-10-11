@@ -88,3 +88,60 @@ masks with partial vector writes, requested stencil masks, the generated observe
 packed lanes, scaled integers, RGB alpha replacement and all half codes.
 `git diff --check` passed; pristine Mesa still has no changes. Xbox visual validation
 remains outstanding. No commit or push was made.
+
+## Time-dependent corruption: upload readiness
+
+The fix3 captures become clean late in the session. This weakens explanations based on
+permanent vertex-format arithmetic, but does not by itself establish a readiness race.
+The strongest concrete defect found here is **incomplete publication of CPU-converted
+texture data**, rather than an unjoined ASTC worker:
+
+- `src/video_core/renderer_opengl/gl_texture_cache.cpp:280` selects the decode worker
+  only for `CpuAsynchronous`. The default `Cpu` path calls `ConvertImage` inline, and
+  `src/video_core/textures/astc.cpp:2037` joins its internal row workers before returning.
+  The asynchronous path queues at `texture_cache.h:1381`, returns without uploading,
+  and uploads completed work in `TickAsyncDecode`. It can bind an image still decoding.
+  Global and per-title settings can override the default; `UPLOAD_POLICY` now records
+  the actual values. `NXBOX_ASTC_SYNC=1` forces `Cpu` after both settings files and before
+  renderer construction (`src/eden_uwp/game_session.cpp:815`).
+- `src/video_core/renderer_opengl/gl_shader_cache.cpp:504` returns no pipeline for
+  unfinished asynchronous non-quad draws; it does not draw a placeholder shader.
+  `gl_graphics_pipeline.cpp:441` waits for unfinished programs before binding them.
+  Async shaders default to false, but settings files can override this too.
+- Upload staging uses persistent, **noncoherent**, explicitly flushed maps
+  (`gl_staging_buffer_pool.h:99`). `gl_texture_cache.cpp:849` previously flushed only
+  `unswizzled_size_bytes`, the compressed source size. CPU ASTC conversion produces
+  larger RGBA output, including mipmaps/layers, so part of the sampled output was outside
+  the published range. It now flushes `MapSizeBytes(*this)`, the same size requested from
+  the pool. Host tests execute this exact flush with a three-mip, two-layer ASTC example
+  (10,752 compressed bytes versus 43,008 output bytes), ordinary and recompressed images.
+- Pool reuse already rejects unsignaled fences (`gl_staging_buffer_pool.cpp:92`).
+  Mesa temporary copies retain source/destination BO references before recording
+  (`/tmp/mesa-pin/src/gallium/drivers/d3d12/d3d12_resource.cpp:1334`), and batch reset waits
+  before releasing them (`d3d12_batch.cpp:156`). No early temporary upload reuse was found.
+  `patch_upload_ready` instruments unexpected busy temporary maps and waits before CPU
+  writes when diagnostics are enabled. Normal execution adds no busy-resource scan.
+- `buffer_cache.h:124` invalidates CPU-written ranges; `:1758` uploads dirty ranges while
+  excluding GPU-owned ranges. OpenGL uses immediate uploads, not mapped uploads
+  (`gl_buffer_cache.h:264`). No guest read-before-write defect was established. Counts of
+  invalidations and uploads expose activity, but cannot prove guest write ordering or
+  detect every missing invalidation.
+
+Enable `NXBOX_UPLOAD_DIAG=1` alongside `NXBOX_ASTC_SYNC=1` for the repeat capture.
+`NXBOX_GL_UPLOAD_READY` and `NXBOX_MESA_UPLOAD_READY` are cumulative, sampled reports
+collected by the frontend. They contain `astc_queued`, `astc_uploaded`,
+`astc_pending_binding` (prepared graphics/compute texture bindings, not skipped draws),
+`pipeline_pending`, `pipeline_skipped`, `staging_busy_avoided` (safe pool rejection),
+`staging_busy_map` (unexpected busy Mesa temporary allocation), `buffer_invalidation`,
+`buffer_upload`, and `expanded_flush` (uploads the old compressed-size flush would
+under-publish). A pending pipeline can subsequently be waited on; it is not itself an
+unsafe draw. Keep early and late captures: neither host checks nor the old zero skip/link
+counts establish that this fix removes the Xbox artifacts.
+
+Readiness validation: the requested `cd tests/port && python3 -m unittest discover -s .
+-p 'test_*.py'` completed with **182 tests, OK, process exit code 0** on the final
+source state. The full patch-chain LF/CRLF checks and exactly-once new-step assertion
+passed. `git diff --check` passed and pristine `/tmp/mesa-pin` remained unchanged.
+No Xbox candidate was built/deployed, and no commit or push was performed. The Mesa
+report is published when an unexpected busy temporary map is observed; its absence
+alone does not demonstrate that the instrumentation ran.
