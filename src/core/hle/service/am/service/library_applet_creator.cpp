@@ -26,8 +26,10 @@ namespace {
 
 bool ShouldCreateGuestApplet(AppletId applet_id) {
 #ifdef NXBOX_UWP
-    // UWP has no firmware-applet UI. HLE selects the active user and completes Mii requests.
-    if (applet_id == AppletId::MiiEdit || applet_id == AppletId::ProfileSelect) {
+    // UWP has no firmware-applet UI. HLE selects the active user, completes Mii requests and
+    // accepts the already-connected pad for controller support (the firmware applet never exits).
+    if (applet_id == AppletId::MiiEdit || applet_id == AppletId::ProfileSelect ||
+        applet_id == AppletId::Controller) {
         return false;
     }
 #endif
