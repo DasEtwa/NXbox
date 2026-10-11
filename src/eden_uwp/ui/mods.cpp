@@ -84,7 +84,7 @@ JsonObject ObjectAt(const JsonObject& object, const wchar_t* key) {
     if (object.HasKey(key)) {
         const IJsonValue value = object.GetNamedValue(key);
         if (value.ValueType() == JsonValueType::Object) {
-            return value.as<winrt::Windows::Data::Json::JsonObject>();
+            return value.GetObject();
         }
     }
     return JsonObject{};
@@ -147,14 +147,18 @@ bool HttpGetText(const std::string& url, std::string& body) {
         const auto client = MakeClient();
         const auto response = client.GetAsync(MakeUri(url)).get();
         if (response.StatusCode() != winrt::Windows::Web::Http::HttpStatusCode::Ok) {
-            Diagnostic(fmt::format("UI mods http {} status={}", url,
+            Diagnostic(fmt::format("MODS fetch url={} status={} bytes=0", url,
                                    static_cast<int>(response.StatusCode())));
             return false;
         }
         body = winrt::to_string(response.Content().ReadAsStringAsync().get());
+        Diagnostic(fmt::format("MODS fetch url={} status={} bytes={}", url,
+                               static_cast<int>(response.StatusCode()), body.size()));
         return true;
     } catch (const winrt::hresult_error& error) {
-        Diagnostic("UI mods http " + url + " failed " + winrt::to_string(error.message()));
+        Diagnostic(fmt::format("MODS fetch url={} status=error bytes={} hresult={:08X} error={}",
+                               url, body.size(), static_cast<std::uint32_t>(error.code().value),
+                               winrt::to_string(error.message())));
         return false;
     }
 }
@@ -167,8 +171,12 @@ bool HttpUrlLive(const std::string& url) {
         winrt::Windows::Web::Http::HttpRequestMessage request{
             winrt::Windows::Web::Http::HttpMethod::Head(), MakeUri(url)};
         const auto response = client.SendRequestAsync(request).get();
+        Diagnostic(fmt::format("MODS probe url={} status={} bytes=0", url,
+                               static_cast<int>(response.StatusCode())));
         return response.IsSuccessStatusCode();
-    } catch (const winrt::hresult_error&) {
+    } catch (const winrt::hresult_error& error) {
+        Diagnostic(fmt::format("MODS probe url={} status=error bytes=0 hresult={:08X}", url,
+                               static_cast<std::uint32_t>(error.code().value)));
         return false;
     }
 }
@@ -943,7 +951,7 @@ struct ModStore::Impl : std::enable_shared_from_this<ModStore::Impl> {
                 if (value.ValueType() != JsonValueType::Object) {
                     continue;
                 }
-                const JsonObject item = value.as<winrt::Windows::Data::Json::JsonObject>();
+                const JsonObject item = value.GetObject();
                 InstalledRecord record;
                 record.id = static_cast<std::int64_t>(NumberAt(item, L"id", 0.0));
                 record.name = StringAt(item, L"name");
@@ -1070,7 +1078,7 @@ struct ModStore::Impl : std::enable_shared_from_this<ModStore::Impl> {
         std::string body;
         JsonObject root;
         if (!HttpGetText(kCnxIndexUrl, body) || !ParseObject(body, root)) {
-            Diagnostic("UI mods CNX index unavailable");
+            Diagnostic(fmt::format("MODS parse source=CNX valid=0 bytes={}", body.size()));
             return;
         }
         const std::string wanted = Lower(title_id);
@@ -1082,6 +1090,7 @@ struct ModStore::Impl : std::enable_shared_from_this<ModStore::Impl> {
             std::string author;
         };
         std::vector<Found> found;
+        std::size_t parsed = 0;
         for (const auto& [section, category] :
              {std::pair<const wchar_t*, const char*>{L"translations", "Translation"},
               std::pair<const wchar_t*, const char*>{L"modifications", "Mod"}}) {
@@ -1090,6 +1099,7 @@ struct ModStore::Impl : std::enable_shared_from_this<ModStore::Impl> {
                 if (pair.Value().ValueType() != JsonValueType::Object) {
                     continue;
                 }
+                ++parsed;
                 const JsonObject item = pair.Value().GetObject();
                 if (item.HasKey(L"enabled") && item.GetNamedBoolean(L"enabled", true) == false) {
                     continue;
@@ -1114,6 +1124,8 @@ struct ModStore::Impl : std::enable_shared_from_this<ModStore::Impl> {
                                  category, owner});
             }
         }
+        Diagnostic(fmt::format("MODS parse source=CNX valid=1 count={}", parsed));
+        Diagnostic(fmt::format("MODS match source=CNX title={} count={}", title_id, found.size()));
         // The index is old: keep only what still downloads.
         const std::size_t listed = found.size();
         found.erase(std::remove_if(found.begin(), found.end(),
@@ -1164,16 +1176,20 @@ struct ModStore::Impl : std::enable_shared_from_this<ModStore::Impl> {
             }
             JsonObject root;
             if (!ParseObject(body, root)) {
+                Diagnostic(fmt::format("MODS parse source=GameBanana/search valid=0 bytes={}",
+                                       body.size()));
                 SetPhase(StorePhase::Offline);
                 return;
             }
+            Diagnostic(fmt::format("MODS parse source=GameBanana/search valid=1 count={}",
+                                   ArrayAt(root, L"_aRecords").Size()));
             std::int64_t first = 0;
             std::int64_t switch_id = 0;
             for (const IJsonValue& value : ArrayAt(root, L"_aRecords")) {
                 if (value.ValueType() != JsonValueType::Object) {
                     continue;
                 }
-                const JsonObject record = value.as<winrt::Windows::Data::Json::JsonObject>();
+                const JsonObject record = value.GetObject();
                 const auto id = static_cast<std::int64_t>(NumberAt(record, L"_idRow", 0.0));
                 std::string name = StringAt(record, L"_sName");
                 while (!name.empty() && name.back() == ' ') {
@@ -1190,6 +1206,8 @@ struct ModStore::Impl : std::enable_shared_from_this<ModStore::Impl> {
                 }
             }
             known = switch_id != 0 ? switch_id : first;
+            Diagnostic(fmt::format("MODS match source=GameBanana/search title={} game_id={}",
+                                   title_id, known));
             if (known == 0) {
                 Diagnostic("UI mods game not found on GameBanana: " + game_name);
                 SetPhase(StorePhase::NoGame);
@@ -1228,6 +1246,8 @@ struct ModStore::Impl : std::enable_shared_from_this<ModStore::Impl> {
         std::string body;
         JsonObject root;
         if (!HttpGetText(url, body) || !ParseObject(body, root)) {
+            Diagnostic(
+                fmt::format("MODS parse source=GameBanana/index valid=0 bytes={}", body.size()));
             const std::lock_guard<std::mutex> lock(mutex);
             page_loading = false;
             if (listing.empty()) {
@@ -1238,13 +1258,15 @@ struct ModStore::Impl : std::enable_shared_from_this<ModStore::Impl> {
         const JsonObject metadata = ObjectAt(root, L"_aMetadata");
         const auto count = static_cast<int>(NumberAt(metadata, L"_nRecordCount", -1.0));
         const JsonArray records = ArrayAt(root, L"_aRecords");
+        Diagnostic(
+            fmt::format("MODS parse source=GameBanana/index valid=1 count={}", records.Size()));
         int received = 0;
         const std::lock_guard<std::mutex> lock(mutex);
         for (const IJsonValue& value : records) {
             if (value.ValueType() != JsonValueType::Object) {
                 continue;
             }
-            const JsonObject record = value.as<winrt::Windows::Data::Json::JsonObject>();
+            const JsonObject record = value.GetObject();
             const auto mod_id = static_cast<std::int64_t>(NumberAt(record, L"_idRow", 0.0));
             if (mod_id == 0) {
                 continue;
@@ -1254,7 +1276,7 @@ struct ModStore::Impl : std::enable_shared_from_this<ModStore::Impl> {
             const JsonObject media = ObjectAt(record, L"_aPreviewMedia");
             const JsonArray images = ArrayAt(media, L"_aImages");
             if (images.Size() > 0 && images.GetAt(0).ValueType() == JsonValueType::Object) {
-                const JsonObject image = images.GetAt(0).as<winrt::Windows::Data::Json::JsonObject>();
+                const JsonObject image = images.GetAt(0).GetObject();
                 std::string file = StringAt(image, L"_sFile220");
                 if (file.empty()) {
                     file = StringAt(image, L"_sFile");
@@ -1283,7 +1305,9 @@ struct ModStore::Impl : std::enable_shared_from_this<ModStore::Impl> {
         more = received >= kPerPage && (total < 0 || static_cast<int>(listing.size()) < total);
         page_loading = false;
         phase = StorePhase::Ready;
-        Diagnostic(fmt::format("UI mods page {} loaded, {} mods listed", number, listing.size()));
+        Diagnostic(fmt::format("MODS match source=GameBanana/index title={} game_id={} page={} "
+                               "count={} listed={}",
+                               title_id, id, number, received, listing.size()));
     }
 
     // The files of a mod, its description and its download count.
@@ -1306,7 +1330,7 @@ struct ModStore::Impl : std::enable_shared_from_this<ModStore::Impl> {
             if (value.ValueType() != JsonValueType::Object) {
                 continue;
             }
-            const JsonObject file = value.as<winrt::Windows::Data::Json::JsonObject>();
+            const JsonObject file = value.GetObject();
             const std::string name = StringAt(file, L"_sFile");
             const std::string address = StringAt(file, L"_sDownloadUrl");
             if (name.empty() || address.empty()) {

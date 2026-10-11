@@ -162,6 +162,15 @@ private:
 
     void Update(Clock::time_point now) {
         rows_ = store_->List(FilterOf(chip_));
+        const StorePhase phase = store_->Phase();
+        if (logged_chip_ != chip_ || logged_rows_ != RowCount() || logged_phase_ != phase) {
+            Diagnostic("MODS render title=" + game_.title_id + " filter=" + std::to_string(chip_) +
+                       " phase=" + std::to_string(static_cast<int>(phase)) +
+                       " count=" + std::to_string(RowCount()));
+            logged_chip_ = chip_;
+            logged_rows_ = RowCount();
+            logged_phase_ = phase;
+        }
         selected_ = std::clamp(selected_, 0, std::max(RowCount() - 1, 0));
         if (!details_open_) {
             HandleInput(now);
@@ -748,6 +757,9 @@ private:
     std::vector<std::shared_ptr<ModEntry>> rows_;
     std::map<std::int64_t, Image> images_;
     std::set<std::int64_t> failed_;
+    int logged_chip_ = -1;
+    int logged_rows_ = -1;
+    StorePhase logged_phase_ = StorePhase::Searching;
     int chip_ = 0;
     int selected_ = 0;
     int top_ = 0;
