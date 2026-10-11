@@ -188,6 +188,38 @@ void MemoryEvent(const char* event, std::uint64_t next_limit = 0) noexcept {
         CrashEvent("memory_query_failed");
     }
 }
+
+// One heartbeat/stall line: memory, usage level, D3D12 device-removed flag (published by Mesa as
+// an environment variable) and the age of the last presented game frame.
+void HeartbeatLine(const char* event, std::uint64_t gap_ms) noexcept {
+    try {
+        using winrt::Windows::System::MemoryManager;
+        Crash::Line line;
+        Prefix(line, event);
+        line.Add(" usage=");
+        line.Number(MemoryManager::AppMemoryUsage());
+        line.Add(" limit=");
+        line.Number(MemoryManager::AppMemoryUsageLimit());
+        line.Add(" level=");
+        line.Number(static_cast<std::uint32_t>(MemoryManager::AppMemoryUsageLevel()));
+        char lost[2]{};
+        line.Add(" device_lost=");
+        line.Add(GetEnvironmentVariableA("NXBOX_D3D12_DEVICE_LOST", lost, sizeof(lost)) == 1 &&
+                         lost[0] == '1'
+                     ? "1"
+                     : "0");
+        const auto present = NxboxStall::last_present_tick_ms.load(std::memory_order_relaxed);
+        line.Add(" present_age_ms=");
+        line.Number(present ? GetTickCount64() - present : 0);
+        if (gap_ms) {
+            line.Add(" gap_ms=");
+            line.Number(gap_ms);
+        }
+        Write(line);
+    } catch (...) {
+        CrashEvent("memory_query_failed");
+    }
+}
 } // namespace
 
 void InstallCrashHandlers() noexcept {
@@ -257,10 +289,24 @@ void ObserveCrashLifecycle() {
         MemoryEvent("AppMemoryUsageLimitChanging", args.NewLimit());
     });
     MemoryEvent("memory_initial");
-    // Continues sampling while the UI/emulation threads stall; suspension pauses the timer.
+    // Samples every 100 ms while the UI/emulation threads stall; suspension pauses the timer. A
+    // line is written once per second, plus a `stall` line the moment a gap over 300 ms ends.
+    static std::atomic<std::uint64_t> last_sample_ms{0};
+    static std::atomic<std::uint64_t> last_write_ms{0};
     static const auto heartbeat =
         winrt::Windows::System::Threading::ThreadPoolTimer::CreatePeriodicTimer(
-            [](const auto&) { MemoryEvent("memory_heartbeat"); }, std::chrono::seconds(1));
+            [](const auto&) {
+                const auto now = GetTickCount64();
+                const auto previous = last_sample_ms.exchange(now);
+                if (previous && now - previous > 300) {
+                    HeartbeatLine("stall", now - previous);
+                }
+                auto written = last_write_ms.load();
+                if (now - written >= 1000 && last_write_ms.compare_exchange_strong(written, now)) {
+                    HeartbeatLine("memory_heartbeat", 0);
+                }
+            },
+            std::chrono::milliseconds(100));
 }
 } // namespace EdenXbox
 

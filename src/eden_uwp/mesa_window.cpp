@@ -261,6 +261,7 @@ public:
         if (!swap(runtime->dc)) {
             throw std::runtime_error("Mesa presentation failed");
         }
+        NxboxStall::last_present_tick_ms.store(GetTickCount64(), std::memory_order_relaxed);
     }
 
 private:

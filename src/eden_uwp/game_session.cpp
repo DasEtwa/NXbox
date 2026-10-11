@@ -96,6 +96,9 @@ struct Lifecycle {
     std::atomic<int> request{None};
     std::mutex mutex;
     std::optional<winrt::Windows::ApplicationModel::SuspendingDeferral> deferral;
+    // Set by the emulation loop once it has paused; the fast-suspend worker waits for it.
+    std::atomic<bool> paused_ack{false};
+    std::thread worker;
 
     void CompleteDeferral() {
         std::scoped_lock lock{mutex};
@@ -994,6 +997,7 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
             if (!paused) {
                 void(system.Pause());
                 paused = true;
+                lifecycle.paused_ack.store(true, std::memory_order_release);
                 Diagnostic("GAME_SUSPENDED");
                 // Leaving through Home suspends the app: share the shaders met this session.
                 UploadSharedShaderCache(system.GetApplicationProcessProgramID());
@@ -1516,13 +1520,39 @@ void RunGameView(const winrt::Windows::UI::Core::CoreWindow& window, const std::
     });
     Lifecycle lifecycle;
     using winrt::Windows::ApplicationModel::Core::CoreApplication;
+    // NXBOX_FAST_SUSPEND=0 restores the old behaviour (the loop alone completes the deferral).
+    char fast_env[2]{};
+    const bool fast_suspend = GetEnvironmentVariableA("NXBOX_FAST_SUSPEND", fast_env,
+                                                      sizeof(fast_env)) != 1 ||
+                              fast_env[0] != '0';
     const auto suspending_token =
-        CoreApplication::Suspending([&lifecycle](const auto&, const auto& args) {
+        CoreApplication::Suspending([&lifecycle, fast_suspend](const auto&, const auto& args) {
+            Diagnostic("SUSPENDING");
             {
                 std::scoped_lock lock{lifecycle.mutex};
                 lifecycle.deferral = args.SuspendingOperation().GetDeferral();
             }
+            lifecycle.paused_ack.store(false, std::memory_order_release);
             lifecycle.request.store(Lifecycle::Suspend, std::memory_order_release);
+            if (!fast_suspend) {
+                return;
+            }
+            // The loop may be stuck in system.Pause() waiting for guest cores; never let the
+            // OS deadline depend on it: complete the deferral after at most ~1 s regardless.
+            if (lifecycle.worker.joinable()) {
+                lifecycle.worker.join();
+            }
+            lifecycle.worker = std::thread([&lifecycle] {
+                for (int waited = 0;
+                     waited < 200 && !lifecycle.paused_ack.load(std::memory_order_acquire);
+                     ++waited) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                }
+                Diagnostic(lifecycle.paused_ack.load(std::memory_order_acquire)
+                               ? "SUSPEND_DEFERRAL_COMPLETE"
+                               : "SUSPEND_DEFERRAL_TIMEOUT");
+                lifecycle.CompleteDeferral();
+            });
         });
     const auto resuming_token = CoreApplication::Resuming([&lifecycle](const auto&, const auto&) {
         lifecycle.request.store(Lifecycle::Resume, std::memory_order_release);
@@ -1532,6 +1562,9 @@ void RunGameView(const winrt::Windows::UI::Core::CoreWindow& window, const std::
         window.KeyUp(key_up_token);
         CoreApplication::Suspending(suspending_token);
         CoreApplication::Resuming(resuming_token);
+        if (lifecycle.worker.joinable()) {
+            lifecycle.worker.join();
+        }
     };
     // The driver targets the current HDMI surface. Layout remains 16:9 until resize handling lands.
     Ui::Pixels initial_frame;

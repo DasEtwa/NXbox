@@ -20,6 +20,9 @@ inline std::atomic<std::uint32_t> gpu_thread_id{0};
 // Host thread ids of the emulated CPU cores (CPUCore_0..3), for the same sampler.
 inline std::array<std::atomic<std::uint32_t>, 4> cpu_thread_ids{};
 
+// GetTickCount64() of the last game frame presented, for the crash logger's stall lines.
+inline std::atomic<std::uint64_t> last_present_tick_ms{0};
+
 enum class Kind {
     Shader,
     Upload,
