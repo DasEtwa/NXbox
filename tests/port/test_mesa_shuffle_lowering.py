@@ -23,6 +23,9 @@ class ShuffleLoweringTests(unittest.TestCase):
             sys.path.insert(0, str(ROOT / "tools/nxbox"))
             import patch_mesa_uwp
 
+            import inspect
+
+            self.assertIn("patch_dxil_shuffle(root)", inspect.getsource(patch_mesa_uwp.patch))
             patch_mesa_uwp.patch_dxil_shuffle(Path(tmp))
             text = dst.read_text()
             self.assertIn("nir_lower_subgroups, &nxbox_subgroup_options", text)

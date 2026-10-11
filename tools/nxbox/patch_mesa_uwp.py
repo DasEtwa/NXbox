@@ -122,6 +122,7 @@ def patch(root: Path) -> None:
     patch_draw_diag(root)
     patch_memstream(root)
     patch_dxil_unsupported(root)
+    patch_dxil_shuffle(root)
 
 
 def patch_list_restart(root: Path) -> None:
