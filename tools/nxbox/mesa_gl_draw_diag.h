@@ -3,7 +3,19 @@
 
 #ifdef _WIN32
 #include <stdio.h>
-#include <windows.h>
+/* src/mesa/main must not include <windows.h> (dd.h #errors), so declare the two kernel32
+ * entry points this header needs. */
+#ifndef _WINDOWS_
+#ifdef __cplusplus
+extern "C" {
+#endif
+__declspec(dllimport) unsigned long __stdcall GetEnvironmentVariableA(const char *, char *,
+                                                                     unsigned long);
+__declspec(dllimport) int __stdcall SetEnvironmentVariableA(const char *, const char *);
+#ifdef __cplusplus
+}
+#endif
+#endif
 #ifndef NXBOX_DRAW_SKIP_KEY
 #define NXBOX_DRAW_SKIP_KEY "NXBOX_GL_DRAW_SKIP_TOTAL"
 #define NXBOX_DRAW_SKIP_LAST_KEY "NXBOX_GL_DRAW_SKIP_LAST"
