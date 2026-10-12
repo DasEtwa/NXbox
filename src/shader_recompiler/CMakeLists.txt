@@ -265,4 +265,8 @@ else()
     )
 endif()
 
+if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    include(backend/hlsl/CMakeLists.txt)
+endif()
+
 create_target_directory_groups(shader_recompiler)

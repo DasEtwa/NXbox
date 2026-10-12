@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include <array>
+#include <cstring>
 #include <span>
 
 #include <d3d12.h>
 #include <wrl/client.h>
 
+#include "shader_recompiler/backend/hlsl/hlsl_root_constants.h"
 #include "shader_recompiler/stage.h"
 #include "video_core/renderer_d3d12/d3d12_dxc.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_iface.h"
@@ -45,8 +48,15 @@ public:
     void SetStageInfo(size_t stage, const Shader::Info* info) {
         stage_infos[stage] = info;
     }
-    // RootConstants() keeps the iface default (render area + y_flip in words 0..2) until the
-    // HLSL backend defines hlsl_root_constants.h; then override it here.
+    std::array<u32, 16> RootConstants(const DrawInputs& inputs) const override {
+        Shader::Backend::HLSL::RootConstants constants;
+        constants.render_area[0] = static_cast<float>(inputs.render_area_width);
+        constants.render_area[1] = static_cast<float>(inputs.render_area_height);
+        constants.y_direction = inputs.y_flip ? -1.0f : 1.0f;
+        std::array<u32, 16> words{};
+        std::memcpy(words.data(), &constants, sizeof(words));
+        return words;
+    }
     const Pso::GraphicsPsoState& State() const {
         return state;
     }
