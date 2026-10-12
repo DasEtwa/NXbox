@@ -1025,7 +1025,7 @@ bool RunPendingSync(const CoreWindow& window, const fs::path& local_state) {
     SyncFlow::Outcome outcome;
     const bool closed =
         WithOwnRenderer(window, "savesync pending", [&](Renderer& renderer, Input& input) {
-            SyncFlow flow(renderer, window, input, game, FlowMode::AfterExit);
+            SyncFlow flow(renderer, window, input, game, FlowMode::BeforeBoot);
             outcome = flow.Run();
             return outcome.window_closed;
         });
