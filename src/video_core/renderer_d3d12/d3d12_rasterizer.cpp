@@ -829,8 +829,7 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         const u64 available = slot.size > attribute.offset ? slot.size - attribute.offset : 0;
         const u64 source_offset = u64{slot.offset} + attribute.offset;
         const bool realign = (source_offset % alignment) || (slot.stride % alignment) ||
-                             bytes != storage_bytes || attribute.swap_rb ||
-                             vertex_size == Pso::VSize::X8B8G8R8 || vertex_size == Pso::VSize::G8R8;
+                             bytes != storage_bytes || attribute.swap_rb;
         if (!realign && required <= available) {
             vertex_views[i] = {slot.resource->handle->GetGPUVirtualAddress() + source_offset,
                                static_cast<UINT>(available), slot.stride};

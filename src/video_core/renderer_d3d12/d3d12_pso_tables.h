@@ -350,7 +350,7 @@ constexpr std::uint32_t VertexStorageByteSize(std::uint32_t size, bool swap_rb =
         return VertexComponentBytes(size) * 4;
     if (size == VSize::R16G16B16)
         return 8;
-    if (size == VSize::R8G8B8 || size == VSize::A8)
+    if (size == VSize::R8G8B8)
         return 4;
     return VertexByteSize(size);
 }
@@ -369,7 +369,7 @@ inline void RepackVertexFormat(std::span<std::uint8_t> destination,
                             std::min<std::uint64_t>(guest_bytes, source.size() - offset)),
                         target);
         const auto component_bytes = VertexComponentBytes(size);
-        if (storage_bytes > guest_bytes || size == VSize::X8B8G8R8) {
+        if (storage_bytes > guest_bytes) {
             const std::uint32_t one =
                 type == VType::Float   ? (component_bytes == 2 ? 0x3c00u : 0x3f800000u)
                 : type == VType::UNorm ? (component_bytes == 2 ? 0xffffu : 0xffu)
@@ -377,19 +377,12 @@ inline void RepackVertexFormat(std::span<std::uint8_t> destination,
                                        : 1u;
             std::memcpy(target + storage_bytes - component_bytes, &one, component_bytes);
         }
-        if (size == VSize::A8) {
-            target[3] = target[0];
-            target[0] = 0;
-        }
-        if (size == VSize::G8R8) {
-            std::swap(target[0], target[1]);
-        }
         if (swap_rb && size == VSize::A2B10G10R10) {
             std::uint32_t packed{};
             std::memcpy(&packed, target, sizeof(packed));
             packed = (packed & 0xc00ffc00u) | ((packed & 0x3ffu) << 20) | ((packed >> 20) & 0x3ffu);
             std::memcpy(target, &packed, sizeof(packed));
-        } else if (swap_rb && storage_bytes >= 3 && size != VSize::A8) {
+        } else if (swap_rb && storage_bytes >= 3) {
             for (std::uint32_t byte = 0; byte < component_bytes; ++byte)
                 std::swap(target[byte], target[component_bytes * 2 + byte]);
         }
@@ -487,7 +480,9 @@ constexpr VertexFormat VertexFormatFor(std::uint32_t size, std::uint32_t type, b
 // signatures implement the conversion policy represented by these flags.
 constexpr VertexFormat VertexFormatForInputAssembler(std::uint32_t size, std::uint32_t type,
                                                      bool bgra = false) {
-    auto format = VertexFormatFor(size, type, bgra);
+    // Maxwell aliases follow Vulkan/GL channel counts: A8 is a one-component
+    // R8 fetch, G8_R8 is RG, and X8_B8_G8_R8 carries all four raw components.
+    auto format = VertexFormatFor(size == VSize::A8 ? VSize::R8 : size, type, bgra);
     if (format.dxgi == 87) {
         format.dxgi = 28;
         format.swap_rb = true;
@@ -500,10 +495,6 @@ constexpr VertexFormat VertexFormatForInputAssembler(std::uint32_t size, std::ui
                               : width == 2 ? VSize::R16G16B16A16
                                            : VSize::R8G8B8A8;
         format.dxgi = VertexFormatFor(expanded, type).dxgi;
-    }
-    if (size == VSize::A8) {
-        format = VertexFormatFor(VSize::R8G8B8A8, type);
-        format.swap_rb = false; // Alpha is invariant under BGRA swizzling.
     }
     return format;
 }

@@ -79,7 +79,7 @@ int main() {
 #include "video_core/renderer_d3d12/d3d12_pso_tables.h"
 using namespace D3D12::Pso;
 int main() {
-    static_assert(VertexFormatForInputAssembler(VSize::A8, VType::SNorm).dxgi == 31);
+    static_assert(VertexFormatForInputAssembler(VSize::A8, VType::SNorm).dxgi == 63);
     static_assert(VertexFormatForInputAssembler(VSize::R8G8B8A8, VType::UNorm, true).dxgi == 28);
     static_assert(VertexFormatForInputAssembler(VSize::B10G11R11, VType::Float, true).dxgi == 0);
     std::array<std::uint8_t, 6> guest{1,2,3,4,5,6};
@@ -89,9 +89,11 @@ int main() {
     RepackVertexFormat(out, guest, 6, VSize::R16G16B16, VType::Float, false);
     assert(out[0]==1 && out[5]==6 && out[6]==0 && out[7]==0x3c);
     RepackVertexFormat(out, guest, 1, VSize::A8, VType::UInt, false);
-    assert(out[0]==0 && out[3]==1 && out[7]==2);
+    assert(out[0]==1 && out[3]==4 && out[6]==0 && out[7]==0);
     RepackVertexFormat(out, guest, 2, VSize::G8R8, VType::UNorm, false);
-    assert(out[0]==2 && out[1]==1 && out[2]==4 && out[3]==3);
+    assert(out[0]==1 && out[1]==2 && out[2]==3 && out[3]==4);
+    RepackVertexFormat(out, guest, 4, VSize::X8B8G8R8, VType::UNorm, false);
+    assert(out[0]==1 && out[3]==4);
     RepackVertexFormat(out, guest, 1, VSize::R8, VType::UInt, true);
     assert(out[0]==0 && out[1]==0 && out[2]==1 && out[3]==1);
     std::uint32_t bits = 9u | (17u << 10) | (25u << 20) | (3u << 30);

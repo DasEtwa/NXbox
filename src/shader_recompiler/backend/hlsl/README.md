@@ -216,7 +216,7 @@ still fail explicitly.
 
 The native input assembler receives a separate slot per attribute. Misaligned or
 expanded inputs are repacked, three-component 8/16-bit values receive the correct
-fourth component, BGRA/GR byte ordering is converted, and scaled integers use typed
+fourth component, explicit BGRA byte ordering is converted, and scaled integers use typed
 integer signatures followed by numeric conversion. Unsupported format combinations
 (including BGRA R11G11B10) are skipped with their format/type reason.
 
@@ -228,3 +228,7 @@ renderer target selection remain unfinished. The 4511-shader corpus tests emissi
 and DXIL validation; it does not exercise runtime stream-output cursors or Xbox
 pixel correctness. `tests/port/test_t9_stages.py` adds executable fetch/conversion
 regressions and optional actual-emitter VS/GS/PS and DXC validation.
+
+Vertex aliases A8, G8_R8, and X8_B8_G8_R8 follow the Vulkan/GL raw-component
+interpretation (R, RG, and RGBA respectively), rather than inferring channel
+swizzles from their names. Only the explicit BGRA flag changes channel order.
