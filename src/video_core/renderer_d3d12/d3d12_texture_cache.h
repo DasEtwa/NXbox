@@ -137,7 +137,7 @@ public:
     u64 allocation_tick{};
 
 private:
-    void TransferConverted(const StagingBufferRef&, std::span<const VideoCommon::BufferImageCopy>,
+    bool TransferConverted(const StagingBufferRef&, std::span<const VideoCommon::BufferImageCopy>,
                            bool download);
     void Transfer(const StagingBufferRef&, std::span<const VideoCommon::BufferImageCopy>,
                   bool download, const ResourcePtr& gpu_destination = {}, size_t gpu_offset = 0);
@@ -163,7 +163,7 @@ public:
     }
     FormatInfo HostFormat() const {
         auto result = host_format;
-        if (resource)
+        if (resource && !host_format.depth)
             result.view_format = static_cast<u32>(description.Format);
         return result;
     }

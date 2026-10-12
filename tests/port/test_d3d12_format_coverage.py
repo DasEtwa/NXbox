@@ -32,10 +32,19 @@ int main() {
             assert(guest == restored);
         }
     }
+    for (unsigned bits = 0; bits < 100000; ++bits) {
+        const std::uint32_t value = bits * 42949u;
+        std::array<std::uint8_t, 4> guest{}, restored{};
+        std::array<std::uint8_t, 8> host{};
+        std::memcpy(guest.data(), &value, 4);
+        ConvertPackedRow("A2R10G10B10_UNORM", host.data(), guest.data(), 1, false);
+        ConvertPackedRow("A2R10G10B10_UNORM", host.data(), restored.data(), 1, true);
+        assert(guest == restored);
+    }
     // Canonical host channels must match the guest's bit significance.
     std::array<std::uint8_t, 4> guest{31, 0, 0, 0}, host{};
     ConvertPackedRow("B5G6R5_UNORM", host.data(), guest.data(), 1, false);
-    assert(host[0] == 0 && host[1] == 0 && host[2] == 255 && host[3] == 255);
+    assert(host[0] == 255 && host[1] == 0 && host[2] == 0 && host[3] == 255);
     guest = {1, 0, 0, 0};
     ConvertPackedRow("A5B5G5R1_UNORM", host.data(), guest.data(), 1, false);
     assert(host[0] == 255 && host[3] == 0);

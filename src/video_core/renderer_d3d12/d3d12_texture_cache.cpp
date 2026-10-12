@@ -187,7 +187,11 @@ ResourcePtr MakeTexture(Context& context, const VideoCommon::ImageInfo& info, Fo
     if (info.num_samples > 1 && !format.depth &&
         !(desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET))
         return skip("MSAA format lacks RENDER_TARGET support");
-    return context.CreateResource(desc, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_COMMON);
+    try {
+        return context.CreateResource(desc, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_COMMON);
+    } catch (const std::exception& error) {
+        return skip(fmt::format("CreateResource failed: {}", error.what()));
+    }
 }
 UINT Subresource(const VideoCommon::ImageInfo& info, s32 level, s32 layer) {
     if (level < 0 || level >= info.resources.levels || layer < 0 || layer >= info.resources.layers)
@@ -251,12 +255,6 @@ void Image::UploadMemory(const StagingBufferRef& map,
 }
 void Image::DownloadMemory(const StagingBufferRef& map,
                            std::span<const VideoCommon::BufferImageCopy> copies) {
-    if (VideoCore::Surface::IsPixelFormatBCn(info.format) && host_format.block_width == 1) {
-        UnsupportedImage(
-            info, host_format,
-            "decoded BCn readback needs a lossy encoder; original guest blocks retained");
-        return;
-    }
     if (host_format.converted_astc || VideoCore::Surface::IsPixelFormatASTC(info.format)) {
         UnsupportedImage(info, host_format, "converted ASTC readback is not reversible");
         return;
@@ -280,12 +278,6 @@ void Image::DownloadMemory(std::span<const ResourcePtr> buffers, std::span<const
     if (buffers.size() != 2 || offsets.size() != 2 || !buffers[0] || !buffers[1] ||
         buffers[0]->heap != D3D12_HEAP_TYPE_DEFAULT || offsets[1] > buffers[1]->mapped.size())
         throw std::invalid_argument("D3D12 invalid DMA download destinations");
-    if (VideoCore::Surface::IsPixelFormatBCn(info.format) && host_format.block_width == 1) {
-        UnsupportedImage(
-            info, host_format,
-            "decoded BCn readback needs a lossy encoder; original guest blocks retained");
-        return;
-    }
     if (host_format.converted_astc || VideoCore::Surface::IsPixelFormatASTC(info.format)) {
         UnsupportedImage(info, host_format, "converted ASTC readback is not reversible");
         return;
@@ -298,6 +290,13 @@ void Image::Transfer(const StagingBufferRef& input,
                      const ResourcePtr& gpu_destination, size_t gpu_offset) {
     if (!resource)
         return;
+    if (download && VideoCore::Surface::IsPixelFormatBCn(info.format) &&
+        host_format.block_width == 1) {
+        UnsupportedImage(
+            info, host_format,
+            "decoded BCn readback needs a lossy encoder; original guest blocks retained");
+        return;
+    }
     if (resource->handle->GetDesc().SampleDesc.Count > 1) {
         // Guest memory stores every sample as a texel in an expanded grid. Keep
         // staging on a single-sample image and scatter/gather with shader loads.
@@ -343,12 +342,50 @@ void Image::Transfer(const StagingBufferRef& input,
         return;
     }
     if (host_format.conversion != FormatConversion::None) {
-        if (gpu_destination) {
-            UnsupportedImage(info, host_format,
-                             "converted DMA download requires CPU packing; use CPU readback");
+        if (!TransferConverted(input, copies, download) || !gpu_destination)
             return;
+        // Planar/packed GPU DMA needs the same guest byte representation as CPU
+        // readback. Wait for packing, then upload it; correctness takes priority
+        // over the native unconverted DMA fast path.
+        auto& context = runtime->context;
+        context.Finish();
+        const auto origin =
+            static_cast<size_t>(input.mapped_span.data() - input.buffer->mapped.data());
+        const auto tight = input.mapped_span.subspan(input.offset - origin);
+        const u32 guest_bytes = VideoCore::Surface::BytesPerBlock(info.format);
+        for (const auto& copy : copies) {
+            const u32 row_length =
+                copy.buffer_row_length ? copy.buffer_row_length : copy.image_extent.width;
+            const u32 image_height =
+                copy.buffer_image_height ? copy.buffer_image_height : copy.image_extent.height;
+            const u64 row_stride = u64{row_length} * guest_bytes;
+            const u64 slice_stride = row_stride * image_height;
+            const u64 row_bytes = u64{copy.image_extent.width} * guest_bytes;
+            for (s32 layer = 0; layer < copy.image_subresource.num_layers; ++layer)
+                for (u32 z = 0; z < copy.image_extent.depth; ++z)
+                    for (u32 y = 0; y < copy.image_extent.height; ++y) {
+                        const u64 base =
+                            copy.buffer_offset +
+                            slice_stride *
+                                (u64{static_cast<u32>(layer)} * copy.image_extent.depth + z) +
+                            row_stride * y;
+                        const u64 destination = CheckedAdd(gpu_offset, base);
+                        if (destination > gpu_destination->handle->GetDesc().Width ||
+                            row_bytes > gpu_destination->handle->GetDesc().Width - destination) {
+                            UnsupportedImage(info, host_format,
+                                             "converted DMA destination outside buffer");
+                            return;
+                        }
+                        auto staging = runtime->UploadStagingBuffer(row_bytes);
+                        std::memcpy(staging.mapped_span.data(), tight.data() + base, row_bytes);
+                        context.Transition(gpu_destination, D3D12_RESOURCE_STATE_COPY_DEST);
+                        context.Retain(staging.buffer);
+                        context.MarkWork("upload/copy");
+                        context.Commands()->CopyBufferRegion(
+                            gpu_destination->handle.Get(), destination,
+                            staging.buffer->handle.Get(), staging.offset, row_bytes);
+                    }
         }
-        TransferConverted(input, copies, download);
         return;
     }
     auto map = input;
@@ -493,7 +530,7 @@ void Image::Transfer(const StagingBufferRef& input,
 }
 // Packed and ETC/EAC conversions consume the original unswizzled guest layout.
 // ASTC and optional BCn decompression instead use the shared Converted upload path.
-void Image::TransferConverted(const StagingBufferRef& input,
+bool Image::TransferConverted(const StagingBufferRef& input,
                               std::span<const VideoCommon::BufferImageCopy> copies, bool download) {
     const auto conversion = host_format.conversion;
     const bool compressed =
@@ -501,17 +538,17 @@ void Image::TransferConverted(const StagingBufferRef& input,
     if (download && compressed) {
         UnsupportedImage(info, host_format,
                          "ETC2/EAC readback needs a lossy encoder; original guest blocks retained");
-        return;
+        return false;
     }
     auto map = input;
     if (!map.buffer || map.mapped_span.empty()) {
         UnsupportedImage(info, host_format, "converted transfer missing mapped staging");
-        return;
+        return false;
     }
     const auto origin = static_cast<size_t>(map.mapped_span.data() - map.buffer->mapped.data());
     if (map.offset < origin || map.offset - origin > map.mapped_span.size()) {
         UnsupportedImage(info, host_format, "converted staging offset outside mapped range");
-        return;
+        return false;
     }
     map.mapped_span = map.mapped_span.subspan(map.offset - origin);
     auto& context = runtime->context;
@@ -539,14 +576,14 @@ void Image::TransferConverted(const StagingBufferRef& input,
                 (info.type == VideoCommon::ImageType::e3D ? std::max(1u, info.size.depth >> level)
                                                           : 1u)) {
             UnsupportedImage(info, host_format, "converted copy outside image subresources");
-            return;
+            return false;
         }
         const u32 row_length = copy.buffer_row_length ? copy.buffer_row_length : extent.width;
         const u32 image_height =
             copy.buffer_image_height ? copy.buffer_image_height : extent.height;
         if (row_length < extent.width || image_height < extent.height) {
             UnsupportedImage(info, host_format, "converted copy stride smaller than extent");
-            return;
+            return false;
         }
         // Depth resources require a whole-subresource CopyTextureRegion, with no box.
         if (host_format.depth && (offset.x || offset.y || offset.z ||
@@ -554,7 +591,7 @@ void Image::TransferConverted(const StagingBufferRef& input,
                                   extent.height != std::max(1u, info.size.height >> level))) {
             UnsupportedImage(info, host_format,
                              "partial depth/stencil copy requires shader conversion");
-            return;
+            return false;
         }
         const u64 row_stride = ((u64{row_length} + block_width - 1) / block_width) * guest_bytes;
         const u64 slice_stride =
@@ -569,7 +606,7 @@ void Image::TransferConverted(const StagingBufferRef& input,
                 slice_stride * (extent.depth - 1) + row_stride * (guest_rows - 1) + guest_row_bytes;
             if (base > map.mapped_span.size() || size > map.mapped_span.size() - base) {
                 UnsupportedImage(info, host_format, "converted copy outside guest staging");
-                return;
+                return false;
             }
             for (u32 plane = 0; plane < host_format.planes; ++plane) {
                 auto desc = resource_desc;
@@ -585,7 +622,7 @@ void Image::TransferConverted(const StagingBufferRef& input,
                                                         &row_bytes, &total);
                 if (total == UINT64_MAX || rows != extent.height || !row_bytes) {
                     UnsupportedImage(info, host_format, "invalid converted SDK footprint");
-                    return;
+                    return false;
                 }
                 const u64 padded_slice = u64{footprint.Footprint.RowPitch} * rows;
                 auto aligned = download
@@ -663,6 +700,7 @@ void Image::TransferConverted(const StagingBufferRef& input,
             }
         }
     }
+    return true;
 }
 ImageView::ImageView(TextureCacheRuntime&, const VideoCommon::ImageViewInfo& info,
                      VideoCommon::ImageId id, Image& image)

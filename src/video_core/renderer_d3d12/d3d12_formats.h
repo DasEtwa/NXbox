@@ -28,6 +28,21 @@ struct FormatInfo {
     constexpr bool Supported() const {
         return resource_format != 0;
     }
+    constexpr std::uint32_t RtvFormat() const {
+        return depth || block_width != 1 ? 0u : view_format;
+    }
+    constexpr std::uint32_t DsvFormat() const {
+        if (!depth)
+            return 0;
+        return resource_format == 19   ? 20u
+               : resource_format == 44 ? 45u
+               : resource_format == 39 ? 40u
+               : resource_format == 53 ? 55u
+                                       : 0u;
+    }
+    constexpr std::uint32_t SrvFormat(unsigned plane = 0) const {
+        return plane && planes == 2 ? (resource_format == 19 ? 22u : 47u) : view_format;
+    }
 };
 inline constexpr auto FormatTable = std::to_array<FormatInfo>({
     {"A8B8G8R8_UNORM", 27, 28, 1, 1, 4, false, false, 1}, // R8G8B8A8_TYPELESS, R8G8B8A8_UNORM
@@ -567,7 +582,7 @@ inline void ConvertPackedRow(std::string_view name, std::uint8_t* host, std::uin
     const bool wide = name == "A2R10G10B10_UNORM";
     const unsigned host_bytes = wide ? 8 : 4;
     const unsigned host_max = wide ? 65535 : 255;
-    const bool reverse = name == "B5G6R5_UNORM" || name == "A2R10G10B10_UNORM";
+    const bool reverse = name == "A2R10G10B10_UNORM";
     for (unsigned x = 0; x < width; ++x) {
         std::uint32_t packed{};
         if (!download)
