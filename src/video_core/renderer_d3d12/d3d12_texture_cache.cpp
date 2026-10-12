@@ -251,13 +251,13 @@ void Image::Transfer(const StagingBufferRef& input,
 ImageView::ImageView(TextureCacheRuntime&, const VideoCommon::ImageViewInfo& info,
                      VideoCommon::ImageId id, Image& image)
     : ImageViewBase{info, image.info, id, image.gpu_addr}, resource{image.Handle()} {
-    const auto format = MaxwellFormat(info.format);
-    if (!format.Supported() || (!VideoCore::Surface::IsPixelFormatASTC(info.format) &&
-                                format.resource_format != image.HostFormat().resource_format))
+    const auto view_info = MaxwellFormat(info.format);
+    if (!view_info.Supported() || (!VideoCore::Surface::IsPixelFormatASTC(info.format) &&
+                                view_info.resource_format != image.HostFormat().resource_format))
         throw std::runtime_error("D3D12 incompatible texture view cast");
     description.Format = static_cast<DXGI_FORMAT>(VideoCore::Surface::IsPixelFormatASTC(info.format)
                                                       ? image.HostFormat().view_format
-                                                      : format.view_format);
+                                                      : view_info.view_format);
     const auto sources = info.Swizzle();
     UINT mapping[4]{};
     for (size_t i = 0; i < 4; ++i) {
