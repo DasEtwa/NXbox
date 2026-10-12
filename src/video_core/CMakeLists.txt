@@ -578,6 +578,7 @@ if (CMAKE_SYSTEM_NAME STREQUAL "WindowsStore")
         target_include_directories(video_core PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/d3d12_shaders)
         target_compile_definitions(video_core PRIVATE HAS_D3D12=1)
         target_link_libraries(video_core PRIVATE d3d12 dxgi)
+        add_subdirectory(renderer_d3d12/d3d12_present)
     endif()
 endif()
 

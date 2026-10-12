@@ -1,0 +1,12 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Generated from checked-in shaders and FidelityFX sources; licenses are retained.
+#pragma once
+#include <string>
+namespace D3D12::Present {
+inline std::string BuildShaderSource() {
+    std::string source;
+    source.reserve(@PRESENT_SOURCE_LENGTH@);
+@SHADER_SOURCE_PARTS@
+    return source;
+}
+}
