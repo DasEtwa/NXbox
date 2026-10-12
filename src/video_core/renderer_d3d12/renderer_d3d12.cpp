@@ -6,10 +6,10 @@
 #include <array>
 #include <atomic>
 #include <stdexcept>
-#include "eden_uwp/renderer_boundary.h"
 #include <dxgi1_4.h>
 #include <windows.h>
 #include "common/logging.h"
+#include "eden_uwp/renderer_boundary.h"
 #ifdef NXBOX_UWP
 #include "eden_uwp/thread_profile.h"
 #endif
@@ -303,7 +303,8 @@ struct RendererD3D12::Impl {
         HRESULT status;
         {
 #ifdef NXBOX_UWP
-            const EdenXbox::ThreadProfile::Scope present_scope{EdenXbox::ThreadProfile::Wait::Present};
+            const EdenXbox::ThreadProfile::Scope present_scope{
+                EdenXbox::ThreadProfile::Wait::Present};
 #endif
             status = swapchain->Present(1, 0);
         }
@@ -342,31 +343,32 @@ bool RendererD3D12::HasFailed() const {
 }
 void RendererD3D12::Composite(std::span<const Tegra::FramebufferConfig> layers) {
     try {
-    if (IsScreenshotPending()) {
-        renderer_settings.screenshot_requested = false;
-        const auto& size = renderer_settings.screenshot_framebuffer_layout;
-        std::fill_n(static_cast<u8*>(renderer_settings.screenshot_bits),
-                    static_cast<size_t>(size.width) * size.height * 4, u8{});
-        LOG_WARNING(Render, "D3D12 screenshot capture is stubbed");
-        renderer_settings.screenshot_complete_callback(false);
-    }
-    if (!impl->failed && render_window.IsShown()) {
-        try {
-            std::vector<Tegra::FramebufferConfig> display_layers;
-            const auto selected = Tegra::FilterLayerStack(
-                layers, Service::Nvnflinger::LayerStackId::Default, display_layers);
-            rasterizer.PreparePresentation();
-            impl->Present(render_window.GetFramebufferLayout(), selected, rasterizer);
-            ++m_current_frame;
-            render_window.OnFrameDisplayed();
-        } catch (const std::exception& error) {
-            ReportFailure(error);
+        if (IsScreenshotPending()) {
+            renderer_settings.screenshot_requested = false;
+            const auto& size = renderer_settings.screenshot_framebuffer_layout;
+            std::fill_n(static_cast<u8*>(renderer_settings.screenshot_bits),
+                        static_cast<size_t>(size.width) * size.height * 4, u8{});
+            LOG_WARNING(Render, "D3D12 screenshot capture is stubbed");
+            renderer_settings.screenshot_complete_callback(false);
         }
-    }
+        if (!impl->failed && render_window.IsShown()) {
+            try {
+                std::vector<Tegra::FramebufferConfig> display_layers;
+                const auto selected = Tegra::FilterLayerStack(
+                    layers, Service::Nvnflinger::LayerStackId::Default, display_layers);
+                rasterizer.PreparePresentation();
+                impl->Present(render_window.GetFramebufferLayout(), selected, rasterizer);
+                ++m_current_frame;
+                render_window.OnFrameDisplayed();
+            } catch (const std::exception& error) {
+                ReportFailure(error);
+            }
+        }
     } catch (const std::exception& error) {
         ReportFailure(error);
     } catch (...) {
-        const EdenXbox::UnknownRendererException error{"D3D12 compositor callback: non-standard exception"};
+        const EdenXbox::UnknownRendererException error{
+            "D3D12 compositor callback: non-standard exception"};
         ReportFailure(error);
     }
     try {
@@ -374,7 +376,8 @@ void RendererD3D12::Composite(std::span<const Tegra::FramebufferConfig> layers) 
     } catch (const std::exception& error) {
         ReportFailure(error);
     } catch (...) {
-        const EdenXbox::UnknownRendererException error{"D3D12 frame notification: non-standard exception"};
+        const EdenXbox::UnknownRendererException error{
+            "D3D12 frame notification: non-standard exception"};
         ReportFailure(error);
     }
 }

@@ -18,8 +18,8 @@
 #include "video_core/host1x/host1x.h"
 #include "video_core/renderer_base.h"
 #ifdef HAS_D3D12
-#include "video_core/renderer_d3d12/renderer_d3d12.h"
 #include "eden_uwp/renderer_boundary.h"
+#include "video_core/renderer_d3d12/renderer_d3d12.h"
 #endif
 
 #ifdef NXBOX_UWP
@@ -45,28 +45,33 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer,
     rasterizer = renderer.ReadRasterizer();
     thread = std::jthread([&](std::stop_token stop_token) {
 #ifdef HAS_D3D12
-        const auto report = [&](const std::exception& error) { return renderer.ReportFailure(error); };
+        const auto report = [&](const std::exception& error) {
+            return renderer.ReportFailure(error);
+        };
         const bool initialized = EdenXbox::RendererBoundary(
-            "GPU initialization: non-standard exception", [&] {
+            "GPU initialization: non-standard exception",
+            [&] {
 #endif
-        Common::SetCurrentThreadName("GPU");
+                Common::SetCurrentThreadName("GPU");
 #ifdef NXBOX_UWP
-        EdenXbox::InstallThreadCrashHandlers();
-        NxboxStall::gpu_thread_id.store(NxboxCurrentThreadId());
+                EdenXbox::InstallThreadCrashHandlers();
+                NxboxStall::gpu_thread_id.store(NxboxCurrentThreadId());
 #endif
-        Common::SetCurrentThreadPriority(Common::ThreadPriority::Critical);
-        Common::SetCurrentThreadToPerformanceCores();
-        system.RegisterHostThread();
+                Common::SetCurrentThreadPriority(Common::ThreadPriority::Critical);
+                Common::SetCurrentThreadToPerformanceCores();
+                system.RegisterHostThread();
 
 #ifdef HAS_D3D12
-        context.MakeCurrent();
-        }, report);
+                context.MakeCurrent();
+            },
+            report);
         // GraphicsContext::Scoped has a noexcept destructor which calls DoneCurrent.
         // Invoke release explicitly under the same boundary to prevent termination.
         SCOPE_EXIT {
             if (initialized)
-                EdenXbox::RendererBoundary("GPU context release: non-standard exception",
-                                          [&] { context.DoneCurrent(); }, report);
+                EdenXbox::RendererBoundary(
+                    "GPU context release: non-standard exception", [&] { context.DoneCurrent(); },
+                    report);
         };
 #else
         auto current_context = context.Acquire();
@@ -80,34 +85,38 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer,
             // Keep consuming queued fences after a renderer failure so synchronous
             // callers and game shutdown cannot deadlock behind a stopped GPU thread.
 #ifdef HAS_D3D12
-            EdenXbox::RendererBoundary("GPU command: non-standard exception", [&] {
-                if (!initialized || renderer.HasFailed()) {
-                    system.GPU().CancelSyncRequests();
-                } else {
-#endif
-                    const NxboxStall::Scope busy_scope{NxboxStall::Kind::GpuBusy};
-                    if (auto* submit_list = std::get_if<SubmitListCommand>(&next.data)) {
-                        scheduler.Push(system.GPU(), submit_list->channel,
-                                       std::move(submit_list->entries));
-                    } else if (std::holds_alternative<GPUTickCommand>(next.data)) {
-                        system.GPU().TickWork();
-                    } else if (const auto* flush = std::get_if<FlushRegionCommand>(&next.data)) {
-                        renderer.ReadRasterizer()->FlushRegion(flush->addr, flush->size);
-                    } else if (const auto* invalidate =
-                                   std::get_if<InvalidateRegionCommand>(&next.data)) {
-                        renderer.ReadRasterizer()->OnCacheInvalidation(invalidate->addr,
-                                                                       invalidate->size);
+            EdenXbox::RendererBoundary(
+                "GPU command: non-standard exception",
+                [&] {
+                    if (!initialized || renderer.HasFailed()) {
+                        system.GPU().CancelSyncRequests();
                     } else {
-                        ASSERT(false);
-                    }
+#endif
+                        const NxboxStall::Scope busy_scope{NxboxStall::Kind::GpuBusy};
+                        if (auto* submit_list = std::get_if<SubmitListCommand>(&next.data)) {
+                            scheduler.Push(system.GPU(), submit_list->channel,
+                                           std::move(submit_list->entries));
+                        } else if (std::holds_alternative<GPUTickCommand>(next.data)) {
+                            system.GPU().TickWork();
+                        } else if (const auto* flush =
+                                       std::get_if<FlushRegionCommand>(&next.data)) {
+                            renderer.ReadRasterizer()->FlushRegion(flush->addr, flush->size);
+                        } else if (const auto* invalidate =
+                                       std::get_if<InvalidateRegionCommand>(&next.data)) {
+                            renderer.ReadRasterizer()->OnCacheInvalidation(invalidate->addr,
+                                                                           invalidate->size);
+                        } else {
+                            ASSERT(false);
+                        }
 #ifdef HAS_D3D12
-                }
-            }, [&](const std::exception& error) {
-                const bool handled = report(error);
-                if (handled)
-                    system.GPU().CancelSyncRequests();
-                return handled;
-            });
+                    }
+                },
+                [&](const std::exception& error) {
+                    const bool handled = report(error);
+                    if (handled)
+                        system.GPU().CancelSyncRequests();
+                    return handled;
+                });
 #endif
             state.signaled_fence.store(next.fence);
             if (next.block) {
@@ -137,11 +146,10 @@ void ThreadManager::TickGPU(bool is_async) {
 
 void ThreadManager::InvalidateRegion(DAddr addr, u64 size) {
 #ifdef HAS_D3D12
-    EdenXbox::RendererBoundary("GPU cache invalidation: non-standard exception",
-                              [&] { rasterizer->OnCacheInvalidation(addr, size); },
-                              [&](const std::exception& error) {
-                                  return system.GPU().Renderer().ReportFailure(error);
-                              });
+    EdenXbox::RendererBoundary(
+        "GPU cache invalidation: non-standard exception",
+        [&] { rasterizer->OnCacheInvalidation(addr, size); },
+        [&](const std::exception& error) { return system.GPU().Renderer().ReportFailure(error); });
 #else
     rasterizer->OnCacheInvalidation(addr, size);
 #endif
@@ -159,11 +167,10 @@ void ThreadManager::FlushAndInvalidateRegion(DAddr addr, u64 size, bool is_async
         }
     }
 #ifdef HAS_D3D12
-    EdenXbox::RendererBoundary("GPU cache invalidation: non-standard exception",
-                              [&] { rasterizer->OnCacheInvalidation(addr, size); },
-                              [&](const std::exception& error) {
-                                  return system.GPU().Renderer().ReportFailure(error);
-                              });
+    EdenXbox::RendererBoundary(
+        "GPU cache invalidation: non-standard exception",
+        [&] { rasterizer->OnCacheInvalidation(addr, size); },
+        [&](const std::exception& error) { return system.GPU().Renderer().ReportFailure(error); });
 #else
     rasterizer->OnCacheInvalidation(addr, size);
 #endif

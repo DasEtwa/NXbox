@@ -1,21 +1,21 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "eden_uwp/crash_logger.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <csignal>
 #include <cstdlib>
 #include <exception>
-#include <string>
-#include <mutex>
 #include <memory>
+#include <mutex>
+#include <string>
 #include <unordered_map>
 #include <vector>
-#include <algorithm>
 #include <fmt/format.h>
+#include <windows.h>
 #include "eden_uwp/diagnostic.h"
 #include "eden_uwp/thread_profile.h"
-#include <windows.h>
 
 #include <fileapifromapp.h>
 #include <winrt/Windows.ApplicationModel.Core.h>
@@ -246,7 +246,10 @@ void HeartbeatLine(const char* event, std::uint64_t gap_ms) noexcept {
 struct ProfileHandle {
     HANDLE value{};
     explicit ProfileHandle(HANDLE value_) noexcept : value{value_} {}
-    ~ProfileHandle() { if (value && value != INVALID_HANDLE_VALUE) CloseHandle(value); }
+    ~ProfileHandle() {
+        if (value && value != INVALID_HANDLE_VALUE)
+            CloseHandle(value);
+    }
     ProfileHandle(const ProfileHandle&) = delete;
     ProfileHandle& operator=(const ProfileHandle&) = delete;
 };
@@ -274,7 +277,8 @@ void SampleThreads() noexcept {
     try {
         static std::mutex sampling_mutex;
         const std::unique_lock sampling_lock{sampling_mutex, std::try_to_lock};
-        if (!sampling_lock.owns_lock()) return;
+        if (!sampling_lock.owns_lock())
+            return;
         static std::unordered_map<DWORD, ThreadProfile::CpuSample> samples;
         static auto last = GetTickCount64();
         const auto now = GetTickCount64();
@@ -288,7 +292,8 @@ void SampleThreads() noexcept {
         const auto kernel = GetModuleHandleW(L"kernel32.dll");
         using Snapshot = HANDLE(WINAPI*)(DWORD, DWORD);
         using ThreadEntry = BOOL(WINAPI*)(HANDLE, ProfileThreadEntry*);
-        const auto snapshot = reinterpret_cast<Snapshot>(GetProcAddress(kernel, "CreateToolhelp32Snapshot"));
+        const auto snapshot =
+            reinterpret_cast<Snapshot>(GetProcAddress(kernel, "CreateToolhelp32Snapshot"));
         const auto first = reinterpret_cast<ThreadEntry>(GetProcAddress(kernel, "Thread32First"));
         const auto next = reinterpret_cast<ThreadEntry>(GetProcAddress(kernel, "Thread32Next"));
         bool complete = false;
@@ -322,36 +327,46 @@ void SampleThreads() noexcept {
         std::vector<DWORD> live;
         std::size_t inaccessible = 0;
         for (const auto id : ids) {
-            if (!id) continue;
+            if (!id)
+                continue;
             ProfileHandle thread{OpenThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE, id)};
-            if (!thread.value) { ++inaccessible; continue; }
+            if (!thread.value) {
+                ++inaccessible;
+                continue;
+            }
             FILETIME creation{}, exit{}, kernel_time{}, user_time{};
             if (!GetThreadTimes(thread.value, &creation, &exit, &kernel_time, &user_time)) {
                 ++inaccessible;
                 continue;
             }
-            if (FileTicks(exit)) continue;
+            if (FileTicks(exit))
+                continue;
             live.push_back(id);
             auto& sample = samples[id];
             const bool baseline = !sample.valid || sample.creation != FileTicks(creation);
-            const double percent = sample.Update(FileTicks(creation), FileTicks(kernel_time) + FileTicks(user_time), now);
+            const double percent = sample.Update(
+                FileTicks(creation), FileTicks(kernel_time) + FileTicks(user_time), now);
             std::string name = ThreadRole(id);
             PWSTR description{};
             if (SUCCEEDED(GetThreadDescription(thread.value, &description))) {
                 // LocalFree even if conversion or formatting throws.
-                const auto cleanup = std::unique_ptr<wchar_t, decltype(&LocalFree)>(description, LocalFree);
+                const auto cleanup =
+                    std::unique_ptr<wchar_t, decltype(&LocalFree)>(description, LocalFree);
                 if (description && *description) {
-                    const auto length = WideCharToMultiByte(CP_UTF8, 0, description, -1, nullptr, 0, nullptr, nullptr);
+                    const auto length = WideCharToMultiByte(CP_UTF8, 0, description, -1, nullptr, 0,
+                                                            nullptr, nullptr);
                     if (length > 1) {
                         std::string utf8(static_cast<std::size_t>(length), '\0');
-                        WideCharToMultiByte(CP_UTF8, 0, description, -1, utf8.data(), length, nullptr, nullptr);
+                        WideCharToMultiByte(CP_UTF8, 0, description, -1, utf8.data(), length,
+                                            nullptr, nullptr);
                         utf8.pop_back();
                         name = std::move(utf8);
                     }
                 }
             }
-            Diagnostic(fmt::format("THREAD_PROFILE tid={} name={} cpu_percent={:.2f} baseline={} interval_ms={}",
-                                   id, name, percent, baseline ? 1 : 0, interval));
+            Diagnostic(fmt::format(
+                "THREAD_PROFILE tid={} name={} cpu_percent={:.2f} baseline={} interval_ms={}", id,
+                name, percent, baseline ? 1 : 0, interval));
         }
         std::erase_if(samples, [&](const auto& item) {
             return std::find(live.begin(), live.end(), item.first) == live.end();
@@ -363,15 +378,18 @@ void SampleThreads() noexcept {
                 return std::find(live.begin(), live.end(), id) == live.end();
             });
         }
-        Diagnostic(fmt::format("THREAD_PROFILE coverage=process complete={} enumeration_error={} inaccessible={} sampled={}",
-                               complete ? 1 : 0, complete ? 0 : enumeration_error, inaccessible, live.size()));
+        Diagnostic(fmt::format("THREAD_PROFILE coverage=process complete={} enumeration_error={} "
+                               "inaccessible={} sampled={}",
+                               complete ? 1 : 0, complete ? 0 : enumeration_error, inaccessible,
+                               live.size()));
         constexpr const char* names[]{"present", "fence"};
         for (std::size_t index = 0; index < ThreadProfile::waits.size(); ++index) {
             auto& counter = ThreadProfile::waits[index];
             const auto us = counter.microseconds.exchange(0, std::memory_order_relaxed);
             const auto calls = counter.calls.exchange(0, std::memory_order_relaxed);
-            Diagnostic(fmt::format("THREAD_PROFILE host_wait={} total_us={} calls={} interval_ms={}",
-                                   names[index], us, calls, interval));
+            Diagnostic(
+                fmt::format("THREAD_PROFILE host_wait={} total_us={} calls={} interval_ms={}",
+                            names[index], us, calls, interval));
         }
     } catch (const std::exception& error) {
         CrashEvent(error.what());
@@ -383,11 +401,13 @@ void SampleThreads() noexcept {
 } // namespace
 
 void RegisterProfileThread() noexcept {
-    if (!ThreadProfile::Enabled()) return;
+    if (!ThreadProfile::Enabled())
+        return;
     try {
         const std::lock_guard lock{profile_mutex};
         const auto id = GetCurrentThreadId();
-        if (std::find(registered_threads.begin(), registered_threads.end(), id) == registered_threads.end())
+        if (std::find(registered_threads.begin(), registered_threads.end(), id) ==
+            registered_threads.end())
             registered_threads.push_back(id);
     } catch (...) {
         CrashEvent("thread_profile_registration_failed");

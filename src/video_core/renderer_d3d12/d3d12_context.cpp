@@ -3,17 +3,17 @@
 
 #include <algorithm>
 #include <atomic>
-#include <stdexcept>
-#include "eden_uwp/renderer_boundary.h"
-#include <set>
 #include <mutex>
+#include <set>
+#include <stdexcept>
 #include <d3d12sdklayers.h>
 #include <fmt/format.h>
 #include <windows.h>
+#include "eden_uwp/renderer_boundary.h"
 #ifdef NXBOX_UWP
+#include "eden_uwp/crash_logger.h"
 #include "eden_uwp/diagnostic.h"
 #include "eden_uwp/thread_profile.h"
-#include "eden_uwp/crash_logger.h"
 #endif
 #include "common/logging.h"
 #include "video_core/renderer_d3d12/d3d12_completion.h"
@@ -346,8 +346,10 @@ void Context::ReportFailure(const std::exception& error) noexcept {
         }
         if (first) {
             Diagnostic(fmt::format(
-                "D3D12 boundary event=renderer_exception fallback=skip_work what={} removed={:#010x}",
-                error.what(), static_cast<u32>(device ? device->GetDeviceRemovedReason() : E_POINTER)));
+                "D3D12 boundary event=renderer_exception fallback=skip_work what={} "
+                "removed={:#010x}",
+                error.what(),
+                static_cast<u32>(device ? device->GetDeviceRemovedReason() : E_POINTER)));
             LogInfoQueue();
             LogDeviceDred(device.Get());
             SetEnvironmentVariableA("NXBOX_D3D12_FIRST_FAILURE", error.what());
@@ -430,7 +432,8 @@ void Context::CompleteThrough(u64 tick) {
             } catch (const std::exception& error) {
                 ReportFailure(error);
             } catch (...) {
-                const EdenXbox::UnknownRendererException error{"D3D12 completion callback: non-standard exception"};
+                const EdenXbox::UnknownRendererException error{
+                    "D3D12 completion callback: non-standard exception"};
                 ReportFailure(error);
             }
         }
