@@ -14,9 +14,17 @@ HARNESS = r"""
 #include <thread>
 #include <vector>
 #include "core/hle/service/service_trace.h"
+#include "core/hle/service/service_interface_name.h"
 #include "core/hle/service/nifm/request_state.h"
 
+namespace First { struct IRequest {}; }
+namespace Second { struct IRequest {}; }
+
 int main() {
+    constexpr auto first_interface = Service::ServiceInterfaceName<First::IRequest>();
+    constexpr auto second_interface = Service::ServiceInterfaceName<Second::IRequest>();
+    static_assert(first_interface == "First::IRequest");
+    static_assert(second_interface == "Second::IRequest");
     Service::ServiceTrace disabled{false};
     assert(!disabled.RecordCall("acc:u0", false, 0, 0, false));
     assert(disabled.RecordMissing("acc:u0", false, 99));
@@ -46,6 +54,12 @@ int main() {
     assert(trace.RecordCall("acc:u0", false, 100, std::nullopt, true));
     assert(!trace.RecordCall("acc:u0", false, 100, std::nullopt, true));
     assert(trace.RecordCall("acc:u0", false, 100, std::nullopt, false));
+    assert(trace.RecordCall("IRequest", false, 0, 0, false, first_interface));
+    assert(trace.RecordCall("IRequest", false, 0, 0, false, second_interface));
+    assert(!trace.RecordCall("IRequest", false, 0, 0, false, first_interface));
+    assert(trace.RecordMissing("IRequest", false, 0, first_interface));
+    assert(trace.RecordMissing("IRequest", false, 0, second_interface));
+    assert(!trace.RecordMissing("IRequest", false, 0, first_interface));
     Service::ServiceTrace fresh_system{true};
     assert(fresh_system.RecordCall("acc:u0", false, 100, 0, false));
     assert(fresh_system.RecordMissing("acc:u0", false, 100));
@@ -121,6 +135,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(service.count("TraceRequest(ctx, command);"), 4)
         self.assertIn("IPC::ResultNotSupported", service)
         self.assertIn("NXBOX_SERVICE_MISSING", service)
+        self.assertIn("interface_name{interface_name_}", service)
 
 
 if __name__ == "__main__":

@@ -18,25 +18,32 @@ public:
     explicit ServiceTrace(bool enabled_) : enabled{enabled_} {}
 
     bool RecordCall(std::string_view service, bool tipc, std::uint32_t command,
-                    std::optional<std::uint32_t> result, bool deferred) {
+                    std::optional<std::uint32_t> result, bool deferred,
+                    std::string_view interface_name = {}) {
         if (!enabled) {
             return false;
         }
         const std::scoped_lock guard{mutex};
-        return calls.emplace(std::string{service}, tipc, command, result, deferred).second;
+        return calls
+            .emplace(std::string{service}, std::string{interface_name}, tipc, command, result,
+                     deferred)
+            .second;
     }
 
-    bool RecordMissing(std::string_view service, bool tipc, std::uint32_t command) {
+    bool RecordMissing(std::string_view service, bool tipc, std::uint32_t command,
+                       std::string_view interface_name = {}) {
         const std::scoped_lock guard{mutex};
-        return missing.emplace(std::string{service}, tipc, command).second;
+        return missing.emplace(std::string{service}, std::string{interface_name}, tipc, command)
+            .second;
     }
 
 private:
     const bool enabled;
     std::mutex mutex;
-    std::set<std::tuple<std::string, bool, std::uint32_t, std::optional<std::uint32_t>, bool>>
+    std::set<std::tuple<std::string, std::string, bool, std::uint32_t, std::optional<std::uint32_t>,
+                        bool>>
         calls;
-    std::set<std::tuple<std::string, bool, std::uint32_t>> missing;
+    std::set<std::tuple<std::string, std::string, bool, std::uint32_t>> missing;
 };
 
 } // namespace Service

@@ -264,7 +264,7 @@ def render(commands):
         "",
         "## Runtime measurement",
         "",
-        "Set `NXBOX_SERVICE_TRACE=1` before launching NXbox. On Xbox, place that line in `LocalState/nxbox_env.txt`; the existing frontend environment loader applies it. Ensure `LocalState/log_filter.txt` includes `Service:Info` (for example `*:Info Service:Info`) so INFO trace lines are retained. Service logs emit NXBOX_SERVICE_TRACE service=... protocol=CMIF/TIPC cmd=... result=0x... once per distinct service/protocol/command/result in the emulated System lifetime. Deferred or absent replies are marked explicitly, never decoded from request arguments. NXBOX_SERVICE_MISSING warns once per service/protocol/command even with tracing disabled; warnings include whether auto-stubbing was enabled. Existing auto-stub policy is retained and clearly labeled, so disable it for semantic validation. Trace output contains identifiers/results only, not guest buffers, tokens or account data. Use fresh System runs per title; compare independent runs for usage priority. Run `python3 tests/port/test_t16_service_coverage.py --trace-log /tmp/run1.log --trace-log /tmp/run2.log` to rank commands by independent run-log presence, with missing-run and result counts. Each input must represent one run; duplicate paths are deduplicated. Empty output means no trace evidence, not complete compatibility. No console usage ranking is claimed from static counts.",
+        "Set `NXBOX_SERVICE_TRACE=1` before launching NXbox. On Xbox, place that line in `LocalState/nxbox_env.txt`; the existing frontend environment loader applies it. Ensure `LocalState/log_filter.txt` includes `Service:Info` (for example `*:Info Service:Info`) so INFO trace lines are retained. Service logs emit NXBOX_SERVICE_TRACE service=... protocol=CMIF/TIPC cmd=... result=0x... once per distinct service/interface/protocol/command/result in the emulated System lifetime. Deferred or absent replies are marked explicitly, never decoded from request arguments. NXBOX_SERVICE_MISSING warns once per service/interface/protocol/command even with tracing disabled; warnings include whether auto-stubbing was enabled. Existing auto-stub policy is retained and clearly labeled, so disable it for semantic validation. The interface field uses the fully qualified C++ service type without RTTI; IRequest and IStorage in different namespaces do not suppress each other. Trace output contains identifiers/results only, not guest buffers, tokens or account data. Use fresh System runs per title; compare independent runs for usage priority. Run `python3 tests/port/test_t16_service_coverage.py --trace-log /tmp/run1.log --trace-log /tmp/run2.log` to rank commands by independent run-log presence, with missing-run and result counts. Each input must represent one run; duplicate paths are deduplicated. Empty output means no trace evidence, not complete compatibility. No console usage ranking is claimed from static counts.",
         "",
         "## Validation and next console checks",
         "",
@@ -340,7 +340,8 @@ def rank_trace_runs(paths):
             missing = MISSING_LINE.search(line)
             if trace or missing:
                 match = trace or missing
-                key = (match[1], match[2], int(match[3]))
+                interface = re.search(r"\binterface=(\S+)", line)
+                key = (match[1], interface[1] if interface else "", match[2], int(match[3]))
                 entry = observations[key]
                 entry["runs"].add(str(path))
                 if missing:
@@ -350,13 +351,14 @@ def rank_trace_runs(paths):
     return [
         {
             "service": service,
+            "interface": interface,
             "protocol": protocol,
             "command": command,
             "runs": len(value["runs"]),
             "missing_runs": len(value["missing_runs"]),
             "results": sorted(value["results"]),
         }
-        for (service, protocol, command), value in sorted(
+        for (service, interface, protocol, command), value in sorted(
             observations.items(),
             key=lambda item: (-len(item[1]["missing_runs"]), -len(item[1]["runs"]), item[0]),
         )
@@ -444,6 +446,21 @@ class CoverageTests(unittest.TestCase):
             self.assertEqual(rows[0]["missing_runs"], 1)
             self.assertEqual(rows[0]["results"], ["0x00000000", "0x00000001"])
             self.assertEqual(rows[1]["protocol"], "TIPC")
+
+    def test_trace_ranking_disambiguates_reused_interface_names(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory(dir="/tmp", prefix="nxbox-t16-trace-") as directory:
+            path = Path(directory) / "interfaces.log"
+            path.write_text(
+                "NXBOX_SERVICE_TRACE service=IRequest protocol=CMIF cmd=0 result=0x00000000 interface=Service::NIFM::IRequest\nNXBOX_SERVICE_TRACE service=IRequest protocol=CMIF cmd=0 result=0x00000000 interface=Service::FGM::IRequest\n"
+            )
+            rows = rank_trace_runs([path])
+            self.assertEqual(len(rows), 2)
+            self.assertEqual(
+                {row["interface"] for row in rows},
+                {"Service::NIFM::IRequest", "Service::FGM::IRequest"},
+            )
 
     def test_unrecognized_initializer_fails(self):
         with self.assertRaisesRegex(ValueError, "Unsupported table"):

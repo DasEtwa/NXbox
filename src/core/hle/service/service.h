@@ -11,6 +11,7 @@
 #include "common/container/unordered_map.h"
 #include "common/common_types.h"
 #include "core/hle/service/hle_ipc.h"
+#include "core/hle/service/service_interface_name.h"
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // Namespace Service
@@ -93,7 +94,8 @@ private:
                            HLERequestContext& ctx);
 
     explicit ServiceFrameworkBase(Core::System& system_, const char* service_name_,
-                                  u32 max_sessions_, InvokerFn* handler_invoker_);
+                                  u32 max_sessions_, InvokerFn* handler_invoker_,
+                                  std::string_view interface_name_);
     ~ServiceFrameworkBase() override;
 
     void RegisterHandlersBase(const FunctionInfoBase* functions, std::size_t n);
@@ -102,6 +104,7 @@ private:
     void TraceRequest(HLERequestContext& ctx, u32 command);
 
     std::shared_ptr<ServiceTrace> service_trace;
+    const std::string_view interface_name;
 
 protected:
     ::Common::unordered_map<u32, FunctionInfoBase> handlers;
@@ -165,7 +168,7 @@ protected:
      * same time.
      */
     explicit ServiceFramework(Core::System& system_, const char* service_name_, u32 max_sessions_ = ServerSessionCountMax)
-        : ServiceFrameworkBase(system_, service_name_, max_sessions_, Invoker) {}
+        : ServiceFrameworkBase(system_, service_name_, max_sessions_, Invoker, ServiceInterfaceName<Self>()) {}
 
     /// Registers handlers in the service.
     template <typename T = Self, std::size_t N>
