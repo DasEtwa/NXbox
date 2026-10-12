@@ -2,10 +2,22 @@
 #include <algorithm>
 #include <cstring>
 #include <stdexcept>
+#include <fmt/format.h>
 #include "common/alignment.h"
 #include "video_core/renderer_d3d12/d3d12_buffer_cache.h"
+#include "video_core/renderer_d3d12/d3d12_footprint.h"
 
 namespace D3D12 {
+namespace {
+void InvalidRange(u32 kind, const char* label, u64 offset, u64 size, u64 width) {
+    static std::array<std::atomic_flag, 8> reported{};
+    if (!reported[kind].test_and_set())
+        Diagnostic(fmt::format(
+            "D3D12 {} rejected offset={} size={} resource_bytes={}; substituting zero/skip", label,
+            offset, size, width));
+}
+} // namespace
+
 Buffer::Buffer(BufferCacheRuntime&, VideoCommon::NullBufferParams params) : BufferBase{params} {}
 Buffer::Buffer(BufferCacheRuntime& runtime, VAddr address, u64 size, bool)
     : BufferBase{address, size}, context{&runtime.context},
@@ -25,16 +37,44 @@ void BufferCacheRuntime::TickFrame(Common::SlotVector<Buffer>& buffers) {
 }
 void BufferCacheRuntime::CopyBuffer(ResourcePtr dst, ResourcePtr src,
                                     std::span<const VideoCommon::BufferCopy> copies, bool, bool) {
-    if (dst == src)
-        throw std::runtime_error("D3D12 overlapping buffer copy requires scratch");
-    context.Transition(src, D3D12_RESOURCE_STATE_COPY_SOURCE);
-    context.Transition(dst, D3D12_RESOURCE_STATE_COPY_DEST);
+    if (!dst || !src) {
+        InvalidRange(7, "null buffer copy", 0, 0, 0);
+        return;
+    }
     const auto src_size = src->handle->GetDesc().Width;
     const auto dst_size = dst->handle->GetDesc().Width;
     for (const auto& copy : copies) {
-        if (copy.src_offset > src_size || copy.size > src_size - copy.src_offset ||
-            copy.dst_offset > dst_size || copy.size > dst_size - copy.dst_offset)
-            throw std::out_of_range("D3D12 buffer copy bounds");
+        if (copy.src_offset > src_size || copy.size > src_size - copy.src_offset) {
+            InvalidRange(0, "buffer copy source", copy.src_offset, copy.size, src_size);
+            return;
+        }
+        if (copy.dst_offset > dst_size || copy.size > dst_size - copy.dst_offset) {
+            InvalidRange(1, "buffer copy destination", copy.dst_offset, copy.size, dst_size);
+            return;
+        }
+    }
+    if (dst == src) {
+        // Snapshot every source range before changing any destination range.
+        size_t scratch_size{};
+        for (const auto& copy : copies)
+            scratch_size = CheckedAdd(scratch_size, copy.size);
+        if (!scratch_size)
+            return;
+        auto scratch = context.CreateBuffer(scratch_size, D3D12_HEAP_TYPE_DEFAULT);
+        std::vector<VideoCommon::BufferCopy> reads, writes;
+        u64 cursor{};
+        for (const auto& copy : copies) {
+            reads.push_back({copy.src_offset, cursor, copy.size});
+            writes.push_back({cursor, copy.dst_offset, copy.size});
+            cursor += copy.size;
+        }
+        CopyBuffer(scratch, src, reads, false);
+        CopyBuffer(dst, scratch, writes, false);
+        return;
+    }
+    context.Transition(src, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    context.Transition(dst, D3D12_RESOURCE_STATE_COPY_DEST);
+    for (const auto& copy : copies) {
         context.MarkWork("upload/copy");
         context.Commands()->CopyBufferRegion(dst->handle.Get(), copy.dst_offset, src->handle.Get(),
                                              copy.src_offset, copy.size);
@@ -42,8 +82,11 @@ void BufferCacheRuntime::CopyBuffer(ResourcePtr dst, ResourcePtr src,
 }
 void BufferCacheRuntime::ClearBuffer(ResourcePtr dst, u32 offset, size_t size, u32 value) {
     // Copy-based fill also handles buffers without UAV flags. Chunk large clears.
-    if ((size | offset) & 3)
-        throw std::invalid_argument("D3D12 unaligned buffer clear");
+    const auto width = dst ? dst->handle->GetDesc().Width : 0;
+    if (!dst || ((size | offset) & 3) || offset > width || size > width - offset) {
+        InvalidRange(2, "unaligned or out-of-bounds buffer clear", offset, size, width);
+        return;
+    }
     while (size) {
         const size_t count = std::min(size, size_t{1 << 20});
         auto staging = upload.Request(count);
@@ -100,8 +143,17 @@ void BufferCacheRuntime::BindQuadIndexBuffer(Maxwell::PrimitiveTopology topology
 }
 void BufferCacheRuntime::BindVertexBuffer(u32 index, ResourcePtr buffer, u32 offset, u32 size,
                                           u32 stride) {
-    if (index < GeometryBindings::MaxVertexBuffers)
-        bindings.geometry.vertex[index] = {std::move(buffer), offset, size, stride};
+    if (index >= GeometryBindings::MaxVertexBuffers)
+        return;
+    const auto width = buffer ? buffer->handle->GetDesc().Width : 0;
+    if (offset > width || size > width - offset) {
+        InvalidRange(3, "vertex binding", offset, size, width);
+        bindings.geometry.vertex[index] = {};
+        return;
+    }
+    // Size is the inclusive Maxwell limit minus start supplied by the shared cache.
+    // Preserve stride zero (constant attributes) and the synchronized guest extent.
+    bindings.geometry.vertex[index] = {std::move(buffer), offset, size, stride};
 }
 void BufferCacheRuntime::BindVertexBuffers(VideoCommon::HostBindings<Buffer>& host) {
     for (size_t i = 0; i < host.buffers.size(); ++i)
@@ -110,19 +162,61 @@ void BufferCacheRuntime::BindVertexBuffers(VideoCommon::HostBindings<Buffer>& ho
                          static_cast<u32>(host.strides[i]));
 }
 std::span<u8> BufferCacheRuntime::BindMappedUniformBuffer(size_t stage, u32, u32 size) {
-    // CBV views are 256-byte multiples: reserve the rounded size, expose the requested one.
-    auto staging = upload.Request(Common::AlignUp<size_t>(size, 256));
+    // Reserve the entire legal CBV range and initialize every byte beyond the guest upload.
+    if (size > 65536) {
+        InvalidRange(4, "mapped uniform exceeds Maxwell 64 KiB limit", 0, size, 65536);
+        // Keep the caller's memcpy in bounds while exposing only legal bytes to D3D12.
+        auto rejected = upload.Request(size);
+        std::fill(rejected.mapped_span.begin(), rejected.mapped_span.end(), u8{0});
+        bindings.stages[stage].uniform.push_back({nullptr, 0, 0});
+        return rejected.mapped_span;
+    }
+    auto staging = upload.Request(65536);
+    std::fill(staging.mapped_span.begin(), staging.mapped_span.end(), u8{0});
     bindings.stages[stage].uniform.push_back(
-        {staging.buffer, static_cast<u32>(staging.offset), size});
+        {staging.buffer, static_cast<u32>(staging.offset), 65536});
     return staging.mapped_span.first(size);
 }
 void BufferCacheRuntime::BindUniformBuffer(const Buffer& buffer, u32 offset, u32 size) {
-    bindings.stages[bindings.current_stage].uniform.push_back({buffer.Handle(), offset, size});
+    auto resource = buffer.Handle();
+    const auto width = resource ? resource->handle->GetDesc().Width : 0;
+    if (!resource || !size) {
+        bindings.stages[bindings.current_stage].uniform.push_back({nullptr, 0, 0});
+        return;
+    }
+    if (size > 65536 || offset > width || size > width - offset) {
+        InvalidRange(5, "uniform binding exceeds synchronized buffer range or 64 KiB", offset, size,
+                     width);
+        bindings.stages[bindings.current_stage].uniform.push_back({nullptr, 0, 0});
+        return;
+    }
+    // A copied CBV owns its padding; rounding a direct view must never expose unrelated bytes.
+    const auto padded = Common::AlignUp<u32>(size, 256);
+    if ((offset & 255) || size != padded || padded > width - offset) {
+        auto staging = upload.Request(65536);
+        std::fill(staging.mapped_span.begin(), staging.mapped_span.end(), u8{0});
+        auto target = context.CreateBuffer(65536, D3D12_HEAP_TYPE_DEFAULT);
+        const VideoCommon::BufferCopy zero{staging.offset, 0, 65536};
+        CopyBuffer(target, staging.buffer, std::span{&zero, 1}, true);
+        const VideoCommon::BufferCopy data{offset, 0, size};
+        CopyBuffer(target, resource, std::span{&data, 1}, false);
+        bindings.stages[bindings.current_stage].uniform.push_back({std::move(target), 0, 65536});
+        return;
+    }
+    bindings.stages[bindings.current_stage].uniform.push_back({std::move(resource), offset, size});
 }
 void BufferCacheRuntime::BindStorageBuffer(const Buffer& buffer, u32 offset, u32 size,
                                            bool is_written) {
+    auto resource = buffer.Handle();
+    const auto width = resource ? resource->handle->GetDesc().Width : 0;
+    if (offset > width || size > width - offset || (offset & 3)) {
+        InvalidRange(6, "raw storage binding requires an in-bounds word-aligned range", offset,
+                     size, width);
+        bindings.stages[bindings.current_stage].storage.push_back({nullptr, 0, 0, is_written});
+        return;
+    }
     bindings.stages[bindings.current_stage].storage.push_back(
-        {buffer.Handle(), offset, size, is_written});
+        {std::move(resource), offset, size, is_written});
 }
 void BufferCacheRuntime::BindTextureBuffer(Buffer& buffer, u32 offset, u32 size,
                                            VideoCore::Surface::PixelFormat format) {

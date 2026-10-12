@@ -6,11 +6,13 @@
 #include <mutex>
 #include <set>
 #include <stdexcept>
+#include <unordered_map>
 #include <d3d12sdklayers.h>
 #include <fmt/format.h>
 #include <windows.h>
 #include "eden_uwp/renderer_boundary.h"
 #ifdef NXBOX_UWP
+#include <winrt/Windows.System.h>
 #include "eden_uwp/crash_logger.h"
 #include "eden_uwp/diagnostic.h"
 #include "eden_uwp/thread_profile.h"
@@ -18,6 +20,7 @@
 #include "common/logging.h"
 #include "video_core/renderer_d3d12/d3d12_completion.h"
 #include "video_core/renderer_d3d12/d3d12_footprint.h"
+#include "video_core/renderer_d3d12/d3d12_ring_allocator.h"
 
 namespace D3D12 {
 bool BisectEnabled(const char* name) noexcept {
@@ -541,26 +544,148 @@ void Context::AfterCompletion(std::function<void()> callback) {
     Commands();
     completion.push_back(std::move(callback));
 }
+u64 NativeBufferMemoryTarget(u64 cache) noexcept {
+#ifdef NXBOX_UWP
+    try {
+        using winrt::Windows::System::MemoryManager;
+        return BufferMemoryTarget(MemoryManager::AppMemoryUsageLimit(),
+                                  MemoryManager::AppMemoryUsage(), cache);
+    } catch (...) {
+        // Keep allocation available if the platform telemetry is temporarily unavailable.
+    }
+#endif
+    MEMORYSTATUSEX memory{};
+    memory.dwLength = sizeof(memory);
+    if (GlobalMemoryStatusEx(&memory))
+        return BufferMemoryTarget(memory.ullTotalPhys, memory.ullTotalPhys - memory.ullAvailPhys,
+                                  cache);
+    return 1ULL << 30;
+}
+namespace {
+// Each placed resource owns its page lease until every fence/binding reference is gone.
+// Empty pages are evicted oldest-first under pressure; populated pages never move.
+struct BufferHeapPage {
+    static constexpr u64 Size = 16ULL << 20;
+    ComPtr<ID3D12Heap> handle;
+    D3D12_HEAP_TYPE type;
+    BufferHeapSlots slots{static_cast<u32>(Size / BufferHeapSlots::Alignment)};
+    std::shared_ptr<MemoryBudget> budget;
+    std::mutex mutex;
+    ~BufferHeapPage() {
+        if (handle)
+            budget->used -= Size;
+    }
+};
+struct BufferHeapPool {
+    std::vector<std::shared_ptr<BufferHeapPage>> pages;
+    void Trim() {
+        std::erase_if(pages, [](const auto& page) {
+            const std::scoped_lock lock{page->mutex};
+            return page->slots.Used() == 0;
+        });
+    }
+    ResourcePtr Allocate(ID3D12Device* device, const std::shared_ptr<MemoryBudget>& budget,
+                         const D3D12_RESOURCE_DESC& desc, D3D12_HEAP_TYPE type,
+                         D3D12_RESOURCE_STATES state,
+                         const std::shared_ptr<BufferHeapPool>& owner) {
+        const auto allocation = device->GetResourceAllocationInfo(0, 1, &desc);
+        if (allocation.SizeInBytes == UINT64_MAX || allocation.SizeInBytes > BufferHeapPage::Size)
+            return {};
+        auto pending = std::make_unique<Resource>();
+        const auto count = static_cast<u32>(allocation.SizeInBytes / BufferHeapSlots::Alignment);
+        std::shared_ptr<BufferHeapPage> page;
+        std::optional<u32> start;
+        for (const auto& candidate : pages) {
+            if (candidate->type != type)
+                continue;
+            const std::scoped_lock lock{candidate->mutex};
+            start = candidate->slots.Allocate(count);
+            if (start) {
+                page = candidate;
+                break;
+            }
+        }
+        if (!page) {
+            page = std::make_shared<BufferHeapPage>();
+            page->budget = budget;
+            page->type = type;
+            D3D12_HEAP_DESC heap{};
+            heap.SizeInBytes = BufferHeapPage::Size;
+            heap.Alignment = D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
+            heap.Properties.Type = type;
+            heap.Properties.CreationNodeMask = heap.Properties.VisibleNodeMask = 1;
+            heap.Flags = D3D12_HEAP_FLAG_ALLOW_ONLY_BUFFERS;
+            Check(device->CreateHeap(&heap, IID_PPV_ARGS(&page->handle)), "Create buffer heap",
+                  device);
+            budget->used += BufferHeapPage::Size;
+            pages.push_back(page);
+            start = page->slots.Allocate(count);
+        }
+        ResourcePtr resource{
+            pending.release(), [page, start = *start, count, owner](Resource* value) {
+                // The owner capture preserves the pool while a fence still holds this lease.
+                (void)owner;
+                delete value; // Release the resource before recycling its heap range.
+                const std::scoped_lock lock{page->mutex};
+                page->slots.Release(start, count);
+            }};
+        Check(device->CreatePlacedResource(page->handle.Get(),
+                                           u64{*start} * BufferHeapSlots::Alignment, &desc, state,
+                                           nullptr, IID_PPV_ARGS(&resource->handle)),
+              "Create placed buffer", device);
+        resource->heap = type;
+        resource->state = state;
+        resource->allocation_size = allocation.SizeInBytes;
+        if (type != D3D12_HEAP_TYPE_DEFAULT) {
+            void* mapped{};
+            const D3D12_RANGE range{
+                0, type == D3D12_HEAP_TYPE_READBACK ? static_cast<SIZE_T>(desc.Width) : 0};
+            Check(resource->handle->Map(0, &range, &mapped), "Map placed buffer", device);
+            resource->mapped = {static_cast<u8*>(mapped), static_cast<size_t>(desc.Width)};
+        }
+        return resource;
+    }
+};
+std::shared_ptr<BufferHeapPool> BufferPool(const std::shared_ptr<MemoryBudget>& budget) {
+    static std::mutex mutex;
+    static std::unordered_map<MemoryBudget*, std::weak_ptr<BufferHeapPool>> pools;
+    const std::scoped_lock lock{mutex};
+    std::erase_if(pools, [](const auto& entry) { return entry.second.expired(); });
+    auto& entry = pools[budget.get()];
+    auto pool = entry.lock();
+    if (!pool) {
+        pool = std::make_shared<BufferHeapPool>();
+        entry = pool;
+    }
+    return pool;
+}
+} // namespace
 ResourcePtr Context::CreateResource(const D3D12_RESOURCE_DESC& desc, D3D12_HEAP_TYPE heap,
                                     D3D12_RESOURCE_STATES state) {
     Collect();
     const auto allocation = device->GetResourceAllocationInfo(0, 1, &desc);
-    if (allocation.SizeInBytes == UINT64_MAX || allocation.SizeInBytes > MemoryBudget::Limit)
-        throw std::runtime_error("D3D12 resource allocation exceeds 512 MiB budget");
-    if (allocation.SizeInBytes > MemoryBudget::Limit - budget->used) {
-        // In-flight leases can outlive cache eviction. Retire them before rejecting
-        // an allocation that fits the device budget once pending work completes.
+    if (allocation.SizeInBytes == UINT64_MAX)
+        throw std::runtime_error("D3D12 invalid resource allocation description");
+    // This is a pressure target, never a correctness limit. Cache owners may still
+    // hold live resources after fence retirement; only the device can reject them.
+    const auto target = NativeBufferMemoryTarget(budget->used);
+    if (budget->used >= target || allocation.SizeInBytes > target - budget->used) {
         Finish();
-        if (allocation.SizeInBytes > MemoryBudget::Limit - budget->used)
-            throw std::runtime_error("D3D12 cache allocation exceeds 512 MiB budget");
+        BufferPool(budget)->Trim();
     }
     auto resource = std::make_shared<Resource>();
     D3D12_HEAP_PROPERTIES properties{};
     properties.Type = heap;
     properties.CreationNodeMask = properties.VisibleNodeMask = 1;
-    Check(device->CreateCommittedResource(&properties, D3D12_HEAP_FLAG_NONE, &desc, state, nullptr,
-                                          IID_PPV_ARGS(&resource->handle)),
-          "CreateCommittedResource", device.Get());
+    auto result = device->CreateCommittedResource(&properties, D3D12_HEAP_FLAG_NONE, &desc, state,
+                                                  nullptr, IID_PPV_ARGS(&resource->handle));
+    if (result == E_OUTOFMEMORY) {
+        Finish();
+        BufferPool(budget)->Trim();
+        result = device->CreateCommittedResource(&properties, D3D12_HEAP_FLAG_NONE, &desc, state,
+                                                 nullptr, IID_PPV_ARGS(&resource->handle));
+    }
+    Check(result, "CreateCommittedResource after fence retirement", device.Get());
     resource->heap = heap;
     resource->state = state;
     resource->allocation_size = allocation.SizeInBytes;
@@ -578,7 +703,8 @@ ResourcePtr Context::CreateResource(const D3D12_RESOURCE_DESC& desc, D3D12_HEAP_
 ResourcePtr Context::CreateBuffer(u64 size, D3D12_HEAP_TYPE heap) {
     D3D12_RESOURCE_DESC desc{};
     desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    desc.Width = std::max(u64{1}, size);
+    // CBVs need a complete final 256-byte unit even for a short guest range.
+    desc.Width = Align(std::max(u64{1}, size), 256);
     desc.Height = 1;
     desc.DepthOrArraySize = 1;
     desc.MipLevels = 1;
@@ -590,6 +716,27 @@ ResourcePtr Context::CreateBuffer(u64 size, D3D12_HEAP_TYPE heap) {
     const auto state = heap == D3D12_HEAP_TYPE_UPLOAD     ? D3D12_RESOURCE_STATE_GENERIC_READ
                        : heap == D3D12_HEAP_TYPE_READBACK ? D3D12_RESOURCE_STATE_COPY_DEST
                                                           : D3D12_RESOURCE_STATE_COMMON;
+    auto pool = BufferPool(budget);
+    Collect();
+    if (budget->used >= NativeBufferMemoryTarget(budget->used)) {
+        Finish();
+        pool->Trim();
+    }
+    try {
+        if (auto resource = pool->Allocate(device.Get(), budget, desc, heap, state, pool)) {
+            D3D12_RESOURCE_BARRIER barrier{};
+            barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_ALIASING;
+            barrier.Aliasing.pResourceAfter = resource->handle.Get();
+            Commands()->ResourceBarrier(1, &barrier);
+            Retain(resource);
+            return resource;
+        }
+    } catch (const std::exception& error) {
+        Diagnostic(fmt::format("D3D12 buffer allocation retry reason={}", error.what()));
+        Finish();
+        pool->Trim();
+        // A committed allocation can succeed when a larger heap cannot fit.
+    }
     return CreateResource(desc, heap, state);
 }
 void StagingRing::Collect() {
