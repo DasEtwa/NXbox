@@ -98,6 +98,7 @@ class AppletPolicyTests(unittest.TestCase):
         source = (ROOT / "src/core/hle/service/am/window_system.cpp").read_text()
         self.assertIn("ShouldRecoverGuestApplet(", source)
         self.assertIn("input.Push(m_system.Kernel(), storage);", source)
+        self.assertIn("applet->window_visible = false;", source)
         self.assertIn("applet->frontend && !applet->is_completed", source)
         self.assertIn("!m_system.IsShuttingDown()", source)
         self.assertIn("applet->display_layer_manager.SetWindowVisibility(false);", source)

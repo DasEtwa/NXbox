@@ -354,6 +354,10 @@ void WindowSystem::PruneTerminatedAppletsLocked() {
                 Service_AM,
                 "LLE applet exited without a response; recovering through HLE: applet_id={}",
                 applet->applet_id);
+            // Recovery has no guest surface. Keep it hidden across subsequent window updates
+            // while an asynchronous HLE callback is still pending.
+            applet->window_visible = false;
+            applet->display_layer_manager.SetWindowVisibility(false);
             auto& input = applet->caller_applet_broker->GetInData();
             std::shared_ptr<IStorage> pending;
             while (input.Pop(m_system.Kernel(), &pending).IsSuccess()) {
