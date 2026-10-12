@@ -139,6 +139,7 @@ private:
     std::vector<std::pair<ResourcePtr, D3D12_RESOURCE_STATES>> state_scratch;
     ComPtr<ID3D12CommandSignature> draw_signature;
     ComPtr<ID3D12CommandSignature> indexed_signature;
+    bool flushing{};
     bool draw_logged{};
     bool quad_logged{};
     bool image_uav_logged{};

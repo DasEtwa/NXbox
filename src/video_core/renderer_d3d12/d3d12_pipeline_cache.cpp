@@ -479,6 +479,7 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline() {
     } catch (const std::exception& error) {
         LOG_ERROR(Render, "D3D12 guest PSO failed: {}", error.what());
     }
+    guest_graphics.emplace(request, nullptr);
     return nullptr;
 }
 
@@ -519,6 +520,7 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() {
         return &pipeline;
     } catch (const std::exception& error) {
         LOG_ERROR(Render, "D3D12 guest compute translation/PSO failed: {}", error.what());
+        guest_compute.emplace(request, nullptr);
         return nullptr;
     }
 }

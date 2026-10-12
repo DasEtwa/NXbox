@@ -9,6 +9,7 @@
 #include <optional>
 #include "common/alignment.h"
 #include "common/logging.h"
+#include "common/scope_exit.h"
 #include "video_core/control/channel_state.h"
 #include "video_core/engines/kepler_compute.h"
 #include "video_core/engines/maxwell_3d.h"
@@ -1091,6 +1092,14 @@ void RasterizerD3D12::TiledCacheBarrier() {
     FragmentBarrier();
 }
 void RasterizerD3D12::FlushCommands() {
+    // QueryCache::CommitAsyncFlushes calls SyncOperation while committing reports.
+    // A nested fence must drain queued copies without recursively committing caches.
+    if (flushing) {
+        context.Finish();
+        return;
+    }
+    flushing = true;
+    SCOPE_EXIT { flushing = false; };
     query_cache.NotifyWFI();
     query_cache.CommitAsyncFlushes();
     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
