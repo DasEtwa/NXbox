@@ -110,6 +110,21 @@ nx::Identity ParseIdentity(const json::JsonObject& object) {
     return value;
 }
 
+void RemoveAccount(const nx::Identity* rejected = nullptr) {
+    std::scoped_lock lock(account_mutex);
+    if (rejected && !nx::SameSession(account, *rejected))
+        return;
+    credentials::PasswordVault vault;
+    try {
+        vault.Remove(vault.Retrieve(AccountResource, L"session"));
+    } catch (const winrt::hresult_error& error) {
+        if (error.code() != HRESULT_FROM_WIN32(ERROR_NOT_FOUND))
+            throw;
+    }
+    account = {};
+    nx::SetIdentity({});
+}
+
 void PublishPresence(const nx::Presence& presence) {
     const auto identity = LinkedAccount();
     if (!nx::IsEnabled() || presence.profile_id != identity.profile_id)
@@ -133,7 +148,7 @@ void PublishPresence(const nx::Presence& presence) {
     try {
         const auto response = Send(request);
         if (response && static_cast<unsigned>(response->StatusCode()) == 401)
-            SignOut();
+            RemoveAccount(&identity);
     } catch (...) {
     }
 }
@@ -169,7 +184,7 @@ void PollSocial(std::stop_token stop) {
                         request.body = "{}";
                         const auto response = Send(request);
                         if (response && static_cast<unsigned>(response->StatusCode()) == 401)
-                            SignOut();
+                            RemoveAccount(&identity);
                     }
                 }
             } catch (...) {
@@ -187,9 +202,9 @@ std::string CurrentProfileId() {
 }
 
 void Initialize(const std::filesystem::path& local_state) {
+    std::scoped_lock lock(account_mutex);
     Service::Account::ProfileManager profiles;
     {
-        std::scoped_lock lock(account_mutex);
         profile_id =
             profiles.GetUser(static_cast<std::size_t>(Settings::values.current_user.GetValue()))
                 .value_or(Common::UUID::MakeDefault())
@@ -234,10 +249,7 @@ void Initialize(const std::filesystem::path& local_state) {
             restored = {};
     } catch (...) {
     }
-    {
-        std::scoped_lock lock(account_mutex);
-        account = restored;
-    }
+    account = restored;
     nx::SetIdentity(std::move(restored), Provider());
     if (!social_worker.joinable())
         social_worker = std::jthread(PollSocial);
@@ -260,6 +272,7 @@ bool SaveAccount(const nx::Identity& identity) {
     if (identity.pid == 0 || identity.nex_token.empty() || identity.profile_id.empty())
         return false;
     try {
+        std::scoped_lock lock(account_mutex);
         json::JsonObject data, root;
         data.SetNamedValue(L"pid",
                            json::JsonValue::CreateNumberValue(static_cast<double>(identity.pid)));
@@ -274,10 +287,7 @@ bool SaveAccount(const nx::Identity& identity) {
                                               winrt::to_hstring(identity.profile_id)));
         credentials::PasswordVault vault;
         vault.Add(credentials::PasswordCredential(AccountResource, L"session", root.Stringify()));
-        {
-            std::scoped_lock lock(account_mutex);
-            account = identity;
-        }
+        account = identity;
         nx::SetIdentity(identity, Provider());
         return true;
     } catch (...) {
@@ -286,19 +296,7 @@ bool SaveAccount(const nx::Identity& identity) {
 }
 
 void SignOut() {
-    // Remove durable credentials before reporting success; never hide a failed vault deletion.
-    credentials::PasswordVault vault;
-    try {
-        vault.Remove(vault.Retrieve(AccountResource, L"session"));
-    } catch (const winrt::hresult_error& error) {
-        if (error.code() != HRESULT_FROM_WIN32(ERROR_NOT_FOUND))
-            throw;
-    }
-    {
-        std::scoped_lock lock(account_mutex);
-        account = {};
-    }
-    nx::SetIdentity({});
+    RemoveAccount();
 }
 
 nx::Identity LinkedAccount() {
@@ -340,7 +338,7 @@ bool RefreshFriends() {
         if (!response)
             return false;
         if (static_cast<unsigned>(response->StatusCode()) == 401) {
-            SignOut();
+            RemoveAccount(&identity);
             return false;
         }
         if (static_cast<unsigned>(response->StatusCode()) != 200)
@@ -382,8 +380,7 @@ bool RefreshFriends() {
             friends.push_back(std::move(friend_entry));
         }
         std::scoped_lock lock(nx::runtime.mutex);
-        if (nx::runtime.config.enabled && nx::runtime.identity.pid == identity.pid &&
-            nx::runtime.identity.profile_id == identity.profile_id)
+        if (nx::runtime.config.enabled && nx::SameSession(nx::runtime.identity, identity))
             nx::runtime.friends = std::move(friends);
         return true;
     } catch (...) {

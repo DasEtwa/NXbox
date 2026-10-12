@@ -70,6 +70,11 @@ struct Identity {
     std::string profile_id;
 };
 
+inline bool SameSession(const Identity& current, const Identity& expected) {
+    return current.pid != 0 && !current.nex_token.empty() && current.pid == expected.pid &&
+           current.profile_id == expected.profile_id && current.nex_token == expected.nex_token;
+}
+
 struct HttpRequest {
     std::string method;
     std::string url;

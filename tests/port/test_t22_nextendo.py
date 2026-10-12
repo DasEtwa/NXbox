@@ -13,6 +13,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = r"""
 
+
 #include "core/hle/service/nextendo/auth.h"
 #include "core/hle/service/nextendo/crypto.h"
 #include "core/hle/service/nextendo/friends.h"
@@ -282,6 +283,19 @@ int main(int argc, char **argv) {
     SetIdentity({});
     assert(GetIdentity("profile-a").pid == 0);
   }
+  if (mode == "session-race") {
+    assert(SameSession(identity, identity));
+    assert(!SameSession(Identity{}, Identity{}));
+    auto replacement = identity;
+    replacement.nex_token = "mock-new-session";
+    assert(!SameSession(replacement, identity));
+    replacement = identity;
+    replacement.profile_id = "profile-b";
+    assert(!SameSession(replacement, identity));
+    replacement = identity;
+    replacement.pid = 43;
+    assert(!SameSession(replacement, identity));
+  }
   if (mode == "social") {
     for (auto path : {"/api/friends", "/api/online-status", "/api/presence",
                       "/api/nex-session"}) {
@@ -485,6 +499,9 @@ class NextendoTests(unittest.TestCase):
 
     def test_account_profile_isolation_and_mode_switch(self):
         self.run_case("runtime")
+
+    def test_late_rejection_cannot_invalidate_a_replacement_session(self):
+        self.run_case("session-race")
 
     def test_social_api_allowlist_presence_and_friend_wire_layout(self):
         self.run_case("social")
