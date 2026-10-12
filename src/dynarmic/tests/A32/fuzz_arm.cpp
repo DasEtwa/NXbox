@@ -10,6 +10,7 @@
 #include <array>
 #include <cstdio>
 #include <functional>
+#include <random>
 #include <tuple>
 #include <type_traits>
 #include <vector>
@@ -115,9 +116,6 @@ u32 GenRandomArmInst(u32 pc, bool is_last_inst) {
 
         // List of instructions not to test
         static constexpr std::array do_not_test{
-            // Translating load/stores
-            "arm_LDRBT", "arm_LDRBT", "arm_LDRHT", "arm_LDRHT", "arm_LDRSBT", "arm_LDRSBT", "arm_LDRSHT", "arm_LDRSHT", "arm_LDRT", "arm_LDRT",
-            "arm_STRBT", "arm_STRBT", "arm_STRHT", "arm_STRHT", "arm_STRT", "arm_STRT",
             // Exclusive load/stores
             "arm_LDREXB", "arm_LDREXD", "arm_LDREXH", "arm_LDREX", "arm_LDAEXB", "arm_LDAEXD", "arm_LDAEXH", "arm_LDAEX",
             "arm_STREXB", "arm_STREXD", "arm_STREXH", "arm_STREX", "arm_STLEXB", "arm_STLEXD", "arm_STLEXH", "arm_STLEX",
@@ -667,5 +665,51 @@ TEST_CASE("A32: Test thumb IT instruction", "[thumb]") {
 
         regs[15] = start_address;
         RunTestInstance(jit, uni, jit_env, uni_env, regs, ext_reg, instructions, cpsr, fpcr, pre_instructions + 1 + post_instructions);
+    }
+}
+
+TEST_CASE("A32: Unprivileged transfers differential", "[arm][unicorn][conformance]") {
+    ArmTestEnv jit_env{};
+    ArmTestEnv uni_env{};
+    Dynarmic::A32::Jit jit{GetUserConfig(jit_env)};
+    A32Unicorn<ArmTestEnv> uni{uni_env};
+    std::mt19937 random{0x1932};
+    const std::array<u32, 16> encodings{
+        0x04f12000, 0x06f12003,  // LDRBT immediate/register
+        0x04b12000, 0x06b12003,  // LDRT immediate/register
+        0x04e12000, 0x06e12003,  // STRBT immediate/register
+        0x04a12000, 0x06a12003,  // STRT immediate/register
+        0x00f120b0, 0x00b120b3,  // LDRHT immediate/register
+        0x00f120d0, 0x00b120d3,  // LDRSBT immediate/register
+        0x00f120f0, 0x00b120f3,  // LDRSHT immediate/register
+        0x00e120b0, 0x00a120b3,  // STRHT immediate/register
+    };
+
+    for (size_t form = 0; form < encodings.size(); ++form) {
+        for (size_t iteration = 0; iteration < 256; ++iteration) {
+            A32Unicorn<ArmTestEnv>::RegisterArray regs{};
+            A32Unicorn<ArmTestEnv>::ExtRegArray ext_regs{};
+            std::generate(regs.begin(), regs.end(), [&] { return random(); });
+            regs[1] = 0x10000 + (random() & 0xffc);
+            regs[3] = random() & 0xff;
+            regs[15] = 0;
+            // Exercise all condition codes except the unconditional extension space.
+            const u32 condition = static_cast<u32>(iteration % 15);
+            u32 instruction = encodings[form] | (condition << 28);
+            if (iteration & 1) {
+                instruction &= ~(1U << 23);  // Subtract the offset.
+            }
+            if ((form & 1) == 0) {
+                const u32 offset = random() & 0xff;
+                instruction |= form < 8 ? offset : ((offset & 0xf0) << 4) | (offset & 0xf);
+            } else if (form < 8) {
+                instruction |= (static_cast<u32>(iteration % 4) << 5) |
+                               (static_cast<u32>(iteration % 32) << 7);
+            }
+            const u32 cpsr = (random() & 0xf0000000) | 0x10;  // User mode.
+            INFO("form=" << form << " iteration=" << iteration << " instruction=" << instruction);
+            RunTestInstance(jit, uni, jit_env, uni_env, regs, ext_regs,
+                            {instruction}, cpsr, 0, 1);
+        }
     }
 }

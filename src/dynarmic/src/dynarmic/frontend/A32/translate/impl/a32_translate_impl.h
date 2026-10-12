@@ -205,14 +205,22 @@ struct TranslatorVisitor final {
     bool arm_YIELD();
 
     // Load/Store
-    bool arm_LDRBT();
-    bool arm_LDRHT();
-    bool arm_LDRSBT();
-    bool arm_LDRSHT();
-    bool arm_LDRT();
-    bool arm_STRBT();
-    bool arm_STRHT();
-    bool arm_STRT();
+    bool arm_LDRBT_imm(Cond cond, bool U, Reg n, Reg t, Imm<12> imm12);
+    bool arm_LDRBT_reg(Cond cond, bool U, Reg n, Reg t, Imm<5> imm5, ShiftType shift, Reg m);
+    bool arm_LDRHT_imm(Cond cond, bool U, Reg n, Reg t, Imm<4> imm8a, Imm<4> imm8b);
+    bool arm_LDRHT_reg(Cond cond, bool U, Reg n, Reg t, Reg m);
+    bool arm_LDRSBT_imm(Cond cond, bool U, Reg n, Reg t, Imm<4> imm8a, Imm<4> imm8b);
+    bool arm_LDRSBT_reg(Cond cond, bool U, Reg n, Reg t, Reg m);
+    bool arm_LDRSHT_imm(Cond cond, bool U, Reg n, Reg t, Imm<4> imm8a, Imm<4> imm8b);
+    bool arm_LDRSHT_reg(Cond cond, bool U, Reg n, Reg t, Reg m);
+    bool arm_LDRT_imm(Cond cond, bool U, Reg n, Reg t, Imm<12> imm12);
+    bool arm_LDRT_reg(Cond cond, bool U, Reg n, Reg t, Imm<5> imm5, ShiftType shift, Reg m);
+    bool arm_STRBT_imm(Cond cond, bool U, Reg n, Reg t, Imm<12> imm12);
+    bool arm_STRBT_reg(Cond cond, bool U, Reg n, Reg t, Imm<5> imm5, ShiftType shift, Reg m);
+    bool arm_STRHT_imm(Cond cond, bool U, Reg n, Reg t, Imm<4> imm8a, Imm<4> imm8b);
+    bool arm_STRHT_reg(Cond cond, bool U, Reg n, Reg t, Reg m);
+    bool arm_STRT_imm(Cond cond, bool U, Reg n, Reg t, Imm<12> imm12);
+    bool arm_STRT_reg(Cond cond, bool U, Reg n, Reg t, Imm<5> imm5, ShiftType shift, Reg m);
     bool arm_LDR_lit(Cond cond, bool U, Reg t, Imm<12> imm12);
     bool arm_LDR_imm(Cond cond, bool P, bool U, bool W, Reg n, Reg d, Imm<12> imm12);
     bool arm_LDR_reg(Cond cond, bool P, bool U, bool W, Reg n, Reg d, Imm<5> imm5, ShiftType shift, Reg m);

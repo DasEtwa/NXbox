@@ -1,0 +1,63 @@
+name: Dynarmic CPU conformance
+on:
+  workflow_dispatch:
+  push:
+    branches: [team/t19-cpu-conformance]
+    paths:
+      - "src/dynarmic/**"
+      - "tests/port/test_t19_*.py"
+      - ".github/workflows/dynarmic-tests.yml"
+permissions:
+  contents: read
+jobs:
+  differential:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+        with:
+          arch: x64
+      - name: Install build tools
+        run: python -m pip install cmake==3.31.6 ninja
+      - name: Install Linux prerequisites
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libboost-all-dev libssl-dev libasound2-dev libx11-dev libxext-dev libva-dev libvdpau-dev libdrm-dev libudev-dev nasm glslang-tools
+      - name: Build reference interpreter
+        shell: bash
+        run: |
+          git clone --depth 1 --branch 2.1.4 https://github.com/unicorn-engine/unicorn.git "$RUNNER_TEMP/unicorn"
+          cmake -S "$RUNNER_TEMP/unicorn" -B "$RUNNER_TEMP/unicorn-build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DUNICORN_ARCH="arm;aarch64" -DUNICORN_BUILD_TESTS=OFF -DBUILD_SHARED_LIBS=OFF -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/unicorn-install"
+          cmake --build "$RUNNER_TEMP/unicorn-build" --parallel 2
+          cmake --install "$RUNNER_TEMP/unicorn-build"
+      - name: Configure CPU tests
+        shell: bash
+        env:
+          UNICORNDIR: ${{ runner.temp }}/unicorn-install
+        run: |
+          cmake -S . -B "$RUNNER_TEMP/cpu-build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DENABLE_QT=OFF -DYUZU_CMD=OFF -DYUZU_ROOM=OFF -DENABLE_CUBEB=OFF -DENABLE_LIBUSB=OFF -DENABLE_WEB_SERVICE=OFF -DUSE_DISCORD_PRESENCE=OFF -DYUZU_TESTS=OFF -DDYNARMIC_TESTS=ON -DDYNARMIC_TESTS_USE_UNICORN=ON -DDYNARMIC_IGNORE_ASSERTS=OFF -DCPMUTIL_FORCE_BUNDLED=ON
+      - name: Build CPU tests
+        shell: bash
+        run: cmake --build "$RUNNER_TEMP/cpu-build" --target dynarmic_tests --parallel 2
+      - name: Run full CPU suite
+        shell: bash
+        run: ctest --test-dir "$RUNNER_TEMP/cpu-build" -R '^dynarmic_tests$' --output-on-failure --timeout 3600
+      - name: Decoder coverage and port regressions
+        run: python -m unittest discover -s tests/port -p "test_*.py"
+      - name: Upload test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cpu-conformance-${{ matrix.os }}
+          path: |
+            ${{ runner.temp }}/cpu-build/Testing/Temporary/**
+            ${{ runner.temp }}/cpu-build/CMakeCache.txt
+            ${{ runner.temp }}/cpu-build/CMakeFiles/CMakeConfigureLog.yaml
