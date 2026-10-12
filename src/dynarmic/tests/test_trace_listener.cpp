@@ -2,7 +2,7 @@
 #include <cstdio>
 
 #if defined(_WIN32) && defined(_M_X64)
-#include <windows.h>
+#    include <windows.h>
 #endif
 
 #include <catch2/catch_test_case_info.hpp>
@@ -20,7 +20,7 @@ LONG CALLBACK ReportNativeFault(EXCEPTION_POINTERS* fault) {
     HMODULE module = nullptr;
     char module_name[MAX_PATH]{};
     GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                      reinterpret_cast<LPCSTR>(context.Rip), &module);
+                       reinterpret_cast<LPCSTR>(context.Rip), &module);
     if (module) {
         GetModuleFileNameA(module, module_name, MAX_PATH);
     }
