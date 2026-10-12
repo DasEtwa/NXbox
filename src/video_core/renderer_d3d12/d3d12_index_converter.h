@@ -25,13 +25,20 @@ enum class Topology : std::uint32_t {
     QuadStrip,
     Polygon,
 };
+inline constexpr Topology LinesAdjacency = static_cast<Topology>(10);
+inline constexpr Topology LineStripAdjacency = static_cast<Topology>(11);
+inline constexpr Topology TrianglesAdjacency = static_cast<Topology>(12);
+inline constexpr Topology TriangleStripAdjacency = static_cast<Topology>(13);
+// Preserve retains the legacy expansion for existing callers. First/Last select
+// the guest flat-shading vertex while preserving triangle winding.
+enum class Provoking { Preserve, First, Last };
 enum class Format : std::uint32_t { Uint8 = 0, Uint16 = 1, Uint32 = 2 };
 struct Restart {
     bool enabled{};
     std::uint32_t index{0xffffffff};
 };
 struct Layout {
-    Topology topology; // Always Points, Lines or Triangles; no restart markers.
+    Topology topology; // List topology, including adjacency; no restart markers.
     Format format;     // Never Uint8.
     std::uint32_t count;
     std::size_t bytes;
@@ -45,9 +52,10 @@ Layout Analyze(Topology topology, Format format, std::span<const std::byte> inpu
 Layout AnalyzeGenerated(Topology topology, std::uint32_t vertex_count,
                         std::uint32_t first_vertex = 0);
 Layout Convert(Topology topology, Format format, std::span<const std::byte> input,
-               std::span<std::byte> output, Restart restart = {});
+               std::span<std::byte> output, Restart restart = {},
+               Provoking provoking = Provoking::Preserve);
 Layout Generate(Topology topology, std::uint32_t vertex_count, std::span<std::byte> output,
-                std::uint32_t first_vertex = 0);
+                std::uint32_t first_vertex = 0, Provoking provoking = Provoking::Preserve);
 } // namespace IndexConversion
 } // namespace D3D12
 
@@ -63,11 +71,14 @@ struct ConvertedIndexBuffer {
 class IndexConverter {
 public:
     explicit IndexConverter(Context& context);
-    ConvertedIndexBuffer Convert(IndexConversion::Topology topology, IndexConversion::Format format,
-                                 std::span<const std::byte> input,
-                                 IndexConversion::Restart restart = {});
-    ConvertedIndexBuffer Generate(IndexConversion::Topology topology, std::uint32_t vertex_count,
-                                  std::uint32_t first_vertex = 0);
+    ConvertedIndexBuffer Convert(
+        IndexConversion::Topology topology, IndexConversion::Format format,
+        std::span<const std::byte> input, IndexConversion::Restart restart = {},
+        IndexConversion::Provoking provoking = IndexConversion::Provoking::Preserve);
+    ConvertedIndexBuffer Generate(
+        IndexConversion::Topology topology, std::uint32_t vertex_count,
+        std::uint32_t first_vertex = 0,
+        IndexConversion::Provoking provoking = IndexConversion::Provoking::Preserve);
 
 private:
     ConvertedIndexBuffer Upload(const IndexConversion::Layout& layout,

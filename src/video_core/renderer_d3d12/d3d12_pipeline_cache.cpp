@@ -5,6 +5,8 @@
 #include <cmath>
 #include <cstring>
 #include <exception>
+#include <limits>
+#include <set>
 #include <tuple>
 #include <vector>
 #include <fmt/format.h>
@@ -21,12 +23,85 @@
 #include "video_core/memory_manager.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_cache.h"
 #include "video_core/renderer_d3d12/d3d12_texture_cache.h"
-#include "video_core/renderer_d3d12/stub_hlsl_emit.h"
 #include "video_core/surface.h"
 
 namespace D3D12 {
 namespace {
 using Maxwell = Tegra::Engines::Maxwell3D::Regs;
+
+void ReportUnsupported(std::string_view reason) {
+    static std::mutex mutex;
+    static std::set<std::string> reported;
+    std::scoped_lock lock{mutex};
+    if (reported.emplace(reason).second) {
+        Diagnostic(fmt::format("D3D12_STATE_FALLBACK reason={} action=skip_draw", reason));
+        LOG_WARNING(Render, "D3D12 state fallback: {}", reason);
+    }
+}
+
+// A rejected state must not produce a valid-looking PSO with different semantics.
+// These cases need shader linkage/emulation beyond the fixed-function D3D12 API.
+const char* UnsupportedState(const Maxwell& regs, u32 topology) {
+    if (topology > 14)
+        return "invalid Maxwell PrimitiveTopology";
+    if (Pso::CullMode(regs.gl_cull_test_enabled != 0, static_cast<u32>(regs.gl_cull_face))
+            .cull_all &&
+        (Pso::TopologyType(topology) == Pso::kTopologyTypeTriangle ||
+         Pso::TopologyType(topology) == Pso::kTopologyTypePatch))
+        return "gl_cull_face=FrontAndBack requires rasterizer discard preserving vertex/query "
+               "effects";
+    if (!regs.rasterize_enable)
+        return "rasterize_enable=0 requires discard with vertex/query side effects";
+    if (regs.IsShaderConfigEnabled(Maxwell::ShaderType::TessellationInit) ||
+        regs.IsShaderConfigEnabled(Maxwell::ShaderType::Tessellation))
+        return "tessellation.params require HLSL hull/domain stage linkage";
+    if (regs.transform_feedback_enabled)
+        return "transform_feedback/stream_out_layout require HLSL linkage and stream-output root "
+               "signature";
+    if (regs.depth_bounds_enable &&
+        (!std::isfinite(regs.depth_bounds[0]) || !std::isfinite(regs.depth_bounds[1]) ||
+         regs.depth_bounds[0] > regs.depth_bounds[1]))
+        return "depth_bounds_enable/depth_bounds invalid range";
+    if (regs.anti_alias_alpha_control.alpha_to_one)
+        return "anti_alias_alpha_control.alpha_to_one requires fragment epilogue";
+    if (regs.iterated_blend.enable || regs.iterated_blend.enable_alpha)
+        return "iterated_blend requires programmable blend emulation";
+    if (regs.polygon_mode_front == Maxwell::PolygonMode::Line &&
+        (topology == 7 || topology == 8 || topology == 9))
+        return "polygon_mode_front=Line for quads/quad strips/polygons requires boundary-edge "
+               "emulation";
+    if (regs.polygon_mode_front == Maxwell::PolygonMode::Point)
+        return "polygon_mode_front=Point requires point rasterization emulation";
+    if (regs.polygon_mode_front != regs.polygon_mode_back)
+        return "polygon_mode_back differs from polygon_mode_front; requires per-face polygon "
+               "emulation";
+    if (topology == 0 && regs.point_size != 1.0f)
+        return "point_size requires expanded point geometry";
+    if (Pso::TopologyType(topology) == Pso::kTopologyTypeLine) {
+        if (regs.line_stipple_enable)
+            return "line_stipple_enable/line_stipple_params require fragment stipple emulation";
+        const float width =
+            regs.line_anti_alias_enable ? regs.line_width_smooth : regs.line_width_aliased;
+        if (width != 1.0f)
+            return "line_width_smooth/line_width_aliased require expanded line geometry";
+    }
+    if (regs.viewport_scale_offset_enabled) {
+        for (const auto& viewport : regs.viewport_transform) {
+            if (viewport.swizzle.x != Maxwell::ViewportSwizzle::PositiveX ||
+                (viewport.swizzle.y != Maxwell::ViewportSwizzle::PositiveY &&
+                 viewport.swizzle.y != Maxwell::ViewportSwizzle::NegativeY) ||
+                viewport.swizzle.z != Maxwell::ViewportSwizzle::PositiveZ ||
+                viewport.swizzle.w != Maxwell::ViewportSwizzle::PositiveW || viewport.scale_x < 0)
+                return "viewport_transform.swizzle requires general position swizzle emulation";
+        }
+    }
+    if (!std::isfinite(regs.depth_bias) || !std::isfinite(regs.slope_scale_depth_bias) ||
+        !std::isfinite(regs.depth_bias_clamp) ||
+        static_cast<double>(regs.depth_bias) / 2.0 < std::numeric_limits<s32>::min() ||
+        static_cast<double>(regs.depth_bias) / 2.0 > std::numeric_limits<s32>::max())
+        return "depth_bias/slope_scale_depth_bias/depth_bias_clamp invalid or outside D3D12 range";
+    return nullptr;
+}
 
 u8 StencilFaceMask(u32 value) {
     return static_cast<u8>(value & 0xFF);
@@ -45,8 +120,8 @@ void SetBlend(Pso::BlendTargetState& out, const Blend& b) {
     out.src = static_cast<u8>(Pso::BlendFactor(static_cast<u32>(b.color_source)));
     out.dst = static_cast<u8>(Pso::BlendFactor(static_cast<u32>(b.color_dest)));
     out.op = static_cast<u8>(Pso::BlendOp(static_cast<u32>(b.color_op)));
-    out.src_alpha = static_cast<u8>(Pso::BlendFactor(static_cast<u32>(b.alpha_source)));
-    out.dst_alpha = static_cast<u8>(Pso::BlendFactor(static_cast<u32>(b.alpha_dest)));
+    out.src_alpha = static_cast<u8>(Pso::AlphaBlendFactor(static_cast<u32>(b.alpha_source)));
+    out.dst_alpha = static_cast<u8>(Pso::AlphaBlendFactor(static_cast<u32>(b.alpha_dest)));
     out.op_alpha = static_cast<u8>(Pso::BlendOp(static_cast<u32>(b.alpha_op)));
 }
 
@@ -61,7 +136,7 @@ void Append64(DiskBytes& bytes, u64 value) {
 DiskBytes Recipe(const Pso::GraphicsPsoState* state, u32 topology,
                  std::span<const StageInput> stages) {
     DiskBytes bytes;
-    Append32(bytes, 1);
+    Append32(bytes, 2);
     Append32(bytes, topology);
     if (state) {
         const auto* data = reinterpret_cast<const u8*>(state);
@@ -123,7 +198,8 @@ void FillGraphicsState(Tegra::Engines::Maxwell3D& maxwell3d, Pso::GraphicsPsoSta
     const auto cull =
         Pso::CullMode(regs.gl_cull_test_enabled != 0, static_cast<u32>(regs.gl_cull_face));
     s.cull_mode = static_cast<u8>(cull.mode);
-    s.cull_all = cull.cull_all;
+    s.cull_all = cull.cull_all && (s.topology_type == Pso::kTopologyTypeTriangle ||
+                                   s.topology_type == Pso::kTopologyTypePatch);
     bool ccw = regs.gl_front_face == Maxwell::FrontFace::CounterClockWise;
     if (regs.window_origin.flip_y != 0) {
         ccw = !ccw;
@@ -141,7 +217,7 @@ void FillGraphicsState(Tegra::Engines::Maxwell3D& maxwell3d, Pso::GraphicsPsoSta
                                                          : regs.polygon_offset_fill_enable != 0;
     if (bias) {
         // GL/Maxwell constant units are "r" like D3D12's integer DepthBias.
-        s.depth_bias = static_cast<s32>(std::lround(regs.depth_bias));
+        s.depth_bias = static_cast<s32>(std::lround(regs.depth_bias / 2.0f));
         s.slope_scaled_bias_bits = std::bit_cast<u32>(regs.slope_scale_depth_bias);
         s.bias_clamp_bits = std::bit_cast<u32>(regs.depth_bias_clamp);
     }
@@ -151,20 +227,41 @@ void FillGraphicsState(Tegra::Engines::Maxwell3D& maxwell3d, Pso::GraphicsPsoSta
     s.depth_write = regs.zeta_enable != 0 && regs.depth_write_enabled != 0;
     s.depth_func = static_cast<u8>(Pso::ComparisonFunc(static_cast<u32>(regs.depth_test_func)));
     s.stencil_enable = regs.zeta_enable != 0 && regs.stencil_enable != 0;
-    s.stencil_read_mask = StencilFaceMask(regs.stencil_front_func_mask);
-    s.stencil_write_mask = StencilFaceMask(regs.stencil_front_mask);
+    const bool back_only = regs.stencil_two_side_enable && cull.mode == Pso::kCullFront;
+    s.stencil_read_mask =
+        StencilFaceMask(back_only ? regs.stencil_back_func_mask : regs.stencil_front_func_mask);
+    s.stencil_write_mask =
+        StencilFaceMask(back_only ? regs.stencil_back_mask : regs.stencil_front_mask);
     s.front = Face(regs.stencil_front_op);
     s.back = regs.stencil_two_side_enable ? Face(regs.stencil_back_op) : s.front;
+    s.stencil_back_read_mask = regs.stencil_two_side_enable
+                                   ? StencilFaceMask(regs.stencil_back_func_mask)
+                                   : s.stencil_read_mask;
+    s.stencil_back_write_mask = regs.stencil_two_side_enable
+                                    ? StencilFaceMask(regs.stencil_back_mask)
+                                    : s.stencil_write_mask;
+    if (s.stencil_enable &&
+        Pso::IndependentStencil(regs.stencil_two_side_enable != 0, cull.mode,
+                                regs.stencil_front_ref, regs.stencil_back_ref,
+                                regs.stencil_front_func_mask, regs.stencil_back_func_mask,
+                                regs.stencil_front_mask, regs.stencil_back_mask))
+        s.stencil_enable |= 2; // Bit 1 selects native independent face state.
 
     // Blend (independent per render target).
-    s.independent_blend = 1;
+    s.logic_enable = regs.logic_op.enable != 0;
+    s.logic_op = static_cast<u8>(Pso::LogicOp(static_cast<u32>(regs.logic_op.op)));
+    s.independent_blend = !s.logic_enable;
+    s.alpha_to_coverage = regs.anti_alias_alpha_control.alpha_to_coverage != 0;
+    s.conservative_raster = regs.conservative_raster_enable != 0;
+    s.smooth_lines = regs.line_anti_alias_enable != 0;
+    s.depth_bounds = regs.zeta_enable && regs.depth_bounds_enable;
     for (size_t i = 0; i < Pso::kNumRenderTargets; ++i) {
         auto& out = s.blend[i];
         out = {0, 0xF, Pso::kBlendOne, Pso::kBlendZero, 1, Pso::kBlendOne, Pso::kBlendZero, 1};
         const auto& mask = regs.color_mask[regs.color_mask_common ? 0 : i];
         out.write_mask = static_cast<u8>((mask.R ? 1 : 0) | (mask.G ? 2 : 0) | (mask.B ? 4 : 0) |
                                          (mask.A ? 8 : 0));
-        if (regs.blend.enable[i]) {
+        if (!s.logic_enable && regs.blend.enable[i]) {
             if (regs.blend_per_target_enabled) {
                 SetBlend(out, regs.blend_per_target[i]);
             } else {
@@ -186,6 +283,7 @@ void FillGraphicsState(Tegra::Engines::Maxwell3D& maxwell3d, Pso::GraphicsPsoSta
         out.offset = static_cast<u16>(in.offset);
         out.dxgi = format.dxgi;
         out.instanced = regs.vertex_stream_instances.IsInstancingEnabled(in.buffer);
+        out.divisor = regs.vertex_streams[in.buffer].frequency;
         out.swap_rb = format.swap_rb;
         out.scaled = format.scaled;
     }
@@ -203,7 +301,6 @@ GraphicsPipeline& PipelineCache::GetGraphics(const Pso::GraphicsPsoState& state,
                                              std::span<const StageInput> stages) {
     std::scoped_lock lock{pipeline_mutex};
     GraphicsPipelineKey key{};
-    key.stage_hashes[5] = d3d_topology;
     key.state = state;
     DescriptorCounts total;
     for (const auto& stage : stages) {
@@ -211,6 +308,9 @@ GraphicsPipeline& PipelineCache::GetGraphics(const Pso::GraphicsPsoState& state,
             Pso::HashBytes(stage.hlsl.data(), stage.hlsl.size(), stage.hash);
         total += stage.counts;
     }
+    // Fragment occupies slot 5: folding topology after stage hashes prevents
+    // its shader hash from overwriting the wrapper's IA topology identity.
+    key.stage_hashes[5] = Pso::HashBytes(&d3d_topology, sizeof(d3d_topology), key.stage_hashes[5]);
     if (const auto it = graphics.find(key); it != graphics.end()) {
         return *it->second;
     }
@@ -357,16 +457,95 @@ Shader::RuntimeInfo GraphicsRuntime(const Maxwell& regs, const Shader::IR::Progr
 }
 } // namespace
 
-IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(const Pso::FramebufferFormats& formats) {
+IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(
+    const Pso::FramebufferFormats& formats) try {
     if (!maxwell3d)
         return nullptr;
     std::scoped_lock lock{pipeline_mutex};
+    if (const auto* reason = UnsupportedState(
+            maxwell3d->regs, static_cast<u32>(maxwell3d->draw_manager.draw_state.topology))) {
+        ReportUnsupported(reason);
+        return nullptr;
+    }
     SyncGuestHost();
     if (!RefreshStages(guest_hashes))
         return nullptr;
     Pso::GraphicsPsoState state;
     FillGraphicsState(*maxwell3d, state);
     Pso::ApplyFramebufferFormats(state, formats);
+    if (!Pso::DsvHasStencil(state.dsv_format))
+        state.stencil_enable = 0;
+    if (state.stencil_enable & 2) {
+        D3D12_FEATURE_DATA_D3D12_OPTIONS14 options{};
+        if (FAILED(context.Device()->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS14, &options,
+                                                         sizeof(options))) ||
+            !options.IndependentFrontAndBackStencilRefMaskSupported) {
+            ReportUnsupported("stencil_back_ref/stencil_back_mask/stencil_back_func_mask differ; "
+                              "host lacks IndependentFrontAndBackStencilRefMaskSupported");
+            return nullptr;
+        }
+    }
+    if (state.depth_bounds) {
+        D3D12_FEATURE_DATA_D3D12_OPTIONS2 options{};
+        if (FAILED(context.Device()->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS2, &options,
+                                                         sizeof(options))) ||
+            !options.DepthBoundsTestSupported) {
+            ReportUnsupported("depth_bounds_enable/depth_bounds unsupported by host device");
+            return nullptr;
+        }
+    }
+    const u32 constant_factors = Pso::ConstantBlendFactors(state);
+    if (constant_factors & 2) {
+        D3D12_FEATURE_DATA_D3D12_OPTIONS13 options{};
+        if (FAILED(context.Device()->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS13, &options,
+                                                         sizeof(options))) ||
+            !options.AlphaBlendFactorSupported) {
+            if (constant_factors & 1) {
+                ReportUnsupported(
+                    "blend mixes constant-color and constant-alpha RGB factors; host lacks "
+                    "AlphaBlendFactorSupported and needs shader blend emulation");
+                return nullptr;
+            }
+            // The draw path replicates blend_color.a into RGB. No shader change
+            // is needed when RGB never consumes the original constant color.
+            Pso::EmulateConstantAlpha(state);
+        }
+    }
+    if (state.logic_enable || state.conservative_raster) {
+        D3D12_FEATURE_DATA_D3D12_OPTIONS options{};
+        if (FAILED(context.Device()->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &options,
+                                                         sizeof(options))) ||
+            (state.logic_enable && !options.OutputMergerLogicOp) ||
+            (state.conservative_raster &&
+             options.ConservativeRasterizationTier ==
+                 D3D12_CONSERVATIVE_RASTERIZATION_TIER_NOT_SUPPORTED)) {
+            ReportUnsupported("logic_op/conservative_raster_enable unsupported by host device");
+            return nullptr;
+        }
+    }
+    if (state.logic_enable) {
+        std::optional<u8> mask;
+        for (size_t i = 0; i < formats.colors.size(); ++i) {
+            if (!formats.colors[i])
+                continue;
+            if (mask && *mask != state.blend[i].write_mask) {
+                ReportUnsupported(
+                    "logic_op with independent color_mask requires programmable blend emulation");
+                return nullptr;
+            }
+            mask = state.blend[i].write_mask;
+            D3D12_FEATURE_DATA_FORMAT_SUPPORT support{static_cast<DXGI_FORMAT>(formats.colors[i])};
+            if (FAILED(context.Device()->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &support,
+                                                             sizeof(support))) ||
+                !(support.Support2 & D3D12_FORMAT_SUPPORT2_OUTPUT_MERGER_LOGIC_OP)) {
+                ReportUnsupported("logic_op RTV format lacks OUTPUT_MERGER_LOGIC_OP; requires "
+                                  "programmable blend emulation");
+                return nullptr;
+            }
+        }
+        if (mask)
+            state.blend[0].write_mask = *mask;
+    }
     const auto topology = Pso::PrimitiveTopology(
         static_cast<u32>(maxwell3d->draw_manager.draw_state.topology), state.patch_vertices);
     GraphicsPipelineKey request{guest_hashes, state};
@@ -383,6 +562,8 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(const Pso::Framebuffer
     specialization = Pso::HashBytes(regs.vertex_attrib_format.data(),
                                     sizeof(regs.vertex_attrib_format), specialization);
     specialization = Pso::HashBytes(&topology.topology, sizeof(topology.topology), specialization);
+    specialization =
+        Pso::HashBytes(&regs.provoking_vertex, sizeof(regs.provoking_vertex), specialization);
     specialization =
         Pso::HashBytes(&regs.mandated_early_z, sizeof(regs.mandated_early_z), specialization);
     specialization =
@@ -434,6 +615,20 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(const Pso::Framebuffer
             }
             const auto runtime = GraphicsRuntime(maxwell3d->regs, program, previous);
             Shader::Maxwell::ConvertLegacyToGeneric(program, runtime);
+            if (program.stage == Shader::Stage::Fragment &&
+                maxwell3d->draw_manager.draw_state.topology == Maxwell::PrimitiveTopology::Quads &&
+                regs.provoking_vertex == Maxwell::ProvokingVertex::Last) {
+                for (size_t attribute = 0; attribute < program.info.interpolation.size();
+                     ++attribute) {
+                    if (program.info.loads.Generic(attribute) &&
+                        program.info.interpolation[attribute] == Shader::Interpolation::Flat) {
+                        ReportUnsupported("provoking_vertex=Last for flat quads requires "
+                                          "flat-value replication without changing diagonal");
+                        guest_graphics.emplace(request, nullptr);
+                        return nullptr;
+                    }
+                }
+            }
             sources[index] =
                 Shader::Backend::HLSL::EmitHLSL(translation.profile, runtime, program, bindings);
             const auto counts = CountStageTables(program.info);
@@ -448,6 +643,22 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(const Pso::Framebuffer
         for (std::size_t i = 0; i < Pso::kNumVertexAttributes; ++i)
             if (vertex_info.loads.Generic(i))
                 vertex_reads |= std::uint32_t{1} << i;
+        for (size_t index = 0; index < state.attributes.size(); ++index) {
+            if (!(vertex_reads & (u32{1} << index)) || regs.vertex_attrib_format[index].constant)
+                continue;
+            const auto& input = regs.vertex_attrib_format[index];
+            const auto& attribute = state.attributes[index];
+            const u32 size = static_cast<u32>(input.size.Value());
+            if (!attribute.dxgi || attribute.swap_rb || attribute.scaled ||
+                size == Pso::VSize::R16G16B16 || size == Pso::VSize::R8G8B8) {
+                ReportUnsupported(fmt::format("vertex_attrib_format[{}] size={:x} type={} bgra={} "
+                                              "requires vertex pulling/component conversion",
+                                              index, size, static_cast<u32>(input.type.Value()),
+                                              input.bgra != 0));
+                guest_graphics.emplace(request, nullptr);
+                return nullptr;
+            }
+        }
         Pso::ApplyVertexReads(state, vertex_reads);
         auto& pipeline = GetGraphics(state, topology.topology, stages);
         for (size_t index = 1; index < 6; ++index) {
@@ -459,26 +670,7 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(const Pso::Framebuffer
         guest_graphics.emplace(request, &pipeline);
         return &pipeline;
     } catch (const Shader::Exception& error) {
-        Diagnostic(fmt::format("D3D12 HLSL pipeline={:016x} what={}",
-                               Pso::HashBytes(&request, sizeof(request)), error.what()));
-        LOG_ERROR(Render, "D3D12 guest translation failed; explicit stub fallback: {}",
-                  error.what());
-        try {
-            const std::array stages{
-                StageInput{
-                    Shader::Stage::VertexB, guest_hashes[1], StubHlsl(Shader::Stage::VertexB), {}},
-                StageInput{Shader::Stage::Fragment,
-                           guest_hashes[5],
-                           StubHlsl(Shader::Stage::Fragment),
-                           {}}};
-            Pso::ApplyVertexReads(state, 0);
-            auto& fallback = GetGraphics(state, topology.topology, stages);
-            guest_graphics.emplace(request, &fallback);
-            return &fallback;
-        } catch (const std::exception& failure) {
-            Diagnostic(fmt::format("D3D12 fallback pipeline={:016x} what={}",
-                                   Pso::HashBytes(&request, sizeof(request)), failure.what()));
-        }
+        ReportUnsupported(error.what());
     } catch (const std::exception& error) {
         Diagnostic(fmt::format("D3D12 graphics pipeline={:016x} what={}",
                                Pso::HashBytes(&request, sizeof(request)), error.what()));
@@ -487,9 +679,15 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(const Pso::Framebuffer
     }
     guest_graphics.emplace(request, nullptr);
     return nullptr;
+} catch (const std::exception& error) {
+    ReportUnsupported(error.what());
+    return nullptr;
+} catch (...) {
+    ReportUnsupported("unknown exception in graphics pipeline state");
+    return nullptr;
 }
 
-ComputePipeline* PipelineCache::CurrentComputePipeline() {
+ComputePipeline* PipelineCache::CurrentComputePipeline() try {
     if (!kepler_compute)
         return nullptr;
     std::scoped_lock lock{pipeline_mutex};
@@ -532,6 +730,12 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() {
         guest_compute.emplace(request, nullptr);
         return nullptr;
     }
+} catch (const std::exception& error) {
+    ReportUnsupported(error.what());
+    return nullptr;
+} catch (...) {
+    ReportUnsupported("unknown exception in compute pipeline state");
+    return nullptr;
 }
 
 void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading,
@@ -546,7 +750,7 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
     guest_compute.clear();
     graphics.clear();
     compute.clear();
-    const auto identity = DiskPipelineCache::QueryIdentity(context.Device(), {3, 1, 3});
+    const auto identity = DiskPipelineCache::QueryIdentity(context.Device(), {3, 2, 3});
     if (!identity) {
         LOG_WARNING(Render, "D3D12 adapter identity unavailable; disk PSO reuse disabled");
         disk.reset();
@@ -564,7 +768,7 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
                 return false;
             try {
                 RecipeReader reader{record.payload};
-                if (reader.U32() != 1)
+                if (reader.U32() != 2)
                     return false;
                 const u32 topology = reader.U32();
                 Pso::GraphicsPsoState state{};
@@ -625,9 +829,15 @@ void PipelineCache::BindToChannel(s32 id) {
         maxwell3d->dirty.flags[VideoCommon::Dirty::Shaders] = true;
 }
 PipelineCache::~PipelineCache() {
-    if (disk) {
-        disk->StopWarmup();
-        disk->Flush();
+    try {
+        if (disk) {
+            disk->StopWarmup();
+            disk->Flush();
+        }
+    } catch (const std::exception& error) {
+        LOG_ERROR(Render, "D3D12 pipeline cache teardown: {}", error.what());
+    } catch (...) {
+        LOG_ERROR(Render, "D3D12 pipeline cache teardown: unknown exception");
     }
 }
 void PipelineCache::FlushDiskCache() {

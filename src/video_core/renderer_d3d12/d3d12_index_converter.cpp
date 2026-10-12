@@ -18,20 +18,26 @@ std::size_t Width(Format format) {
     throw std::invalid_argument("Invalid index format");
 }
 Topology ListTopology(Topology topology) {
-    switch (topology) {
-    case Topology::Points:
+    switch (static_cast<std::uint32_t>(topology)) {
+    case static_cast<std::uint32_t>(Topology::Points):
         return Topology::Points;
-    case Topology::Lines:
-    case Topology::LineLoop:
-    case Topology::LineStrip:
+    case static_cast<std::uint32_t>(Topology::Lines):
+    case static_cast<std::uint32_t>(Topology::LineLoop):
+    case static_cast<std::uint32_t>(Topology::LineStrip):
         return Topology::Lines;
-    case Topology::Triangles:
-    case Topology::TriangleStrip:
-    case Topology::TriangleFan:
-    case Topology::Quads:
-    case Topology::QuadStrip:
-    case Topology::Polygon:
+    case static_cast<std::uint32_t>(Topology::Triangles):
+    case static_cast<std::uint32_t>(Topology::TriangleStrip):
+    case static_cast<std::uint32_t>(Topology::TriangleFan):
+    case static_cast<std::uint32_t>(Topology::Quads):
+    case static_cast<std::uint32_t>(Topology::QuadStrip):
+    case static_cast<std::uint32_t>(Topology::Polygon):
         return Topology::Triangles;
+    case static_cast<std::uint32_t>(LinesAdjacency):
+    case static_cast<std::uint32_t>(LineStripAdjacency):
+        return LinesAdjacency;
+    case static_cast<std::uint32_t>(TrianglesAdjacency):
+    case static_cast<std::uint32_t>(TriangleStripAdjacency):
+        return TrianglesAdjacency;
     }
     throw std::invalid_argument("Unsupported index topology");
 }
@@ -40,25 +46,33 @@ std::uint64_t SegmentCount(Topology topology, std::uint64_t n) {
     // Bound before multiplying so adversarial spans cannot wrap the count.
     if (n > std::uint64_t{std::numeric_limits<std::uint32_t>::max()} + 2)
         throw std::overflow_error("Index segment exceeds D3D12 limits");
-    switch (topology) {
-    case Topology::Points:
+    switch (static_cast<std::uint32_t>(topology)) {
+    case static_cast<std::uint32_t>(Topology::Points):
         return n;
-    case Topology::Lines:
+    case static_cast<std::uint32_t>(Topology::Lines):
         return n / 2 * 2;
-    case Topology::LineStrip:
+    case static_cast<std::uint32_t>(Topology::LineStrip):
         return n >= 2 ? (n - 1) * 2 : 0;
-    case Topology::LineLoop:
+    case static_cast<std::uint32_t>(Topology::LineLoop):
         return n >= 2 ? n * 2 : 0;
-    case Topology::Triangles:
+    case static_cast<std::uint32_t>(Topology::Triangles):
         return n / 3 * 3;
-    case Topology::Quads:
+    case static_cast<std::uint32_t>(Topology::Quads):
         return n / 4 * 6;
-    case Topology::QuadStrip:
+    case static_cast<std::uint32_t>(Topology::QuadStrip):
         return n >= 4 ? (n / 2 - 1) * 6 : 0;
-    case Topology::TriangleStrip:
-    case Topology::TriangleFan:
-    case Topology::Polygon:
+    case static_cast<std::uint32_t>(Topology::TriangleStrip):
+    case static_cast<std::uint32_t>(Topology::TriangleFan):
+    case static_cast<std::uint32_t>(Topology::Polygon):
         return n >= 3 ? (n - 2) * 3 : 0;
+    case static_cast<std::uint32_t>(LinesAdjacency):
+        return n / 4 * 4;
+    case static_cast<std::uint32_t>(LineStripAdjacency):
+        return n >= 4 ? (n - 3) * 4 : 0;
+    case static_cast<std::uint32_t>(TrianglesAdjacency):
+        return n / 6 * 6;
+    case static_cast<std::uint32_t>(TriangleStripAdjacency):
+        return n >= 6 ? (n / 2 - 2) * 6 : 0;
     }
     throw std::invalid_argument("Unsupported index topology");
 }
@@ -77,59 +91,122 @@ std::uint32_t Read(std::span<const std::byte> input, std::size_t width, std::siz
     return value;
 }
 template <typename ReadIndex, typename Emit>
-void EmitSegment(Topology topology, std::size_t begin, std::size_t n, ReadIndex read, Emit emit) {
+void EmitSegment(Topology topology, std::size_t begin, std::size_t n, ReadIndex read, Emit emit,
+                 Provoking provoking) {
     auto at = [&](std::size_t i) { return read(begin + i); };
     auto line = [&](std::size_t a, std::size_t b) {
-        emit(at(a));
-        emit(at(b));
+        emit(at(provoking == Provoking::Last ? b : a));
+        emit(at(provoking == Provoking::Last ? a : b));
     };
     auto triangle = [&](std::size_t a, std::size_t b, std::size_t c) {
-        emit(at(a));
-        emit(at(b));
-        emit(at(c));
+        if (provoking == Provoking::Last) {
+            emit(at(c));
+            emit(at(a));
+            emit(at(b));
+        } else {
+            emit(at(a));
+            emit(at(b));
+            emit(at(c));
+        }
     };
-    switch (topology) {
-    case Topology::Points:
+    switch (static_cast<std::uint32_t>(topology)) {
+    case static_cast<std::uint32_t>(Topology::Points):
         for (std::size_t i = 0; i < n; ++i)
             emit(at(i));
         break;
-    case Topology::Lines:
+    case static_cast<std::uint32_t>(Topology::Lines):
         for (std::size_t i = 0; i + 1 < n; i += 2)
             line(i, i + 1);
         break;
-    case Topology::LineStrip:
-    case Topology::LineLoop:
+    case static_cast<std::uint32_t>(Topology::LineStrip):
+    case static_cast<std::uint32_t>(Topology::LineLoop):
         for (std::size_t i = 1; i < n; ++i)
             line(i - 1, i);
         if (topology == Topology::LineLoop && n >= 2)
             line(n - 1, 0);
         break;
-    case Topology::Triangles:
+    case static_cast<std::uint32_t>(Topology::Triangles):
         for (std::size_t i = 0; i + 2 < n; i += 3)
             triangle(i, i + 1, i + 2);
         break;
-    case Topology::TriangleStrip:
-        for (std::size_t i = 2; i < n; ++i)
-            triangle(i % 2 ? i - 1 : i - 2, i % 2 ? i - 2 : i - 1, i);
+    case static_cast<std::uint32_t>(Topology::TriangleStrip):
+        for (std::size_t i = 2; i < n; ++i) {
+            if (provoking == Provoking::First && i % 2)
+                triangle(i - 2, i, i - 1);
+            else
+                triangle(i % 2 ? i - 1 : i - 2, i % 2 ? i - 2 : i - 1, i);
+        }
         break;
-    case Topology::TriangleFan:
-    case Topology::Polygon:
-        for (std::size_t i = 2; i < n; ++i)
-            triangle(0, i - 1, i);
+    case static_cast<std::uint32_t>(Topology::TriangleFan):
+    case static_cast<std::uint32_t>(Topology::Polygon):
+        for (std::size_t i = 2; i < n; ++i) {
+            if (provoking == Provoking::First)
+                triangle(i - 1, i, 0);
+            else
+                triangle(0, i - 1, i);
+        }
         break;
-    case Topology::Quads:
+    case static_cast<std::uint32_t>(Topology::Quads):
         for (std::size_t i = 0; i + 3 < n; i += 4) {
             triangle(i, i + 1, i + 2);
             triangle(i, i + 2, i + 3);
         }
         break;
-    case Topology::QuadStrip:
+    case static_cast<std::uint32_t>(Topology::QuadStrip):
         // Match Eden's vulkan_quad_indexed.comp winding/diagonal.
         for (std::size_t i = 0; i + 3 < n; i += 2) {
-            triangle(i, i + 3, i + 1);
+            if (provoking == Provoking::Last)
+                triangle(i + 1, i, i + 3);
+            else
+                triangle(i, i + 3, i + 1);
             triangle(i, i + 2, i + 3);
         }
         break;
+    case static_cast<std::uint32_t>(LinesAdjacency):
+    case static_cast<std::uint32_t>(LineStripAdjacency):
+        for (std::size_t i = 0; i + 3 < n; i += topology == LinesAdjacency ? 4 : 1)
+            for (std::size_t j = 0; j < 4; ++j)
+                emit(at(i + j));
+        break;
+    case static_cast<std::uint32_t>(TrianglesAdjacency):
+        for (std::size_t i = 0; i + 5 < n; i += 6)
+            for (std::size_t j = 0; j < 6; ++j)
+                emit(at(i + j));
+        break;
+    case static_cast<std::uint32_t>(TriangleStripAdjacency): {
+        // Vulkan drawing-triangle-strips-with-adjacency: edge neighbors differ
+        // at the strip ends and on odd/even primitives. They are not a sliding
+        // window of six vertices (even a single triangle swaps neighbors 3/5).
+        const std::size_t count = n < 6 ? 0 : n / 2 - 2;
+        for (std::size_t primitive = 0; primitive < count; ++primitive) {
+            const auto base = primitive * 2;
+            std::size_t indices[6];
+            if (count == 1) {
+                const std::size_t single[]{0, 1, 2, 5, 4, 3};
+                for (std::size_t j = 0; j < 6; ++j)
+                    indices[j] = single[j];
+            } else if (primitive == 0) {
+                const std::size_t first[]{0, 1, 2, 6, 4, 3};
+                for (std::size_t j = 0; j < 6; ++j)
+                    indices[j] = first[j];
+            } else if (primitive % 2) {
+                const std::size_t odd[]{base,     base + 3,
+                                        base + 4, base + (primitive + 1 == count ? 5 : 6),
+                                        base + 2, base - 2};
+                for (std::size_t j = 0; j < 6; ++j)
+                    indices[j] = odd[j];
+            } else {
+                const std::size_t even[]{base,     base - 2,
+                                         base + 2, base + (primitive + 1 == count ? 5 : 6),
+                                         base + 4, base + 3};
+                for (std::size_t j = 0; j < 6; ++j)
+                    indices[j] = even[j];
+            }
+            for (const auto index : indices)
+                emit(at(index));
+        }
+        break;
+    }
     }
 }
 template <typename Visit>
@@ -183,7 +260,7 @@ Layout AnalyzeGenerated(Topology topology, std::uint32_t n, std::uint32_t first)
     return MakeLayout(topology, format, SegmentCount(topology, n));
 }
 Layout Convert(Topology topology, Format format, std::span<const std::byte> input,
-               std::span<std::byte> output, Restart restart) {
+               std::span<std::byte> output, Restart restart, Provoking provoking) {
     const auto layout = Analyze(topology, format, input, restart);
     ValidateOutput(layout, output);
     // Reject overlap before conversion; byte addresses avoid alignment assumptions.
@@ -196,17 +273,17 @@ Layout Convert(Topology topology, Format format, std::span<const std::byte> inpu
     Segments(format, input, restart, [&](std::size_t begin, std::size_t n) {
         EmitSegment(
             topology, begin, n, [&](std::size_t i) { return Read(input, Width(format), i); },
-            [&](std::uint32_t value) { emit(value); });
+            [&](std::uint32_t value) { emit(value); }, provoking);
     });
     return layout;
 }
 Layout Generate(Topology topology, std::uint32_t n, std::span<std::byte> output,
-                std::uint32_t first) {
+                std::uint32_t first, Provoking provoking) {
     const auto layout = AnalyzeGenerated(topology, n, first);
     ValidateOutput(layout, output);
     EmitSegment(
         topology, 0, n, [&](std::size_t i) { return first + static_cast<std::uint32_t>(i); },
-        Writer(layout.format, output));
+        Writer(layout.format, output), provoking);
     return layout;
 }
 } // namespace D3D12::IndexConversion
@@ -218,10 +295,12 @@ IndexConverter::IndexConverter(Context& context)
 ConvertedIndexBuffer IndexConverter::Upload(const IndexConversion::Layout& layout,
                                             StagingBufferRef& allocation) {
     using namespace IndexConversion;
-    const auto topology = layout.topology == Topology::Points ? D3D_PRIMITIVE_TOPOLOGY_POINTLIST
-                          : layout.topology == Topology::Lines
-                              ? D3D_PRIMITIVE_TOPOLOGY_LINELIST
-                              : D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+    const auto topology =
+        layout.topology == Topology::Points     ? D3D_PRIMITIVE_TOPOLOGY_POINTLIST
+        : layout.topology == LinesAdjacency     ? D3D_PRIMITIVE_TOPOLOGY_LINELIST_ADJ
+        : layout.topology == TrianglesAdjacency ? D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST_ADJ
+        : layout.topology == Topology::Lines    ? D3D_PRIMITIVE_TOPOLOGY_LINELIST
+                                                : D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
     if (!layout.count)
         return {{}, topology, 0};
     context.Retain(allocation.buffer); // Fence-retired resource lease prevents ring reuse.
@@ -235,22 +314,25 @@ ConvertedIndexBuffer IndexConverter::Upload(const IndexConversion::Layout& layou
 ConvertedIndexBuffer IndexConverter::Convert(IndexConversion::Topology topology,
                                              IndexConversion::Format format,
                                              std::span<const std::byte> input,
-                                             IndexConversion::Restart restart) {
+                                             IndexConversion::Restart restart,
+                                             IndexConversion::Provoking provoking) {
     const auto layout = IndexConversion::Analyze(topology, format, input, restart);
     if (layout.bytes > UINT_MAX)
         throw std::overflow_error("Index buffer view exceeds UINT size");
     auto allocation = layout.bytes ? upload.Request(layout.bytes) : StagingBufferRef{};
     IndexConversion::Convert(topology, format, input,
-                             std::as_writable_bytes(allocation.mapped_span), restart);
+                             std::as_writable_bytes(allocation.mapped_span), restart, provoking);
     return Upload(layout, allocation);
 }
 ConvertedIndexBuffer IndexConverter::Generate(IndexConversion::Topology topology, std::uint32_t n,
-                                              std::uint32_t first) {
+                                              std::uint32_t first,
+                                              IndexConversion::Provoking provoking) {
     const auto layout = IndexConversion::AnalyzeGenerated(topology, n, first);
     if (layout.bytes > UINT_MAX)
         throw std::overflow_error("Index buffer view exceeds UINT size");
     auto allocation = layout.bytes ? upload.Request(layout.bytes) : StagingBufferRef{};
-    IndexConversion::Generate(topology, n, std::as_writable_bytes(allocation.mapped_span), first);
+    IndexConversion::Generate(topology, n, std::as_writable_bytes(allocation.mapped_span), first,
+                              provoking);
     return Upload(layout, allocation);
 }
 } // namespace D3D12
