@@ -6,14 +6,19 @@
 
 namespace D3D12 {
 TransformFeedback::TransformFeedback(Context& context)
-    : context{context}, counters{context.CreateBuffer(32, D3D12_HEAP_TYPE_DEFAULT)},
-      upload{context, D3D12_HEAP_TYPE_UPLOAD}, readback{context, D3D12_HEAP_TYPE_READBACK} {
+    : context{context}, upload{context, D3D12_HEAP_TYPE_UPLOAD},
+      readback{context, D3D12_HEAP_TYPE_READBACK} {}
+void TransformFeedback::EnsureCounters() {
+    if (counters)
+        return;
+    counters = context.CreateBuffer(32, D3D12_HEAP_TYPE_DEFAULT);
     context.Commands()->SetPredication(nullptr, 0, D3D12_PREDICATION_OP_EQUAL_ZERO);
     auto initial = upload.Request(32);
     std::memset(initial.mapped_span.data(), 0, 32);
     context.Transition(counters, D3D12_RESOURCE_STATE_COPY_DEST);
     context.Retain(initial.buffer);
-    context.MarkWork("upload/copy");
+    context.Retain(counters);
+    context.MarkWork("stream-output counter initialization");
     context.Commands()->CopyBufferRegion(counters->handle.Get(), 0, initial.buffer->handle.Get(),
                                          initial.offset, 32);
 }
@@ -39,7 +44,7 @@ void TransformFeedback::Configure(const Shader::RuntimeInfo& info, SemanticResol
             if (resolver) {
                 semantic = resolver(e.attribute);
             } else if (e.attribute / 4 == 7) {
-                semantic = {"SV_Position", 0};
+                semantic = {"NX_XFB_POSITION", 0};
             } else if (e.attribute >= 32 && e.attribute < 160) {
                 semantic = {"TEXCOORD", (e.attribute - 32) / 4};
             } else {
@@ -95,6 +100,11 @@ void TransformFeedback::BindBuffer(u32 slot, ResourcePtr buffer, u64 offset, u64
         (filled_size && (*filled_size > size || *filled_size % 4))) {
         throw std::invalid_argument("Invalid stream output buffer range");
     }
+    EnsureCounters();
+    if (!filled_size &&
+        (reset_pending[slot] || buffers[slot] != buffer ||
+         views[slot].BufferLocation != buffer->handle->GetGPUVirtualAddress() + offset))
+        filled_size = 0;
     if (filled_size) {
         context.Commands()->SetPredication(nullptr, 0, D3D12_PREDICATION_OP_EQUAL_ZERO);
         auto reset = upload.Request(8);
@@ -105,29 +115,37 @@ void TransformFeedback::BindBuffer(u32 slot, ResourcePtr buffer, u64 offset, u64
         context.Commands()->CopyBufferRegion(counters->handle.Get(), slot * 8,
                                              reset.buffer->handle.Get(), reset.offset, 8);
     }
+    reset_pending[slot] = false;
     buffers[slot] = std::move(buffer);
     views[slot] = {buffers[slot]->handle->GetGPUVirtualAddress() + offset, size,
                    counters->handle->GetGPUVirtualAddress() + slot * 8};
 }
 void TransformFeedback::Bind() {
+    EnsureCounters();
     std::array<D3D12_STREAM_OUTPUT_BUFFER_VIEW, 4> active_views{};
     for (u32 i = 0; i < 4; ++i) {
         if (layout.strides[i] && !buffers[i]) {
             throw std::invalid_argument("Missing stream output buffer");
         }
         if (buffers[i] && layout.strides[i]) {
+            context.Retain(buffers[i]);
             context.Transition(buffers[i], D3D12_RESOURCE_STATE_STREAM_OUT);
             active_views[i] = views[i];
         }
     }
+    context.Retain(counters);
     context.Transition(counters, D3D12_RESOURCE_STATE_STREAM_OUT);
     context.Commands()->SOSetTargets(0, 4, active_views.data());
     bound = true;
 }
-void TransformFeedback::Unbind() {
+void TransformFeedback::Unbind(bool reset_cursor) {
     const std::array<D3D12_STREAM_OUTPUT_BUFFER_VIEW, 4> empty{};
     context.Commands()->SOSetTargets(0, 4, empty.data());
     bound = false;
+    // Keep the last filled-size counters readable after disabling capture.
+    // Clear/blit unbinding only pauses host SO; a new guest session resets on bind.
+    if (reset_cursor)
+        reset_pending.fill(true);
 }
 u32 TransformFeedback::StreamMask() const {
     u32 mask{};

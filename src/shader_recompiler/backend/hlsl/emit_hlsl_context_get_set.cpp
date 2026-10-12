@@ -6,7 +6,7 @@
 namespace Shader::Backend::HLSL {
 void EmitGetAttribute(EmitContext& ctx, IR::Inst& inst, IR::Attribute attr,
                       std::string_view vertex) {
-    if (IR::IsGeneric(attr) && ctx.stage == Stage::Fragment &&
+    if (IR::IsGeneric(attr) && (ctx.stage == Stage::Fragment || ctx.stage == Stage::Geometry) &&
         !ctx.runtime_info.previous_stage_stores.Generic(IR::GenericAttributeIndex(attr),
                                                         IR::GenericAttributeElement(attr))) {
         ctx.AddF32("{} = {};", inst, IR::GenericAttributeElement(attr) == 3 ? "1.0f" : "0.0f");
@@ -24,6 +24,8 @@ void EmitGetAttribute(EmitContext& ctx, IR::Inst& inst, IR::Attribute attr,
         const auto type = ctx.runtime_info.generic_input_types[IR::GenericAttributeIndex(attr)];
         if (type == AttributeType::SignedInt || type == AttributeType::UnsignedInt)
             value = fmt::format("asfloat({})", value);
+        else if (type == AttributeType::SignedScaled || type == AttributeType::UnsignedScaled)
+            value = fmt::format("float({})", value);
         else if (type == AttributeType::Disabled)
             value = IR::GenericAttributeElement(attr) == 3 ? "1.0f" : "0.0f";
     } else if (attr == IR::Attribute::FrontFace || attr == IR::Attribute::VertexId ||
@@ -47,7 +49,8 @@ void EmitGetAttributeU32(EmitContext& ctx, IR::Inst& inst, IR::Attribute attr,
 void EmitSetAttribute(EmitContext& ctx, IR::Attribute attr, std::string_view value,
                       std::string_view) {
     if (attr == IR::Attribute::PointSize)
-        return; // ponytail: D3D12 points are always 1px; emulate with quad expansion if a game needs it.
+        return; // ponytail: D3D12 points are always 1px; emulate with quad expansion if a game
+                // needs it.
     if (attr == IR::Attribute::Layer || attr == IR::Attribute::ViewportIndex)
         ctx.Add("{} = asuint({});", ctx.Attribute(attr, true), value);
     else

@@ -9,6 +9,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <span>
 #include <type_traits>
@@ -315,6 +316,9 @@ constexpr std::uint32_t VertexAlignment(std::uint32_t size) {
     const auto bytes = VertexByteSize(size);
     return bytes >= 4 ? 4 : bytes == 3 ? 1 : bytes;
 }
+constexpr std::uint64_t VertexLastNonIndexed(std::uint32_t first, std::uint32_t count) {
+    return std::uint64_t{first} + (count ? count - 1 : 0);
+}
 constexpr std::uint64_t VertexRequiredBytes(std::uint64_t last, std::uint32_t stride,
                                             std::uint32_t bytes) {
     return last * stride + bytes;
@@ -333,6 +337,58 @@ inline void RepackVertexAttribute(std::span<std::uint8_t> destination,
         const auto count = std::min<std::uint64_t>(bytes, source.size() - offset);
         std::copy_n(source.data() + offset, static_cast<std::size_t>(count),
                     destination.data() + element * bytes);
+    }
+}
+
+constexpr std::uint32_t VertexComponentBytes(std::uint32_t size) {
+    using namespace VSize;
+    if (size == R32 || size == R32G32 || size == R32G32B32 || size == R32G32B32A32)
+        return 4;
+    if (size == R16 || size == R16G16 || size == R16G16B16 || size == R16G16B16A16)
+        return 2;
+    return 1;
+}
+constexpr std::uint32_t VertexStorageByteSize(std::uint32_t size, bool swap_rb = false) {
+    if (swap_rb && size != VSize::A2B10G10R10 && size != VSize::B10G11R11)
+        return VertexComponentBytes(size) * 4;
+    if (size == VSize::R16G16B16)
+        return 8;
+    if (size == VSize::R8G8B8)
+        return 4;
+    return VertexByteSize(size);
+}
+inline void RepackVertexFormat(std::span<std::uint8_t> destination,
+                               std::span<const std::uint8_t> source, std::uint32_t stride,
+                               std::uint32_t size, std::uint32_t type, bool swap_rb) {
+    const auto guest_bytes = VertexByteSize(size);
+    const auto storage_bytes = VertexStorageByteSize(size, swap_rb);
+    std::fill(destination.begin(), destination.end(), std::uint8_t{0});
+    for (std::size_t element = 0; element < destination.size() / storage_bytes; ++element) {
+        const std::uint64_t offset = std::uint64_t{element} * stride;
+        auto* target = destination.data() + element * storage_bytes;
+        if (offset < source.size())
+            std::copy_n(source.data() + offset,
+                        static_cast<std::size_t>(
+                            std::min<std::uint64_t>(guest_bytes, source.size() - offset)),
+                        target);
+        const auto component_bytes = VertexComponentBytes(size);
+        if (storage_bytes > guest_bytes) {
+            const std::uint32_t one =
+                type == VType::Float   ? (component_bytes == 2 ? 0x3c00u : 0x3f800000u)
+                : type == VType::UNorm ? (component_bytes == 2 ? 0xffffu : 0xffu)
+                : type == VType::SNorm ? (component_bytes == 2 ? 0x7fffu : 0x7fu)
+                                       : 1u;
+            std::memcpy(target + storage_bytes - component_bytes, &one, component_bytes);
+        }
+        if (swap_rb && size == VSize::A2B10G10R10) {
+            std::uint32_t packed{};
+            std::memcpy(&packed, target, sizeof(packed));
+            packed = (packed & 0xc00ffc00u) | ((packed & 0x3ffu) << 20) | ((packed >> 20) & 0x3ffu);
+            std::memcpy(target, &packed, sizeof(packed));
+        } else if (swap_rb && storage_bytes >= 3) {
+            for (std::uint32_t byte = 0; byte < component_bytes; ++byte)
+                std::swap(target[byte], target[component_bytes * 2 + byte]);
+        }
     }
 }
 
@@ -423,6 +479,29 @@ constexpr VertexFormat VertexFormatFor(std::uint32_t size, std::uint32_t type, b
     return {f, scaled, bgra && f != 0};
 }
 
+// IA formats are distinct from texture/view formats. The CPU repacker and HLSL
+// signatures implement the conversion policy represented by these flags.
+constexpr VertexFormat VertexFormatForInputAssembler(std::uint32_t size, std::uint32_t type,
+                                                     bool bgra = false) {
+    // Maxwell aliases follow Vulkan/GL channel counts: A8 is a one-component
+    // R8 fetch, G8_R8 is RG, and X8_B8_G8_R8 carries all four raw components.
+    auto format = VertexFormatFor(size == VSize::A8 ? VSize::R8 : size, type, bgra);
+    if (format.dxgi == 87) {
+        format.dxgi = 28;
+        format.swap_rb = true;
+    }
+    if (format.swap_rb && size == VSize::B10G11R11)
+        return {}; // Unequal-width packed BGRA needs conversion to floating components.
+    if (format.swap_rb && size != VSize::A2B10G10R10) {
+        const auto width = VertexComponentBytes(size);
+        const auto expanded = width == 4   ? VSize::R32G32B32A32
+                              : width == 2 ? VSize::R16G16B16A16
+                                           : VSize::R8G8B8A8;
+        format.dxgi = VertexFormatFor(expanded, type).dxgi;
+    }
+    return format;
+}
+
 // DXGI depth-stencil view format from the typeless resource format used by the texture cache
 // (FormatInfo::resource_format). 0 = not a depth format / unsupported.
 constexpr std::uint32_t DsvFormat(std::uint32_t resource_format) {
@@ -465,6 +544,12 @@ struct VertexAttributeState {
 
 inline constexpr std::size_t kNumRenderTargets = 8;
 inline constexpr std::size_t kNumVertexAttributes = 32;
+
+constexpr bool RenderTargetLayersOverlap(std::uint32_t first_a, std::uint32_t count_a,
+                                         std::uint32_t first_b, std::uint32_t count_b) {
+    return count_a && count_b && std::uint64_t{first_a} < std::uint64_t{first_b} + count_b &&
+           std::uint64_t{first_b} < std::uint64_t{first_a} + count_a;
+}
 
 // Actual bound views, in fragment-output slot order. Zero means unbound.
 struct FramebufferFormats {

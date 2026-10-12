@@ -13,6 +13,7 @@
 #include "common/alignment.h"
 #include "common/logging.h"
 #include "common/scope_exit.h"
+#include "shader_recompiler/backend/hlsl/hlsl_draw_texture.h"
 #include "video_core/control/channel_state.h"
 #include "video_core/dirty_flags.h"
 #include "video_core/engines/kepler_compute.h"
@@ -364,12 +365,24 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
             return;
         }
         if (view && view->ImageHandle()) {
-            // Conservative alias handling: one writable RTV per resource. A null
-            // duplicate discards that output without binding overlapping subresources.
+            // Only overlapping RTV subresources conflict. Distinct mips/layers
+            // of one resource remain legal independent color attachments.
             bool duplicate = false;
-            for (u32 previous = 0; previous < slot; ++previous)
-                duplicate |= color_views[previous] &&
-                             color_views[previous]->ImageHandle() == view->ImageHandle();
+            const auto resource_desc = view->ImageHandle()->handle->GetDesc();
+            for (u32 previous = 0; previous < slot; ++previous) {
+                const auto* prior = color_views[previous];
+                if (!prior || prior->ImageHandle() != view->ImageHandle())
+                    continue;
+                const bool same_mip = resource_desc.SampleDesc.Count > 1 ||
+                                      prior->range.base.level == view->range.base.level;
+                duplicate |=
+                    same_mip &&
+                    (resource_desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D ||
+                     Pso::RenderTargetLayersOverlap(static_cast<u32>(prior->range.base.layer),
+                                                    static_cast<u32>(prior->range.extent.layers),
+                                                    static_cast<u32>(view->range.base.layer),
+                                                    static_cast<u32>(view->range.extent.layers)));
+            }
             if (!duplicate) {
                 color_views[slot] = view;
                 formats.colors[slot] = static_cast<u32>(view->Description().Format);
@@ -592,9 +605,9 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         for (auto& [known, known_state] : state_scratch) {
             if (known != resource)
                 continue;
-            constexpr u32 WriteStates = D3D12_RESOURCE_STATE_UNORDERED_ACCESS |
-                                        D3D12_RESOURCE_STATE_RENDER_TARGET |
-                                        D3D12_RESOURCE_STATE_DEPTH_WRITE;
+            constexpr u32 WriteStates =
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS | D3D12_RESOURCE_STATE_RENDER_TARGET |
+                D3D12_RESOURCE_STATE_DEPTH_WRITE | D3D12_RESOURCE_STATE_STREAM_OUT;
             if (!CompatibleDrawStates(known_state, state, WriteStates))
                 invalid_states = true;
             known_state |= state;
@@ -752,9 +765,12 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     const auto& submitted = draw.params;
     if (!submitted.num_vertices || !submitted.num_instances)
         return;
-    u64 last_vertex = u64{submitted.base_vertex} + submitted.num_vertices - 1;
+    const auto& guest_draw = maxwell3d->draw_manager.draw_state;
+    // Index expansion increases submitted index count, not the maximum guest
+    // vertex. Use the original vertex range for generated fans/strips/quads.
+    u64 last_vertex =
+        Pso::VertexLastNonIndexed(submitted.base_vertex, guest_draw.vertex_buffer.count);
     if (is_indexed) {
-        const auto& guest_draw = maxwell3d->draw_manager.draw_state;
         if (static_cast<u32>(guest_draw.index_buffer.format) > 2) {
             SkipDraw("invalid index width for vertex sizing");
             return;
@@ -797,7 +813,9 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         if (!regs.vertex_streams[attribute.slot].enable || !slot.resource || !slot.size)
             continue;
         const auto& input = regs.vertex_attrib_format[i];
-        const u32 bytes = Pso::VertexByteSize(static_cast<u32>(input.size.Value()));
+        const u32 vertex_size = static_cast<u32>(input.size.Value());
+        const u32 bytes = Pso::VertexByteSize(vertex_size);
+        const u32 storage_bytes = Pso::VertexStorageByteSize(vertex_size, attribute.swap_rb != 0);
         const u32 alignment = Pso::VertexAlignment(static_cast<u32>(input.size.Value()));
         const u64 last = attribute.instanced
                              ? (attribute.divisor == 0 ? 0
@@ -813,7 +831,8 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         }
         const u64 available = slot.size > attribute.offset ? slot.size - attribute.offset : 0;
         const u64 source_offset = u64{slot.offset} + attribute.offset;
-        const bool realign = (source_offset % alignment) || (slot.stride % alignment);
+        const bool realign = (source_offset % alignment) || (slot.stride % alignment) ||
+                             bytes != storage_bytes || attribute.swap_rb;
         if (!realign && required <= available) {
             vertex_views[i] = {slot.resource->handle->GetGPUVirtualAddress() + source_offset,
                                static_cast<UINT>(available), slot.stride};
@@ -845,11 +864,11 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         // Repack only misaligned streams. Each attribute owns one IA slot with
         // offset zero, so shared streams cannot impose conflicting alignments.
         const u64 elements = slot.stride ? last + 1 : 1;
-        if (elements * bytes > MaxVertexUpload) {
+        if (elements * storage_bytes > MaxVertexUpload) {
             SkipDraw("realigned vertex binding exceeds 64 MiB draw budget");
             return;
         }
-        auto packed = context.CreateBuffer(elements * bytes, D3D12_HEAP_TYPE_UPLOAD);
+        auto packed = context.CreateBuffer(elements * storage_bytes, D3D12_HEAP_TYPE_UPLOAD);
         std::fill(packed->mapped.begin(), packed->mapped.end(), u8{0});
         const u64 read_bytes = std::min(available, required);
         std::vector<u8> source(static_cast<size_t>(read_bytes));
@@ -857,10 +876,13 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         if (const auto cpu = gpu_memory->GpuToCpuAddress(guest_address))
             buffer_cache.DownloadMemory(*cpu, read_bytes);
         gpu_memory->ReadBlock(guest_address, source.data(), source.size());
-        Pso::RepackVertexAttribute(packed->mapped, source, slot.stride, bytes);
+        Pso::RepackVertexFormat(packed->mapped.first(static_cast<size_t>(elements * storage_bytes)),
+                                source, slot.stride, vertex_size,
+                                static_cast<u32>(input.type.Value()), attribute.swap_rb != 0);
         context.Retain(packed);
         vertex_views[i] = {packed->handle->GetGPUVirtualAddress(),
-                           static_cast<UINT>(elements * bytes), slot.stride ? bytes : 0};
+                           static_cast<UINT>(elements * storage_bytes),
+                           slot.stride ? storage_bytes : 0};
     }
     const auto& draw_state = maxwell3d->draw_manager.draw_state;
     const bool quads = draw_state.topology == Maxwell::PrimitiveTopology::Quads ||
@@ -890,6 +912,32 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
                       static_cast<UINT>(geometry.index_size),
                       geometry.index_is_32bit ? DXGI_FORMAT_R32_UINT : DXGI_FORMAT_R16_UINT};
         need(geometry.index, D3D12_RESOURCE_STATE_INDEX_BUFFER);
+    }
+    const auto* feedback_info = native_pipeline->TransformFeedbackInfo();
+    if (feedback_info) {
+        transform_feedback.Configure(*feedback_info);
+        for (u32 slot = 0; slot < regs.transform_feedback.buffers.size(); ++slot) {
+            const auto& guest = regs.transform_feedback.buffers[slot];
+            if (!guest.enable || !regs.transform_feedback.controls[slot].varying_count) {
+                transform_feedback.BindBuffer(slot, nullptr, 0, 0);
+                continue;
+            }
+            if (guest.size <= 0 || guest.start_offset < 0) {
+                SkipDraw("invalid guest stream-output range");
+                return;
+            }
+            const auto [buffer, offset] = buffer_cache.ObtainBuffer(
+                guest.Address() + static_cast<u32>(guest.start_offset),
+                static_cast<u32>(guest.size), VideoCommon::ObtainBufferSynchronize::FullSynchronize,
+                VideoCommon::ObtainBufferOperation::MarkAsWritten);
+            auto resource = buffer->Handle();
+            if (!resource) {
+                SkipDraw("unmapped guest stream-output buffer");
+                return;
+            }
+            transform_feedback.BindBuffer(slot, resource, offset, static_cast<u32>(guest.size));
+            need(resource, D3D12_RESOURCE_STATE_STREAM_OUT);
+        }
     }
     // Render targets.
     const SIZE_T rtv_stride =
@@ -996,6 +1044,10 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
 
     query_cache.CounterEnable(VideoCommon::QueryType::ZPassPixelCount64,
                               regs.zpass_pixel_count_enable != 0);
+    if (feedback_info)
+        transform_feedback.Bind();
+    else
+        transform_feedback.Unbind(regs.transform_feedback_enabled == 0);
     query_runtime.BeginDraw(pipeline->StageInfo(3) != nullptr);
     context.MarkWork("guest draws");
     draw(commands);
@@ -1196,10 +1248,153 @@ void RasterizerD3D12::PreparePresentation() {
     query_runtime.PauseHostConditionalRendering();
 }
 void RasterizerD3D12::DrawTexture() {
-    SkipDraw("draw_texture_state requires sampler/rectangle/blend/scissor blit linkage");
+    const auto execute_blit = [this] {
+        gpu_memory->FlushCaching();
+        query_runtime.PauseHostConditionalRendering();
+        std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
+        texture_cache.SynchronizeDescriptors(false);
+        texture_cache.UpdateRenderTargets(false);
+        const auto* current = texture_cache.GetFramebuffer();
+        if (!current)
+            return;
+        Framebuffer framebuffer = *current;
+        auto* target = framebuffer.Color(framebuffer.DrawBuffer(0));
+        if (!target || !target->ImageHandle())
+            return;
+        if (!(target->ImageHandle()->handle->GetDesc().Flags &
+              D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET)) {
+            SkipDraw("DrawTexture target lacks ALLOW_RENDER_TARGET");
+            return;
+        }
+        query_runtime.PrepareDraw();
+        const auto& blit = maxwell3d->draw_manager.draw_texture_state;
+        // Descriptor discovery may relocate ImageViews; own the source snapshot.
+        const ImageView source = texture_cache.GetImageView(blit.src_texture);
+        const auto* sampler = texture_cache.GetSampler(blit.src_sampler, false);
+        auto sampled = source.ImageHandle();
+        auto description = source.Description();
+        if (!sampled || !sampler)
+            return;
+        if (sampled->handle->GetDesc().SampleDesc.Count != 1 ||
+            (description.ViewDimension != D3D12_SRV_DIMENSION_TEXTURE2D &&
+             description.ViewDimension != D3D12_SRV_DIMENSION_TEXTURE2DARRAY) ||
+            VideoCore::Surface::IsPixelFormatInteger(source.format) ||
+            VideoCore::Surface::IsPixelFormatInteger(target->format)) {
+            SkipDraw("draw_texture_state requires single-sample float/normalized 2D views");
+            return;
+        }
+        texture_cache.PrepareImage(source.image_id, false, false);
+        if (sampled == target->ImageHandle()) {
+            sampled = CopyFeedback(sampled);
+            if (!sampled) {
+                SkipDraw("DrawTexture feedback copy budget");
+                return;
+            }
+        }
+        if (description.ViewDimension == D3D12_SRV_DIMENSION_TEXTURE2D) {
+            const auto mip = description.Texture2D.MostDetailedMip;
+            const auto levels = description.Texture2D.MipLevels;
+            const auto plane = description.Texture2D.PlaneSlice;
+            description.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+            description.Texture2DArray = {mip, levels, 0, 1, plane, 0};
+        }
+        Pso::GraphicsPsoState state{};
+        FillGraphicsState(*maxwell3d, state);
+        state.attributes.fill({});
+        state.cull_mode = Pso::kCullNone;
+        state.cull_all = 0;
+        state.fill_mode = 3; // D3D12_FILL_MODE_SOLID
+        state.topology_type = Pso::kTopologyTypeTriangle;
+        state.depth_enable = state.depth_write = state.stencil_enable = state.depth_bounds = 0;
+        state.logic_enable = state.alpha_to_coverage = state.conservative_raster = 0;
+        state.depth_bias = 0;
+        state.bias_clamp_bits = state.slope_scaled_bias_bits = 0;
+        for (auto& blend : state.blend) {
+            blend.enable = 0;
+            blend.write_mask = 15;
+        }
+        Pso::FramebufferFormats formats{};
+        formats.colors[0] = static_cast<u32>(target->Description().Format);
+        formats.sample_count =
+            static_cast<u8>(target->ImageHandle()->handle->GetDesc().SampleDesc.Count);
+        Pso::ApplyFramebufferFormats(state, formats);
+        const std::array<StageInput, 2> stages{{
+            {Shader::Stage::VertexB, 0, Shader::Backend::HLSL::DRAW_TEXTURE_VERTEX, {}},
+            {Shader::Stage::Fragment,
+             0,
+             Shader::Backend::HLSL::DRAW_TEXTURE_FRAGMENT,
+             {0, 1, 0, 1}},
+        }};
+        auto& pipeline = default_pipeline_cache->GetGraphics(
+            state, D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP, stages);
+        descriptors.Reserve(3, 1, 1);
+        const auto tables = descriptors.AllocateViews(3);
+        const auto sampler_table = descriptors.AllocateSamplers(1);
+        const auto rtv = descriptors.AllocateRtv(1);
+        descriptors.WriteNullCbv(tables, 0);
+        context.Device()->CreateShaderResourceView(sampled->handle.Get(), &description,
+                                                   tables.Slot(1));
+        descriptors.WriteNullUav(tables, 2);
+        descriptors.WriteSampler(sampler_table, 0, *sampler);
+        descriptors.CreateRtv(rtv, target);
+        context.Transition(sampled, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        context.Transition(target->ImageHandle(), D3D12_RESOURCE_STATE_RENDER_TARGET);
+        context.Retain(sampled);
+        context.Retain(target->ImageHandle());
+        auto* commands = context.Commands();
+        descriptors.SetHeaps(commands);
+        commands->SetGraphicsRootSignature(pipeline.RootSignature());
+        commands->SetPipelineState(pipeline.PipelineState());
+        commands->SetGraphicsRootDescriptorTable(1, tables.gpu);
+        commands->SetGraphicsRootDescriptorTable(2, tables.Slice(1, 1).gpu);
+        commands->SetGraphicsRootDescriptorTable(3, tables.Slice(2, 1).gpu);
+        commands->SetGraphicsRootDescriptorTable(4, sampler_table.gpu);
+        const auto size = framebuffer.Size();
+        const std::array<float, 12> constants{blit.dst_x0,
+                                              blit.dst_y0,
+                                              blit.dst_x1,
+                                              blit.dst_y1,
+                                              blit.src_x0,
+                                              blit.src_y0,
+                                              blit.src_x1,
+                                              blit.src_y1,
+                                              static_cast<float>(size.width),
+                                              static_cast<float>(size.height),
+                                              static_cast<float>(source.size.width),
+                                              static_cast<float>(source.size.height)};
+        if (!size.width || !size.height || !source.size.width || !source.size.height)
+            return;
+        commands->SetGraphicsRoot32BitConstants(0, static_cast<UINT>(constants.size()),
+                                                constants.data(), 0);
+        commands->OMSetRenderTargets(1, &rtv, TRUE, nullptr);
+        const D3D12_VIEWPORT viewport{
+            0, 0, static_cast<float>(size.width), static_cast<float>(size.height), 0, 1};
+        const D3D12_RECT scissor{0, 0, static_cast<LONG>(size.width),
+                                 static_cast<LONG>(size.height)};
+        commands->RSSetViewports(1, &viewport);
+        commands->RSSetScissorRects(1, &scissor);
+        commands->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+        transform_feedback.Unbind();
+        query_cache.CounterEnable(VideoCommon::QueryType::ZPassPixelCount64,
+                                  maxwell3d->regs.zpass_pixel_count_enable != 0);
+        query_runtime.BeginDraw(false);
+        context.MarkWork("DrawTexture blit");
+        commands->DrawInstanced(4, 1, 0, 0);
+        query_runtime.EndDraw();
+    };
+    try {
+        execute_blit();
+    } catch (const std::exception& error) {
+        SkipDraw(error.what());
+    } catch (...) {
+        SkipDraw("unknown exception in DrawTexture");
+    }
+    // Tick callbacks may throw. Let the GPU-thread boundary cancel their waiters;
+    // executing them in a noexcept scope-exit destructor could terminate instead.
     m_gpu.TickWork();
 }
 void RasterizerD3D12::Clear(u32 layer_count) try {
+    transform_feedback.Unbind();
     gpu_memory->FlushCaching();
     query_runtime.PauseHostConditionalRendering();
     std::scoped_lock lock{texture_cache.mutex};
