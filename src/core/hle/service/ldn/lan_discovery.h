@@ -7,6 +7,7 @@
 #pragma once
 
 #include <array>
+#include <condition_variable>
 #include <cstring>
 #include <functional>
 #include <memory>
@@ -54,7 +55,6 @@ public:
     ~LANDiscovery();
 
     State GetState() const;
-    void SetState(State new_state);
 
     Result GetNetworkInfo(NetworkInfo& out_network) const;
     Result GetNetworkInfo(NetworkInfo& out_network, std::span<NodeLatestUpdate> out_updates);
@@ -81,10 +81,15 @@ public:
     Result Finalize();
 
     void ReceivePacket(const Network::LDNPacket& packet);
+    void OnRoomDisconnected();
+    void UpdateRoomMembers(const Network::RoomMember::MemberList& members);
 
 protected:
     friend class LanStation;
 
+    void SetState(State new_state);
+    Result DestroyNetworkLocked();
+    Result DisconnectLocked();
     void InitNetworkInfo();
     void InitNodeStateChange();
 
@@ -115,7 +120,10 @@ protected:
     static constexpr Ssid fake_ssid{"YuzuFakeSsidForLdn"};
 
     bool inited{};
-    std::mutex packet_mutex;
+    mutable std::mutex packet_mutex;
+    std::condition_variable connection_event;
+    bool connecting{};
+    bool scanning{};
     std::array<LanStation, StationCountMax> stations;
     std::array<NodeLatestUpdate, NodeCountMax> node_changes{};
     std::array<u8, NodeCountMax> node_last_states{};

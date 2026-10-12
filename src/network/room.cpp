@@ -16,6 +16,7 @@
 #include "common/logging.h"
 #include "enet/enet.h"
 #include "network/packet.h"
+#include "network/ldn_packet.h"
 #include "network/room.h"
 #include "network/verify_user.h"
 
@@ -243,6 +244,10 @@ void Room::RoomImpl::StartLoop() {
             if (enet_host_service(server, &event, 5) > 0) {
                 switch (event.type) {
                 case ENET_EVENT_TYPE_RECEIVE:
+                    if (event.packet->dataLength == 0) {
+                        enet_packet_destroy(event.packet);
+                        break;
+                    }
                     switch (event.packet->data[0]) {
                     case IdJoinRequest:
                         HandleJoinRequest(&event);
@@ -303,10 +308,10 @@ void Room::RoomImpl::HandleJoinRequest(const ENetEvent* event) {
     std::string nickname;
     packet.Read(nickname);
 
-    IPv4Address preferred_fake_ip;
+    IPv4Address preferred_fake_ip{};
     packet.Read(preferred_fake_ip);
 
-    u32 client_version;
+    u32 client_version{};
     packet.Read(client_version);
 
     std::string pass;
@@ -314,6 +319,10 @@ void Room::RoomImpl::HandleJoinRequest(const ENetEvent* event) {
 
     std::string token;
     packet.Read(token);
+
+    if (!packet || !packet.EndOfPacket()) {
+        return;
+    }
 
     if (pass != password) {
         SendWrongPassword(event->peer);
@@ -878,19 +887,25 @@ void Room::RoomImpl::HandleLdnPacket(const ENetEvent* event) {
     Packet in_packet;
     in_packet.Append(event->packet->data, event->packet->dataLength);
 
-    in_packet.IgnoreBytes(sizeof(u8)); // Message type
-
-    in_packet.IgnoreBytes(sizeof(u8));          // LAN packet type
-    in_packet.IgnoreBytes(sizeof(IPv4Address)); // Local IP
-
-    IPv4Address remote_ip;
-    in_packet.Read(remote_ip); // Remote IP
-
-    bool broadcast;
-    in_packet.Read(broadcast); // Broadcast
+    LDNPacket ldn{};
+    if (!DeserializeLdnPacket(in_packet, ldn)) {
+        return;
+    }
+    // The room assigns addresses; a peer cannot impersonate another LDN host.
+    {
+        std::lock_guard lock(member_mutex);
+        const auto sender = std::find_if(members.begin(), members.end(),
+                                        [&](const Member& member) { return member.peer == event->peer; });
+        if (sender == members.end()) {
+            return;
+        }
+        ldn.local_ip = sender->fake_ip;
+    }
+    const auto remote_ip = ldn.remote_ip;
+    const bool broadcast = ldn.broadcast;
 
     Packet out_packet;
-    out_packet.Append(event->packet->data, event->packet->dataLength);
+    out_packet = SerializeLdnPacket(ldn);
     ENetPacket* enet_packet = enet_packet_create(out_packet.GetData(), out_packet.GetDataSize(),
                                                  ENET_PACKET_FLAG_RELIABLE);
 
@@ -1052,10 +1067,16 @@ bool Room::Create(const std::string& name, const std::string& description,
                   const GameInfo preferred_game,
                   std::unique_ptr<VerifyUser::Backend> verify_backend,
                   const Room::BanList& ban_list) {
-    ENetAddress address;
+    if (room_impl->state != State::Closed || max_connections == 0 ||
+        max_connections > MaxConcurrentConnections) {
+        return false;
+    }
+    ENetAddress address{};
     address.host = ENET_HOST_ANY;
     if (!server_address.empty()) {
-        enet_address_set_host(&address, server_address.c_str());
+        if (enet_address_set_host(&address, server_address.c_str()) != 0) {
+            return false;
+        }
     }
     address.port = server_port;
 
@@ -1070,7 +1091,7 @@ bool Room::Create(const std::string& name, const std::string& description,
     room_impl->room_information.name = name;
     room_impl->room_information.description = description;
     room_impl->room_information.member_slots = max_connections;
-    room_impl->room_information.port = server_port;
+    room_impl->room_information.port = room_impl->server->address.port;
     room_impl->room_information.preferred_game = preferred_game;
     room_impl->room_information.host_username = host_username;
     room_impl->password = password;

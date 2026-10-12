@@ -14,6 +14,9 @@ static std::shared_ptr<RoomMember> g_room_member; ///< RoomMember (Client) for n
 static std::shared_ptr<Room> g_room;              ///< Room (Server) for network games
 
 bool Init() {
+    if (g_room_member) {
+        return true;
+    }
     if (enet_initialize() != 0) {
         LOG_ERROR(Network, "Error initializing ENet");
         return false;
@@ -33,6 +36,9 @@ std::weak_ptr<RoomMember> GetRoomMember() {
 }
 
 void Shutdown() {
+    if (!g_room_member && !g_room) {
+        return;
+    }
     if (g_room_member) {
         if (g_room_member->IsConnected())
             g_room_member->Leave();

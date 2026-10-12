@@ -13,6 +13,7 @@
 #include "common/socket_types.h"
 #include "enet/enet.h"
 #include "network/packet.h"
+#include "network/ldn_packet.h"
 #include "network/room_member.h"
 
 namespace Network {
@@ -41,6 +42,8 @@ public:
 
     /// Information about the clients connected to the same room as us.
     MemberList member_information;
+    mutable std::mutex information_mutex;
+    std::atomic<u32> ping_ms{};
     /// Information about the room we're connected to.
     RoomInformation room_information;
 
@@ -54,7 +57,7 @@ public:
     std::string username;              ///< The username of this member.
     mutable std::mutex username_mutex; ///< Mutex for locking username.
 
-    IPv4Address fake_ip; ///< The fake ip of this member.
+    IPv4Address fake_ip{NoPreferredIP}; ///< The fake ip of this member.
 
     std::mutex network_mutex; ///< Mutex that controls access to the `client` variable.
     /// Thread that receives and dispatches network packets
@@ -108,7 +111,7 @@ public:
      * Extracts a MAC Address from a received ENet packet.
      * @param event The ENet event that was received.
      */
-    void HandleJoinPacket(const ENetEvent* event);
+    bool HandleJoinPacket(const ENetEvent* event);
     /**
      * Extracts RoomInformation and MemberInformation from a received ENet packet.
      * @param event The ENet event that was received.
@@ -164,10 +167,17 @@ void RoomMember::RoomMemberImpl::StartLoop() {
         // Receive packets while the connection is open
         while (IsConnected()) {
             std::lock_guard lock(network_mutex);
+            if (server) {
+                ping_ms = server->roundTripTime;
+            }
             ENetEvent event;
             if (enet_host_service(client, &event, 5) > 0) {
                 switch (event.type) {
                 case ENET_EVENT_TYPE_RECEIVE:
+                    if (event.packet->dataLength == 0) {
+                        enet_packet_destroy(event.packet);
+                        break;
+                    }
                     switch (event.packet->data[0]) {
                     case IdProxyPacket:
                         HandleProxyPackets(&event);
@@ -188,9 +198,11 @@ void RoomMember::RoomMemberImpl::StartLoop() {
                     case IdJoinSuccessAsMod:
                         // The join request was successful, we are now in the room.
                         // If we joined successfully, there must be at least one client in the room: us.
-                        ASSERT_MSG(member_information.size() > 0,
-                                "We have not yet received member information.");
-                        HandleJoinPacket(&event); // Get the MAC Address for the client
+                        if (member_information.empty() || !HandleJoinPacket(&event)) {
+                            SetState(State::Idle);
+                            SetError(Error::UnknownError);
+                            break;
+                        }
                         if (event.packet->data[0] == IdJoinSuccessAsMod) {
                             SetState(State::Moderator);
                         } else {
@@ -305,18 +317,14 @@ void RoomMember::RoomMemberImpl::HandleRoomInformationPacket(const ENetEvent* ev
     packet.Read(info.port);
     packet.Read(info.preferred_game.name);
     packet.Read(info.host_username);
-    room_information.name = info.name;
-    room_information.description = info.description;
-    room_information.member_slots = info.member_slots;
-    room_information.port = info.port;
-    room_information.preferred_game = info.preferred_game;
-    room_information.host_username = info.host_username;
-
-    u32 num_members;
+    u32 num_members{};
     packet.Read(num_members);
-    member_information.resize(num_members);
+    if (!packet || num_members > MaxConcurrentConnections) {
+        return;
+    }
+    MemberList next_members(num_members);
 
-    for (auto& member : member_information) {
+    for (auto& member : next_members) {
         packet.Read(member.nickname);
         packet.Read(member.fake_ip);
         packet.Read(member.game_info.name);
@@ -325,18 +333,23 @@ void RoomMember::RoomMemberImpl::HandleRoomInformationPacket(const ENetEvent* ev
         packet.Read(member.username);
         packet.Read(member.display_name);
         packet.Read(member.avatar_url);
-
-        {
-            std::lock_guard lock(username_mutex);
-            if (member.nickname == nickname) {
-                username = member.username;
-            }
+    }
+    if (!packet || !packet.EndOfPacket()) {
+        return;
+    }
+    {
+        std::lock_guard lock(information_mutex);
+        room_information = info;
+        member_information = std::move(next_members);
+        std::lock_guard username_lock(username_mutex);
+        for (const auto& member : member_information) {
+            if (member.nickname == nickname) username = member.username;
         }
     }
-    Invoke(room_information);
+    Invoke(info);
 }
 
-void RoomMember::RoomMemberImpl::HandleJoinPacket(const ENetEvent* event) {
+bool RoomMember::RoomMemberImpl::HandleJoinPacket(const ENetEvent* event) {
     Packet packet;
     packet.Append(event->packet->data, event->packet->dataLength);
 
@@ -344,7 +357,12 @@ void RoomMember::RoomMemberImpl::HandleJoinPacket(const ENetEvent* event) {
     packet.IgnoreBytes(sizeof(u8)); // Ignore the message type
 
     // Parse the MAC Address from the packet
-    packet.Read(fake_ip);
+    IPv4Address assigned_ip{};
+    packet.Read(assigned_ip);
+    if (!packet || !packet.EndOfPacket() || assigned_ip == NoPreferredIP) return false;
+    std::lock_guard lock(information_mutex);
+    fake_ip = assigned_ip;
+    return true;
 }
 
 void RoomMember::RoomMemberImpl::HandleProxyPackets(const ENetEvent* event) {
@@ -383,20 +401,9 @@ void RoomMember::RoomMemberImpl::HandleLdnPackets(const ENetEvent* event) {
     Packet packet;
     packet.Append(event->packet->data, event->packet->dataLength);
 
-    // Ignore the first byte, which is the message id.
-    packet.IgnoreBytes(sizeof(u8)); // Ignore the message type
-
-    u8 packet_type;
-    packet.Read(packet_type);
-    ldn_packet.type = static_cast<LDNPacketType>(packet_type);
-
-    packet.Read(ldn_packet.local_ip);
-    packet.Read(ldn_packet.remote_ip);
-    packet.Read(ldn_packet.broadcast);
-
-    packet.Read(ldn_packet.data);
-
-    Invoke<LDNPacket>(ldn_packet);
+    if (DeserializeLdnPacket(packet, ldn_packet)) {
+        Invoke<LDNPacket>(ldn_packet);
+    }
 }
 
 void RoomMember::RoomMemberImpl::HandleChatPacket(const ENetEvent* event) {
@@ -443,9 +450,13 @@ void RoomMember::RoomMemberImpl::HandleModBanListResponsePacket(const ENetEvent*
 }
 
 void RoomMember::RoomMemberImpl::Disconnect() {
-    member_information.clear();
-    room_information.member_slots = 0;
-    room_information.name.clear();
+    {
+        std::lock_guard lock(information_mutex);
+        member_information.clear();
+        room_information = {};
+        fake_ip = NoPreferredIP;
+    }
+    ping_ms = 0;
 
     if (!server) {
         return;
@@ -553,6 +564,20 @@ const RoomMember::MemberList& RoomMember::GetMemberInformation() const {
     return room_member_impl->member_information;
 }
 
+RoomMember::MemberList RoomMember::GetMemberInformationSnapshot() const {
+    std::lock_guard lock(room_member_impl->information_mutex);
+    return room_member_impl->member_information;
+}
+
+IPv4Address RoomMember::GetFakeIpAddressSnapshot() const {
+    std::lock_guard lock(room_member_impl->information_mutex);
+    return room_member_impl->fake_ip;
+}
+
+u32 RoomMember::GetPingMs() const {
+    return room_member_impl->ping_ms;
+}
+
 const std::string& RoomMember::GetNickname() const {
     return room_member_impl->nickname;
 }
@@ -568,6 +593,7 @@ const IPv4Address& RoomMember::GetFakeIpAddress() const {
 }
 
 RoomInformation RoomMember::GetRoomInformation() const {
+    std::lock_guard lock(room_member_impl->information_mutex);
     return room_member_impl->room_information;
 }
 
@@ -585,13 +611,21 @@ void RoomMember::Join(const std::string& nick, const char* server_addr, u16 serv
 
     if (!room_member_impl->client) {
         room_member_impl->client = enet_host_create(nullptr, 1, NumChannels, 0, 0);
-        ASSERT_MSG(room_member_impl->client != nullptr, "Could not create client");
+        if (!room_member_impl->client) {
+            room_member_impl->SetState(State::Idle);
+            room_member_impl->SetError(Error::UnknownError);
+            return;
+        }
     }
 
     room_member_impl->SetState(State::Joining);
 
     ENetAddress address{};
-    enet_address_set_host(&address, server_addr);
+    if (enet_address_set_host(&address, server_addr) != 0) {
+        room_member_impl->SetState(State::Idle);
+        room_member_impl->SetError(Error::CouldNotConnect);
+        return;
+    }
     address.port = server_port;
     room_member_impl->server =
         enet_host_connect(room_member_impl->client, &address, NumChannels, 0);
@@ -640,18 +674,9 @@ void RoomMember::SendProxyPacket(const ProxyPacket& proxy_packet) {
 }
 
 void RoomMember::SendLdnPacket(const LDNPacket& ldn_packet) {
-    Packet packet;
-    packet.Write(static_cast<u8>(IdLdnPacket));
-
-    packet.Write(static_cast<u8>(ldn_packet.type));
-
-    packet.Write(ldn_packet.local_ip);
-    packet.Write(ldn_packet.remote_ip);
-    packet.Write(ldn_packet.broadcast);
-
-    packet.Write(ldn_packet.data);
-
-    room_member_impl->Send(std::move(packet));
+    if (IsValidLdnPayload(ldn_packet.type, ldn_packet.data.size())) {
+        room_member_impl->Send(SerializeLdnPacket(ldn_packet));
+    }
 }
 
 void RoomMember::SendChatMessage(const std::string& message) {

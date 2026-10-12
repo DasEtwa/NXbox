@@ -97,6 +97,9 @@ private:
     // Callback identifier for the OnLDNPacketReceived event.
     Network::RoomMember::CallbackHandle<Network::LDNPacket> ldn_packet_received;
 
+    Network::RoomMember::CallbackHandle<Network::RoomMember::State> room_state_changed;
+    Network::RoomMember::CallbackHandle<Network::RoomInformation> room_information_changed;
+
     bool is_initialized{};
 };
 
