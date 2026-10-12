@@ -27,6 +27,7 @@
 #include "eden_uwp/diagnostic.h"
 #include "eden_uwp/firmware.h"
 #include "eden_uwp/home_ui_settings.h"
+#include "eden_uwp/nextendo_online.h"
 #include "eden_uwp/save_sync.h"
 #include "eden_uwp/title_settings.h"
 #include "eden_uwp/ui/anim.h"
@@ -35,6 +36,7 @@
 #include "eden_uwp/ui/input.h"
 #include "eden_uwp/ui/library.h"
 #include "eden_uwp/ui/mods_screen.h"
+#include "eden_uwp/ui/nextendo_screen.h"
 #include "eden_uwp/ui/renderer.h"
 #include "eden_uwp/ui/savesync_ui.h"
 #include "eden_uwp/ui/sources_screen.h"
@@ -125,10 +127,11 @@ constexpr int kSettingSaveSync = 0;
 constexpr int kSettingSources = 1;
 constexpr int kSettingUsb = 2;
 constexpr int kSettingCredits = 3;
-constexpr int kSettingSystemMenu = 4;
-constexpr int kSettingOfficialInterface = 5;
-constexpr int kSettingBackToNXbox = 6;
-constexpr int kSettingsRowCount = 7;
+constexpr int kSettingNextendo = 4;
+constexpr int kSettingSystemMenu = 5;
+constexpr int kSettingOfficialInterface = 6;
+constexpr int kSettingBackToNXbox = 7;
+constexpr int kSettingsRowCount = 8;
 
 constexpr std::size_t Idx(int index) {
     return static_cast<std::size_t>(index);
@@ -297,6 +300,7 @@ public:
             Toast(Tr(Text::HomeComboPrompt), Clock::now());
             input_.ConsumeUntilRelease();
         }
+        NextendoOnline::Initialize(local_state_);
         firmware_status_ = GetFirmwareStatus();
         sync_account_ = GetSyncAccount();
         sources_count_ = CountSources(local_state_);
@@ -832,6 +836,11 @@ private:
             launching_ = true;
             launch_started_ = now;
             input_.ConsumeUntilRelease();
+            return;
+        }
+        if (settings_row_ == kSettingNextendo) {
+            const InputTransition transition(input_);
+            closed_ = RunNextendoScreen(renderer_, window_, input_);
             return;
         }
         if (settings_row_ == kSettingCredits) {
@@ -1420,7 +1429,8 @@ private:
             }
             if (layer_ == Layer::Rail &&
                 (settings_row_ == kSettingSources || settings_row_ == kSettingUsb ||
-                 settings_row_ == kSettingCredits || settings_row_ == kSettingSystemMenu)) {
+                 settings_row_ == kSettingCredits || settings_row_ == kSettingSystemMenu ||
+                 settings_row_ == kSettingNextendo)) {
                 hints.push_back({Theme::kButtonA, L"A", Tr(Text::HintSelect)});
             }
         } else if (HasGame()) {
@@ -1478,11 +1488,16 @@ private:
                              Tr(Text::UsbSettingHint)};
         const Row credits_row = {Tr(Text::CreditsRowTitle), Tr(Text::CreditsRowState),
                                  Theme::kTextSecondary, Tr(Text::CreditsRowHint)};
+        const Row nextendo_row = {
+            Tr(Text::NextendoTitle),
+            Tr(Service::Nextendo::IsEnabled() ? Text::NextendoOn : Text::NextendoOff),
+            Theme::kTextSecondary, Tr(Text::NextendoRowHint)};
         const std::array<Row, kSettingsRowCount> rows = {
             {sync_row,
              sources_row,
              usb_row,
              credits_row,
+             nextendo_row,
              {Tr(Text::SystemMenuTitle), Tr(Text::SystemMenuBoot), Theme::kTextSecondary,
               Tr(Text::SystemMenuHint)},
              {Tr(Text::OfficialSwitchInterface),

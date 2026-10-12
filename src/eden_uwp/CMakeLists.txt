@@ -24,6 +24,10 @@ add_executable(eden-uwp WIN32
     save_sync/backend.cpp
     save_sync/policy.h
     save_sync/qrcodegen.cpp
+    nextendo_online.cpp
+    nextendo_online.h
+    ui/nextendo_screen.cpp
+    ui/nextendo_screen.h
     save_sync.h
     game_download.h
     http_vfs_file.cpp
@@ -90,7 +94,7 @@ add_executable(eden-uwp WIN32
 target_link_libraries(eden-uwp PRIVATE common core video_core audio_core frontend_common input_common glad)
 
 # ui/mods.cpp unpacks the mods' .zip files with zlib, which core already links privately.
-target_link_libraries(eden-uwp PRIVATE ZLIB::ZLIB)
+target_link_libraries(eden-uwp PRIVATE ZLIB::ZLIB OpenSSL::Crypto)
 
 # WinRT (CoreApplication, IFrameworkView, ApplicationData) comes from the Store umbrella import lib.
 target_link_libraries(eden-uwp PRIVATE WindowsApp.lib)

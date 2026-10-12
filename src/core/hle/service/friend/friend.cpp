@@ -14,6 +14,7 @@
 #include "core/hle/service/friend/friend_interface.h"
 #include "core/hle/service/ipc_helpers.h"
 #include "core/hle/service/kernel_helpers.h"
+#include "core/hle/service/nextendo/friends.h"
 #include "core/hle/service/server_manager.h"
 
 namespace Service::Friend {
@@ -26,7 +27,7 @@ public:
         static const FunctionInfo functions[] = {
             {0, &IFriendService::GetCompletionEvent, "GetCompletionEvent"},
             {1, &IFriendService::Cancel, "Cancel"},
-            {10100, nullptr, "GetFriendListIds"},
+            {10100, &IFriendService::GetFriendListIds, "GetFriendListIds"},
             {10101, &IFriendService::GetFriendList, "GetFriendList"},
             {10102, nullptr, "UpdateFriendInfo"},
             {10110, nullptr, "GetFriendProfileImage"},
@@ -197,14 +198,60 @@ private:
     }
 
     void GetFriendList(HLERequestContext& ctx) {
+        GetFriendListData(ctx, false);
+    }
+    void GetFriendListIds(HLERequestContext& ctx) {
+        GetFriendListData(ctx, true);
+    }
+
+    std::vector<Nextendo::FriendEntry> FilterNextendoFriends(const Common::UUID& uuid,
+                                                             const SizedFriendFilter& filter) {
+        auto friends = Nextendo::GetFriends(uuid.RawString());
+        const auto program_id = system.GetApplicationProcessProgramID();
+        std::erase_if(friends, [&](const auto& entry) {
+            return filter.is_favorite || filter.same_app_played || filter.arbitrary_app_played ||
+                   filter.group_id || (filter.same_app && entry.program_id != program_id) ||
+                   (filter.presence == PresenceFilter::Online && entry.status != 1) ||
+                   (filter.presence == PresenceFilter::OnlinePlay && entry.status != 2) ||
+                   (filter.presence == PresenceFilter::OnlineOrOnlinePlay && entry.status == 0);
+        });
+        return friends;
+    }
+
+    void GetFriendListData(HLERequestContext& ctx, bool ids_only) {
         IPC::RequestParser rp{ctx};
         const auto friend_offset = rp.Pop<u32>();
         const auto uuid = rp.PopRaw<Common::UUID>();
-        [[maybe_unused]] const auto filter = rp.PopRaw<SizedFriendFilter>();
+        const auto filter = rp.PopRaw<SizedFriendFilter>();
         const auto pid = rp.Pop<u64>();
         LOG_WARNING(Service_Friend, "(STUBBED) called, offset={}, uuid=0x{}, pid={}", friend_offset,
                     uuid.RawString(), pid);
 
+        if (Nextendo::IsEnabled()) {
+            auto friends = FilterNextendoFriends(uuid, filter);
+            const auto program_id = system.GetApplicationProcessProgramID();
+            const std::size_t stride = ids_only ? 8 : 0x200;
+            const auto offset = (std::min)(static_cast<std::size_t>(friend_offset), friends.size());
+            const auto count = ctx.CanWriteBuffer() ? (std::min)(friends.size() - offset,
+                                                                 ctx.GetWriteBufferSize() / stride)
+                                                    : 0;
+            std::vector<u8> data(count * stride);
+            for (std::size_t i = 0; i < count; ++i) {
+                if (ids_only) {
+                    Nextendo::WriteLittleEndian(data.data() + i * stride, friends[offset + i].pid,
+                                                8);
+                } else {
+                    const auto entry = Nextendo::SerializeFriend(friends[offset + i], program_id);
+                    std::copy(entry.begin(), entry.end(), data.begin() + i * stride);
+                }
+            }
+            if (ctx.CanWriteBuffer())
+                ctx.WriteBuffer(data);
+            IPC::ResponseBuilder rb{ctx, 3};
+            rb.Push(ResultSuccess);
+            rb.Push(static_cast<u32>(count));
+            return;
+        }
         IPC::ResponseBuilder rb{ctx, 3};
         rb.Push(ResultSuccess);
 
@@ -251,6 +298,24 @@ private:
     }
 
     void UpdateUserPresence(HLERequestContext& ctx) {
+        if (Nextendo::IsEnabled()) {
+            IPC::RequestParser rp{ctx};
+            Nextendo::Presence presence;
+            presence.profile_id = rp.PopRaw<Common::UUID>().RawString();
+            presence.program_id = system.GetApplicationProcessProgramID();
+            const auto buffer = ctx.ReadBuffer(0);
+            if (buffer.size() == 0xe0) {
+                presence.status = static_cast<unsigned>(buffer[0x18]) |
+                                  (static_cast<unsigned>(buffer[0x19]) << 8) |
+                                  (static_cast<unsigned>(buffer[0x1a]) << 16) |
+                                  (static_cast<unsigned>(buffer[0x1b]) << 24);
+                std::copy_n(buffer.begin() + 0x20, 0xc0, presence.app_field.begin());
+                Nextendo::QueuePresence(std::move(presence));
+            }
+            IPC::ResponseBuilder rb{ctx, 2};
+            rb.Push(ResultSuccess);
+            return;
+        }
         // Stub used by Retro City Rampage
         LOG_WARNING(Service_Friend, "(STUBBED) called");
         IPC::ResponseBuilder rb{ctx, 2};
@@ -270,6 +335,16 @@ private:
     }
 
     void GetFriendCount(HLERequestContext& ctx) {
+        if (Nextendo::IsEnabled()) {
+            IPC::RequestParser rp{ctx};
+            const auto uuid = rp.PopRaw<Common::UUID>();
+            const auto filter = rp.PopRaw<SizedFriendFilter>();
+            const auto friends = FilterNextendoFriends(uuid, filter);
+            IPC::ResponseBuilder rb{ctx, 3};
+            rb.Push(ResultSuccess);
+            rb.Push(static_cast<u32>(friends.size()));
+            return;
+        }
         LOG_DEBUG(Service_Friend, "(STUBBED) called");
 
         IPC::ResponseBuilder rb{ctx, 3};

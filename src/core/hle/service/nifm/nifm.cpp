@@ -10,6 +10,7 @@
 #include "core/hle/kernel/k_event.h"
 #include "core/hle/service/ipc_helpers.h"
 #include "core/hle/service/kernel_helpers.h"
+#include "core/hle/service/nextendo/runtime.h"
 #include "core/hle/service/nifm/nifm.h"
 #include "core/hle/service/nifm/request_state.h"
 #include "core/hle/service/server_manager.h"
@@ -223,6 +224,10 @@ static std::atomic<bool> ethernet_enabled{true};
 static std::atomic<u64> next_client_id{1};
 
 static bool HasLocalConnection() {
+    if (Nextendo::IsEnabled()) {
+        // Nextendo routes through the host stack even without a selected adapter.
+        return !Settings::values.airplane_mode.GetValue();
+    }
     const auto adapter = Network::GetSelectedNetworkInterface();
     if (!adapter || Network::TranslateIPv4(adapter->ip_address) == Network::IPv4Address{}) {
         return false;
@@ -946,13 +951,13 @@ void IGeneralService::GetInternetConnectionStatus(HLERequestContext& ctx) {
     };
     Output out{};
 
-    if (!st.connected || !HasLocalConnection()) {
+    if (!HasLocalConnection() || (!st.connected && !Nextendo::IsEnabled())) {
         out.type = 1;
         out.bars = 0;
         out.state = InternetConnectionStatus::ConnectingUnknown1;
     } else {
         out.type = st.via_wifi ? 1 : 2;
-        out.bars = st.via_wifi ? st.bars : 0;
+        out.bars = Nextendo::IsEnabled() ? 3 : (st.via_wifi ? st.bars : 0);
         out.state = InternetConnectionStatus::Connected;
     }
 
