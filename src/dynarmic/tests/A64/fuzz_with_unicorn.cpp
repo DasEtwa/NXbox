@@ -756,6 +756,14 @@ TEST_CASE("A64: Complex floating point differential", "[a64][unicorn][conformanc
                                     }
                                 }
                             }
+                            if (variant == 2 && !q) {
+                                // Unicorn 2.1.4 evaluates inactive upper FCMLA lanes for
+                                // FPSR. Mirrored inputs duplicate active exceptions only.
+                                // The separate hardware-oracle case checks ignored lanes.
+                                for (size_t reg = 0; reg < 3; ++reg) {
+                                    vecs[reg][1] = vecs[reg][0];
+                                }
+                            }
                             u32 instruction = bases[variant] | (q << 30) | (size << 22) | (2U << 16) | (1U << 5) | static_cast<u32>(iteration % 3);
                             instruction |= rotation << (variant == 0 ? 12 : variant == 1 ? 11
                                                                                          : 13);
@@ -796,4 +804,21 @@ TEST_CASE("A64: Final-page stores differential", "[a64][unicorn][conformance]") 
             RunTestInstance(jit, uni, jit_env, uni_env, conf, regs, vecs, 0, {instruction}, 0, 0);
         }
     }
+}
+
+TEST_CASE("A64: FCMLA inactive lanes hardware oracle", "[a64][unicorn][conformance]") {
+    A64TestEnv jit_env{};
+    A64TestEnv uni_env{};
+    auto conf = GetUserConfig(jit_env);
+    A64::Jit jit{conf};
+    A64Unicorn uni{uni_env};
+    A64Unicorn::RegisterArray regs{};
+    A64Unicorn::VectorArray vecs{};
+    vecs[1] = {0xfbff7bffbc003c00, 0xfe027e01fc007c00};
+    vecs[2] = {0x7c01fe027e01fc00, 0x000180000000fc02};
+    RunTestInstance(jit, uni, jit_env, uni_env, conf, regs, vecs, 0, {0x2f421021}, 0, 1U << 25);
+    // Measured on Apple M3 Pro ARM hardware; Unicorn reports spurious IOC here.
+    REQUIRE(jit.GetFpsr() == 0);
+    const A64::Vector expected{0x7e00fc007e00fc00, 0};
+    REQUIRE(jit.GetVectors()[1] == expected);
 }
