@@ -662,3 +662,32 @@ TEST_CASE("A64: Vector rounding differential", "[a64][unicorn][conformance]") {
         }
     }
 }
+
+TEST_CASE("A64: Signed division boundaries differential", "[a64][unicorn][conformance]") {
+    A64TestEnv jit_env{};
+    A64TestEnv uni_env{};
+    auto conf = GetUserConfig(jit_env);
+    A64::Jit jit{conf};
+    A64Unicorn uni{uni_env};
+    std::mt19937 random{0x1953};
+    A64Unicorn::VectorArray vecs{};
+    const std::array<u64, 8> boundaries{
+        0, 1, ~u64{0}, 0x80000000, 0x7fffffff,
+        0x8000000000000000, 0x7fffffffffffffff, 2,
+    };
+
+    for (const u32 width : {0U, 1U}) {
+        for (size_t iteration = 0; iteration < 512; ++iteration) {
+            A64Unicorn::RegisterArray regs{};
+            regs[1] = iteration < boundaries.size() * boundaries.size()
+                          ? boundaries[iteration / boundaries.size()]
+                          : (static_cast<u64>(random()) << 32) | random();
+            regs[2] = boundaries[iteration % boundaries.size()];
+            const u32 instruction = 0x1ac20c20 | (width << 31) |
+                                    static_cast<u32>(iteration % 3);
+            INFO("width=" << width << " iteration=" << iteration);
+            RunTestInstance(jit, uni, jit_env, uni_env, conf, regs, vecs, 0,
+                            {instruction}, 0, 0);
+        }
+    }
+}

@@ -741,3 +741,28 @@ TEST_CASE("A32: Unprivileged transfers differential", "[arm][unicorn][conformanc
         }
     }
 }
+
+TEST_CASE("A32: Signed division boundaries differential", "[arm][thumb][unicorn][conformance]") {
+    const auto run = []<typename TestEnv>(const std::vector<typename TestEnv::InstructionType>& instructions) {
+        TestEnv jit_env{};
+        TestEnv uni_env{};
+        Dynarmic::A32::Jit jit{GetUserConfig(jit_env)};
+        A32Unicorn<TestEnv> uni{uni_env};
+        std::mt19937 random{0x1933};
+        const std::array<u32, 6> boundaries{0, 1, ~u32{0}, 0x80000000, 0x7fffffff, 2};
+
+        for (size_t iteration = 0; iteration < 256; ++iteration) {
+            typename A32Unicorn<TestEnv>::RegisterArray regs{};
+            typename A32Unicorn<TestEnv>::ExtRegArray ext_regs{};
+            regs[2] = iteration < boundaries.size() * boundaries.size()
+                          ? boundaries[iteration / boundaries.size()] : random();
+            regs[9] = boundaries[iteration % boundaries.size()];
+            const u32 cpsr = std::is_same_v<TestEnv, ThumbTestEnv> ? 0x30 : 0x10;
+            INFO("iteration=" << iteration);
+            RunTestInstance(jit, uni, jit_env, uni_env, regs, ext_regs,
+                            instructions, cpsr, 0, 1, {}, true);
+        }
+    };
+    run.template operator()<ArmTestEnv>({0xe71af912});
+    run.template operator()<ThumbTestEnv>({0xfb92, 0xfaf9});
+}

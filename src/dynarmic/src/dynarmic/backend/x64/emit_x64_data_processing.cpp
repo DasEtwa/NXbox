@@ -1202,9 +1202,12 @@ void EmitX64::EmitSignedDiv32(EmitContext& ctx, IR::Inst* inst) {
     ctx.reg_alloc.ScratchGpr(code, HostLoc::RDX);
     ctx.reg_alloc.UseScratch(code, args[0], HostLoc::RAX);
     auto const divisor = ctx.reg_alloc.UseGpr(code, args[1]).cvt32();
-    Xbyak::Label end, ok;
+    Xbyak::Label end, ok, nonzero;
     code.test(divisor, divisor);
-    code.jz(end, code.T_NEAR);
+    code.jnz(nonzero, code.T_NEAR);
+    code.xor_(eax, eax);
+    code.jmp(end, code.T_NEAR);
+    code.L(nonzero);
     code.cmp(divisor, u32(-1)); // is sign extended
     code.jne(ok, code.T_NEAR);
     code.cmp(eax, u32(1ULL << 31));
