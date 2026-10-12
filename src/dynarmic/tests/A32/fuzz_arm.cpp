@@ -755,7 +755,8 @@ TEST_CASE("A32: Signed division boundaries differential", "[arm][thumb][unicorn]
             typename A32Unicorn<TestEnv>::RegisterArray regs{};
             typename A32Unicorn<TestEnv>::ExtRegArray ext_regs{};
             regs[2] = iteration < boundaries.size() * boundaries.size()
-                          ? boundaries[iteration / boundaries.size()] : random();
+                        ? boundaries[iteration / boundaries.size()]
+                        : random();
             regs[9] = boundaries[iteration % boundaries.size()];
             const u32 cpsr = std::is_same_v<TestEnv, ThumbTestEnv> ? 0x30 : 0x10;
             INFO("iteration=" << iteration);
