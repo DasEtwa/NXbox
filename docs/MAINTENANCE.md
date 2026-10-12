@@ -742,6 +742,10 @@ patch/source/policy behavior; Xbox GPU behavior still needs console validation.
 
 ### Console test loop
 
+The tracked [compatibility runner](../tools/nxbox/compat/README.md) automates the
+probe-style loop, preserves evidence, and writes per-game Markdown/JSON reports
+with PNG contact sheets using Python 3 standard-library Device Portal calls.
+
 1. Install a signed candidate Appx through Xbox Device Portal; record emulator revision, Mesa run,
    package version, game version and content configuration.
 2. Edit `LocalState\nxbox_env.txt` for environment overrides and `LocalState\eden_settings.txt` for
