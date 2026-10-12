@@ -10,9 +10,9 @@
 namespace D3D12 {
 namespace {
 D3D12_DEPTH_STENCILOP_DESC StencilFace(const Pso::StencilFaceState& face) {
-    return {static_cast<D3D12_STENCIL_OP>(face.fail), static_cast<D3D12_STENCIL_OP>(face.depth_fail),
-            static_cast<D3D12_STENCIL_OP>(face.pass),
-            static_cast<D3D12_COMPARISON_FUNC>(face.func)};
+    return {
+        static_cast<D3D12_STENCIL_OP>(face.fail), static_cast<D3D12_STENCIL_OP>(face.depth_fail),
+        static_cast<D3D12_STENCIL_OP>(face.pass), static_cast<D3D12_COMPARISON_FUNC>(face.func)};
 }
 
 D3D12_SHADER_BYTECODE Bytecode(const StageProgram& program) {
@@ -79,7 +79,8 @@ GraphicsPipeline::GraphicsPipeline(ID3D12Device* device, ComPtr<ID3D12RootSignat
 
     auto& ds = desc.DepthStencilState;
     ds.DepthEnable = state.depth_enable != 0;
-    ds.DepthWriteMask = state.depth_write ? D3D12_DEPTH_WRITE_MASK_ALL : D3D12_DEPTH_WRITE_MASK_ZERO;
+    ds.DepthWriteMask =
+        state.depth_write ? D3D12_DEPTH_WRITE_MASK_ALL : D3D12_DEPTH_WRITE_MASK_ZERO;
     ds.DepthFunc = static_cast<D3D12_COMPARISON_FUNC>(state.depth_func);
     ds.StencilEnable = state.stencil_enable != 0;
     ds.StencilReadMask = state.stencil_read_mask;

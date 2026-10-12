@@ -420,9 +420,8 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         const auto add_images = [&](const auto& descs, bool blacklist) {
             for (const auto& desc : descs) {
                 for (u32 i = 0; i < desc.count; ++i) {
-                    view_scratch.push_back({.index = read_handle(desc, i).first,
-                                            .blacklist = blacklist,
-                                            .id = {}});
+                    view_scratch.push_back(
+                        {.index = read_handle(desc, i).first, .blacklist = blacklist, .id = {}});
                 }
             }
         };
@@ -585,7 +584,8 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         // Textures (+ samplers), then texel buffers.
         const u32 texel_count = Shader::NumDescriptors(info->texture_buffer_descriptors);
         const u32 image_buffer_count = Shader::NumDescriptors(info->image_buffer_descriptors);
-        const VideoCommon::ImageViewInOut* texture_views = view_it + texel_count + image_buffer_count;
+        const VideoCommon::ImageViewInOut* texture_views =
+            view_it + texel_count + image_buffer_count;
         for (const auto& desc : info->texture_descriptors) {
             for (u32 i = 0; i < desc.count; ++i, ++srv_i, ++smp_i) {
                 ImageView& view = texture_cache.GetImageView((texture_views++)->id);
@@ -805,8 +805,8 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     std::array<D3D12_RECT, Maxwell::NumViewports> scissors{};
     bool y_flip = false;
     for (size_t i = 0; i < Maxwell::NumViewports; ++i) {
-        const auto result = regs.viewport_scale_offset_enabled ? MakeViewport(regs, i)
-                                                                : MakeFullViewport(regs);
+        const auto result =
+            regs.viewport_scale_offset_enabled ? MakeViewport(regs, i) : MakeFullViewport(regs);
         viewports[i] = result.viewport;
         scissors[i] = MakeScissor(regs, i);
         if (i == 0)
@@ -902,10 +902,11 @@ ID3D12CommandSignature* RasterizerD3D12::IndirectSignature(bool indexed) {
     auto& signature = indexed ? indexed_signature : draw_signature;
     if (!signature) {
         D3D12_INDIRECT_ARGUMENT_DESC argument{};
-        argument.Type = indexed ? D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED
-                                : D3D12_INDIRECT_ARGUMENT_TYPE_DRAW;
+        argument.Type =
+            indexed ? D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED : D3D12_INDIRECT_ARGUMENT_TYPE_DRAW;
         D3D12_COMMAND_SIGNATURE_DESC desc{};
-        desc.ByteStride = indexed ? sizeof(D3D12_DRAW_INDEXED_ARGUMENTS) : sizeof(D3D12_DRAW_ARGUMENTS);
+        desc.ByteStride =
+            indexed ? sizeof(D3D12_DRAW_INDEXED_ARGUMENTS) : sizeof(D3D12_DRAW_ARGUMENTS);
         desc.NumArgumentDescs = 1;
         desc.pArgumentDescs = &argument;
         Check(context.Device()->CreateCommandSignature(&desc, nullptr, IID_PPV_ARGS(&signature)),
