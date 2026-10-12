@@ -12,6 +12,7 @@
 #include "common/fs/fs.h"
 #include "core/core.h"
 #include "core/crypto/key_manager.h"
+#include "core/file_sys/registered_cache.h"
 #include "core/file_sys/vfs/vfs_real.h"
 #include "core/hle/service/filesystem/filesystem.h"
 #include "eden_uwp/await_bounded.h"
