@@ -11,6 +11,8 @@ add_library(network STATIC
     network.h
     packet.cpp
     packet.h
+    ldn_packet.h
+    proxy_packet.h
     room.cpp
     room.h
     room_member.cpp
@@ -30,4 +32,14 @@ endif()
 # Solaris uses /lib/amd64/libsocket.so and /lib/amd64/libnsl.so
 if (SOLARIS)
     target_link_libraries(network PRIVATE socket nsl)
+endif()
+
+# Compile the UWP screen in this owned target; the frontend integration is applied separately.
+if (CMAKE_SYSTEM_NAME STREQUAL "WindowsStore")
+    target_sources(network PRIVATE
+        ../eden_uwp/multiplayer_screen.cpp
+        ../eden_uwp/multiplayer_screen.h
+        ../eden_uwp/multiplayer_strings.h
+    )
+    target_link_libraries(network PRIVATE WindowsApp.lib ws2_32)
 endif()

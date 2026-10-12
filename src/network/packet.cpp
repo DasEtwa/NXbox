@@ -33,7 +33,7 @@ void Packet::Append(const void* in_data, std::size_t size_in_bytes) {
 }
 
 void Packet::Read(void* out_data, std::size_t size_in_bytes) {
-    if (out_data && CheckSize(size_in_bytes)) {
+    if (out_data && CheckSize(size_in_bytes) && size_in_bytes != 0) {
         std::memcpy(out_data, &data[read_pos], size_in_bytes);
         read_pos += size_in_bytes;
     }
@@ -50,7 +50,9 @@ const void* Packet::GetData() const {
 }
 
 void Packet::IgnoreBytes(u32 length) {
-    read_pos += length;
+    if (CheckSize(length)) {
+        read_pos += length;
+    }
 }
 
 std::size_t Packet::GetDataSize() const {
@@ -254,7 +256,7 @@ Packet& Packet::Write(const std::string& in_data) {
 }
 
 bool Packet::CheckSize(std::size_t size) {
-    is_valid = is_valid && (read_pos + size <= data.size());
+    is_valid = is_valid && (read_pos <= data.size()) && (size <= data.size() - read_pos);
 
     return is_valid;
 }

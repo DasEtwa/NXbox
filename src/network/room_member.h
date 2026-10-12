@@ -132,6 +132,11 @@ public:
      */
     const MemberList& GetMemberInformation() const;
 
+    // Copies for frontends polling on a different thread than ENet.
+    MemberList GetMemberInformationSnapshot() const;
+    IPv4Address GetFakeIpAddressSnapshot() const;
+    u32 GetPingMs() const;
+
     /**
      * Returns the nickname of the RoomMember.
      */

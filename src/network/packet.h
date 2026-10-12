@@ -4,6 +4,7 @@
 #pragma once
 
 #include <array>
+#include <string>
 #include <vector>
 #include "common/common_types.h"
 
@@ -121,11 +122,16 @@ Packet& Packet::Read(std::vector<T>& out_data) {
     // First extract the size
     u32 size = 0;
     Read(size);
+    out_data.clear();
+    // Every supported element consumes at least one wire byte. Validate before allocating.
+    if (!CheckSize(size)) {
+        return *this;
+    }
     out_data.resize(size);
 
     // Then extract the data
     for (std::size_t i = 0; i < out_data.size(); ++i) {
-        T character;
+        T character{};
         Read(character);
         out_data[i] = character;
     }
@@ -135,7 +141,7 @@ Packet& Packet::Read(std::vector<T>& out_data) {
 template <typename T, std::size_t S>
 Packet& Packet::Read(std::array<T, S>& out_data) {
     for (std::size_t i = 0; i < out_data.size(); ++i) {
-        T character;
+        T character{};
         Read(character);
         out_data[i] = character;
     }

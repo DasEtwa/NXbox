@@ -7,6 +7,7 @@
 #pragma once
 
 #include <array>
+#include <condition_variable>
 #include <cstring>
 #include <functional>
 #include <memory>
@@ -54,7 +55,6 @@ public:
     ~LANDiscovery();
 
     State GetState() const;
-    void SetState(State new_state);
 
     Result GetNetworkInfo(NetworkInfo& out_network) const;
     Result GetNetworkInfo(NetworkInfo& out_network, std::span<NodeLatestUpdate> out_updates);
@@ -70,8 +70,14 @@ public:
     Result CloseStation();
 
     Result CreateNetwork(const SecurityConfig& security_config, const UserConfig& user_config,
-                         const NetworkConfig& network_config);
+                         const NetworkConfig& network_config,
+                         const SecurityParameter* security_parameter = nullptr);
     Result DestroyNetwork();
+    Result SetStationAcceptPolicy(AcceptPolicy policy);
+    Result AddAcceptFilterEntry(MacAddress address);
+    Result ClearAcceptFilter();
+    Result Reject(Ipv4Address address);
+    Result ConnectPrivate(const ConnectNetworkPrivateData& data);
 
     Result Connect(const NetworkInfo& network_info_, const UserConfig& user_config,
                    u16 local_communication_version);
@@ -81,10 +87,15 @@ public:
     Result Finalize();
 
     void ReceivePacket(const Network::LDNPacket& packet);
+    void OnRoomDisconnected();
+    void UpdateRoomMembers(const Network::RoomMember::MemberList& members);
 
 protected:
     friend class LanStation;
 
+    void SetState(State new_state);
+    Result DestroyNetworkLocked();
+    Result DisconnectLocked();
     void InitNetworkInfo();
     void InitNodeStateChange();
 
@@ -115,7 +126,10 @@ protected:
     static constexpr Ssid fake_ssid{"YuzuFakeSsidForLdn"};
 
     bool inited{};
-    std::mutex packet_mutex;
+    mutable std::mutex packet_mutex;
+    std::condition_variable connection_event;
+    bool connecting{};
+    bool scanning{};
     std::array<LanStation, StationCountMax> stations;
     std::array<NodeLatestUpdate, NodeCountMax> node_changes{};
     std::array<u8, NodeCountMax> node_last_states{};
@@ -127,6 +141,8 @@ protected:
 
     // TODO (flTobi): Should this be an std::set?
     std::vector<Ipv4Address> connected_clients;
+    std::vector<MacAddress> accept_filter;
+    AcceptPolicy accept_policy{AcceptPolicy::AcceptAll};
     std::optional<Ipv4Address> host_ip;
 
     LanEventFunc lan_event;

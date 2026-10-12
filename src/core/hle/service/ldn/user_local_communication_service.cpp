@@ -44,15 +44,15 @@ IUserLocalCommunicationService::IUserLocalCommunicationService(Core::System& sys
             {202, D<&IUserLocalCommunicationService::CreateNetwork>, "CreateNetwork"},
             {203, D<&IUserLocalCommunicationService::CreateNetworkPrivate>, "CreateNetworkPrivate"},
             {204, D<&IUserLocalCommunicationService::DestroyNetwork>, "DestroyNetwork"},
-            {205, nullptr, "Reject"},
+            {205, D<&IUserLocalCommunicationService::Reject>, "Reject"},
             {206, D<&IUserLocalCommunicationService::SetAdvertiseData>, "SetAdvertiseData"},
             {207, D<&IUserLocalCommunicationService::SetStationAcceptPolicy>, "SetStationAcceptPolicy"},
             {208, D<&IUserLocalCommunicationService::AddAcceptFilterEntry>, "AddAcceptFilterEntry"},
-            {209, nullptr, "ClearAcceptFilter"},
+            {209, D<&IUserLocalCommunicationService::ClearAcceptFilter>, "ClearAcceptFilter"},
             {300, D<&IUserLocalCommunicationService::OpenStation>, "OpenStation"},
             {301, D<&IUserLocalCommunicationService::CloseStation>, "CloseStation"},
             {302, D<&IUserLocalCommunicationService::Connect>, "Connect"},
-            {303, nullptr, "ConnectPrivate"},
+            {303, D<&IUserLocalCommunicationService::ConnectPrivate>, "ConnectPrivate"},
             {304, D<&IUserLocalCommunicationService::Disconnect>, "Disconnect"},
             {400, D<&IUserLocalCommunicationService::Initialize>, "Initialize"},
             {401, D<&IUserLocalCommunicationService::Finalize>, "Finalize"},
@@ -68,9 +68,7 @@ IUserLocalCommunicationService::IUserLocalCommunicationService(Core::System& sys
 
 IUserLocalCommunicationService::~IUserLocalCommunicationService() {
     if (is_initialized) {
-        if (auto room_member = Network::GetRoomMember().lock()) {
-            room_member->Unbind(ldn_packet_received);
-        }
+        Finalize();
     }
 
     service_context.CloseEvent(state_change_event);
@@ -98,18 +96,20 @@ Result IUserLocalCommunicationService::GetNetworkInfo(
 Result IUserLocalCommunicationService::GetIpv4Address(Out<Ipv4Address> out_current_address,
                                                       Out<Ipv4Address> out_subnet_mask) {
     LOG_INFO(Service_LDN, "called");
-    const auto network_interface = Network::GetSelectedNetworkInterface();
-
-    R_UNLESS(network_interface.has_value(), ResultNoIpAddress);
-
-    *out_current_address = {Network::TranslateIPv4(network_interface->ip_address)};
-    *out_subnet_mask = {Network::TranslateIPv4(network_interface->subnet_mask)};
-
-    // When we're connected to a room, spoof the hosts IP address
+    bool has_room_address = false;
     if (auto room_member = Network::GetRoomMember().lock()) {
-        if (room_member->IsConnected()) {
-            *out_current_address = room_member->GetFakeIpAddress();
+        if (room_member->GetState() == Network::RoomMember::State::Joined ||
+            room_member->GetState() == Network::RoomMember::State::Moderator) {
+            *out_current_address = room_member->GetFakeIpAddressSnapshot();
+            *out_subnet_mask = {255, 255, 0, 0}; // Room addresses span 192.168.0.0/16.
+            has_room_address = true;
         }
+    }
+    if (!has_room_address) {
+        const auto network_interface = Network::GetSelectedNetworkInterface();
+        R_UNLESS(network_interface.has_value(), ResultNoIpAddress);
+        *out_current_address = {Network::TranslateIPv4(network_interface->ip_address)};
+        *out_subnet_mask = {Network::TranslateIPv4(network_interface->subnet_mask)};
     }
 
     std::reverse(std::begin(*out_current_address), std::end(*out_current_address)); // ntohl
@@ -175,7 +175,6 @@ Result IUserLocalCommunicationService::Scan(
     LOG_INFO(Service_LDN, "called, channel={}, filter_scan_flag={}, filter_network_type={}",
              channel, scan_filter.flag, scan_filter.network_type);
 
-    R_UNLESS(!out_network_info.empty(), ResultBadInput);
     R_RETURN(lan_discovery.Scan(out_network_info, *network_count, scan_filter));
 }
 
@@ -185,7 +184,6 @@ Result IUserLocalCommunicationService::ScanPrivate(
     LOG_INFO(Service_LDN, "called, channel={}, filter_scan_flag={}, filter_network_type={}",
              channel, scan_filter.flag, scan_filter.network_type);
 
-    R_UNLESS(out_network_info.empty(), ResultBadInput);
     R_RETURN(lan_discovery.Scan(out_network_info, *network_count, scan_filter));
 }
 
@@ -224,8 +222,15 @@ Result IUserLocalCommunicationService::CreateNetworkPrivate(
     InArray<AddressEntry, BufferAttr_HipcPointer> address_list) {
     LOG_INFO(Service_LDN, "called");
 
-    R_RETURN(lan_discovery.CreateNetwork(create_config.security_config, create_config.user_config,
-                                         create_config.network_config));
+    R_UNLESS(address_list.size() <= NodeCountMax, ResultBadInput);
+    R_TRY(lan_discovery.CreateNetwork(create_config.security_config, create_config.user_config,
+                                      create_config.network_config,
+                                      &create_config.security_parameter));
+    R_TRY(lan_discovery.ClearAcceptFilter());
+    for (const auto& entry : address_list) {
+        R_TRY(lan_discovery.AddAcceptFilterEntry(entry.mac_address));
+    }
+    R_SUCCEED();
 }
 
 Result IUserLocalCommunicationService::DestroyNetwork() {
@@ -242,13 +247,11 @@ Result IUserLocalCommunicationService::SetAdvertiseData(
 }
 
 Result IUserLocalCommunicationService::SetStationAcceptPolicy(AcceptPolicy accept_policy) {
-    LOG_WARNING(Service_LDN, "(STUBBED) called");
-    R_SUCCEED();
+    R_RETURN(lan_discovery.SetStationAcceptPolicy(accept_policy));
 }
 
 Result IUserLocalCommunicationService::AddAcceptFilterEntry(MacAddress mac_address) {
-    LOG_WARNING(Service_LDN, "(STUBBED) called");
-    R_SUCCEED();
+    R_RETURN(lan_discovery.AddAcceptFilterEntry(mac_address));
 }
 
 Result IUserLocalCommunicationService::OpenStation() {
@@ -276,6 +279,18 @@ Result IUserLocalCommunicationService::Connect(
                                    static_cast<u16>(connect_data.local_communication_version)));
 }
 
+Result IUserLocalCommunicationService::ConnectPrivate(const ConnectNetworkPrivateData& data) {
+    R_RETURN(lan_discovery.ConnectPrivate(data));
+}
+
+Result IUserLocalCommunicationService::Reject(Ipv4Address address) {
+    R_RETURN(lan_discovery.Reject(address));
+}
+
+Result IUserLocalCommunicationService::ClearAcceptFilter() {
+    R_RETURN(lan_discovery.ClearAcceptFilter());
+}
+
 Result IUserLocalCommunicationService::Disconnect() {
     LOG_INFO(Service_LDN, "called");
 
@@ -285,12 +300,22 @@ Result IUserLocalCommunicationService::Disconnect() {
 Result IUserLocalCommunicationService::Initialize(ClientProcessId aruid) {
     LOG_INFO(Service_LDN, "called, process_id={}", aruid.pid);
 
-    const auto network_interface = Network::GetSelectedNetworkInterface();
-    R_UNLESS(network_interface, ResultAirplaneModeEnabled);
-
+    if (is_initialized) {
+        R_SUCCEED();
+    }
     if (auto room_member = Network::GetRoomMember().lock()) {
         ldn_packet_received = room_member->BindOnLdnPacketReceived(
             [this](const Network::LDNPacket& packet) { OnLDNPacketReceived(packet); });
+        room_state_changed = room_member->BindOnStateChanged([this](const auto& state) {
+            if (state == Network::RoomMember::State::Idle)
+                lan_discovery.OnRoomDisconnected();
+        });
+        room_information_changed = room_member->BindOnRoomInformationChanged(
+            [this, weak_member = std::weak_ptr<Network::RoomMember>{room_member}](const auto&) {
+                if (auto member = weak_member.lock()) {
+                    lan_discovery.UpdateRoomMembers(member->GetMemberInformationSnapshot());
+                }
+            });
     } else {
         LOG_ERROR(Service_LDN, "Couldn't bind callback!");
         R_RETURN(ResultAirplaneModeEnabled);
@@ -305,6 +330,8 @@ Result IUserLocalCommunicationService::Finalize() {
     LOG_INFO(Service_LDN, "called");
     if (auto room_member = Network::GetRoomMember().lock()) {
         room_member->Unbind(ldn_packet_received);
+        room_member->Unbind(room_state_changed);
+        room_member->Unbind(room_information_changed);
     }
 
     is_initialized = false;
