@@ -936,9 +936,13 @@ bool LoadConfig(const Env&, Config& out, std::string& reason) {
     out = config;
     if (!config.client_id.empty() && !config.client_secret.empty())
         return true;
-    reason = "Google Drive is unavailable in this build. Configure NXBOX_GDRIVE_CLIENT_ID and "
-             "NXBOX_GDRIVE_CLIENT_SECRET.";
-    return false;
+    // Default: the shared auth server holds the Google client, so release builds embed no secret.
+    config.client_id.clear();
+    config.client_secret.clear();
+    config.endpoint = "https://auth.nspx.dev/nxbox";
+    config.backend = true;
+    out = config;
+    return true;
 }
 
 fs::path TokenPath(const Env& env) {
