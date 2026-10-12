@@ -78,6 +78,11 @@ public:
     Result Request(const Key& key, Compile compile) {
         if (!enabled)
             return compile();
+        if (worker_failed.load(std::memory_order_acquire)) {
+            if (!worker_failure_reported.test_and_set())
+                ReportFailure(worker_error);
+            return {};
+        }
         std::unique_lock lock{mutex};
         if (stopping)
             return {};
@@ -88,13 +93,7 @@ public:
                 entry.reported = true;
                 const auto failure = entry.failure;
                 lock.unlock();
-                try {
-                    std::rethrow_exception(failure);
-                } catch (const std::exception& error) {
-                    report(error.what());
-                } catch (...) {
-                    report("D3D12 async PSO compiler: non-standard exception");
-                }
+                ReportFailure(failure);
                 return {};
             }
             return entry.result;
@@ -102,8 +101,18 @@ public:
         // Bounded outstanding jobs: never turn a shader burst into unbounded RAM.
         if (pending >= MaxPending)
             return {};
-        if (!worker.joinable())
-            worker = std::thread{[this] { Run(); }};
+        if (!worker.joinable()) {
+            worker = std::thread{[this] {
+                try {
+                    Run();
+                } catch (...) {
+                    // Queue/wait failures also stay inside the thread boundary.
+                    // Publish before the release store; reporting stays on the caller.
+                    worker_error = std::current_exception();
+                    worker_failed.store(true, std::memory_order_release);
+                }
+            }};
+        }
         auto entry = std::make_shared<Entry>();
         jobs.push_back({entry, std::move(compile)});
         try {
@@ -143,6 +152,15 @@ private:
         std::shared_ptr<Entry> entry;
         Compile compile;
     };
+    void ReportFailure(const std::exception_ptr& failure) {
+        try {
+            std::rethrow_exception(failure);
+        } catch (const std::exception& error) {
+            report(error.what());
+        } catch (...) {
+            report("D3D12 async PSO compiler: non-standard exception");
+        }
+    }
     void Run() {
         for (;;) {
             Job job;
@@ -181,6 +199,9 @@ private:
     std::deque<Job> jobs;
     size_t pending{};
     bool stopping{};
+    std::exception_ptr worker_error;
+    std::atomic<bool> worker_failed{};
+    std::atomic_flag worker_failure_reported = ATOMIC_FLAG_INIT;
     std::thread worker;
 };
 } // namespace D3D12
