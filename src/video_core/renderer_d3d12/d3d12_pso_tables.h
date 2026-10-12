@@ -5,9 +5,11 @@
 // Everything here is std-only and uses raw numeric enum values (Maxwell regs on the input side,
 // D3D12/DXGI SDK values on the output side) so it can be unit tested without a Windows SDK.
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <type_traits>
 
 namespace D3D12::Pso {
@@ -88,6 +90,25 @@ constexpr std::uint32_t BlendOp(std::uint32_t v) {
     default:
         return 1;
     }
+}
+
+// GL logic-op order differs from the D3D12 SDK order.
+constexpr std::uint32_t LogicOp(std::uint32_t value) {
+    constexpr std::array<std::uint8_t, 16> ops{0, 6,  12, 2,  13, 4,  10, 8,
+                                               9, 11, 5,  14, 3,  15, 7,  1};
+    return value >= 0x1500 && value <= 0x150f ? ops[value - 0x1500] : 4;
+}
+
+// Guest indirect stride zero means tightly packed. Reject truncated/overflowing
+// ranges before accessing memory or issuing any draw.
+constexpr std::uint64_t IndirectCount(std::uint64_t bytes, std::uint64_t stride,
+                                      std::uint64_t command_size, std::uint64_t maximum,
+                                      std::uint64_t count) {
+    stride = stride ? stride : command_size;
+    if (!command_size || stride < command_size || bytes < command_size)
+        return 0;
+    const auto capacity = 1 + (bytes - command_size) / stride;
+    return (std::min)((std::min)(maximum, count), capacity);
 }
 
 // D3D12_COMPARISON_FUNC from Maxwell::ComparisonOp. Unknown -> ALWAYS.
@@ -343,6 +364,7 @@ struct VertexAttributeState {
     std::uint8_t swap_rb;
     std::uint8_t scaled;
     std::uint8_t pad;
+    std::uint32_t divisor{1};
 };
 
 inline constexpr std::size_t kNumRenderTargets = 8;
@@ -362,6 +384,8 @@ struct GraphicsPsoState {
     std::uint8_t cull_all, depth_clip, depth_enable, depth_write;
     std::uint8_t depth_func, stencil_enable, stencil_read_mask, stencil_write_mask;
     std::uint8_t independent_blend, num_render_targets, sample_count, patch_vertices;
+    std::uint8_t logic_enable, logic_op, alpha_to_coverage, conservative_raster;
+    std::uint8_t smooth_lines, reserved0, reserved1, reserved2;
     std::int32_t depth_bias;
     std::uint32_t slope_scaled_bias_bits, bias_clamp_bits;
     std::uint32_t dsv_format;
@@ -398,7 +422,7 @@ constexpr void ApplyVertexReads(GraphicsPsoState& state, std::uint32_t reads) {
         ++zero_slot;
     for (std::size_t i = 0; i < state.attributes.size(); ++i)
         if ((reads & (std::uint32_t{1} << i)) && !state.attributes[i].enabled)
-            state.attributes[i] = {2, zero_slot, 0, 2, 0, 0, 0, 0}; // R32G32B32A32_FLOAT
+            state.attributes[i] = {2, zero_slot, 0, 2, 0, 0, 0, 0, 0}; // R32G32B32A32_FLOAT
 }
 static_assert(std::has_unique_object_representations_v<GraphicsPsoState>);
 static_assert(std::is_trivially_copyable_v<GraphicsPsoState>);

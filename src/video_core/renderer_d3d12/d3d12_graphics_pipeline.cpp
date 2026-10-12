@@ -52,18 +52,19 @@ GraphicsPipeline::GraphicsPipeline(ID3D12Device* device, ComPtr<ID3D12RootSignat
 
     // Blend: IndependentBlendEnable must be set for per-target state to take effect.
     desc.BlendState.IndependentBlendEnable = state.independent_blend != 0;
+    desc.BlendState.AlphaToCoverageEnable = state.alpha_to_coverage != 0;
     for (size_t i = 0; i < Pso::kNumRenderTargets; ++i) {
         const auto& b = state.blend[i];
         auto& rt = desc.BlendState.RenderTarget[i];
         rt.BlendEnable = b.enable != 0;
-        rt.LogicOpEnable = FALSE;
+        rt.LogicOpEnable = state.logic_enable != 0;
         rt.SrcBlend = static_cast<D3D12_BLEND>(b.src);
         rt.DestBlend = static_cast<D3D12_BLEND>(b.dst);
         rt.BlendOp = static_cast<D3D12_BLEND_OP>(b.op);
         rt.SrcBlendAlpha = static_cast<D3D12_BLEND>(b.src_alpha);
         rt.DestBlendAlpha = static_cast<D3D12_BLEND>(b.dst_alpha);
         rt.BlendOpAlpha = static_cast<D3D12_BLEND_OP>(b.op_alpha);
-        rt.LogicOp = D3D12_LOGIC_OP_NOOP;
+        rt.LogicOp = static_cast<D3D12_LOGIC_OP>(state.logic_op);
         rt.RenderTargetWriteMask = b.write_mask; // R=1 G=2 B=4 A=8, same as D3D12
     }
     desc.SampleMask = 0xFFFFFFFFu;
@@ -76,6 +77,10 @@ GraphicsPipeline::GraphicsPipeline(ID3D12Device* device, ComPtr<ID3D12RootSignat
     std::memcpy(&desc.RasterizerState.SlopeScaledDepthBias, &state.slope_scaled_bias_bits,
                 sizeof(float));
     desc.RasterizerState.DepthClipEnable = state.depth_clip != 0;
+    desc.RasterizerState.AntialiasedLineEnable = state.smooth_lines != 0;
+    desc.RasterizerState.ConservativeRaster = state.conservative_raster
+                                                  ? D3D12_CONSERVATIVE_RASTERIZATION_MODE_ON
+                                                  : D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF;
 
     auto& ds = desc.DepthStencilState;
     ds.DepthEnable = state.depth_enable != 0;
@@ -104,7 +109,7 @@ GraphicsPipeline::GraphicsPipeline(ID3D12Device* device, ComPtr<ID3D12RootSignat
                                      a.offset,
                                      a.instanced ? D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA
                                                  : D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
-                                     a.instanced ? 1u : 0u};
+                                     a.instanced ? static_cast<UINT>(a.divisor) : 0u};
     }
     desc.InputLayout = {elements.data(), element_count};
     desc.PrimitiveTopologyType = static_cast<D3D12_PRIMITIVE_TOPOLOGY_TYPE>(state.topology_type);
