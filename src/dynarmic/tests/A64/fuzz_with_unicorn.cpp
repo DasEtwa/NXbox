@@ -636,8 +636,13 @@ TEST_CASE("A64: Vector rounding differential", "[a64][unicorn][conformance]") {
     std::mt19937 random{0x1952};
     A64Unicorn::RegisterArray regs{};
     const std::array<u32, 7> operations{
-        0x4e218820, 0x4ea18820, 0x4e219820, 0x4ea19820,
-        0x6e218820, 0x6e219820, 0x6ea19820,
+        0x4e218820,
+        0x4ea18820,
+        0x4e219820,
+        0x4ea19820,
+        0x6e218820,
+        0x6e219820,
+        0x6ea19820,
     };  // FRINTN/P/M/Z/A/X/I V0.4S, V1.4S.
 
     for (const u32 type : {0U, 1U}) {
@@ -647,8 +652,7 @@ TEST_CASE("A64: Vector rounding differential", "[a64][unicorn][conformance]") {
                 for (auto& part : vecs[1]) {
                     part = (static_cast<u64>(random()) << 32) | random();
                 }
-                const u32 fpcr = (static_cast<u32>(iteration % 4) << 22) |
-                                 ((random() & 1) << 24) | ((random() & 1) << 25);
+                const u32 fpcr = (static_cast<u32>(iteration % 4) << 22) | ((random() & 1) << 24) | ((random() & 1) << 25);
                 const u32 instruction = operation | (type << 22);
                 INFO("instruction=" << instruction << " fpcr=" << fpcr);
                 RunTestInstance(jit, uni, jit_env, uni_env, conf, regs, vecs, 0,
