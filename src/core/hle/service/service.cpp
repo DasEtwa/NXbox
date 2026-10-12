@@ -7,9 +7,9 @@
 #include <chrono>
 #include <cstdlib>
 #include <map>
-#include <fmt/ranges.h>
 #include <string_view>
 #include <thread>
+#include <fmt/ranges.h>
 #include "common/assert.h"
 #include "common/logging.h"
 #include "common/settings.h"
@@ -42,9 +42,10 @@ static std::shared_ptr<ServiceTrace> GetServiceTrace(Core::System& system) {
 
 void ServiceFrameworkBase::TraceRequest(HLERequestContext& ctx, u32 command) {
     const bool deferred = ctx.GetIsDeferred();
-    const std::optional<u32> result = ctx.HasResponse() && !deferred
-                                          ? std::optional{ctx.CommandBuffer()[ctx.GetDataPayloadOffset()]}
-                                          : std::nullopt;
+    const std::optional<u32> result =
+        ctx.HasResponse() && !deferred
+            ? std::optional{ctx.CommandBuffer()[ctx.GetDataPayloadOffset()]}
+            : std::nullopt;
     if (service_trace->RecordCall(service_name, ctx.IsTipc(), command, result, deferred)) {
         LOG_INFO(Service, "NXBOX_SERVICE_TRACE service={} protocol={} cmd={} result={}",
                  service_name, ctx.IsTipc() ? "TIPC" : "CMIF", command,
@@ -52,7 +53,6 @@ void ServiceFrameworkBase::TraceRequest(HLERequestContext& ctx, u32 command) {
                         : (deferred ? "deferred" : "no-response"));
     }
 }
-
 
 /// @brief Creates a function string for logging, complete with the name (or header code, depending
 /// on what's passed in) the port name, and all the cmd_buf arguments.
@@ -65,15 +65,12 @@ void ServiceFrameworkBase::TraceRequest(HLERequestContext& ctx, u32 command) {
     return function_string;
 }
 
-ServiceFrameworkBase::ServiceFrameworkBase(Core::System& system_, const char* service_name_, u32 max_sessions_, InvokerFn* handler_invoker_)
-    : SessionRequestHandler(system_.Kernel(), service_name_)
-    , service_trace{GetServiceTrace(system_)}
-    , system{system_}
-    , service_name{service_name_}
-    , is_i_storage{std::string_view{service_name_} == "IStorage"}
-    , handler_invoker{handler_invoker_}
-    , max_sessions{max_sessions_}
-{}
+ServiceFrameworkBase::ServiceFrameworkBase(Core::System& system_, const char* service_name_,
+                                           u32 max_sessions_, InvokerFn* handler_invoker_)
+    : SessionRequestHandler(system_.Kernel(), service_name_),
+      service_trace{GetServiceTrace(system_)}, system{system_}, service_name{service_name_},
+      is_i_storage{std::string_view{service_name_} == "IStorage"},
+      handler_invoker{handler_invoker_}, max_sessions{max_sessions_} {}
 
 ServiceFrameworkBase::~ServiceFrameworkBase() {
     // Wait for other threads to release access before destroying
@@ -96,7 +93,8 @@ void ServiceFrameworkBase::RegisterHandlersBaseTipc(const FunctionInfoBase* func
 
 void ServiceFrameworkBase::ReportUnimplementedFunction(HLERequestContext& ctx,
                                                        const FunctionInfoBase* info) {
-    const bool first_missing = service_trace->RecordMissing(service_name, ctx.IsTipc(), ctx.GetCommand());
+    const bool first_missing =
+        service_trace->RecordMissing(service_name, ctx.IsTipc(), ctx.GetCommand());
     if (!first_missing) {
         IPC::ResponseBuilder rb{ctx, 2};
         rb.Push(Settings::values.use_auto_stub ? ResultSuccess : IPC::ResultNotSupported);

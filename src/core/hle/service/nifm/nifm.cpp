@@ -857,7 +857,8 @@ void IGeneralService::GetCurrentIpAddress(HLERequestContext& ctx) {
         IPC::ResponseBuilder{ctx, 2}.Push(ResultNetworkCommunicationDisabled);
         return;
     }
-    if (auto room_member = Network::GetRoomMember().lock(); room_member && room_member->IsConnected()) {
+    if (auto room_member = Network::GetRoomMember().lock();
+        room_member && room_member->IsConnected()) {
         ipv4 = room_member->GetFakeIpAddress();
     }
     IPC::ResponseBuilder rb{ctx, 3};
@@ -983,7 +984,8 @@ void IGeneralService::IsAnyInternetRequestAccepted(HLERequestContext& ctx) {
     }
     u64 requested_client{};
     std::memcpy(&requested_client, buffer.data(), sizeof(requested_client));
-    const bool accepted = requested_client == client_id && accepted_requests->load() != 0 && HasLocalConnection();
+    const bool accepted =
+        requested_client == client_id && accepted_requests->load() != 0 && HasLocalConnection();
     IPC::ResponseBuilder rb{ctx, 3};
     rb.Push(ResultSuccess);
     rb.Push<u8>(accepted);
@@ -999,7 +1001,8 @@ void IGeneralService::IsWiredConnectionAvailable(HLERequestContext& ctx) {
     const auto adapter = Network::GetSelectedNetworkInterface();
     IPC::ResponseBuilder rb{ctx, 3};
     rb.Push(ResultSuccess);
-    rb.Push<u8>(adapter && adapter->kind == Network::HostAdapterKind::Ethernet && HasLocalConnection());
+    rb.Push<u8>(adapter && adapter->kind == Network::HostAdapterKind::Ethernet &&
+                HasLocalConnection());
 }
 
 void IGeneralService::IsNetworkEmulationFeatureEnabled(HLERequestContext& ctx) {
