@@ -1034,8 +1034,10 @@ void RasterizerD3D12::DrawIndirect() try {
     gpu_memory->ReadBlock(params.indirect_start_address, arguments.data(), arguments.size());
     auto& state = maxwell3d->draw_manager.draw_state;
     const auto saved_state = state;
+    const auto saved_draw_id = indirect_draw_id;
     SCOPE_EXIT {
         state = saved_state;
+        indirect_draw_id = saved_draw_id;
     };
     for (u64 i = 0; i < count; ++i) {
         indirect_draw_id = static_cast<u32>(i);
