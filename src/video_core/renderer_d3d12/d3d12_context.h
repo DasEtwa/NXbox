@@ -5,9 +5,11 @@
 #include <functional>
 #include <memory>
 #include <span>
+#include <string>
 #include <string_view>
 #include <vector>
 #include <d3d12.h>
+#include <d3d12sdklayers.h>
 #include <wrl/client.h>
 
 #include "common/common_types.h"
@@ -15,6 +17,7 @@
 namespace D3D12 {
 using Microsoft::WRL::ComPtr;
 void Diagnostic(std::string_view message) noexcept;
+bool BisectEnabled(const char* name) noexcept;
 void Check(HRESULT result, const char* operation, ID3D12Device* device = nullptr);
 void CheckPipeline(HRESULT result, const char* operation, ID3D12Device* device, u64 hash);
 struct MemoryBudget {
@@ -46,6 +49,7 @@ public:
     Context& operator=(const Context&) = delete;
     ID3D12GraphicsCommandList* Commands();
     u64 Submit();
+    void MarkWork(std::string_view label);
     void Finish();
     void ReportFailure(const std::exception& error) noexcept;
     void LogInfoQueue() noexcept;
@@ -76,6 +80,17 @@ private:
     ComPtr<ID3D12Fence> fence;
     ComPtr<ID3D12CommandAllocator> allocator;
     ComPtr<ID3D12GraphicsCommandList> commands;
+    struct InfoCallback {
+        ComPtr<ID3D12InfoQueue1> queue;
+        DWORD cookie{};
+        bool registered{};
+        ~InfoCallback() {
+            if (registered)
+                queue->UnregisterMessageCallback(cookie);
+        }
+    } info_callback;
+    u64 execute_sequence{};
+    std::vector<std::string> work;
     HANDLE event{};
     u64 submitted{};
     bool recording{};

@@ -614,6 +614,7 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     query_cache.CounterEnable(VideoCommon::QueryType::ZPassPixelCount64,
                               regs.zpass_pixel_count_enable != 0);
     query_runtime.BeginDraw(pipeline->StageInfo(3) != nullptr);
+    context.MarkWork("guest draws");
     draw(commands);
     query_runtime.EndDraw();
     if (totals.uav)
@@ -623,6 +624,10 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
 }
 
 void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) {
+    if (BisectEnabled("NXBOX_D3D12_NO_DRAWS")) {
+        m_gpu.TickWork();
+        return;
+    }
     converted_indices.reset();
     const auto& state = maxwell3d->draw_manager.draw_state;
     const auto topology = static_cast<IndexConversion::Topology>(state.topology);
@@ -693,6 +698,10 @@ ID3D12CommandSignature* RasterizerD3D12::IndirectSignature(bool indexed) {
 }
 
 void RasterizerD3D12::DrawIndirect() {
+    if (BisectEnabled("NXBOX_D3D12_NO_DRAWS")) {
+        m_gpu.TickWork();
+        return;
+    }
     const auto& params = maxwell3d->draw_manager.indirect_state;
     buffer_cache.SetDrawIndirect(&params);
     PrepareDraw(params.is_indexed, [&](ID3D12GraphicsCommandList* commands) {
@@ -736,6 +745,7 @@ void RasterizerD3D12::PreparePresentation() {
 }
 void RasterizerD3D12::DrawTexture() {}
 void RasterizerD3D12::Clear(u32 layer_count) {
+    context.MarkWork("guest clears");
     gpu_memory->FlushCaching();
     query_runtime.PauseHostConditionalRendering();
     std::scoped_lock lock{texture_cache.mutex};
@@ -851,6 +861,10 @@ void RasterizerD3D12::Clear(u32 layer_count) {
     m_gpu.TickWork();
 }
 void RasterizerD3D12::DispatchCompute() {
+    if (BisectEnabled("NXBOX_D3D12_NO_COMPUTE")) {
+        m_gpu.TickWork();
+        return;
+    }
     gpu_memory->FlushCaching();
     query_runtime.PauseHostConditionalRendering();
     auto* pipeline = default_pipeline_cache->CurrentComputePipeline();
@@ -995,6 +1009,7 @@ void RasterizerD3D12::DispatchCompute() {
     Shader::Backend::HLSL::RootConstants constants;
     std::memcpy(dispatch.constants.data(), &constants, sizeof(constants));
     dispatch.resources = resources;
+    context.MarkWork("guest compute");
     compute_dispatch.Direct(dispatch, {qmd.grid_dim_x, qmd.grid_dim_y, qmd.grid_dim_z});
     bindings.stages[0].Clear();
     m_gpu.TickWork();

@@ -317,6 +317,8 @@ bool CacheSucceeded(HRESULT result, const char* operation, ID3D12Device* device,
     } catch (const std::exception&) {
         // A cache miss or unsupported library is recoverable, but keep its HRESULT.
     }
+    if (device)
+        Check(device->GetDeviceRemovedReason(), "optional cache device removed", device);
     return false;
 }
 } // namespace
@@ -351,12 +353,21 @@ DiskPipelineCache::DiskPipelineCache(const std::filesystem::path& local_state,
                                      ID3D12Device* device)
     : DiskPipelineCache(local_state, title_id, identity) {
     impl->device = device;
+    Check(device->GetDeviceRemovedReason(), "before pipeline library identity", device);
     const auto actual = QueryIdentity(device, identity);
     if (!actual) {
         impl->directory.clear();
         return;
     }
     impl->identity = *actual;
+    Diagnostic("D3D12 cache identity luid=" + Hex(actual->adapter_luid) + " driver=" +
+               Hex(actual->driver_version) + " emitter=" + std::to_string(actual->emitter_version) +
+               " dxc=" + std::to_string(actual->dxc_version) +
+               " schema=" + std::to_string(actual->schema_version));
+    if (BisectEnabled("NXBOX_D3D12_NO_PSO_LIBRARY")) {
+        Diagnostic("D3D12 pipeline library disabled; direct PSO creation");
+        return;
+    }
     Microsoft::WRL::ComPtr<ID3D12Device1> device1;
     D3D12_FEATURE_DATA_SHADER_CACHE support{};
     if (!CacheSucceeded(
@@ -367,14 +378,25 @@ DiskPipelineCache::DiskPipelineCache(const std::filesystem::path& local_state,
                         device))
         return;
     if (!impl->directory.empty()) {
-        auto record = impl->Read(impl->directory / "pso.library");
+        const auto path = impl->directory / "pso.library";
+        std::error_code error;
+        const bool existed = std::filesystem::exists(path, error);
+        auto record = impl->Read(path);
+        if (existed && !record)
+            Diagnostic("D3D12 pipeline library identity/version/checksum mismatch; blob deleted");
         if (record)
             impl->library_input = std::move(record->payload);
     }
+    Check(device->GetDeviceRemovedReason(), "before CreatePipelineLibrary", device);
+    Diagnostic("D3D12 CreatePipelineLibrary begin bytes=" +
+               std::to_string(impl->library_input.size()));
     auto result = device1->CreatePipelineLibrary(
         impl->library_input.empty() ? nullptr : impl->library_input.data(),
         impl->library_input.size(), IID_PPV_ARGS(&impl->library));
-    if (!CacheSucceeded(result, "CreatePipelineLibrary from disk", device)) {
+    if (!CacheSucceeded(result,
+                        impl->library_input.empty() ? "CreatePipelineLibrary empty initial"
+                                                    : "CreatePipelineLibrary from disk",
+                        device)) {
         impl->library.Reset();
         impl->library_input.clear();
         if (!impl->directory.empty()) {
@@ -384,6 +406,8 @@ DiskPipelineCache::DiskPipelineCache(const std::filesystem::path& local_state,
         CacheSucceeded(device1->CreatePipelineLibrary(nullptr, 0, IID_PPV_ARGS(&impl->library)),
                        "CreatePipelineLibrary empty", device);
     }
+    Check(device->GetDeviceRemovedReason(), "after CreatePipelineLibrary", device);
+    Diagnostic("D3D12 CreatePipelineLibrary complete");
 }
 Microsoft::WRL::ComPtr<ID3D12PipelineState> DiskPipelineCache::LoadOrCreateGraphics(
     std::uint64_t key, const D3D12_GRAPHICS_PIPELINE_STATE_DESC& desc,

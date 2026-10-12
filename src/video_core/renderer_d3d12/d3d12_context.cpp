@@ -14,6 +14,10 @@
 #include "video_core/renderer_d3d12/d3d12_footprint.h"
 
 namespace D3D12 {
+bool BisectEnabled(const char* name) noexcept {
+    char value[2]{};
+    return GetEnvironmentVariableA(name, value, sizeof(value)) == 1 && value[0] == '1';
+}
 void Diagnostic(std::string_view message) noexcept {
     try {
         LOG_ERROR(Render, "{}", message);
@@ -41,6 +45,28 @@ void Diagnostic(std::string_view message) noexcept {
     }
 }
 namespace {
+void InfoMessage(D3D12_MESSAGE_CATEGORY category, D3D12_MESSAGE_SEVERITY severity,
+                 D3D12_MESSAGE_ID id, LPCSTR description, void*) noexcept {
+    // The callback can run on runtime threads; never call D3D APIs here.
+    try {
+        Diagnostic(fmt::format("D3D12 InfoQueue severity={} id={} category={} {}",
+                               static_cast<u32>(severity), static_cast<u32>(id),
+                               static_cast<u32>(category), description ? description : ""));
+    } catch (...) {
+        Diagnostic("D3D12 InfoQueue callback logging failed");
+    }
+}
+std::string Narrow(const wchar_t* value) {
+    if (!value)
+        return "unnamed";
+    const int size = WideCharToMultiByte(CP_UTF8, 0, value, -1, nullptr, 0, nullptr, nullptr);
+    if (size <= 0)
+        return "unavailable";
+    std::string text(size, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, value, -1, text.data(), size, nullptr, nullptr);
+    text.pop_back();
+    return text;
+}
 void LogDeviceInfoQueue(ID3D12Device* device) noexcept {
     try {
         if (!device)
@@ -69,6 +95,39 @@ void LogDeviceInfoQueue(ID3D12Device* device) noexcept {
         Diagnostic("D3D12 InfoQueue logging failed");
     }
 }
+template <typename Node>
+void LogBreadcrumbs(HRESULT result, const Node* head) {
+    Diagnostic(fmt::format("D3D12 DRED breadcrumbs HRESULT={:#010x}", static_cast<u32>(result)));
+    for (auto* node = head; SUCCEEDED(result) && node; node = node->pNext) {
+        const auto last = node->pLastBreadcrumbValue ? *node->pLastBreadcrumbValue : 0;
+        Diagnostic(
+            fmt::format("D3D12 DRED list={} queue={} completed={}/{}",
+                        node->pCommandListDebugNameA ? std::string{node->pCommandListDebugNameA}
+                                                     : Narrow(node->pCommandListDebugNameW),
+                        node->pCommandQueueDebugNameA ? std::string{node->pCommandQueueDebugNameA}
+                                                      : Narrow(node->pCommandQueueDebugNameW),
+                        last, node->BreadcrumbCount));
+        if constexpr (requires { node->pBreadcrumbContexts; }) {
+            for (UINT i = 0; node->pBreadcrumbContexts && i < node->BreadcrumbContextsCount; ++i) {
+                const auto& context = node->pBreadcrumbContexts[i];
+                Diagnostic(fmt::format("D3D12 DRED context op[{}]={}", context.BreadcrumbIndex,
+                                       Narrow(context.pContextString)));
+            }
+        }
+        if (node->pCommandHistory && last && last <= node->BreadcrumbCount)
+            Diagnostic(fmt::format("D3D12 DRED last completed op[{}]={}", last - 1,
+                                   static_cast<u32>(node->pCommandHistory[last - 1])));
+        if (node->pCommandHistory) {
+            const UINT begin = last > 8 ? last - 8 : 0;
+            const UINT end = last < node->BreadcrumbCount
+                                 ? last + std::min(8u, node->BreadcrumbCount - last)
+                                 : node->BreadcrumbCount;
+            for (UINT i = begin; i < end; ++i)
+                Diagnostic(fmt::format("D3D12 DRED op[{}]={}", i,
+                                       static_cast<u32>(node->pCommandHistory[i])));
+        }
+    }
+}
 void LogDeviceDred(ID3D12Device* device) noexcept {
     try {
         ComPtr<ID3D12DeviceRemovedExtendedData> dred;
@@ -76,44 +135,35 @@ void LogDeviceDred(ID3D12Device* device) noexcept {
         if (FAILED(status)) {
             Diagnostic(
                 fmt::format("D3D12 DRED unavailable HRESULT={:#010x}", static_cast<u32>(status)));
+            return;
+        }
+        ComPtr<ID3D12DeviceRemovedExtendedData1> extended;
+        const auto context_status = device->QueryInterface(IID_PPV_ARGS(&extended));
+        if (SUCCEEDED(context_status)) {
+            D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT1 breadcrumbs{};
+            const auto result = extended->GetAutoBreadcrumbsOutput1(&breadcrumbs);
+            LogBreadcrumbs(result, breadcrumbs.pHeadAutoBreadcrumbNode);
         } else {
+            Diagnostic(fmt::format("D3D12 DRED contexts unavailable HRESULT={:#010x}",
+                                   static_cast<u32>(context_status)));
             D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT breadcrumbs{};
             const auto result = dred->GetAutoBreadcrumbsOutput(&breadcrumbs);
-            Diagnostic(
-                fmt::format("D3D12 DRED breadcrumbs HRESULT={:#010x}", static_cast<u32>(result)));
-            size_t nodes{};
-            for (auto* node = breadcrumbs.pHeadAutoBreadcrumbNode;
-                 SUCCEEDED(result) && node && nodes++ < 256; node = node->pNext) {
-                const auto last = node->pLastBreadcrumbValue ? *node->pLastBreadcrumbValue : 0;
-                Diagnostic(fmt::format(
-                    "D3D12 DRED list={} queue={} completed={}/{}",
-                    node->pCommandListDebugNameA ? node->pCommandListDebugNameA : "unnamed",
-                    node->pCommandQueueDebugNameA ? node->pCommandQueueDebugNameA : "unnamed", last,
-                    node->BreadcrumbCount));
-                if (node->pCommandHistory) {
-                    const UINT begin = last > 8 ? last - 8 : 0;
-                    const UINT end = std::min(node->BreadcrumbCount, last + 8);
-                    for (UINT i = begin; i < end; ++i)
-                        Diagnostic(fmt::format("D3D12 DRED op[{}]={}", i,
-                                               static_cast<u32>(node->pCommandHistory[i])));
-                }
-            }
-            D3D12_DRED_PAGE_FAULT_OUTPUT fault{};
-            const auto fault_status = dred->GetPageFaultAllocationOutput(&fault);
-            Diagnostic(fmt::format("D3D12 DRED page fault HRESULT={:#010x} address={:#x}",
-                                   static_cast<u32>(fault_status), fault.PageFaultVA));
-            if (SUCCEEDED(fault_status)) {
-                const auto allocations = [](const char* kind,
-                                            const D3D12_DRED_ALLOCATION_NODE* node) {
-                    size_t count{};
-                    for (; node && count++ < 256; node = node->pNext)
-                        Diagnostic(fmt::format("D3D12 DRED {} allocation={} type={}", kind,
-                                               node->ObjectNameA ? node->ObjectNameA : "unnamed",
-                                               static_cast<u32>(node->AllocationType)));
-                };
-                allocations("existing", fault.pHeadExistingAllocationNode);
-                allocations("freed", fault.pHeadRecentFreedAllocationNode);
-            }
+            LogBreadcrumbs(result, breadcrumbs.pHeadAutoBreadcrumbNode);
+        }
+        D3D12_DRED_PAGE_FAULT_OUTPUT fault{};
+        const auto fault_status = dred->GetPageFaultAllocationOutput(&fault);
+        Diagnostic(fmt::format("D3D12 DRED page fault HRESULT={:#010x} address={:#x}",
+                               static_cast<u32>(fault_status), fault.PageFaultVA));
+        if (SUCCEEDED(fault_status)) {
+            const auto allocations = [](const char* kind, const D3D12_DRED_ALLOCATION_NODE* node) {
+                for (; node; node = node->pNext)
+                    Diagnostic(fmt::format("D3D12 DRED {} allocation={} type={}", kind,
+                                           node->ObjectNameA ? std::string{node->ObjectNameA}
+                                                             : Narrow(node->ObjectNameW),
+                                           static_cast<u32>(node->AllocationType)));
+            };
+            allocations("existing", fault.pHeadExistingAllocationNode);
+            allocations("freed", fault.pHeadRecentFreedAllocationNode);
         }
     } catch (...) {
         Diagnostic("D3D12 DRED logging failed");
@@ -147,15 +197,23 @@ Resource::~Resource() {
 Context::Context() {
     SetEnvironmentVariableA("NXBOX_D3D12_COMMAND_FAILURE", nullptr);
     SetEnvironmentVariableA("NXBOX_D3D12_FIRST_FAILURE", nullptr);
-    ComPtr<ID3D12DeviceRemovedExtendedDataSettings> dred;
+    ComPtr<ID3D12DeviceRemovedExtendedDataSettings1> dred;
     const auto dred_status = D3D12GetDebugInterface(IID_PPV_ARGS(&dred));
     if (SUCCEEDED(dred_status)) {
         dred->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
         dred->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
-        Diagnostic("D3D12 DRED enabled before device creation");
+        dred->SetBreadcrumbContextEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+        Diagnostic("D3D12 DRED breadcrumbs/page-fault/context enabled before device creation");
     } else {
-        Diagnostic(fmt::format("D3D12 DRED settings unavailable HRESULT={:#010x}",
-                               static_cast<u32>(dred_status)));
+        ComPtr<ID3D12DeviceRemovedExtendedDataSettings> legacy;
+        const auto status = D3D12GetDebugInterface(IID_PPV_ARGS(&legacy));
+        if (SUCCEEDED(status)) {
+            legacy->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+            legacy->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+        }
+        Diagnostic(fmt::format(
+            "D3D12 DRED context settings unavailable HRESULT={:#010x}; legacy HRESULT={:#010x}",
+            static_cast<u32>(dred_status), static_cast<u32>(status)));
     }
     char debug[2]{};
     if (GetEnvironmentVariableA("NXBOX_D3D12_DEBUG", debug, sizeof(debug)) == 1 &&
@@ -179,10 +237,43 @@ Context::Context() {
                                SUCCEEDED(status) ? "available" : "unavailable",
                                static_cast<u32>(status)));
     }
+    if (debug[0] == '1') {
+        ComPtr<ID3D12InfoQueue> info;
+        if (SUCCEEDED(device.As(&info))) {
+            info->ClearStorageFilter();
+            info->ClearRetrievalFilter();
+            info->SetMessageCountLimit(UINT64_MAX);
+            // Drain creation messages before installing the live callback.
+            LogDeviceInfoQueue(device.Get());
+        }
+        const auto query = device.As(&info_callback.queue);
+        const auto status = SUCCEEDED(query)
+                                ? info_callback.queue->RegisterMessageCallback(
+                                      InfoMessage, D3D12_MESSAGE_CALLBACK_IGNORE_FILTERS, nullptr,
+                                      &info_callback.cookie)
+                                : query;
+        info_callback.registered = SUCCEEDED(status);
+        Diagnostic(fmt::format("D3D12 InfoQueue callback HRESULT={:#010x} mode={}",
+                               static_cast<u32>(status),
+                               info_callback.registered ? "callback" : "poll"));
+    }
+    for (const auto* knob :
+         {"NXBOX_D3D12_NO_PSO_LIBRARY", "NXBOX_D3D12_NO_GPU_ASTC", "NXBOX_D3D12_NO_COMPUTE",
+          "NXBOX_D3D12_NO_DRAWS", "NXBOX_D3D12_NO_QUERIES"})
+        Diagnostic(fmt::format("D3D12 bisect {}={}", knob, BisectEnabled(knob) ? 1 : 0));
+    D3D12_FEATURE_DATA_SHADER_MODEL model{D3D_SHADER_MODEL_6_0};
+    Check(device->CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL, &model, sizeof(model)),
+          "shader model support before helper PSOs", device.Get());
+    Diagnostic(fmt::format("D3D12 shader model={:#x} required=0x60 root signature=1.0",
+                           static_cast<u32>(model.HighestShaderModel)));
+    if (model.HighestShaderModel < D3D_SHADER_MODEL_6_0)
+        throw std::runtime_error("D3D12 requires shader model 6.0");
+    Diagnostic("D3D12 CreateDevice complete; creating direct queue");
     D3D12_COMMAND_QUEUE_DESC desc{};
     desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
     Check(device->CreateCommandQueue(&desc, IID_PPV_ARGS(&queue)), "CreateCommandQueue",
           device.Get());
+    queue->SetName(L"NXbox direct queue");
     Check(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence)), "CreateFence",
           device.Get());
     Check(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator)),
@@ -205,7 +296,10 @@ Context::~Context() {
         CloseHandle(event);
 }
 void Context::LogInfoQueue() noexcept {
-    LogDeviceInfoQueue(device.Get());
+    if (info_callback.registered)
+        info_callback.queue->ClearStoredMessages();
+    else
+        LogDeviceInfoQueue(device.Get());
 }
 void Context::ReportFailure(const std::exception& error) noexcept {
     try {
@@ -267,13 +361,38 @@ ID3D12GraphicsCommandList* Context::Commands() {
     }
     return commands.Get();
 }
+void Context::MarkWork(std::string_view label) {
+    Commands();
+    if (std::find(work.begin(), work.end(), label) == work.end())
+        work.emplace_back(label);
+    // PIX string marker encoding consumed by DRED breadcrumb contexts.
+    const std::wstring marker(label.begin(), label.end());
+    commands->SetMarker(0, marker.c_str(),
+                        static_cast<UINT>((marker.size() + 1) * sizeof(wchar_t)));
+}
 u64 Context::Submit() {
     if (recording) {
         LogInfoQueue();
         Check(commands->Close(), "Close", device.Get());
         ID3D12CommandList* lists[] = {commands.Get()};
+        std::string contents;
+        for (const auto& label : work) {
+            if (!contents.empty())
+                contents += ", ";
+            contents += label;
+        }
+        const auto name = fmt::format("NXbox execute {}: {}", ++execute_sequence,
+                                      contents.empty() ? "barriers/state" : contents);
+        const std::wstring wide_name(name.begin(), name.end());
+        commands->SetName(wide_name.c_str());
+        Diagnostic(fmt::format("D3D12 ExecuteCommandLists sequence={} tick={} contents={}",
+                               execute_sequence, CurrentTick(), contents));
+        Check(device->GetDeviceRemovedReason(), "before ExecuteCommandLists", device.Get());
         queue->ExecuteCommandLists(1, lists);
         recording = false;
+        work.clear();
+        LogInfoQueue();
+        Check(device->GetDeviceRemovedReason(), "after ExecuteCommandLists", device.Get());
     }
     Check(queue->Signal(fence.Get(), ++submitted), "Signal", device.Get());
     LogInfoQueue();

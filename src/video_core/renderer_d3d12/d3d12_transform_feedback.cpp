@@ -13,6 +13,7 @@ TransformFeedback::TransformFeedback(Context& context)
     std::memset(initial.mapped_span.data(), 0, 32);
     context.Transition(counters, D3D12_RESOURCE_STATE_COPY_DEST);
     context.Retain(initial.buffer);
+    context.MarkWork("upload/copy");
     context.Commands()->CopyBufferRegion(counters->handle.Get(), 0, initial.buffer->handle.Get(),
                                          initial.offset, 32);
 }
@@ -100,6 +101,7 @@ void TransformFeedback::BindBuffer(u32 slot, ResourcePtr buffer, u64 offset, u64
         std::memcpy(reset.mapped_span.data(), &*filled_size, 8);
         context.Transition(counters, D3D12_RESOURCE_STATE_COPY_DEST);
         context.Retain(reset.buffer);
+        context.MarkWork("upload/copy");
         context.Commands()->CopyBufferRegion(counters->handle.Get(), slot * 8,
                                              reset.buffer->handle.Get(), reset.offset, 8);
     }
@@ -148,6 +150,7 @@ u64 TransformFeedback::ReadFilledSize(u32 stream) {
             auto result = readback.Request(8);
             context.Transition(counters, D3D12_RESOURCE_STATE_COPY_SOURCE);
             context.Retain(result.buffer);
+            context.MarkWork("upload/copy");
             context.Commands()->CopyBufferRegion(result.buffer->handle.Get(), result.offset,
                                                  counters->handle.Get(), i * 8, 8);
             context.Finish();

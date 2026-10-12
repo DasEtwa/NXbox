@@ -35,6 +35,7 @@ void BufferCacheRuntime::CopyBuffer(ResourcePtr dst, ResourcePtr src,
         if (copy.src_offset > src_size || copy.size > src_size - copy.src_offset ||
             copy.dst_offset > dst_size || copy.size > dst_size - copy.dst_offset)
             throw std::out_of_range("D3D12 buffer copy bounds");
+        context.MarkWork("upload/copy");
         context.Commands()->CopyBufferRegion(dst->handle.Get(), copy.dst_offset, src->handle.Get(),
                                              copy.src_offset, copy.size);
     }

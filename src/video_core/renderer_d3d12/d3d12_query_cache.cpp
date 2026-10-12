@@ -23,6 +23,8 @@ constexpr u64 SOOffset = PipelineOffset + sizeof(D3D12_QUERY_DATA_PIPELINE_STATI
 constexpr u64 ResultStride = SOOffset + 4 * sizeof(D3D12_QUERY_DATA_SO_STATISTICS);
 constexpr size_t TypeCount = static_cast<size_t>(QueryType::MaxQueryTypes);
 ComPtr<ID3D12QueryHeap> CreateHeap(Context& context, D3D12_QUERY_HEAP_TYPE type, u32 count) {
+    if (BisectEnabled("NXBOX_D3D12_NO_QUERIES"))
+        return {};
     D3D12_QUERY_HEAP_DESC desc{};
     desc.Type = type;
     desc.Count = count;
@@ -240,12 +242,16 @@ VideoCommon::StreamerInterface* QueryCacheRuntime::GetStreamerInterface(QueryTyp
     return index < TypeCount ? impl->streamers[index].get() : nullptr;
 }
 void QueryCacheRuntime::PrepareDraw() {
+    if (BisectEnabled("NXBOX_D3D12_NO_QUERIES"))
+        return;
     impl->RequireClosed();
     if (impl->count == BankSize) {
         impl->Collect();
     }
 }
 void QueryCacheRuntime::BeginDraw(bool geometry) {
+    if (BisectEnabled("NXBOX_D3D12_NO_QUERIES"))
+        return;
     impl->RequireClosed();
     if (impl->count == BankSize) {
         throw std::logic_error("PrepareDraw must precede draw state binding");
@@ -256,6 +262,7 @@ void QueryCacheRuntime::BeginDraw(bool geometry) {
                 impl->enabled[static_cast<size_t>(QueryType::ZPassPixelCount64)],
             geometry, impl->feedback.StreamMask()};
     auto* commands = impl->context.Commands();
+    impl->context.MarkWork("queries");
     commands->BeginQuery(impl->pipeline.Get(), D3D12_QUERY_TYPE_PIPELINE_STATISTICS, impl->count);
     if (draw.occlusion) {
         commands->BeginQuery(impl->occlusion.Get(), D3D12_QUERY_TYPE_OCCLUSION, impl->count);
@@ -268,6 +275,8 @@ void QueryCacheRuntime::BeginDraw(bool geometry) {
     impl->drawing = true;
 }
 void QueryCacheRuntime::EndDraw() {
+    if (BisectEnabled("NXBOX_D3D12_NO_QUERIES"))
+        return;
     if (!impl->drawing) {
         throw std::logic_error("D3D12 EndDraw without BeginDraw");
     }
@@ -294,6 +303,8 @@ void QueryCacheRuntime::EndDraw() {
     impl->drawing = false;
 }
 u64 QueryCacheRuntime::ReadCounter(QueryType type, u32 stream) {
+    if (BisectEnabled("NXBOX_D3D12_NO_QUERIES"))
+        return 0;
     if (stream >= 4 || static_cast<size_t>(type) >= TypeCount) {
         throw std::out_of_range("Invalid D3D12 query counter");
     }
@@ -349,6 +360,8 @@ void QueryCacheRuntime::Barriers(bool) {
     impl->RequireClosed(); // Explicit resource transitions order every resolve/copy.
 }
 void QueryCacheRuntime::PauseHostConditionalRendering() {
+    if (BisectEnabled("NXBOX_D3D12_NO_QUERIES"))
+        return;
     impl->context.Commands()->SetPredication(nullptr, 0, D3D12_PREDICATION_OP_EQUAL_ZERO);
 }
 void QueryCacheRuntime::EndHostConditionalRendering() {
@@ -357,6 +370,8 @@ void QueryCacheRuntime::EndHostConditionalRendering() {
     impl->predicate.reset();
 }
 void QueryCacheRuntime::ResumeHostConditionalRendering() {
+    if (BisectEnabled("NXBOX_D3D12_NO_QUERIES"))
+        return;
     if (impl->predicate_set) {
         impl->context.Transition(impl->predicate, D3D12_RESOURCE_STATE_PREDICATION);
         // D3D12 EQUAL_ZERO skips commands when zero, so a one means execute.
@@ -378,6 +393,8 @@ bool QueryCacheRuntime::HostConditionalRenderingCompareValues(VideoCommon::Looku
 }
 bool QueryCacheRuntime::CompareConditional(VideoCommon::LookupData first,
                                            VideoCommon::LookupData second, bool equal) {
+    if (BisectEnabled("NXBOX_D3D12_NO_QUERIES"))
+        return false;
     impl->RequireClosed();
     if (!first.address) {
         EndHostConditionalRendering();
@@ -406,6 +423,9 @@ bool QueryCacheRuntime::CompareConditional(VideoCommon::LookupData first,
     return true;
 }
 QueryCacheRuntime::Timestamp QueryCacheRuntime::CaptureTimestamp() {
+    if (BisectEnabled("NXBOX_D3D12_NO_QUERIES"))
+        return {};
+    impl->context.MarkWork("timestamp query");
     impl->RequireClosed();
     auto heap = CreateHeap(impl->context, D3D12_QUERY_HEAP_TYPE_TIMESTAMP, 1);
     Timestamp timestamp{impl->readback.Request(8), impl->context.CurrentTick(), 0};
@@ -420,6 +440,8 @@ QueryCacheRuntime::Timestamp QueryCacheRuntime::CaptureTimestamp() {
     return timestamp;
 }
 u64 QueryCacheRuntime::ReadTimestamp(const Timestamp& timestamp) {
+    if (BisectEnabled("NXBOX_D3D12_NO_QUERIES"))
+        return 0;
     impl->RequireClosed();
     if (!timestamp.result.buffer || timestamp.result.mapped_span.size() < 8) {
         throw std::invalid_argument("Invalid D3D12 timestamp");

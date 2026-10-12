@@ -44,6 +44,9 @@ ComputePasses::ComputePasses(Context& context)
                              HostShaders::QUAD_INDEXED_HLSL};
     ShaderCompiler compiler;
     for (std::size_t i = 0; i < sources.size(); ++i) {
+        if (i == static_cast<size_t>(HelperComputePass::DecodeAstc) &&
+            BisectEnabled("NXBOX_D3D12_NO_GPU_ASTC"))
+            continue;
         const auto dxil = compiler.Compile(sources[i], L"main", L"cs_6_0");
         D3D12_COMPUTE_PIPELINE_STATE_DESC desc{};
         desc.pRootSignature = root_signature.Get();
@@ -69,6 +72,7 @@ ResourcePtr ComputePasses::UploadInput(const ResourcePtr& staging, std::uint64_t
         context.CreateResource(desc, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_COPY_DEST);
     context.Transition(staging, D3D12_RESOURCE_STATE_COPY_SOURCE);
     context.Retain(input);
+    context.MarkWork("upload/copy");
     context.Commands()->CopyBufferRegion(input->handle.Get(), 0, staging->handle.Get(), offset,
                                          size);
     return input;
@@ -220,6 +224,7 @@ void ComputePasses::Run(HelperComputePass pass, ComputeConstants constants, Comp
     sampler.MaxLOD = std::numeric_limits<float>::max();
     context.Device()->CreateSampler(&sampler, sampler_heap->GetCPUDescriptorHandleForHeapStart());
     bindings.resources = resources;
+    context.MarkWork(pass == HelperComputePass::DecodeAstc ? "ASTC compute" : "helper compute");
     dispatch.Direct(bindings, groups);
 }
 } // namespace D3D12

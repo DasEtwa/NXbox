@@ -236,3 +236,42 @@ comparisons remain required acceptance evidence; passing host tests alone does n
 complete that evidence. For console evidence, keep startup logs, the test-color
 capture, frame progression and teardown/removal logs. Do not treat passing host
 checks as proof that the Xbox accepts the swapchain or shader compiler imports.
+
+## Early device removal bisect
+
+With `NXBOX_D3D12_DEBUG=1`, diagnostics capture all InfoQueue severities through
+an unfiltered InfoQueue1 callback, with polling when the callback is unavailable.
+Creation messages are drained before registration. Each ExecuteCommandLists logs
+its sequence, fence tick and recorded work categories; command lists have matching
+names and string markers. Present and pipeline-library creation have explicit
+before/after removal checks. UWP diagnostics also append to `nxbox_crash.txt`.
+DRED enables breadcrumbs, page faults and breadcrumb contexts before device creation;
+removal reports list/queue names, the last completed operation, nearby operations,
+contexts and page-fault allocations. Availability HRESULTs are retained.
+
+Set each knob to exactly `1` before starting a fresh process. They deliberately
+change emulation behavior and are intended only to isolate device removal:
+
+| Variable | Effect |
+| --- | --- |
+| `NXBOX_D3D12_NO_PSO_LIBRARY` | Skip native pipeline-library creation/load/store/serialization; keep direct PSOs and validated DXIL/recipe caching. |
+| `NXBOX_D3D12_NO_GPU_ASTC` | Disable accelerated ASTC uploads and the ASTC helper PSO; use the CPU conversion path. |
+| `NXBOX_D3D12_NO_COMPUTE` | Skip guest compute dispatches; retain helper compute and GPU work accounting. |
+| `NXBOX_D3D12_NO_DRAWS` | Skip direct/indirect guest draws; retain clears, compositor presentation and GPU work accounting. |
+| `NXBOX_D3D12_NO_QUERIES` | Disable native query heaps, begin/end/resolve, timestamps and host predication; return zero counters/timestamps and retain guest report writes. |
+
+Initialization order is device/SM6 support, direct queue/fence/allocator/list,
+rasterizer heaps and transform-feedback counter upload recording, swapchain and
+SM6.0 presentation PSOs, counter upload submission, test clear/present submission
+and completion, then disk shader-cache warmup. All root signatures use version 1.0.
+The view heap has 262144 descriptors and the sampler heap has 2048; creation logs
+record these capacities rather than assuming console-specific limits.
+
+The third SM3DW console capture (`/tmp/d3d12crash3`) establishes removal reason
+`0x887a0020`, but cannot identify the offending work. The old “from disk” label
+was also used for an empty blob. Existing disk records already validate adapter
+LUID, driver version, emitter/DXC/schema/format versions and checksum, deleting
+stale/corrupt records before passing their payload to the driver. New logs include
+identity and actual blob size, and native-library fallback cannot swallow a removed
+device. ASTC image stores already check output dimensions; no out-of-bounds store
+was established by this capture. A new console run is required to locate the fault.

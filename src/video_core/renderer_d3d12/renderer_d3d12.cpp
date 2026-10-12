@@ -190,8 +190,11 @@ struct RendererD3D12::Impl {
         Check(context.Device()->CreateDescriptorHeap(&heap, IID_PPV_ARGS(&srv_heap)),
               "Create SRV heap", context.Device());
         srv_stride = context.Device()->GetDescriptorHandleIncrementSize(heap.Type);
+        Diagnostic("D3D12 swapchain and descriptor heaps created");
         AcquireBuffers();
         InitializePipeline();
+        context.LogInfoQueue();
+        Diagnostic("D3D12 present PSOs ready");
         LOG_INFO(Render, "D3D12 initialized: native caches/framebuffer presentation; guest "
                          "pipeline path=Maxwell/HLSL/DXIL");
     }
@@ -220,6 +223,7 @@ struct RendererD3D12::Impl {
         for (const auto& layer : layers)
             textures.push_back(rasterizer.FramebufferTexture(layer));
         const UINT index = swapchain->GetCurrentBackBufferIndex();
+        context.MarkWork(layers.empty() ? "init present clear" : "frame present clear/compositor");
         auto* commands = context.Commands();
         context.Transition(buffers[index], D3D12_RESOURCE_STATE_RENDER_TARGET);
         const auto target = Rtv(index);
@@ -278,7 +282,12 @@ struct RendererD3D12::Impl {
         }
         context.Transition(buffers[index], D3D12_RESOURCE_STATE_PRESENT);
         context.Submit();
-        Check(swapchain->Present(1, 0), "Present", context.Device());
+        Diagnostic("D3D12 Present begin");
+        const auto status = swapchain->Present(1, 0);
+        context.LogInfoQueue();
+        Check(status, "Present", context.Device());
+        Check(context.Device()->GetDeviceRemovedReason(), "after Present", context.Device());
+        Diagnostic("D3D12 Present complete");
     }
 };
 RendererD3D12::RendererD3D12(Core::Frontend::EmuWindow& window,

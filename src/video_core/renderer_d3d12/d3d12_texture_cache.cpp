@@ -120,7 +120,8 @@ Image::Image(TextureCacheRuntime& runtime, const VideoCommon::ImageInfo& info, G
         }
     }
     resource = MakeTexture(runtime.context, info, host_format);
-    if (VideoCore::Surface::IsPixelFormatASTC(info.format) &&
+    if (!BisectEnabled("NXBOX_D3D12_NO_GPU_ASTC") &&
+        VideoCore::Surface::IsPixelFormatASTC(info.format) &&
         info.type == VideoCommon::ImageType::e2D && info.num_samples == 1 &&
         host_format.block_width == 1 &&
         (resource->handle->GetDesc().Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS)) {
@@ -243,6 +244,7 @@ void Image::Transfer(const StagingBufferRef& input,
                 RepackRows(aligned.mapped_span, map.mapped_span.subspan(base), row_bytes, num_rows,
                            extent.depth, footprint.Footprint.RowPitch, padded_slice, row_stride,
                            slice_stride);
+                context.MarkWork("upload/copy");
                 context.Commands()->CopyTextureRegion(&texture, offset.x, offset.y, offset.z,
                                                       &linear, nullptr);
             } else {
@@ -252,6 +254,7 @@ void Image::Transfer(const StagingBufferRef& input,
                               static_cast<UINT>(offset.x) + extent.width,
                               static_cast<UINT>(offset.y) + extent.height,
                               static_cast<UINT>(offset.z) + extent.depth};
+                context.MarkWork("upload/copy");
                 context.Commands()->CopyTextureRegion(&linear, 0, 0, 0, &texture,
                                                       full_subresource ? nullptr : &box);
                 // The caller's tight staging stays leased through CPU unpack after the fence.
@@ -462,6 +465,7 @@ void TextureCacheRuntime::CopyImage(Image& dst, Image& src,
                           static_cast<UINT>(copy.src_offset.x) + copy.extent.width,
                           static_cast<UINT>(copy.src_offset.y) + copy.extent.height,
                           static_cast<UINT>(copy.src_offset.z) + copy.extent.depth};
+            context.MarkWork("upload/copy");
             context.Commands()->CopyTextureRegion(&target, copy.dst_offset.x, copy.dst_offset.y,
                                                   copy.dst_offset.z, &source,
                                                   full_copy ? nullptr : &box);
@@ -529,6 +533,7 @@ ResourcePtr TextureCacheRuntime::UploadFramebuffer(Tegra::MaxwellDeviceMemoryMan
                                config.height, 1, footprint.row_pitch}};
     target.pResource = framebuffer->handle.Get();
     target.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    context.MarkWork("upload/copy");
     context.Commands()->CopyTextureRegion(&target, 0, 0, 0, &source, nullptr);
     return framebuffer;
 }
