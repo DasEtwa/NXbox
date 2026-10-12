@@ -745,7 +745,6 @@ void RasterizerD3D12::PreparePresentation() {
 }
 void RasterizerD3D12::DrawTexture() {}
 void RasterizerD3D12::Clear(u32 layer_count) {
-    context.MarkWork("guest clears");
     gpu_memory->FlushCaching();
     query_runtime.PauseHostConditionalRendering();
     std::scoped_lock lock{texture_cache.mutex};

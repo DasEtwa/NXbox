@@ -176,6 +176,7 @@ bool ClearRenderer::Execute(const ClearOperations::Selection& selection, const C
     if (values.color_type != ClearColorType::Float && values.color_type != ClearColorType::Uint &&
         values.color_type != ClearColorType::Sint)
         throw std::invalid_argument("Invalid clear color type");
+    impl->context.MarkWork("guest clears");
     bool drawn{};
     if (color && color->resource && selection.color_mask) {
         const auto rect = Rectangle(*color, clip);
