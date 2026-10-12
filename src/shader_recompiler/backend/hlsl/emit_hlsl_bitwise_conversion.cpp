@@ -19,8 +19,8 @@ void EmitConditionRef(EmitContext& ctx, IR::Inst& inst, const IR::Value& value) 
     }
 }
 
-void EmitBitCastU16F16([[maybe_unused]] EmitContext& ctx, [[maybe_unused]] IR::Inst& inst) {
-    NotImplemented();
+void EmitBitCastU16F16(EmitContext& ctx, IR::Inst& inst, std::string_view value) {
+    ctx.AddU32("{} = f32tof16({});", inst, value);
 }
 
 void EmitBitCastU32F32(EmitContext& ctx, IR::Inst& inst, std::string_view value) {
@@ -31,8 +31,8 @@ void EmitBitCastU64F64(EmitContext& ctx, IR::Inst& inst, std::string_view value)
     ctx.AddU64("{}=doubleBitsToUint64({});", inst, value);
 }
 
-void EmitBitCastF16U16([[maybe_unused]] EmitContext& ctx, [[maybe_unused]] IR::Inst& inst) {
-    NotImplemented();
+void EmitBitCastF16U16(EmitContext& ctx, IR::Inst& inst, std::string_view value) {
+    ctx.AddF32("{} = f16tof32({} & 0xffffu);", inst, value);
 }
 
 void EmitBitCastF32U32(EmitContext& ctx, IR::Inst& inst, std::string_view value) {

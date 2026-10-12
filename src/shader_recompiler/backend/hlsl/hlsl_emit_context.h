@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <set>
 #include <string>
 #include <unordered_set>
 #include <utility>
@@ -131,9 +132,13 @@ public:
     const RuntimeInfo& runtime_info;
     Stage stage{};
     bool uses_cc_carry{};
+    bool uses_register_state{};
+    bool uses_shared_wide{};
+    std::set<u32> goto_variables;
     std::unordered_set<IR::Inst*> handled_pseudo;
     std::string Attribute(IR::Attribute attribute, bool output);
     std::string Resource(const IR::Value& index, u32 descriptor, bool image, bool buffer = false);
+    void GlobalMemoryAccess(size_t index, std::string_view address, u32 bytes);
     std::string Sampler(const IR::Value& index, u32 descriptor);
     struct ResourceDefinition {
         u32 binding;
@@ -142,6 +147,6 @@ public:
     std::vector<ResourceDefinition> textures, texture_buffers, images, image_buffers;
     std::vector<u32> storage_bindings;
     std::string ReturnStatement() const;
-    void FinishOutput();
+    void FinishOutput(std::string_view output = "output");
 };
 } // namespace Shader::Backend::HLSL

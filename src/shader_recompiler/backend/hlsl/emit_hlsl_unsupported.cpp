@@ -1,357 +1,217 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Fail closed for unlowered frontend operations and unsupported SM 6.0 features.
 #include "shader_recompiler/backend/hlsl/emit_hlsl_instructions.h"
+#include "shader_recompiler/backend/hlsl/hlsl_emit_context.h"
 #include "shader_recompiler/exception.h"
 namespace Shader::Backend::HLSL {
-void EmitEmitVertex(EmitContext&, const IR::Value&) {
-    NotImplemented();
-}
-void EmitEndPrimitive(EmitContext&, const IR::Value&) {
-    NotImplemented();
-}
-void EmitSetAttributeIndexed(EmitContext&, std::string_view, std::string_view, std::string_view) {
-    NotImplemented();
-}
 void EmitGetPatch(EmitContext&, IR::Inst&, IR::Patch) {
-    NotImplemented();
+    throw NotImplementedException("HLSL GetPatch requires hull/domain patch linkage");
 }
 void EmitSetPatch(EmitContext&, IR::Patch, std::string_view) {
-    NotImplemented();
+    throw NotImplementedException("HLSL SetPatch requires hull/domain patch linkage");
 }
-void EmitInvocationId(EmitContext&, IR::Inst&) {
-    NotImplemented();
-}
-void EmitIsHelperInvocation(EmitContext&, IR::Inst&) {
-    NotImplemented();
+void EmitIsHelperInvocation(EmitContext& ctx, IR::Inst& inst) {
+    // IsHelperLane is an SM 6.6 intrinsic; callers must select RequiredShaderModel.
+    ctx.AddU1("{} = {};", inst, ctx.stage == Stage::Fragment ? "IsHelperLane()" : "false");
 }
 void EmitSR_WScaleFactorXY(EmitContext&, IR::Inst&) {
-    NotImplemented();
+    throw NotImplementedException("HLSL SR_WScaleFactorXY has no defined Maxwell W-scale register "
+                                  "mapping in the reference backends");
 }
 void EmitSR_WScaleFactorZ(EmitContext&, IR::Inst&) {
-    NotImplemented();
-}
-void EmitLoadGlobalU8(EmitContext&) {
-    NotImplemented();
-}
-void EmitLoadGlobalS8(EmitContext&) {
-    NotImplemented();
-}
-void EmitLoadGlobalU16(EmitContext&) {
-    NotImplemented();
-}
-void EmitLoadGlobalS16(EmitContext&) {
-    NotImplemented();
-}
-void EmitWriteGlobalU8(EmitContext&) {
-    NotImplemented();
-}
-void EmitWriteGlobalS8(EmitContext&) {
-    NotImplemented();
-}
-void EmitWriteGlobalU16(EmitContext&) {
-    NotImplemented();
-}
-void EmitWriteGlobalS16(EmitContext&) {
-    NotImplemented();
-}
-void EmitSharedAtomicExchange64(EmitContext&, IR::Inst&, std::string_view, std::string_view) {
-    NotImplemented();
-}
-void EmitSharedAtomicExchange32x2(EmitContext&, IR::Inst&, std::string_view, std::string_view) {
-    NotImplemented();
-}
-void EmitStorageAtomicIAdd64(EmitContext&, IR::Inst&, const IR::Value&, const IR::Value&,
-                             std::string_view) {
-    NotImplemented();
-}
-void EmitStorageAtomicSMin64(EmitContext&, IR::Inst&, const IR::Value&, const IR::Value&,
-                             std::string_view) {
-    NotImplemented();
-}
-void EmitStorageAtomicUMin64(EmitContext&, IR::Inst&, const IR::Value&, const IR::Value&,
-                             std::string_view) {
-    NotImplemented();
-}
-void EmitStorageAtomicSMax64(EmitContext&, IR::Inst&, const IR::Value&, const IR::Value&,
-                             std::string_view) {
-    NotImplemented();
-}
-void EmitStorageAtomicUMax64(EmitContext&, IR::Inst&, const IR::Value&, const IR::Value&,
-                             std::string_view) {
-    NotImplemented();
-}
-void EmitStorageAtomicAnd64(EmitContext&, IR::Inst&, const IR::Value&, const IR::Value&,
-                            std::string_view) {
-    NotImplemented();
-}
-void EmitStorageAtomicOr64(EmitContext&, IR::Inst&, const IR::Value&, const IR::Value&,
-                           std::string_view) {
-    NotImplemented();
-}
-void EmitStorageAtomicXor64(EmitContext&, IR::Inst&, const IR::Value&, const IR::Value&,
-                            std::string_view) {
-    NotImplemented();
-}
-void EmitStorageAtomicExchange64(EmitContext&, IR::Inst&, const IR::Value&, const IR::Value&,
-                                 std::string_view) {
-    NotImplemented();
-}
-void EmitGlobalAtomicIAdd32(EmitContext&) {
-    NotImplemented();
-}
-void EmitGlobalAtomicSMin32(EmitContext&) {
-    NotImplemented();
-}
-void EmitGlobalAtomicUMin32(EmitContext&) {
-    NotImplemented();
-}
-void EmitGlobalAtomicSMax32(EmitContext&) {
-    NotImplemented();
-}
-void EmitGlobalAtomicUMax32(EmitContext&) {
-    NotImplemented();
-}
-void EmitGlobalAtomicInc32(EmitContext&) {
-    NotImplemented();
-}
-void EmitGlobalAtomicDec32(EmitContext&) {
-    NotImplemented();
-}
-void EmitGlobalAtomicAnd32(EmitContext&) {
-    NotImplemented();
-}
-void EmitGlobalAtomicOr32(EmitContext&) {
-    NotImplemented();
-}
-void EmitGlobalAtomicXor32(EmitContext&) {
-    NotImplemented();
-}
-void EmitGlobalAtomicExchange32(EmitContext&) {
-    NotImplemented();
-}
-void EmitGlobalAtomicIAdd64(EmitContext&) {
-    NotImplemented();
-}
-void EmitGlobalAtomicSMin64(EmitContext&) {
-    NotImplemented();
-}
-void EmitGlobalAtomicUMin64(EmitContext&) {
-    NotImplemented();
-}
-void EmitGlobalAtomicSMax64(EmitContext&) {
-    NotImplemented();
-}
-void EmitGlobalAtomicUMax64(EmitContext&) {
-    NotImplemented();
-}
-void EmitGlobalAtomicInc64(EmitContext&) {
-    NotImplemented();
-}
-void EmitGlobalAtomicDec64(EmitContext&) {
-    NotImplemented();
-}
-void EmitGlobalAtomicAnd64(EmitContext&) {
-    NotImplemented();
-}
-void EmitGlobalAtomicOr64(EmitContext&) {
-    NotImplemented();
-}
-void EmitGlobalAtomicXor64(EmitContext&) {
-    NotImplemented();
-}
-void EmitGlobalAtomicExchange64(EmitContext&) {
-    NotImplemented();
-}
-void EmitGlobalAtomicIAdd32x2(EmitContext&) {
-    NotImplemented();
-}
-void EmitGlobalAtomicSMin32x2(EmitContext&) {
-    NotImplemented();
-}
-void EmitGlobalAtomicUMin32x2(EmitContext&) {
-    NotImplemented();
-}
-void EmitGlobalAtomicSMax32x2(EmitContext&) {
-    NotImplemented();
-}
-void EmitGlobalAtomicUMax32x2(EmitContext&) {
-    NotImplemented();
+    throw NotImplementedException("HLSL SR_WScaleFactorZ has no defined Maxwell W-scale register "
+                                  "mapping in the reference backends");
 }
 void EmitGlobalAtomicInc32x2(EmitContext&) {
-    NotImplemented();
+    throw NotImplementedException(
+        "HLSL GlobalAtomicInc32x2 requires a paired wrapping atomic implementation");
 }
 void EmitGlobalAtomicDec32x2(EmitContext&) {
-    NotImplemented();
-}
-void EmitGlobalAtomicAnd32x2(EmitContext&) {
-    NotImplemented();
-}
-void EmitGlobalAtomicOr32x2(EmitContext&) {
-    NotImplemented();
-}
-void EmitGlobalAtomicXor32x2(EmitContext&) {
-    NotImplemented();
-}
-void EmitGlobalAtomicExchange32x2(EmitContext&) {
-    NotImplemented();
-}
-void EmitGlobalAtomicAddF32(EmitContext&) {
-    NotImplemented();
-}
-void EmitGlobalAtomicAddF16x2(EmitContext&) {
-    NotImplemented();
-}
-void EmitGlobalAtomicAddF32x2(EmitContext&) {
-    NotImplemented();
-}
-void EmitGlobalAtomicMinF16x2(EmitContext&) {
-    NotImplemented();
-}
-void EmitGlobalAtomicMinF32x2(EmitContext&) {
-    NotImplemented();
-}
-void EmitGlobalAtomicMaxF16x2(EmitContext&) {
-    NotImplemented();
-}
-void EmitGlobalAtomicMaxF32x2(EmitContext&) {
-    NotImplemented();
+    throw NotImplementedException(
+        "HLSL GlobalAtomicDec32x2 requires a paired wrapping atomic implementation");
 }
 void EmitBindlessImageSampleImplicitLod(EmitContext&) {
-    NotImplemented();
+    throw NotImplementedException(
+        "HLSL BindlessImageSampleImplicitLod must be resolved by TexturePass before HLSL emission");
 }
 void EmitBindlessImageSampleExplicitLod(EmitContext&) {
-    NotImplemented();
+    throw NotImplementedException(
+        "HLSL BindlessImageSampleExplicitLod must be resolved by TexturePass before HLSL emission");
 }
 void EmitBindlessImageSampleDrefImplicitLod(EmitContext&) {
-    NotImplemented();
+    throw NotImplementedException("HLSL BindlessImageSampleDrefImplicitLod must be resolved by "
+                                  "TexturePass before HLSL emission");
 }
 void EmitBindlessImageSampleDrefExplicitLod(EmitContext&) {
-    NotImplemented();
+    throw NotImplementedException("HLSL BindlessImageSampleDrefExplicitLod must be resolved by "
+                                  "TexturePass before HLSL emission");
 }
 void EmitBindlessImageGather(EmitContext&) {
-    NotImplemented();
+    throw NotImplementedException(
+        "HLSL BindlessImageGather must be resolved by TexturePass before HLSL emission");
 }
 void EmitBindlessImageGatherDref(EmitContext&) {
-    NotImplemented();
+    throw NotImplementedException(
+        "HLSL BindlessImageGatherDref must be resolved by TexturePass before HLSL emission");
 }
 void EmitBindlessImageFetch(EmitContext&) {
-    NotImplemented();
+    throw NotImplementedException(
+        "HLSL BindlessImageFetch must be resolved by TexturePass before HLSL emission");
 }
 void EmitBindlessImageQueryDimensions(EmitContext&) {
-    NotImplemented();
+    throw NotImplementedException(
+        "HLSL BindlessImageQueryDimensions must be resolved by TexturePass before HLSL emission");
 }
 void EmitBindlessImageQueryLod(EmitContext&) {
-    NotImplemented();
+    throw NotImplementedException(
+        "HLSL BindlessImageQueryLod must be resolved by TexturePass before HLSL emission");
 }
 void EmitBindlessImageGradient(EmitContext&) {
-    NotImplemented();
+    throw NotImplementedException(
+        "HLSL BindlessImageGradient must be resolved by TexturePass before HLSL emission");
 }
 void EmitBindlessImageRead(EmitContext&) {
-    NotImplemented();
+    throw NotImplementedException(
+        "HLSL BindlessImageRead must be resolved by TexturePass before HLSL emission");
 }
 void EmitBindlessImageWrite(EmitContext&) {
-    NotImplemented();
+    throw NotImplementedException(
+        "HLSL BindlessImageWrite must be resolved by TexturePass before HLSL emission");
 }
 void EmitBoundImageSampleImplicitLod(EmitContext&) {
-    NotImplemented();
+    throw NotImplementedException(
+        "HLSL BoundImageSampleImplicitLod must be resolved by TexturePass before HLSL emission");
 }
 void EmitBoundImageSampleExplicitLod(EmitContext&) {
-    NotImplemented();
+    throw NotImplementedException(
+        "HLSL BoundImageSampleExplicitLod must be resolved by TexturePass before HLSL emission");
 }
 void EmitBoundImageSampleDrefImplicitLod(EmitContext&) {
-    NotImplemented();
+    throw NotImplementedException("HLSL BoundImageSampleDrefImplicitLod must be resolved by "
+                                  "TexturePass before HLSL emission");
 }
 void EmitBoundImageSampleDrefExplicitLod(EmitContext&) {
-    NotImplemented();
+    throw NotImplementedException("HLSL BoundImageSampleDrefExplicitLod must be resolved by "
+                                  "TexturePass before HLSL emission");
 }
 void EmitBoundImageGather(EmitContext&) {
-    NotImplemented();
+    throw NotImplementedException(
+        "HLSL BoundImageGather must be resolved by TexturePass before HLSL emission");
 }
 void EmitBoundImageGatherDref(EmitContext&) {
-    NotImplemented();
+    throw NotImplementedException(
+        "HLSL BoundImageGatherDref must be resolved by TexturePass before HLSL emission");
 }
 void EmitBoundImageFetch(EmitContext&) {
-    NotImplemented();
+    throw NotImplementedException(
+        "HLSL BoundImageFetch must be resolved by TexturePass before HLSL emission");
 }
 void EmitBoundImageQueryDimensions(EmitContext&) {
-    NotImplemented();
+    throw NotImplementedException(
+        "HLSL BoundImageQueryDimensions must be resolved by TexturePass before HLSL emission");
 }
 void EmitBoundImageQueryLod(EmitContext&) {
-    NotImplemented();
+    throw NotImplementedException(
+        "HLSL BoundImageQueryLod must be resolved by TexturePass before HLSL emission");
 }
 void EmitBoundImageGradient(EmitContext&) {
-    NotImplemented();
+    throw NotImplementedException(
+        "HLSL BoundImageGradient must be resolved by TexturePass before HLSL emission");
 }
 void EmitBoundImageRead(EmitContext&) {
-    NotImplemented();
+    throw NotImplementedException(
+        "HLSL BoundImageRead must be resolved by TexturePass before HLSL emission");
 }
 void EmitBoundImageWrite(EmitContext&) {
-    NotImplemented();
+    throw NotImplementedException(
+        "HLSL BoundImageWrite must be resolved by TexturePass before HLSL emission");
 }
 void EmitBindlessImageAtomicIAdd32(EmitContext&) {
-    NotImplemented();
+    throw NotImplementedException(
+        "HLSL BindlessImageAtomicIAdd32 must be resolved by TexturePass before HLSL emission");
 }
 void EmitBindlessImageAtomicSMin32(EmitContext&) {
-    NotImplemented();
+    throw NotImplementedException(
+        "HLSL BindlessImageAtomicSMin32 must be resolved by TexturePass before HLSL emission");
 }
 void EmitBindlessImageAtomicUMin32(EmitContext&) {
-    NotImplemented();
+    throw NotImplementedException(
+        "HLSL BindlessImageAtomicUMin32 must be resolved by TexturePass before HLSL emission");
 }
 void EmitBindlessImageAtomicSMax32(EmitContext&) {
-    NotImplemented();
+    throw NotImplementedException(
+        "HLSL BindlessImageAtomicSMax32 must be resolved by TexturePass before HLSL emission");
 }
 void EmitBindlessImageAtomicUMax32(EmitContext&) {
-    NotImplemented();
+    throw NotImplementedException(
+        "HLSL BindlessImageAtomicUMax32 must be resolved by TexturePass before HLSL emission");
 }
 void EmitBindlessImageAtomicInc32(EmitContext&) {
-    NotImplemented();
+    throw NotImplementedException(
+        "HLSL BindlessImageAtomicInc32 must be resolved by TexturePass before HLSL emission");
 }
 void EmitBindlessImageAtomicDec32(EmitContext&) {
-    NotImplemented();
+    throw NotImplementedException(
+        "HLSL BindlessImageAtomicDec32 must be resolved by TexturePass before HLSL emission");
 }
 void EmitBindlessImageAtomicAnd32(EmitContext&) {
-    NotImplemented();
+    throw NotImplementedException(
+        "HLSL BindlessImageAtomicAnd32 must be resolved by TexturePass before HLSL emission");
 }
 void EmitBindlessImageAtomicOr32(EmitContext&) {
-    NotImplemented();
+    throw NotImplementedException(
+        "HLSL BindlessImageAtomicOr32 must be resolved by TexturePass before HLSL emission");
 }
 void EmitBindlessImageAtomicXor32(EmitContext&) {
-    NotImplemented();
+    throw NotImplementedException(
+        "HLSL BindlessImageAtomicXor32 must be resolved by TexturePass before HLSL emission");
 }
 void EmitBindlessImageAtomicExchange32(EmitContext&) {
-    NotImplemented();
+    throw NotImplementedException(
+        "HLSL BindlessImageAtomicExchange32 must be resolved by TexturePass before HLSL emission");
 }
 void EmitBoundImageAtomicIAdd32(EmitContext&) {
-    NotImplemented();
+    throw NotImplementedException(
+        "HLSL BoundImageAtomicIAdd32 must be resolved by TexturePass before HLSL emission");
 }
 void EmitBoundImageAtomicSMin32(EmitContext&) {
-    NotImplemented();
+    throw NotImplementedException(
+        "HLSL BoundImageAtomicSMin32 must be resolved by TexturePass before HLSL emission");
 }
 void EmitBoundImageAtomicUMin32(EmitContext&) {
-    NotImplemented();
+    throw NotImplementedException(
+        "HLSL BoundImageAtomicUMin32 must be resolved by TexturePass before HLSL emission");
 }
 void EmitBoundImageAtomicSMax32(EmitContext&) {
-    NotImplemented();
+    throw NotImplementedException(
+        "HLSL BoundImageAtomicSMax32 must be resolved by TexturePass before HLSL emission");
 }
 void EmitBoundImageAtomicUMax32(EmitContext&) {
-    NotImplemented();
+    throw NotImplementedException(
+        "HLSL BoundImageAtomicUMax32 must be resolved by TexturePass before HLSL emission");
 }
 void EmitBoundImageAtomicInc32(EmitContext&) {
-    NotImplemented();
+    throw NotImplementedException(
+        "HLSL BoundImageAtomicInc32 must be resolved by TexturePass before HLSL emission");
 }
 void EmitBoundImageAtomicDec32(EmitContext&) {
-    NotImplemented();
+    throw NotImplementedException(
+        "HLSL BoundImageAtomicDec32 must be resolved by TexturePass before HLSL emission");
 }
 void EmitBoundImageAtomicAnd32(EmitContext&) {
-    NotImplemented();
+    throw NotImplementedException(
+        "HLSL BoundImageAtomicAnd32 must be resolved by TexturePass before HLSL emission");
 }
 void EmitBoundImageAtomicOr32(EmitContext&) {
-    NotImplemented();
+    throw NotImplementedException(
+        "HLSL BoundImageAtomicOr32 must be resolved by TexturePass before HLSL emission");
 }
 void EmitBoundImageAtomicXor32(EmitContext&) {
-    NotImplemented();
+    throw NotImplementedException(
+        "HLSL BoundImageAtomicXor32 must be resolved by TexturePass before HLSL emission");
 }
 void EmitBoundImageAtomicExchange32(EmitContext&) {
-    NotImplemented();
+    throw NotImplementedException(
+        "HLSL BoundImageAtomicExchange32 must be resolved by TexturePass before HLSL emission");
 }
 } // namespace Shader::Backend::HLSL

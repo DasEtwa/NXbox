@@ -33,6 +33,8 @@ auto Arg(EmitContext& ctx, const IR::Value& arg) {
         return arg.Attribute();
     } else if constexpr (std::is_same_v<ArgType, IR::Patch>) {
         return arg.Patch();
+    } else if constexpr (std::is_same_v<ArgType, IR::Pred>) {
+        return arg.Pred();
     } else if constexpr (std::is_same_v<ArgType, IR::Reg>) {
         return arg.Reg();
     }
@@ -127,13 +129,27 @@ void EmitCode(EmitContext& ctx, const IR::Program& program) {
             break;
         case Node::Type::Return:
         case Node::Type::Unreachable:
-            ctx.FinishOutput();
+            if (program.stage != Stage::Geometry)
+                ctx.FinishOutput();
             ctx.Add("{}", ctx.ReturnStatement());
             break;
         }
     }
 }
 } // namespace
+u32 RequiredShaderModel(const IR::Program& program) {
+    for (const auto* block : program.blocks) {
+        for (const auto& inst : block->Instructions()) {
+            const auto name = IR::NameOf(inst.GetOpcode());
+            if ((inst.GetOpcode() == IR::Opcode::IsHelperInvocation &&
+                 program.stage == Stage::Fragment) ||
+                inst.GetOpcode() == IR::Opcode::SharedAtomicExchange32x2 ||
+                (name.find("Atomic") != name.npos && name.ends_with("64")))
+                return 66u;
+        }
+    }
+    return 60u;
+}
 std::string EmitHLSL(const Profile& profile, const RuntimeInfo& runtime_info, IR::Program& program,
                      Bindings& bindings) {
     // Do not publish partially advanced descriptor counters if emission fails.
@@ -148,6 +164,27 @@ std::string EmitHLSL(const Profile& profile, const RuntimeInfo& runtime_info, IR
         ctx.header += fmt::format("[numthreads({}, {}, {})]\nvoid main(uint3 local_id : "
                                   "SV_GroupThreadID, uint3 group_id : SV_GroupID) {{\n",
                                   size[0], size[1], size[2]);
+    } else if (program.stage == Stage::Geometry) {
+        const auto topology = runtime_info.input_topology;
+        const auto input_type = topology == InputTopology::Points           ? "point"
+                                : topology == InputTopology::Lines          ? "line"
+                                : topology == InputTopology::LinesAdjacency ? "lineadj"
+                                : topology == InputTopology::Triangles      ? "triangle"
+                                                                            : "triangleadj";
+        const auto stream_type =
+            program.output_topology == OutputTopology::PointList   ? "PointStream"
+            : program.output_topology == OutputTopology::LineStrip ? "LineStream"
+                                                                   : "TriangleStream";
+        if (!program.output_vertices || program.output_vertices > 1024u ||
+            program.invocations > 32u)
+            throw NotImplementedException("HLSL invalid geometry output/invocation count");
+        ctx.header += fmt::format(
+            "[maxvertexcount({})]\n[instance({})]\nvoid main({} Input inputs[{}], "
+            "uint nx_primitive_id : SV_PrimitiveID, uint nx_invocation_id : SV_GSInstanceID, "
+            "inout {}<Output> nx_stream) {{\nInput input = inputs[0];\n"
+            "Output output = (Output)0; output.position = float4(0, 0, 0, 1);\n",
+            program.output_vertices, std::max(program.invocations, 1u), input_type,
+            InputTopologyVertices::vertices(topology), stream_type);
     } else {
         if (runtime_info.force_early_z && program.stage == Stage::Fragment)
             ctx.header += "[earlydepthstencil]\n";
@@ -159,17 +196,26 @@ std::string EmitHLSL(const Profile& profile, const RuntimeInfo& runtime_info, IR
             if (program.info.stores.Generic(i))
                 ctx.header += fmt::format("output.attr{} = float4(0, 0, 0, 1);\n", i);
     }
+    if (program.stage == Stage::Fragment && runtime_info.alpha_test_func)
+        ctx.header += "float nx_alpha = 0.0f;\n";
     if (program.local_memory_size)
         ctx.header += fmt::format("uint lmem[{}];\n", (program.local_memory_size + 3) / 4);
     ctx.header += ctx.var_alloc.Declarations();
     if (ctx.uses_cc_carry)
         ctx.header += "uint carry;\n";
-    ctx.header += "bool shfl_in_bounds;\n";
+    ctx.header += "bool shfl_in_bounds = false;\n";
+    if (ctx.uses_register_state)
+        ctx.header +=
+            "uint nx_regs[255] = (uint[255])0; bool nx_preds[7] = (bool[7])0; "
+            "uint nx_branch = 0u; bool nx_z = false, nx_s = false, nx_c = false, nx_o = false;\n";
+    for (const auto index : ctx.goto_variables)
+        ctx.header += fmt::format("bool nx_goto_{} = false;\n", index);
     size_t loop_index = 0;
     for (const auto& node : program.syntax_list)
         if (node.type == IR::AbstractSyntaxNode::Type::Repeat)
             ctx.header += fmt::format("int loop{} = 0x2000;\n", loop_index++);
-    ctx.FinishOutput();
+    if (program.stage != Stage::Geometry)
+        ctx.FinishOutput();
     ctx.Add("{}", ctx.ReturnStatement());
     bindings = pending;
     return ctx.header + ctx.code + "}\n";

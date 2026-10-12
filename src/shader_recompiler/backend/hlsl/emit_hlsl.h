@@ -12,8 +12,10 @@
 
 namespace Shader::Backend::HLSL {
 
-[[nodiscard]] std::string EmitHLSL(const Profile& profile, const RuntimeInfo& runtime_info,
-                                   IR::Program& program, Bindings& bindings);
+[[nodiscard]] u32 RequiredShaderModel(const IR::Program& program);
+
+std::string EmitHLSL(const Profile& profile, const RuntimeInfo& runtime_info, IR::Program& program,
+                     Bindings& bindings);
 
 [[nodiscard]] inline std::string EmitHLSL(const Profile& profile, IR::Program& program) {
     Bindings binding;
