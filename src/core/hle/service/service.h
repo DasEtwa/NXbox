@@ -8,9 +8,10 @@
 
 #include <cstddef>
 #include <mutex>
-#include "common/container/unordered_map.h"
 #include "common/common_types.h"
+#include "common/container/unordered_map.h"
 #include "core/hle/service/hle_ipc.h"
+#include "core/hle/service/service_interface_name.h"
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // Namespace Service
@@ -25,6 +26,8 @@ class ServiceThread;
 } // namespace Kernel
 
 namespace Service {
+
+class ServiceTrace;
 
 namespace FileSystem {
 class FileSystemController;
@@ -91,12 +94,17 @@ private:
                            HLERequestContext& ctx);
 
     explicit ServiceFrameworkBase(Core::System& system_, const char* service_name_,
-                                  u32 max_sessions_, InvokerFn* handler_invoker_);
+                                  u32 max_sessions_, InvokerFn* handler_invoker_,
+                                  std::string_view interface_name_);
     ~ServiceFrameworkBase() override;
 
     void RegisterHandlersBase(const FunctionInfoBase* functions, std::size_t n);
     void RegisterHandlersBaseTipc(const FunctionInfoBase* functions, std::size_t n);
     void ReportUnimplementedFunction(HLERequestContext& ctx, const FunctionInfoBase* info);
+    void TraceRequest(HLERequestContext& ctx, u32 command);
+
+    std::shared_ptr<ServiceTrace> service_trace;
+    const std::string_view interface_name;
 
 protected:
     ::Common::unordered_map<u32, FunctionInfoBase> handlers;
@@ -159,8 +167,10 @@ protected:
      * @param max_sessions_ Maximum number of sessions that can be connected to this service at the
      * same time.
      */
-    explicit ServiceFramework(Core::System& system_, const char* service_name_, u32 max_sessions_ = ServerSessionCountMax)
-        : ServiceFrameworkBase(system_, service_name_, max_sessions_, Invoker) {}
+    explicit ServiceFramework(Core::System& system_, const char* service_name_,
+                              u32 max_sessions_ = ServerSessionCountMax)
+        : ServiceFrameworkBase(system_, service_name_, max_sessions_, Invoker,
+                               ServiceInterfaceName<Self>()) {}
 
     /// Registers handlers in the service.
     template <typename T = Self, std::size_t N>

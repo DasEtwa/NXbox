@@ -5,9 +5,11 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <chrono>
-#include <fmt/ranges.h>
+#include <cstdlib>
+#include <map>
 #include <string_view>
 #include <thread>
+#include <fmt/ranges.h>
 #include "common/assert.h"
 #include "common/logging.h"
 #include "common/settings.h"
@@ -17,10 +19,42 @@
 #include "core/hle/kernel/kernel.h"
 #include "core/hle/service/ipc_helpers.h"
 #include "core/hle/service/service.h"
+#include "core/hle/service/service_trace.h"
 #include "core/hle/service/sm/sm.h"
 #include "core/reporter.h"
 
 namespace Service {
+
+static std::shared_ptr<ServiceTrace> GetServiceTrace(Core::System& system) {
+    static std::mutex mutex;
+    static std::map<Core::System*, std::weak_ptr<ServiceTrace>> traces;
+    const std::scoped_lock guard{mutex};
+    std::erase_if(traces, [](const auto& entry) { return entry.second.expired(); });
+    auto& weak_trace = traces[&system];
+    auto trace = weak_trace.lock();
+    if (!trace) {
+        const char* value = std::getenv("NXBOX_SERVICE_TRACE");
+        trace = std::make_shared<ServiceTrace>(value && std::string_view{value} == "1");
+        weak_trace = trace;
+    }
+    return trace;
+}
+
+void ServiceFrameworkBase::TraceRequest(HLERequestContext& ctx, u32 command) {
+    const bool deferred = ctx.GetIsDeferred();
+    const std::optional<u32> result =
+        ctx.HasResponse() && !deferred
+            ? std::optional{ctx.CommandBuffer()[ctx.GetDataPayloadOffset()]}
+            : std::nullopt;
+    if (service_trace->RecordCall(service_name, ctx.IsTipc(), command, result, deferred,
+                                  interface_name)) {
+        LOG_INFO(
+            Service, "NXBOX_SERVICE_TRACE service={} protocol={} cmd={} result={} interface={}",
+            service_name, ctx.IsTipc() ? "TIPC" : "CMIF", command,
+            result ? fmt::format("{:#010x}", *result) : (deferred ? "deferred" : "no-response"),
+            interface_name);
+    }
+}
 
 /// @brief Creates a function string for logging, complete with the name (or header code, depending
 /// on what's passed in) the port name, and all the cmd_buf arguments.
@@ -33,14 +67,13 @@ namespace Service {
     return function_string;
 }
 
-ServiceFrameworkBase::ServiceFrameworkBase(Core::System& system_, const char* service_name_, u32 max_sessions_, InvokerFn* handler_invoker_)
-    : SessionRequestHandler(system_.Kernel(), service_name_)
-    , system{system_}
-    , service_name{service_name_}
-    , is_i_storage{std::string_view{service_name_} == "IStorage"}
-    , handler_invoker{handler_invoker_}
-    , max_sessions{max_sessions_}
-{}
+ServiceFrameworkBase::ServiceFrameworkBase(Core::System& system_, const char* service_name_,
+                                           u32 max_sessions_, InvokerFn* handler_invoker_,
+                                           std::string_view interface_name_)
+    : SessionRequestHandler(system_.Kernel(), service_name_),
+      service_trace{GetServiceTrace(system_)}, interface_name{interface_name_}, system{system_},
+      service_name{service_name_}, is_i_storage{std::string_view{service_name_} == "IStorage"},
+      handler_invoker{handler_invoker_}, max_sessions{max_sessions_} {}
 
 ServiceFrameworkBase::~ServiceFrameworkBase() {
     // Wait for other threads to release access before destroying
@@ -63,6 +96,18 @@ void ServiceFrameworkBase::RegisterHandlersBaseTipc(const FunctionInfoBase* func
 
 void ServiceFrameworkBase::ReportUnimplementedFunction(HLERequestContext& ctx,
                                                        const FunctionInfoBase* info) {
+    const bool first_missing =
+        service_trace->RecordMissing(service_name, ctx.IsTipc(), ctx.GetCommand(), interface_name);
+    if (!first_missing) {
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(Settings::values.use_auto_stub ? ResultSuccess : IPC::ResultNotSupported);
+        return;
+    }
+    LOG_WARNING(
+        Service,
+        "NXBOX_SERVICE_MISSING service={} protocol={} cmd={} name={} auto_stub={} interface={}",
+        service_name, ctx.IsTipc() ? "TIPC" : "CMIF", u32{ctx.GetCommand()},
+        info ? info->name : "<unknown>", Settings::values.use_auto_stub.GetValue(), interface_name);
     auto cmd_buf = ctx.CommandBuffer();
     std::string function_name = info == nullptr ? "<unknown>" : info->name;
 
@@ -89,11 +134,9 @@ void ServiceFrameworkBase::ReportUnimplementedFunction(HLERequestContext& ctx,
 
     system.GetReporter().SaveUnimplementedFunctionReport(ctx, ctx.GetCommand(), function_name, service_name);
     UNIMPLEMENTED_MSG("Unknown / unimplemented {}", fmt::to_string(buf));
-    if (Settings::values.use_auto_stub) {
-        LOG_WARNING(Service, "Using auto stub fallback!");
-        IPC::ResponseBuilder rb{ctx, 2};
-        rb.Push(ResultSuccess);
-    }
+    // Without auto-stub, return an error instead of echoing an incoming request as a reply.
+    IPC::ResponseBuilder rb{ctx, 2};
+    rb.Push(Settings::values.use_auto_stub ? ResultSuccess : IPC::ResultNotSupported);
 }
 
 void ServiceFrameworkBase::InvokeRequest(HLERequestContext& ctx) {
@@ -101,11 +144,16 @@ void ServiceFrameworkBase::InvokeRequest(HLERequestContext& ctx) {
     auto it = handlers.find(command);
     const bool is_cmd_read = command == 0;
     FunctionInfoBase const* info = it == handlers.end() ? nullptr : &it->second;
-    if (info == nullptr || info->handler_callback == nullptr)
-        return ReportUnimplementedFunction(ctx, info);
+    ctx.has_response = false;
+    if (info == nullptr || info->handler_callback == nullptr) {
+        ReportUnimplementedFunction(ctx, info);
+        TraceRequest(ctx, command);
+        return;
+    }
 
     LOG_TRACE(Service, "{}", MakeFunctionString(info->name, GetServiceName(), ctx.CommandBuffer()));
     handler_invoker(this, info->handler_callback, ctx);
+    TraceRequest(ctx, command);
 
     if (is_i_storage && is_cmd_read) {
         const auto* const process = ctx.GetThread().GetOwnerProcess();
@@ -116,13 +164,19 @@ void ServiceFrameworkBase::InvokeRequest(HLERequestContext& ctx) {
 }
 
 void ServiceFrameworkBase::InvokeRequestTipc(HLERequestContext& ctx) {
-    auto it = handlers_tipc.find(ctx.GetCommand());
+    const u32 command = ctx.GetCommand();
+    auto it = handlers_tipc.find(command);
     FunctionInfoBase const* info = it == handlers_tipc.end() ? nullptr : &it->second;
-    if (info == nullptr || info->handler_callback == nullptr)
-        return ReportUnimplementedFunction(ctx, info);
+    ctx.has_response = false;
+    if (info == nullptr || info->handler_callback == nullptr) {
+        ReportUnimplementedFunction(ctx, info);
+        TraceRequest(ctx, command);
+        return;
+    }
 
     LOG_TRACE(Service, "{}", MakeFunctionString(info->name, GetServiceName(), ctx.CommandBuffer()));
     handler_invoker(this, info->handler_callback, ctx);
+    TraceRequest(ctx, command);
 }
 
 Result ServiceFrameworkBase::HandleSyncRequest(Kernel::KServerSession& session,

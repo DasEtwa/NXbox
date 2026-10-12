@@ -6,6 +6,8 @@
 
 #pragma once
 
+#include <atomic>
+
 #include "core/hle/service/service.h"
 
 namespace Core {
@@ -25,6 +27,12 @@ public:
     ~IGeneralService() override;
 
 private:
+    const u64 client_id;
+    std::shared_ptr<std::atomic<u32>> accepted_requests;
+
+    void IsWiredConnectionAvailable(HLERequestContext& ctx);
+    void IsNetworkEmulationFeatureEnabled(HLERequestContext& ctx);
+    void IsRewriteFeatureEnabled(HLERequestContext& ctx);
     void GetClientId(HLERequestContext& ctx);
     void CreateScanRequest(HLERequestContext& ctx);
     void CreateRequest(HLERequestContext& ctx);

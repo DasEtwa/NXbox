@@ -383,6 +383,10 @@ public:
         return manager.lock();
     }
 
+    [[nodiscard]] bool HasResponse() const {
+        return has_response;
+    }
+
     bool GetIsDeferred() const {
         return is_deferred;
     }
@@ -393,6 +397,7 @@ public:
 
 private:
     friend struct IPC::ResponseBuilder;
+    friend class ServiceFrameworkBase;
 
     void ParseCommandBuffer(u32_le* src_cmdbuf, bool incoming);
 
@@ -430,6 +435,7 @@ private:
     u32 handles_offset{};
     u32 domain_offset{};
     bool is_deferred = false;
+    bool has_response = false;
 };
 
 } // namespace Service
