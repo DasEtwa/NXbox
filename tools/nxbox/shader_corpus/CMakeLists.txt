@@ -23,7 +23,9 @@ target_include_directories(nxbox-shader-corpus SYSTEM PRIVATE ${Boost_INCLUDE_DI
 target_link_libraries(nxbox-shader-corpus PRIVATE fmt::fmt)
 if(MSVC)
   target_compile_definitions(nxbox-shader-corpus PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
-  target_compile_options(nxbox-shader-corpus PRIVATE /W4 /WX /permissive-)
+  # Match Eden's permitted legacy constructs; keep remaining warnings fatal.
+  target_compile_options(nxbox-shader-corpus PRIVATE /W4 /WX /permissive-
+    /Zc:preprocessor /utf-8 /wd4100 /wd4201 /wd4324)
 elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   target_compile_options(nxbox-shader-corpus PRIVATE -fbracket-depth=1024)
 endif()
