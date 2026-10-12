@@ -383,7 +383,7 @@ void D3D12DescriptorAllocator::CreateDsv(D3D12_CPU_DESCRIPTOR_HANDLE handle, con
     if (resource->handle->GetDesc().SampleDesc.Count > 1) {
         dsv.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2DMSARRAY;
         dsv.Texture2DMSArray = {static_cast<UINT>(view.range.base.layer),
-                              static_cast<UINT>(view.range.extent.layers)};
+                                static_cast<UINT>(view.range.extent.layers)};
     } else {
         dsv.Texture2DArray = {static_cast<UINT>(view.range.base.level),
                               static_cast<UINT>(view.range.base.layer),
@@ -397,7 +397,8 @@ bool D3D12DescriptorAllocator::WriteImageUav(const DescriptorTable& table, u32 s
         WriteNullUav(table, slot);
         return false;
     }
-    if (!(view.ImageHandle()->handle->GetDesc().Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS)) {
+    if (!(view.ImageHandle()->handle->GetDesc().Flags &
+          D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS)) {
         WriteNullUav(table, slot);
         return false;
     }

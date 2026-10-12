@@ -8,8 +8,8 @@
 
 #include <algorithm>
 #include <bit>
-#include <numeric>
 #include <memory>
+#include <numeric>
 #include <type_traits>
 #include <utility>
 #include <vector>

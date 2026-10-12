@@ -191,7 +191,7 @@ std::optional<VideoCore::Surface::PixelFormat> PixelFormatFromImageFormat(
 D3D12_SRV_DIMENSION SrvDimension(Shader::TextureType type, bool multisample = false) {
     if (multisample)
         return type == Shader::TextureType::ColorArray2D ? D3D12_SRV_DIMENSION_TEXTURE2DMSARRAY
-                                                        : D3D12_SRV_DIMENSION_TEXTURE2DMS;
+                                                         : D3D12_SRV_DIMENSION_TEXTURE2DMS;
     switch (type) {
     case Shader::TextureType::Color1D:
         return D3D12_SRV_DIMENSION_TEXTURE1D;
@@ -599,7 +599,8 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
                         }
                     }
                 }
-                if (descriptors.WriteImageSrv(srv_table, srv_i, view, SrvDimension(desc.type, desc.is_multisample),
+                if (descriptors.WriteImageSrv(srv_table, srv_i, view,
+                                              SrvDimension(desc.type, desc.is_multisample),
                                               sampled))
                     need(sampled, SrvState);
                 descriptors.WriteSampler(sampler_table, smp_i,
@@ -1028,13 +1029,16 @@ void RasterizerD3D12::Clear(u32 layer_count) {
             const bool msaa_array = srv.ViewDimension == D3D12_SRV_DIMENSION_TEXTURE2DMSARRAY;
             const u32 first = msaa_array ? srv.Texture2DMSArray.FirstArraySlice
                               : srv.ViewDimension == D3D12_SRV_DIMENSION_TEXTURE2DARRAY
-                                  ? srv.Texture2DArray.FirstArraySlice : 0;
+                                  ? srv.Texture2DArray.FirstArraySlice
+                                  : 0;
             const u32 layers = msaa_array ? srv.Texture2DMSArray.ArraySize
                                : srv.ViewDimension == D3D12_SRV_DIMENSION_TEXTURE2DARRAY
-                                   ? srv.Texture2DArray.ArraySize : 1;
+                                   ? srv.Texture2DArray.ArraySize
+                                   : 1;
             if (layer >= layers)
                 return false;
-            const u32 mip = msaa ? 0 : srv.ViewDimension == D3D12_SRV_DIMENSION_TEXTURE2DARRAY
+            const u32 mip = msaa ? 0
+                            : srv.ViewDimension == D3D12_SRV_DIMENSION_TEXTURE2DARRAY
                                 ? srv.Texture2DArray.MostDetailedMip
                                 : srv.Texture2D.MostDetailedMip;
             attachment.resource = view->ImageHandle();
@@ -1183,7 +1187,8 @@ void RasterizerD3D12::DispatchCompute() {
     for (const auto& desc : info.texture_descriptors)
         for (u32 i = 0; i < desc.count; ++i) {
             auto& view = texture_cache.GetImageView(view_scratch[view_index++].id);
-            descriptors.WriteImageSrv(srv, srv_index++, view, SrvDimension(desc.type, desc.is_multisample));
+            descriptors.WriteImageSrv(srv, srv_index++, view,
+                                      SrvDimension(desc.type, desc.is_multisample));
             use(view.ImageHandle(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
             descriptors.WriteSampler(sampler, sampler_index,
                                      texture_cache.GetSampler(sampler_scratch[sampler_index]));
@@ -1217,8 +1222,9 @@ void RasterizerD3D12::DispatchCompute() {
             const auto format = PixelFormatFromImageFormat(desc.format);
             if (!format)
                 throw std::runtime_error("D3D12 unsupported compute storage image format");
-            if (!descriptors.WriteImageUav(uav, uav_index++, view,
-                                          static_cast<DXGI_FORMAT>(MaxwellFormat(*format).view_format))) {
+            if (!descriptors.WriteImageUav(
+                    uav, uav_index++, view,
+                    static_cast<DXGI_FORMAT>(MaxwellFormat(*format).view_format))) {
                 SkipDraw("unsupported compute storage image view");
                 return;
             }

@@ -4,8 +4,8 @@
 #include <algorithm>
 #include <array>
 #include <optional>
-#include "video_core/renderer_d3d12/d3d12_compute_pass.h"
 #include "video_core/renderer_d3d12/d3d12_blit_image.h"
+#include "video_core/renderer_d3d12/d3d12_compute_pass.h"
 #include "video_core/renderer_d3d12/d3d12_context.h"
 #include "video_core/renderer_d3d12/d3d12_formats.h"
 #include "video_core/texture_cache/image_view_base.h"

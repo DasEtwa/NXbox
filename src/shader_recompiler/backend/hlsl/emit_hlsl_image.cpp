@@ -184,7 +184,7 @@ void EmitImageFetch(EmitContext& ctx, IR::Inst& inst, const IR::Value& index,
     const auto tex = Texture(ctx, info, index);
     std::string arguments = IntCoordinates(coords, info.type);
     const bool multisample = info.type != TextureType::Buffer &&
-        ctx.info.texture_descriptors.at(info.descriptor_index).is_multisample;
+                             ctx.info.texture_descriptors.at(info.descriptor_index).is_multisample;
     if (info.type != TextureType::Buffer && !multisample)
         arguments = fmt::format("int{}({}, int({}))", CoordinateCount(info.type) + 1, arguments,
                                 lod.empty() ? "0" : lod);

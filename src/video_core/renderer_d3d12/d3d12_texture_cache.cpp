@@ -4,9 +4,9 @@
 #include <algorithm>
 #include <bit>
 #include <cstring>
-#include <stdexcept>
-#include <set>
 #include <mutex>
+#include <set>
+#include <stdexcept>
 #include <tuple>
 #include <fmt/format.h>
 #include "common/logging.h"
@@ -38,19 +38,25 @@ void UnsupportedImage(const VideoCommon::ImageInfo& info, FormatInfo format,
     static std::mutex mutex;
     static std::set<std::tuple<u32, u32, u32, u32>> logged;
     std::scoped_lock lock{mutex};
-    if (!logged.emplace(static_cast<u32>(info.format), format.planes, info.num_samples,
-                        static_cast<u32>(info.type)).second)
+    if (!logged
+             .emplace(static_cast<u32>(info.format), format.planes, info.num_samples,
+                      static_cast<u32>(info.type))
+             .second)
         return;
     std::string_view name = "Unknown";
     switch (info.format) {
-#define PIXEL_FORMAT_ELEM(name_, ...) \
-    case VideoCore::Surface::PixelFormat::name_: name = #name_; break;
+#define PIXEL_FORMAT_ELEM(name_, ...)                                                              \
+    case VideoCore::Surface::PixelFormat::name_:                                                   \
+        name = #name_;                                                                             \
+        break;
         PIXEL_FORMAT_LIST
 #undef PIXEL_FORMAT_ELEM
-    default: break;
+    default:
+        break;
     }
-    LOG_WARNING(Render, "D3D12 image unsupported: format={} ({}) planes={} samples={} type={} "
-                        "condition={}; attachment/transfer skipped",
+    LOG_WARNING(Render,
+                "D3D12 image unsupported: format={} ({}) planes={} samples={} type={} "
+                "condition={}; attachment/transfer skipped",
                 name, static_cast<u32>(info.format), format.planes, info.num_samples,
                 static_cast<u32>(info.type), condition);
 }
@@ -71,7 +77,8 @@ ResourcePtr MakeTexture(Context& context, const VideoCommon::ImageInfo& info, Fo
         info.resources.levels > 16 || info.resources.layers <= 0 || info.resources.layers > 2048 ||
         info.size.depth > 2048)
         return skip("invalid dimensions/levels/layers");
-    if (info.num_samples == 0 || (info.num_samples & (info.num_samples - 1)) || info.num_samples > 16)
+    if (info.num_samples == 0 || (info.num_samples & (info.num_samples - 1)) ||
+        info.num_samples > 16)
         return skip("sample count is not 1/2/4/8/16");
     if (info.num_samples > 1 &&
         (info.type != VideoCommon::ImageType::e2D || format.block_width != 1 ||
@@ -88,12 +95,11 @@ ResourcePtr MakeTexture(Context& context, const VideoCommon::ImageInfo& info, Fo
     if (!width || !height || (width << samples_x) != info.size.width ||
         (height << samples_y) != info.size.height)
         return skip("image dimensions are not aligned to the MSAA sample grid");
-    desc.Width =
-        (u64{width} + format.block_width - 1) / format.block_width * format.block_width;
-    desc.Height = desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE1D
-                      ? 1
-                      : (height + format.block_height - 1) / format.block_height *
-                            format.block_height;
+    desc.Width = (u64{width} + format.block_width - 1) / format.block_width * format.block_width;
+    desc.Height =
+        desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE1D
+            ? 1
+            : (height + format.block_height - 1) / format.block_height * format.block_height;
     desc.DepthOrArraySize = static_cast<UINT16>(desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D
                                                     ? info.size.depth
                                                     : info.resources.layers);
@@ -101,8 +107,9 @@ ResourcePtr MakeTexture(Context& context, const VideoCommon::ImageInfo& info, Fo
     const u32 max_dimension = info.type == VideoCommon::ImageType::e3D ? 2048u : 16384u;
     if (desc.Width > max_dimension || desc.Height > max_dimension)
         return skip("dimensions exceed the D3D12 texture limit");
-    const u32 max_extent = std::max({static_cast<u32>(desc.Width), desc.Height,
-        info.type == VideoCommon::ImageType::e3D ? info.size.depth : 1u});
+    const u32 max_extent =
+        std::max({static_cast<u32>(desc.Width), desc.Height,
+                  info.type == VideoCommon::ImageType::e3D ? info.size.depth : 1u});
     if (desc.MipLevels > std::bit_width(max_extent))
         return skip("mip count exceeds the image dimension chain");
     desc.Format = static_cast<DXGI_FORMAT>(format.resource_format);
@@ -111,15 +118,17 @@ ResourcePtr MakeTexture(Context& context, const VideoCommon::ImageInfo& info, Fo
         desc.MipLevels = 1;
         D3D12_FEATURE_DATA_MULTISAMPLE_QUALITY_LEVELS quality{};
         quality.Format = format.depth ? DsvFormat(static_cast<DXGI_FORMAT>(format.view_format))
-                                     : static_cast<DXGI_FORMAT>(format.view_format);
+                                      : static_cast<DXGI_FORMAT>(format.view_format);
         quality.SampleCount = info.num_samples;
         quality.Flags = D3D12_MULTISAMPLE_QUALITY_LEVELS_FLAG_NONE;
         const HRESULT result = context.Device()->CheckFeatureSupport(
             D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS, &quality, sizeof(quality));
         if (FAILED(result)) {
-            Check(context.Device()->GetDeviceRemovedReason(), "MSAA support device removed", context.Device());
-            return skip(fmt::format("CheckFeatureSupport(MULTISAMPLE_QUALITY_LEVELS) HRESULT={:#010x}",
-                                    static_cast<u32>(result)));
+            Check(context.Device()->GetDeviceRemovedReason(), "MSAA support device removed",
+                  context.Device());
+            return skip(
+                fmt::format("CheckFeatureSupport(MULTISAMPLE_QUALITY_LEVELS) HRESULT={:#010x}",
+                            static_cast<u32>(result)));
         }
         if (!quality.NumQualityLevels)
             return skip("MULTISAMPLE_QUALITY_LEVELS.NumQualityLevels == 0");
@@ -131,13 +140,14 @@ ResourcePtr MakeTexture(Context& context, const VideoCommon::ImageInfo& info, Fo
     D3D12_FEATURE_DATA_FORMAT_SUPPORT support{static_cast<DXGI_FORMAT>(format.view_format)};
     const auto query_format = [&](D3D12_FEATURE_DATA_FORMAT_SUPPORT& data,
                                   std::string_view condition) {
-        const HRESULT result = context.Device()->CheckFeatureSupport(
-            D3D12_FEATURE_FORMAT_SUPPORT, &data, sizeof(data));
+        const HRESULT result = context.Device()->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT,
+                                                                     &data, sizeof(data));
         if (SUCCEEDED(result))
             return true;
-        Check(context.Device()->GetDeviceRemovedReason(), "format support device removed", context.Device());
-        UnsupportedImage(info, format, fmt::format("{} HRESULT={:#010x}", condition,
-                                                  static_cast<u32>(result)));
+        Check(context.Device()->GetDeviceRemovedReason(), "format support device removed",
+              context.Device());
+        UnsupportedImage(info, format,
+                         fmt::format("{} HRESULT={:#010x}", condition, static_cast<u32>(result)));
         return false;
     };
     if (!query_format(support, "texture FORMAT_SUPPORT query"))
@@ -160,7 +170,8 @@ ResourcePtr MakeTexture(Context& context, const VideoCommon::ImageInfo& info, Fo
                desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE1D) {
         desc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
     }
-    if (info.num_samples == 1 && !format.depth && format.block_width == 1 && format.block_height == 1) {
+    if (info.num_samples == 1 && !format.depth && format.block_width == 1 &&
+        format.block_height == 1) {
         D3D12_FEATURE_DATA_FORMAT_SUPPORT uav_support{
             format.converted_astc ? DXGI_FORMAT_R8G8B8A8_UNORM
                                   : static_cast<DXGI_FORMAT>(format.view_format)};
@@ -258,7 +269,8 @@ void Image::Transfer(const StagingBufferRef& input,
     if (!resource)
         return;
     if (host_format.planes != 1) {
-        UnsupportedImage(info, host_format, "packed depth/stencil staging transfer not implemented");
+        UnsupportedImage(info, host_format,
+                         "packed depth/stencil staging transfer not implemented");
         return;
     }
     if (resource->handle->GetDesc().SampleDesc.Count > 1) {
@@ -280,16 +292,20 @@ void Image::Transfer(const StagingBufferRef& input,
                 (static_cast<u32>(offset.y) & ((1u << samples_y) - 1)) ||
                 (extent.width & ((1u << samples_x) - 1)) ||
                 (extent.height & ((1u << samples_y) - 1))) {
-                UnsupportedImage(info, host_format, "MSAA staging region is not sample-grid aligned");
+                UnsupportedImage(info, host_format,
+                                 "MSAA staging region is not sample-grid aligned");
                 return;
             }
             VideoCommon::ImageCopy region{};
             region.src_subresource = region.dst_subresource = copy.image_subresource;
             region.src_offset = offset; // Helper MSAA source offsets use expanded-grid units.
-            region.dst_offset = download ? offset : VideoCommon::Offset3D{
-                offset.x >> samples_x, offset.y >> samples_y, offset.z};
-            region.extent = download ? extent : VideoCommon::Extent3D{
-                extent.width >> samples_x, extent.height >> samples_y, extent.depth};
+            region.dst_offset = download ? offset
+                                         : VideoCommon::Offset3D{offset.x >> samples_x,
+                                                                 offset.y >> samples_y, offset.z};
+            region.extent = download
+                                ? extent
+                                : VideoCommon::Extent3D{extent.width >> samples_x,
+                                                        extent.height >> samples_y, extent.depth};
             image_copies.push_back(region);
         }
         if (download) {
@@ -447,9 +463,9 @@ ImageView::ImageView(TextureCacheRuntime&, const VideoCommon::ImageViewInfo& inf
     if (!resource)
         return;
     const auto view_info = MaxwellFormat(info.format);
-    if (!view_info.Supported() || (!VideoCore::Surface::IsPixelFormatASTC(info.format) &&
-                                   view_info.resource_format != image.HostFormat().resource_format))
-    {
+    if (!view_info.Supported() ||
+        (!VideoCore::Surface::IsPixelFormatASTC(info.format) &&
+         view_info.resource_format != image.HostFormat().resource_format)) {
         UnsupportedImage(image.info, image.HostFormat(), "incompatible texture view cast");
         resource.reset();
         return;
@@ -474,9 +490,9 @@ ImageView::ImageView(TextureCacheRuntime&, const VideoCommon::ImageViewInfo& inf
         range.base.level + range.extent.levels > desc.MipLevels || range.base.layer < 0 ||
         range.extent.layers <= 0 ||
         (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE3D &&
-         range.base.layer + range.extent.layers > desc.DepthOrArraySize))
-    {
-        UnsupportedImage(image.info, image.HostFormat(), "image view subresources outside resource");
+         range.base.layer + range.extent.layers > desc.DepthOrArraySize)) {
+        UnsupportedImage(image.info, image.HostFormat(),
+                         "image view subresources outside resource");
         resource.reset();
         return;
     }
@@ -485,7 +501,8 @@ ImageView::ImageView(TextureCacheRuntime&, const VideoCommon::ImageViewInfo& inf
     const UINT first_layer = range.base.layer;
     const UINT layers = range.extent.layers;
     if (desc.SampleDesc.Count > 1) {
-        if (type != VideoCommon::ImageViewType::e2D && type != VideoCommon::ImageViewType::e2DArray &&
+        if (type != VideoCommon::ImageViewType::e2D &&
+            type != VideoCommon::ImageViewType::e2DArray &&
             type != VideoCommon::ImageViewType::Rect) {
             UnsupportedImage(image.info, image.HostFormat(), "MSAA view must be 2D or 2D array");
             resource.reset();
@@ -635,12 +652,12 @@ BlitImageHelper& TextureCacheRuntime::BlitHelpers() {
     return *blit_helper;
 }
 void TextureCacheRuntime::CopyImageMSAA(Image& dst, Image& src,
-                                       std::span<const VideoCommon::ImageCopy> copies) {
+                                        std::span<const VideoCommon::ImageCopy> copies) {
     if (!dst.Handle() || !src.Handle())
         return;
     try {
         BlitHelpers().CopyImageMSAA({dst.Handle(), dst.HostFormat()},
-                                  {src.Handle(), src.HostFormat()}, copies);
+                                    {src.Handle(), src.HostFormat()}, copies);
     } catch (const std::logic_error& error) {
         UnsupportedImage(src.info, src.HostFormat(), error.what());
     }
@@ -656,7 +673,8 @@ void TextureCacheRuntime::ConvertImage(Framebuffer*, ImageView& dst, ImageView& 
                    desc.Height >> dst.range.base.level, 1};
     try {
         BlitHelpers().CopyImage({dst.ImageHandle(), MaxwellFormat(dst.format)},
-                                {src.ImageHandle(), MaxwellFormat(src.format)}, std::span{&copy, 1});
+                                {src.ImageHandle(), MaxwellFormat(src.format)},
+                                std::span{&copy, 1});
     } catch (const std::logic_error& error) {
         VideoCommon::ImageInfo diagnostic;
         diagnostic.format = src.format;
@@ -676,8 +694,8 @@ void TextureCacheRuntime::ReinterpretImage(Image& dst, Image& src,
         return;
     }
     try {
-        BlitHelpers().CopyImage({dst.Handle(), dst.HostFormat()},
-                                {src.Handle(), src.HostFormat()}, copies);
+        BlitHelpers().CopyImage({dst.Handle(), dst.HostFormat()}, {src.Handle(), src.HostFormat()},
+                                copies);
     } catch (const std::logic_error& error) {
         UnsupportedImage(src.info, src.HostFormat(), error.what());
     }
@@ -692,8 +710,8 @@ void TextureCacheRuntime::CopyImage(Image& dst, Image& src,
         return;
     }
     try {
-        BlitHelpers().CopyImage({dst.Handle(), dst.HostFormat()},
-                                {src.Handle(), src.HostFormat()}, copies);
+        BlitHelpers().CopyImage({dst.Handle(), dst.HostFormat()}, {src.Handle(), src.HostFormat()},
+                                copies);
     } catch (const std::logic_error& error) {
         UnsupportedImage(src.info, src.HostFormat(), error.what());
     }

@@ -329,9 +329,9 @@ void Context::LogInfoQueue() noexcept {
 }
 void Context::ReportFailure(const std::exception& error) noexcept {
     try {
-        Diagnostic(
-            fmt::format("D3D12 boundary event=renderer_exception what={} removed={:#010x}", error.what(),
-                        static_cast<u32>(device ? device->GetDeviceRemovedReason() : E_POINTER)));
+        Diagnostic(fmt::format(
+            "D3D12 boundary event=renderer_exception what={} removed={:#010x}", error.what(),
+            static_cast<u32>(device ? device->GetDeviceRemovedReason() : E_POINTER)));
         LogInfoQueue();
         LogDeviceDred(device.Get());
         SetEnvironmentVariableA("NXBOX_D3D12_FIRST_FAILURE", error.what());

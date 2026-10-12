@@ -99,21 +99,21 @@ void MultisampleFetch() {
             f.program.info.texture_descriptors.push_back(
                 {.type = type, .is_depth = depth, .is_multisample = true, .count = 1});
             const bool array = type == TextureType::ColorArray2D;
-            const auto coords = array
-                ? f.Add(IR::Opcode::CompositeConstructU32x3,
-                        {IR::Value{1u}, IR::Value{2u}, IR::Value{0u}})
-                : f.Add(IR::Opcode::CompositeConstructU32x2,
-                        {IR::Value{1u}, IR::Value{2u}});
+            const auto coords =
+                array ? f.Add(IR::Opcode::CompositeConstructU32x3,
+                              {IR::Value{1u}, IR::Value{2u}, IR::Value{0u}})
+                      : f.Add(IR::Opcode::CompositeConstructU32x2, {IR::Value{1u}, IR::Value{2u}});
             IR::TextureInstInfo flags{};
             flags.type.Assign(type);
             flags.is_depth.Assign(depth);
-            const auto sample = f.Add(IR::Opcode::ImageFetch,
-                {IR::Value{0u}, coords, {}, IR::Value{0u}, IR::Value{2u}}, flags.raw);
+            const auto sample =
+                f.Add(IR::Opcode::ImageFetch,
+                      {IR::Value{0u}, coords, {}, IR::Value{0u}, IR::Value{2u}}, flags.raw);
             const auto red = f.Add(IR::Opcode::CompositeExtractF32x4, {sample, IR::Value{0u}});
             f.Add(IR::Opcode::SetFragColor, {IR::Value{0u}, IR::Value{0u}, red});
             // An omitted sample operand still selects the MSAA overload at sample zero.
             const auto zero = f.Add(IR::Opcode::ImageFetch,
-                {IR::Value{0u}, coords, {}, IR::Value{0u}, {}}, flags.raw);
+                                    {IR::Value{0u}, coords, {}, IR::Value{0u}, {}}, flags.raw);
             const auto green = f.Add(IR::Opcode::CompositeExtractF32x4, {zero, IR::Value{0u}});
             f.Add(IR::Opcode::SetFragColor, {IR::Value{0u}, IR::Value{1u}, green});
             Bindings bindings;
@@ -124,7 +124,7 @@ void MultisampleFetch() {
             Contains(text, ", int(0)");
             Require(text.find("SamplerState") == text.npos, "MSAA has no sampler declaration");
             const std::string name = std::string{"hlsl_msaa"} + (array ? "_array" : "") +
-                (depth ? "_depth" : "") + ".hlsl";
+                                     (depth ? "_depth" : "") + ".hlsl";
             std::ofstream(name) << text;
         }
     }
