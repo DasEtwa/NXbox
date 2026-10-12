@@ -2436,7 +2436,6 @@ SyncResult RunPublic(std::uint64_t title_id, const ProgressCallback& progress,
     const std::lock_guard<std::mutex> guard(g_sync_mutex);
     try {
         WinrtTransport transport;
-        const Env env = MakeEnv(&transport);
         const Env session_env = MakeEnv(&transport, profile_uuid);
         return RunSync(session_env, title_id, progress, game_name, mode, trigger, system_save);
     } catch (const winrt::hresult_error& failure) {

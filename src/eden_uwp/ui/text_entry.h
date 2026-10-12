@@ -24,7 +24,7 @@ class TextEntry {
 public:
     enum class Result { Editing, Confirmed, Cancelled };
 
-    TextEntry(std::wstring title, std::wstring initial);
+    TextEntry(std::wstring title, std::wstring initial, bool secret = false);
 
     Result Update(const Input& input);
     void Draw(Renderer& renderer, Clock::time_point now) const;
@@ -52,6 +52,7 @@ private:
     std::wstring title_;
     std::wstring text_;
     std::size_t caret_ = 0;
+    bool secret_ = false;
     bool shift_ = false;
     int row_ = 1;
     int column_ = 0;

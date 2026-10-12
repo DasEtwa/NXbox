@@ -768,7 +768,7 @@ SignInOutcome RunSignIn(Renderer& renderer, const CoreWindow& window, Input& inp
     if (use_dav) {
         std::vector<std::string> fields;
         for (const auto key : {Text::SyncDavUrl, Text::SyncDavUser, Text::SyncDavPassword}) {
-            TextEntry entry(Tr(key), L"");
+            TextEntry entry(Tr(key), L"", key == Text::SyncDavPassword);
             bool confirmed = false;
             window_closed = RunFrames(renderer, window, input, [&](Clock::time_point now) {
                 const auto result = entry.Update(input);

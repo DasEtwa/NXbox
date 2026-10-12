@@ -12,7 +12,9 @@ ROOT = Path(__file__).resolve().parents[2]
 class SaveSyncTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.build = tempfile.TemporaryDirectory(prefix="nxbox-t15-")
+        cls.build = tempfile.TemporaryDirectory(
+            prefix="nxbox-t15-", dir="/tmp" if Path("/tmp").is_dir() else None
+        )
         cls.addClassCleanup(cls.build.cleanup)
         cls.binary = Path(cls.build.name) / "policy"
         source = Path(cls.build.name) / "policy.cpp"
@@ -90,7 +92,9 @@ int main(int argc, char** argv) {
         )
 
     def run_policy(self, mode):
-        with tempfile.TemporaryDirectory(prefix="nxbox-t15-tree-") as tree:
+        with tempfile.TemporaryDirectory(
+            prefix="nxbox-t15-tree-", dir="/tmp" if Path("/tmp").is_dir() else None
+        ) as tree:
             subprocess.run([str(self.binary), mode, tree], check=True, capture_output=True)
 
     def test_switchsave_name_sanitization(self):

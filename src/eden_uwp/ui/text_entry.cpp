@@ -33,8 +33,8 @@ constexpr auto kBlink = std::chrono::milliseconds(530);
 
 } // namespace
 
-TextEntry::TextEntry(std::wstring title, std::wstring initial)
-    : title_(std::move(title)), text_(std::move(initial)) {
+TextEntry::TextEntry(std::wstring title, std::wstring initial, bool secret)
+    : title_(std::move(title)), text_(std::move(initial)), secret_(secret) {
     if (text_.size() > kMaxLength) {
         text_.resize(kMaxLength);
     }
@@ -194,12 +194,14 @@ void TextEntry::Draw(Renderer& renderer, Clock::time_point now) const {
     renderer.StrokeRounded(Inflate(field, -0.5f), 19.5f, 1.0f, Theme::kHairline);
     const float inner_left = field.left + 28.0f;
     const float inner_right = field.right - 28.0f;
+    const std::wstring display_text = secret_ ? std::wstring(text_.size(), L'•') : text_;
     const float before =
-        caret_ == 0 ? 0.0f : renderer.MeasureString(text_.substr(0, caret_), Font::MetaMono).width;
+        caret_ == 0 ? 0.0f
+                    : renderer.MeasureString(display_text.substr(0, caret_), Font::MetaMono).width;
     const float overflow = std::max(0.0f, before - (inner_right - inner_left) + 6.0f);
     renderer.PushClip(RectF(inner_left, field.top, inner_right, field.bottom));
     renderer.DrawString(
-        text_, Font::MetaMono,
+        display_text, Font::MetaMono,
         RectF(inner_left - overflow, field.top, inner_left - overflow + 4000.0f, field.bottom),
         Theme::kText, HAlign::Left, VAlign::Middle);
     const bool caret_on =
