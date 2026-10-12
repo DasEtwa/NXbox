@@ -27,9 +27,19 @@ def inventory(revision=None):
     rows = []
     for arch, tables in TABLES.items():
         bodies = {}
+        helpers = {}
         for absolute in sorted((ROOT / FRONTEND / arch / "translate").rglob("*.cpp")):
             path = absolute.relative_to(ROOT)
             source = read_source(path, revision)
+            local_helpers = {}
+            helper_pattern = re.compile(r"bool (\w+)\([^)]*\)\s*\{")
+            for match in helper_pattern.finditer(source):
+                end, depth = match.end(), 1
+                while depth:
+                    depth += (source[end] == "{") - (source[end] == "}")
+                    end += 1
+                local_helpers[match[1]] = source[match.end() : end - 1]
+            helpers[path] = local_helpers
             for match in FUNCTION.finditer(source):
                 end, depth = match.end(), 1
                 while depth:
@@ -41,6 +51,9 @@ def inventory(revision=None):
             source = read_source(FRONTEND / arch / "decoder" / f"{table}.inc", revision)
             for index, (handler, name, bits) in enumerate(ENTRY.findall(source), 1):
                 path, body = bodies.get(handler, (None, ""))
+                for helper, helper_body in helpers.get(path, {}).items():
+                    if re.search(rf"\b{helper}\(", body):
+                        body += "\n" + helper_body
                 code = re.sub(r"//[^\n]*|/\*.*?\*/", "", body, flags=re.S).strip()
                 if path is None:
                     status = "missing"
@@ -68,6 +81,11 @@ def inventory(revision=None):
                         )
                     )
                 )
+                if re.search(
+                    r"if\s*\([^)]*\*datasize\s*==\s*16[^)]*\)\s*\{\s*return\s+(?:\w+\.)?UnallocatedEncoding\(\);",
+                    code,
+                ) or re.search(r"ASSERT(?:_MSG)?\([^;]*esize\s*!=\s*16", code):
+                    guards.append("FP16 unsupported")
                 rows.append(
                     {
                         "arch": arch,
@@ -154,7 +172,7 @@ def report(destination):
         "",
         "17 decoder rows (8 instruction families, 16 valid operand forms plus a PC-base guard) now dispatch A32 LDRBT/LDRHT/LDRSBT/LDRSHT/LDRT/STRBT/STRHT/STRT instead of unconditionally raising undefined. Valid forms perform a post-indexed UNPRIV access, preserve condition execution, extend loads correctly, and write back the base after the transfer. PC and base/destination overlap remain unpredictable. The prior general fuzz exclusion is removed.",
         "",
-        "The six remaining unconditional unreachable handlers are privileged RFE/SRS/CPS and banked-register LDM/STM forms. They are outside the user-mode execution target; this audit does not claim their privileged semantics are implemented. Architectural UDF and reserved SIMD encodings intentionally raise exceptions. There are zero direct InterpretThisInstruction/NOT_IMPLEMENTED/UNIMPLEMENTED markers in decoder handlers.",
+        "The five remaining unconditional unreachable handlers are privileged RFE/SRS and banked-register LDM/STM forms. They are outside the user-mode execution target; this audit does not claim their privileged semantics are implemented. Architectural UDF and reserved SIMD encodings intentionally raise exceptions. There are zero direct InterpretThisInstruction/NOT_IMPLEMENTED/UNIMPLEMENTED markers in decoder handlers.",
         "",
         "## Differential evidence",
         "",
