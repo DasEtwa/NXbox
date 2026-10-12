@@ -11,9 +11,9 @@
 #include <string>
 #include <vector>
 
-#include "common/container/unordered_map.h"
 #include "common/assert.h"
 #include "common/common_types.h"
+#include "common/container/unordered_map.h"
 #include "dynarmic/interface/A64/a64.h"
 #include "dynarmic/interface/A64/config.h"
 
