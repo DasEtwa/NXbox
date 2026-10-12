@@ -26,6 +26,9 @@ Eden. Each entry below describes one file; generated caches are identified separ
 - `src/eden_uwp/diagnostic.h` — Writes the LocalState diagnostic log and rotates it past 4 MiB.
 - `src/eden_uwp/diagnostic_report.h` — Collects chunked Mesa reports and prefixes every physical log
   line.
+- `src/eden_uwp/firmware.cpp` / `firmware.h` — Imports user-dumped firmware at boot and exposes
+  the installed NAND version to the library; shares the desktop installer in
+  `src/frontend_common/firmware_install.cpp`.
 - `src/eden_uwp/game_download.cpp` — Implements resumable downloads and storage-aware destination
   selection.
 - `src/eden_uwp/game_download.h` — Declares the worker-thread download interface and progress
@@ -950,3 +953,31 @@ use a larger interval to reduce console I/O. Settings are cached for the process
 Host selection/accounting regressions are in `tests/port/test_shader_probe.py`; run
 `cd tests/port && python3 -m unittest discover -s . -p 'test_*.py'`. Xbox screenshot
 comparison and a Windows UWP build are still required for end-to-end validation.
+
+## Installing user-dumped firmware on Xbox
+
+Copy a flat TegraExplorer firmware dump (`.nca` files, with their original hash names) to
+`LocalState\firmware\`, or `NXbox\firmware\` on a removable drive. Install the matching
+owner-supplied `prod.keys` in `LocalState\eden\keys\` before restarting NXbox. The package
+manifest declares `.nca` access with `uap:Capability` removable storage and a file association,
+as required by [Microsoft's file access permissions](https://learn.microsoft.com/en-us/windows/uwp/files/file-access-permissions).
+No firmware
+is downloaded. LocalState takes priority when both sources are present.
+
+Before the library or a direct game launch, an MTA worker reloads keys and uses the shared desktop
+installer: decrypt and verify each source, require real SystemVersion and MiiModel archives,
+replace the system NAND registered contents with raw NCAs, recreate filesystem factories, and
+verify installed contents. `FIRMWARE install version=<version> count=<count>` records success in
+`eden_uwp_diag.txt`. The library status reads the real installed SystemVersion, never the core's
+synthetic fallback. Missing firmware and installation failures have Portuguese/English text.
+
+Only after success is the source renamed beside its original location to `firmware_installed`;
+existing archives are preserved as `firmware_installed_1`, `_2`, etc. Failures retain the source
+for retry on the next boot, including an archive rename failure. As on desktop, an I/O failure
+while replacing NAND contents can leave an incomplete installation; check keys, files and free
+space and restart with the dump still present. Boot discovery does not scan archived folders.
+
+`tests/port/test_firmware.py` compiles a std-only host test for source paths, flat NCA discovery,
+invalid entries, bounded version parsing and collision-safe archival. A Windows UWP build and
+an Xbox run with the owner's firmware/keys are required to validate installation and MK8DX's Mii
+selection end to end.

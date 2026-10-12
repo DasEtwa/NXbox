@@ -24,6 +24,7 @@
 
 #include "common/scope_exit.h"
 #include "eden_uwp/diagnostic.h"
+#include "eden_uwp/firmware.h"
 #include "eden_uwp/save_sync.h"
 #include "eden_uwp/title_settings.h"
 #include "eden_uwp/ui/anim.h"
@@ -279,6 +280,7 @@ public:
                   const std::filesystem::path& local_state)
         : renderer_(renderer), window_(window), input_(window), local_state_(local_state),
           banners_(local_state) {
+        firmware_status_ = GetFirmwareStatus();
         sync_account_ = GetSyncAccount();
         sources_count_ = CountSources(local_state_);
         usb_mode_ = LoadUsbMode(local_state_);
@@ -1155,6 +1157,19 @@ private:
                              RectF(kMargin, kSectionTop, kMargin + 600.0f,
                                    kSectionTop + kSectionHeight),
                              Theme::kTextSecondary);
+        std::wstring firmware_text = firmware_status_.version.empty()
+                                         ? std::wstring(Tr(Text::FirmwareMissing))
+                                         : std::wstring(Tr(Text::FirmwareInstalled)) + L" " +
+                                               Widen(firmware_status_.version);
+        if (firmware_status_.install_failed) {
+            firmware_text = firmware_status_.version.empty()
+                                ? std::wstring(Tr(Text::FirmwareInstallFailed))
+                                : firmware_text + L" · " + Tr(Text::FirmwareInstallFailed);
+        }
+        renderer_.DrawString(firmware_text, Font::MetaMono,
+                             RectF(kMargin + 620.0f, kSectionTop, kCanvasWidth - kMargin,
+                                   kSectionTop + kSectionHeight),
+                             Theme::kTextSecondary);
         if (scan_) {
             DrawSkeletonRail(now);
             return;
@@ -1520,6 +1535,7 @@ private:
 
     UsbMode usb_mode_ = UsbMode::Unset;
     std::unique_ptr<UsbDetection> usb_detection_;
+    FirmwareStatus firmware_status_;
     std::unique_ptr<LibraryScan> scan_; // set while the folder is being read
     std::string keep_title_id_;         // the game to focus again when the scan ends
     bool keys_missing_ = false;         // the last scan found games it could not open for want of keys

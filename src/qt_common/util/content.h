@@ -6,6 +6,7 @@
 #include <QObject>
 #include "common/common_types.h"
 #include "frontend_common/data_manager.h"
+#include "frontend_common/firmware_install.h"
 #include "frontend_common/firmware_manager.h"
 #include "qt_common/qt_string_lookup.h"
 
@@ -14,13 +15,7 @@ namespace QtCommon::Content {
 //
 bool CheckGameFirmware(u64 program_id);
 
-enum class FirmwareInstallResult {
-    Success,
-    NoNCAs,
-    FailedDelete,
-    FailedCopy,
-    FailedCorrupted,
-};
+using FirmwareInstallResult = FirmwareManager::InstallResult;
 
 inline const QString GetFirmwareInstallResultString(FirmwareInstallResult result) {
     return LOOKUP_ENUM(result, FwInstallSuccess);

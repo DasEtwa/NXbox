@@ -13,6 +13,8 @@ add_executable(eden-uwp WIN32
     mesa_window.h
     alloc_track.cpp
     alloc_track.h
+    firmware.cpp
+    firmware.h
     game_session.cpp
     game_session.h
     protocol_uri.h

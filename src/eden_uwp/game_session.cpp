@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "eden_uwp/firmware.h"
 #include "eden_uwp/game_session.h"
 #include "eden_uwp/shader_share.h"
 
@@ -1457,6 +1458,18 @@ void RunGameView(const winrt::Windows::UI::Core::CoreWindow& window, const std::
     Ui::SyncGame sync_game;
     const std::filesystem::path local_state(
         winrt::to_string(winrt::Windows::Storage::ApplicationData::Current().LocalFolder().Path()));
+    auto firmware_worker = std::async(std::launch::async, [&local_state] {
+        winrt::init_apartment(winrt::apartment_type::multi_threaded);
+        SCOPE_EXIT {
+            winrt::uninit_apartment();
+        };
+        PrepareFirmware(local_state);
+    });
+    while (firmware_worker.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready) {
+        window.Dispatcher().ProcessEvents(CoreProcessEventsOption::ProcessAllIfPresent);
+        Sleep(16);
+    }
+    firmware_worker.get();
     const auto show_failure = [&](Ui::Text message) {
         // Called only after all GL objects have gone away, or before Mesa was constructed.
         splash.reset();

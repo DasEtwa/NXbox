@@ -98,72 +98,11 @@ void InstallFirmware(const QString& location, bool recursive) {
         return;
     }
 
-    // Locate and erase the content of nand/system/Content/registered/*.nca, if any.
-    auto sysnand_content_vdir = system->GetFileSystemController().GetSystemNANDContentDirectory();
-    if (sysnand_content_vdir->IsWritable() &&
-        !sysnand_content_vdir->CleanSubdirectoryRecursive("registered")) {
-        result = FirmwareInstallResult::FailedDelete;
-        icon = QtCommon::Frontend::Icon::Critical;
-        ShowMessage();
-        return;
-    }
-
-    LOG_INFO(Frontend,
-             "Cleaned nand/system/Content/registered folder in preparation for new firmware.");
-
-    callback(100, 20);
-
-    auto firmware_vdir = sysnand_content_vdir->GetDirectoryRelative("registered");
-
-    bool success = true;
-    int i = 0;
-    for (const auto& firmware_src_path : out) {
-        i++;
-        auto firmware_src_vfile =
-            vfs->OpenFile(firmware_src_path.generic_string(), FileSys::OpenMode::Read);
-        auto firmware_dst_vfile =
-            firmware_vdir->CreateFileRelative(firmware_src_path.filename().string());
-
-        if (!VfsRawCopy(firmware_src_vfile, firmware_dst_vfile)) {
-            LOG_ERROR(Frontend, "Failed to copy firmware file {} to {} in registered folder!",
-                      firmware_src_path.generic_string(), firmware_src_path.filename().string());
-            success = false;
-        }
-
-        if (callback(100, 20 + static_cast<int>(((i) / static_cast<float>(out.size())) * 70.0))) {
-            result = FirmwareInstallResult::FailedCorrupted;
-            icon = QtCommon::Frontend::Icon::Warning;
-            ShowMessage();
-            return;
-        }
-    }
-
-    if (!success) {
-        result = FirmwareInstallResult::FailedCopy;
-        icon = QtCommon::Frontend::Icon::Critical;
-        ShowMessage();
-        return;
-    }
-
-    // Re-scan VFS for the newly placed firmware files.
-    system->GetFileSystemController().CreateFactories(*vfs);
-
-    auto VerifyFirmwareCallback = [&](size_t total_size, size_t processed_size) {
-        QGuiApplication::processEvents();
-        progress->setValue(90 + static_cast<int>((processed_size * 10) / total_size));
-        return progress->wasCanceled();
-    };
-
-    auto results = ContentManager::VerifyInstalledContents(*QtCommon::system, *QtCommon::provider,
-                                                           VerifyFirmwareCallback, true);
-
-    if (results.size() > 0) {
-        const auto failed_names =
-            QString::fromStdString(fmt::format("{}", fmt::join(results, "\n")));
+    result = FirmwareManager::InstallFirmware(*system, out, callback);
+    if (result != FirmwareInstallResult::Success) {
         progress->close();
-        QtCommon::Frontend::Critical(
-            tr("Firmware integrity verification failed!"),
-            tr("Verification failed for the following files:\n\n%1").arg(failed_names));
+        icon = QtCommon::Frontend::Icon::Critical;
+        ShowMessage();
         return;
     }
 

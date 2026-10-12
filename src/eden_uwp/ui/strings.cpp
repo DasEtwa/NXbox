@@ -324,6 +324,11 @@ constexpr Entry kTable[] = {
         {L"Não foi possível iniciar. Abra o NXbox para conferir o jogo e as chaves. Pressione B "
          L"para sair.",
          L"Could not start. Open NXbox to check the game and keys. Press B to exit."}, // LaunchFailed
+    {L"Firmware instalado", L"Installed firmware"}, // FirmwareInstalled
+    {L"Firmware: copie seu dump para firmware ou NXbox\\firmware no USB e reinicie.",
+     L"Firmware: copy your dump to firmware or NXbox\\firmware on USB and restart."}, // FirmwareMissing
+    {L"Instalação falhou: confira chaves, arquivos e espaço; reinicie.",
+     L"Install failed: check keys, files and free space; restart."}, // FirmwareInstallFailed
 };
 static_assert(std::size(kTable) == static_cast<std::size_t>(Text::Count),
               "every Text needs a row in kTable");
