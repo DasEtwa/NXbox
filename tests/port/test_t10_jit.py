@@ -52,7 +52,7 @@ class T10JitTests(unittest.TestCase):
 #include "dynarmic/interface/A64/config.h"
 #include "core/arm/dynarmic/nxbox_jit_policy.h"
 template<class C> void Check() {
-    C config;
+    C config{};
     const auto original = config.optimizations;
     Core::NxboxJit::ApplyOptOuts(config);
     assert(config.optimizations == original);
@@ -98,7 +98,7 @@ template<class C> void Check(const char* name, Flag flag) {
     const auto all = static_cast<Flag>(0x001fffff);
     for (const auto* value : {"", "1", "false", "00", "0"}) {
         setenv(name, value, 1);
-        C config;
+        C config{};
         config.optimizations = all;
         Core::NxboxJit::ApplyOptOuts(config);
         assert(config.optimizations == (std::strcmp(value, "0") == 0 ? all & ~flag : all));
@@ -121,18 +121,20 @@ int main() { All<Dynarmic::A32::UserConfig>(); All<Dynarmic::A64::UserConfig>();
 #include "dynarmic/interface/A64/config.h"
 #include "core/arm/dynarmic/nxbox_jit_policy.h"
 template<class C> void Check() {
-    C config;
+    C config{};
     config.page_table = reinterpret_cast<decltype(config.page_table)>(0x1000);
     config.fastmem_pointer = 0x1000;
     config.fastmem_exclusive_access = true;
     config.recompile_on_exclusive_fastmem_failure = true;
     config.only_detect_misalignment_via_page_table_on_page_boundary = true;
+    config.callbacks = reinterpret_cast<decltype(config.callbacks)>(0x2000);
+    const auto* callbacks = config.callbacks;
     Core::NxboxJit::ApplyOptOuts(config);
     assert(config.page_table == nullptr);
     assert(!config.fastmem_pointer && !config.fastmem_exclusive_access);
     assert(!config.recompile_on_exclusive_fastmem_failure);
     assert(!config.only_detect_misalignment_via_page_table_on_page_boundary);
-    assert(config.callbacks == nullptr); // Policy never changes callback identity.
+    assert(config.callbacks == callbacks); // Policy never changes callback identity.
 }
 int main() { Check<Dynarmic::A32::UserConfig>(); Check<Dynarmic::A64::UserConfig>(); }
 """,
@@ -186,6 +188,23 @@ int main() {
 }
 """,
             {"NXBOX_THREAD_PROFILE": "1"},
+        )
+
+    def test_profile_disabled_by_default(self):
+        self.run_cpp(
+            r"""
+#include <cassert>
+#include "core/arm/dynarmic/nxbox_jit_profile.h"
+int main() {
+    Core::NxboxJit::Profile profile;
+    assert(!profile.enabled);
+    assert(profile.start == Core::NxboxJit::Profile::Clock::time_point{});
+    profile.CodeRead(false); profile.CodeRead(true);
+    profile.PageFill(); profile.MemoryCallback();
+    assert(profile.code_reads == 0 && profile.fresh_code_reads == 0);
+    assert(profile.code_page_fills == 0 && profile.memory_callbacks == 0);
+}
+"""
         )
 
     def test_disk_cache_second_process_identity_and_corruption(self):

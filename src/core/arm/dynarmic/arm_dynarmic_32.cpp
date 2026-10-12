@@ -350,10 +350,12 @@ HaltReason ArmDynarmic32::RunThread(Kernel::KThread* thread) {
         m_cb->m_profile.Poll(
             [&](auto reads, auto fills, auto fresh, auto callbacks, auto interval) {
                 EdenXbox::Diagnostic(fmt::format(
-                    "THREAD_PROFILE jit_core={} guest_bits=32 code_reads={} code_page_fills={} "
+                    "THREAD_PROFILE jit_core={} program_id={:016x} guest_bits=32 code_reads={} "
+                    "code_page_fills={} "
                     "fresh_code_reads={} page_table_fallback_callbacks={} interval_ms={} "
                     "compiles=unavailable cache_misses=unavailable fastmem_faults=unavailable",
-                    m_core_index, reads, fills, fresh, callbacks, interval));
+                    m_core_index, m_cb->m_process->GetProgramId(), reads, fills, fresh, callbacks,
+                    interval));
             },
             NxboxJit::Profile::Clock::now());
     }
