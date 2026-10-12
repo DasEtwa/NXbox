@@ -47,6 +47,16 @@ export const strings = {
     secret: "A terminal is required to enter a hidden password.",
     args: "Invalid arguments. Run --help.",
     progress: "Sending",
+    itemGame: "Game",
+    itemKeys: "Keys (prod.keys)",
+    itemUpdate: "Update",
+    itemDlc: "DLC",
+    none: "-",
+    rejectNoId:
+      "Rejected: no single [title ID] token in the file name, so it cannot be matched to the game.",
+    rejectMismatch:
+      "Rejected: this title ID does not belong to the game (expected its update ID or DLC range).",
+    rejectDuplicate: "Rejected: this file or title ID was already added.",
     help: "NXbox Pack\nUsage: nxbox-pack [--runtime-url HTTPS_URL --runtime-sha256 HEX] [--insecure-portal]\n--insecure-portal accepts the Xbox self-signed TLS certificate for this connection only.\nDefault runtime: latest NspxMiguel/NXbox release with a SHA-256 asset digest.\nNo games or keys are included in the staged runtime. NSZ/XCZ requires nsz on PATH.",
   },
   pt: {
@@ -89,6 +99,16 @@ export const strings = {
     secret: "É necessário um terminal para digitar uma senha oculta.",
     args: "Argumentos inválidos. Execute --help.",
     progress: "Enviando",
+    itemGame: "Jogo",
+    itemKeys: "Chaves (prod.keys)",
+    itemUpdate: "Update",
+    itemDlc: "DLC",
+    none: "-",
+    rejectNoId:
+      "Rejeitado: o nome do arquivo não tem um único [ID do título], então não dá para associar ao jogo.",
+    rejectMismatch:
+      "Rejeitado: este ID de título não pertence ao jogo (esperado o ID do update ou a faixa de DLC).",
+    rejectDuplicate: "Rejeitado: este arquivo ou ID de título já foi adicionado.",
     help: "NXbox Pack\nUso: nxbox-pack [--runtime-url URL_HTTPS --runtime-sha256 HEX] [--insecure-portal]\n--insecure-portal aceita o certificado TLS autoassinado do Xbox somente nesta conexão.\nRuntime padrão: última release de NspxMiguel/NXbox com digest SHA-256 do arquivo.\nJogos e chaves ficam fora do runtime preparado. NSZ/XCZ requer nsz no PATH.",
   },
 } as const;

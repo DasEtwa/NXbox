@@ -23,6 +23,7 @@ import { DevicePortal, portalUrl } from "./portal";
 import { discoverXbox } from "./discovery";
 import { loadCredentials, saveCredentials } from "./credentials";
 import { prepareContent } from "./content";
+import { checkAddon, renderChecklist, type Item } from "./checklist";
 import { Prompt } from "./prompt";
 
 export function parseArgs(args: string[]): {
@@ -92,18 +93,28 @@ export async function main(): Promise<void> {
     prompt = new Prompt();
     const game = draggedPath(await prompt.ask("→"));
     await validateFile(game);
+    const titleId = validateTitleId(parseTitleId(game) ?? (await prompt.ask(text.title)));
+    const gameInfo = { titleId, size: Bun.file(game).size };
     const keys = draggedPath(await prompt.ask(text.keys));
     await validateFile(keys, true);
     const extras: string[] = [];
+    const added: Item[] = [];
+    const show = () => console.log(renderChecklist(text, gameInfo, true, added));
+    show();
     for (;;) {
       const answer = await prompt.ask(text.extra);
       if (!answer) break;
       const path = draggedPath(answer);
       await validateFile(path);
-      extras.push(path);
+      const result = checkAddon(titleId, path, Bun.file(path).size, added);
+      if (typeof result === "string") console.log(text[result]);
+      else {
+        added.push(result);
+        extras.push(path);
+      }
+      show();
     }
     console.log(text.fallback);
-    const titleId = validateTitleId(parseTitleId(game) ?? (await prompt.ask(text.title)));
     const name = validateName(await prompt.ask(text.name, filenameName(game)));
     // Resolve the runtime before collecting credentials or changing console state.
     const source = options.source ?? (await latestRuntime());
