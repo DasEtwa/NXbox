@@ -313,6 +313,13 @@ void QueryCacheRuntime::EndDraw() {
     ++impl->count;
     impl->drawing = false;
 }
+void QueryCacheRuntime::CancelDraw() {
+    // A draw that threw after BeginDraw must still close its queries before
+    // submitting. Keep any partial native statistics instead of leaking a bank.
+    if (impl->drawing)
+        EndDraw();
+    PauseHostConditionalRendering();
+}
 u64 QueryCacheRuntime::ReadCounter(QueryType type, u32 stream) {
     if (BisectEnabled("NXBOX_D3D12_NO_QUERIES"))
         return 0;

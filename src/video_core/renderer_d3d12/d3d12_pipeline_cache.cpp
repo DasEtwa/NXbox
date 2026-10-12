@@ -261,6 +261,12 @@ void FillGraphicsState(Tegra::Engines::Maxwell3D& maxwell3d, Pso::GraphicsPsoSta
                                 regs.stencil_front_mask, regs.stencil_back_mask))
         s.stencil_enable |= 2; // Bit 1 selects native independent face state.
 
+    // Diagnostic bisection only: preserve writes while bypassing rejection.
+    if (BisectEnabled("NXBOX_D3D12_NO_DEPTH_TEST"))
+        s.depth_func = 8; // D3D12_COMPARISON_FUNC_ALWAYS
+    if (BisectEnabled("NXBOX_D3D12_NO_STENCIL_TEST"))
+        s.stencil_enable = 0;
+
     // Blend (independent per render target).
     s.logic_enable = regs.logic_op.enable != 0;
     s.logic_op = static_cast<u8>(Pso::LogicOp(static_cast<u32>(regs.logic_op.op)));
@@ -268,7 +274,8 @@ void FillGraphicsState(Tegra::Engines::Maxwell3D& maxwell3d, Pso::GraphicsPsoSta
     s.alpha_to_coverage = regs.anti_alias_alpha_control.alpha_to_coverage != 0;
     s.conservative_raster = regs.conservative_raster_enable != 0;
     s.smooth_lines = regs.line_anti_alias_enable != 0;
-    s.depth_bounds = regs.zeta_enable && regs.depth_bounds_enable;
+    s.depth_bounds =
+        regs.zeta_enable && regs.depth_bounds_enable && !BisectEnabled("NXBOX_D3D12_NO_DEPTH_TEST");
     for (size_t i = 0; i < Pso::kNumRenderTargets; ++i) {
         auto& out = s.blend[i];
         out = {0, 0xF, Pso::kBlendOne, Pso::kBlendZero, 1, Pso::kBlendOne, Pso::kBlendZero, 1};

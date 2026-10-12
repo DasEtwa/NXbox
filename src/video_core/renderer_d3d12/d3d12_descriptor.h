@@ -165,11 +165,12 @@ public:
 
     // Render target views derived from an image view's subresource range.
     // nullptr (or a view without image) creates a null RTV that discards writes.
-    void CreateRtv(D3D12_CPU_DESCRIPTOR_HANDLE handle, const ImageView* view);
+    void CreateRtv(D3D12_CPU_DESCRIPTOR_HANDLE handle, const ImageView* view,
+                   const ResourcePtr& replacement = {}, u32 layer_count = 0);
     void CreateDsv(D3D12_CPU_DESCRIPTOR_HANDLE handle, const ImageView& view,
-                   D3D12_DSV_FLAGS flags = D3D12_DSV_FLAG_NONE);
+                   D3D12_DSV_FLAGS flags = D3D12_DSV_FLAG_NONE, u32 layer_count = 0);
 
-private:
+  private:
     struct Ring {
         ComPtr<ID3D12DescriptorHeap> heap;
         RingAllocator math;

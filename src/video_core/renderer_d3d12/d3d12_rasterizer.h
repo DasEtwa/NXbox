@@ -146,12 +146,17 @@ private:
         u64 frame{};
     };
     std::vector<FeedbackTexture> feedback_pool;
+    std::vector<FeedbackTexture> attachment_pool;
     u64 feedback_draw{};
     u64 feedback_frame{};
     u64 feedback_copies{};
     u64 feedback_readonly_depth{};
     u64 skipped_draws{};
     u32 attachment_diagnostics{};
+    u32 attachment_extent_diagnostics{};
+    u32 depth_trace_draws{}, depth_trace_clears{};
+    bool feedback_failure_logged{};
+    bool injected_draw_skip{};
     bool presentation_logged{};
     ResourcePtr zero_vertex_buffer;
     std::vector<std::pair<ResourcePtr, D3D12_RESOURCE_STATES>> state_scratch;

@@ -246,7 +246,10 @@ void D3D12DescriptorAllocator::SetHeaps(ID3D12GraphicsCommandList* commands) {
 }
 
 DescriptorTable D3D12DescriptorAllocator::Allocate(Ring& ring, u32 count) {
+    if (!count || count > ring.math.Capacity())
+        throw std::invalid_argument("D3D12 invalid descriptor allocation size");
     for (;;) {
+        context.Commands();
         while (const auto oldest = ring.math.OldestTick()) {
             if (!context.IsFree(*oldest))
                 break;
@@ -447,10 +450,11 @@ void D3D12DescriptorAllocator::WriteSampler(const DescriptorTable& table, u32 sl
 }
 
 void D3D12DescriptorAllocator::CreateRtv(D3D12_CPU_DESCRIPTOR_HANDLE handle,
-                                         const ImageView* view_ptr) {
+                                         const ImageView* view_ptr, const ResourcePtr& replacement,
+                                         u32 layer_count) {
     const FrameProfile::Scope profile_write{context.Profile(), FramePhase::DescriptorWrites};
     context.Profile().Count(FrameCount::DescriptorWrites);
-    const auto resource = view_ptr ? view_ptr->ImageHandle() : nullptr;
+    const auto resource = replacement ? replacement : view_ptr ? view_ptr->ImageHandle() : nullptr;
     if (!resource) {
         // Null render target: a valid RTV that discards writes.
         D3D12_RENDER_TARGET_VIEW_DESC null_desc{};
@@ -461,9 +465,9 @@ void D3D12DescriptorAllocator::CreateRtv(D3D12_CPU_DESCRIPTOR_HANDLE handle,
     }
     const ImageView& view = *view_ptr;
     const auto desc = resource->handle->GetDesc();
-    const UINT level = static_cast<UINT>(view.range.base.level);
-    const UINT layer = static_cast<UINT>(view.range.base.layer);
-    const UINT layers = static_cast<UINT>(view.range.extent.layers);
+    const UINT level = replacement ? 0 : static_cast<UINT>(view.range.base.level);
+    const UINT layer = replacement ? 0 : static_cast<UINT>(view.range.base.layer);
+    const UINT layers = layer_count ? layer_count : static_cast<UINT>(view.range.extent.layers);
     D3D12_RENDER_TARGET_VIEW_DESC rtv{};
     rtv.Format = view.Description().Format;
     if (desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D) {
@@ -483,7 +487,7 @@ void D3D12DescriptorAllocator::CreateRtv(D3D12_CPU_DESCRIPTOR_HANDLE handle,
 }
 
 void D3D12DescriptorAllocator::CreateDsv(D3D12_CPU_DESCRIPTOR_HANDLE handle, const ImageView& view,
-                                         D3D12_DSV_FLAGS flags) {
+                                         D3D12_DSV_FLAGS flags, u32 layer_count) {
     const FrameProfile::Scope profile_write{context.Profile(), FramePhase::DescriptorWrites};
     context.Profile().Count(FrameCount::DescriptorWrites);
     const auto resource = view.ImageHandle();
@@ -496,11 +500,12 @@ void D3D12DescriptorAllocator::CreateDsv(D3D12_CPU_DESCRIPTOR_HANDLE handle, con
     if (resource->handle->GetDesc().SampleDesc.Count > 1) {
         dsv.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2DMSARRAY;
         dsv.Texture2DMSArray = {static_cast<UINT>(view.range.base.layer),
-                                static_cast<UINT>(view.range.extent.layers)};
+                                layer_count ? layer_count
+                                            : static_cast<UINT>(view.range.extent.layers)};
     } else {
-        dsv.Texture2DArray = {static_cast<UINT>(view.range.base.level),
-                              static_cast<UINT>(view.range.base.layer),
-                              static_cast<UINT>(view.range.extent.layers)};
+        dsv.Texture2DArray = {
+            static_cast<UINT>(view.range.base.level), static_cast<UINT>(view.range.base.layer),
+            layer_count ? layer_count : static_cast<UINT>(view.range.extent.layers)};
     }
     context.Device()->CreateDepthStencilView(resource->handle.Get(), &dsv, handle);
 }

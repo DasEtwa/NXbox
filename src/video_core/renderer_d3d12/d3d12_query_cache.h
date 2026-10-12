@@ -69,6 +69,7 @@ public:
     void PrepareDraw();
     void BeginDraw(bool has_geometry_shader = false);
     void EndDraw();
+    void CancelDraw();
     u64 ReadCounter(VideoCommon::QueryType type, u32 stream = 0);
     void ResetCounter(VideoCommon::QueryType type);
     void EnableCounter(VideoCommon::QueryType type, bool enabled);

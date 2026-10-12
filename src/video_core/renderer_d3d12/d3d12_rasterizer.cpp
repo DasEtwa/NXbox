@@ -24,6 +24,7 @@
 #include "video_core/renderer_d3d12/d3d12_feedback.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_cache.h"
 #include "video_core/renderer_d3d12/d3d12_rasterizer.h"
+#include "video_core/renderer_d3d12/d3d12_render_area.h"
 #include "video_core/textures/texture.h"
 
 namespace D3D12 {
@@ -245,6 +246,19 @@ constexpr D3D12_RESOURCE_STATES BufferReadState =
 } // namespace
 
 void RasterizerD3D12::SkipDraw(const char* reason) {
+    // Descriptor slots and recorded copies belong to CurrentTick even if no draw
+    // reaches OMSetRenderTargets. Submit that producer so they can retire.
+    // Transitions are immediate; this backend never opens a native render pass.
+    for (auto& stage : bindings.stages)
+        stage.Clear();
+    state_scratch.clear();
+    converted_indices.reset();
+    try {
+        query_runtime.CancelDraw();
+        context.Submit();
+    } catch (const std::exception& error) {
+        context.ReportFailure(error);
+    }
     ++skipped_draws;
     static std::mutex warning_mutex;
     static std::set<std::string> warnings;
@@ -255,8 +269,6 @@ void RasterizerD3D12::SkipDraw(const char* reason) {
             LOG_WARNING(Render, "D3D12 draw fallback: {}", reason);
         }
     }
-    for (auto& stage : bindings.stages)
-        stage.Clear();
 }
 
 ResourcePtr RasterizerD3D12::CopyFeedback(const ResourcePtr& source) {
@@ -278,22 +290,36 @@ ResourcePtr RasterizerD3D12::CopyFeedback(const ResourcePtr& source) {
         }
     }
     if (!selected) {
-        // Evict inactive shapes before allocating. Pending command lists still retain
-        // them until their fence completes; never bypass the global memory budget.
-        std::erase_if(feedback_pool, [this](const auto& entry) {
-            return entry.frame != feedback_frame && entry.draw != feedback_draw;
-        });
-        const auto allocation = context.Device()->GetResourceAllocationInfo(0, 1, &desc);
         u64 pool_bytes{};
         for (const auto& entry : feedback_pool)
             pool_bytes += entry.resource->allocation_size;
-        constexpr u64 PoolLimit = 64ULL << 20;
-        if (allocation.SizeInBytes == UINT64_MAX || allocation.SizeInBytes > PoolLimit ||
-            pool_bytes > PoolLimit - allocation.SizeInBytes ||
-            allocation.SizeInBytes > MemoryBudget::Limit - context.MemoryUsage())
+        // A cache target, not a draw limit. Evicted resources remain owned by
+        // Context's submission batches until their fences complete. Copies reused
+        // on the same queue are ordered after earlier sampling by Transition.
+        constexpr u64 PoolTarget = 64ULL << 20;
+        std::erase_if(feedback_pool, [this, pool_bytes](const auto& entry) {
+            return entry.draw != feedback_draw &&
+                   (entry.frame != feedback_frame || pool_bytes >= PoolTarget);
+        });
+        pool_bytes = 0;
+        for (const auto& entry : feedback_pool)
+            pool_bytes += entry.resource->allocation_size;
+        const auto allocation = context.Device()->GetResourceAllocationInfo(0, 1, &desc);
+        try {
+            feedback_pool.push_back({context.CreateResource(desc, D3D12_HEAP_TYPE_DEFAULT,
+                                                            D3D12_RESOURCE_STATE_COPY_DEST)});
+        } catch (const std::exception& error) {
+            if (!feedback_failure_logged) {
+                feedback_failure_logged = true;
+                Diagnostic(fmt::format("D3D12_FEEDBACK_ALLOCATION_FAILED width={} height={} "
+                                       "layers={} mips={} bytes={} pool_bytes={} memory_bytes={} "
+                                       "reason={}",
+                                       desc.Width, desc.Height, desc.DepthOrArraySize,
+                                       desc.MipLevels, allocation.SizeInBytes, pool_bytes,
+                                       context.MemoryUsage(), error.what()));
+            }
             return {};
-        feedback_pool.push_back({context.CreateResource(desc, D3D12_HEAP_TYPE_DEFAULT,
-                                                        D3D12_RESOURCE_STATE_COPY_DEST)});
+        }
         selected = &feedback_pool.back();
     }
     selected->source = source.get();
@@ -314,6 +340,11 @@ ResourcePtr RasterizerD3D12::CopyFeedback(const ResourcePtr& source) {
 // happens BEFORE any per-draw state is recorded.
 template <typename Func>
 void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
+    SCOPE_EXIT {
+        for (auto& stage : bindings.stages)
+            stage.Clear();
+        state_scratch.clear();
+    };
     gpu_memory->FlushCaching();
     if (!pipeline_cache) {
         if (!draw_logged) {
@@ -421,6 +452,117 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         }
         message += " depth=" + std::to_string(formats.depth);
         Diagnostic(message);
+    }
+
+    ++feedback_draw;
+    const auto extent = [](const ImageView& view) {
+        const auto desc = view.ImageHandle()->handle->GetDesc();
+        const u32 mip = desc.SampleDesc.Count > 1 ? 0 : static_cast<u32>(view.range.base.level);
+        return AttachmentExtent{static_cast<u32>(std::max<u64>(1, desc.Width >> mip)),
+                                std::max(1u, desc.Height >> mip),
+                                static_cast<u32>(view.range.extent.layers)};
+    };
+    AttachmentExtent render_area{16384, 16384, 2048};
+    bool has_attachment = false;
+    for (const auto* color : color_views) {
+        if (color) {
+            render_area = IntersectAttachments(render_area, extent(*color));
+            has_attachment = true;
+        }
+    }
+    if (has_depth) {
+        render_area = IntersectAttachments(render_area, extent(*depth_view));
+        has_attachment = true;
+    }
+    if (!has_attachment) {
+        const auto size = framebuffer->Size();
+        render_area = {size.width, size.height, 1};
+    }
+    if (!render_area.width || !render_area.height || !render_area.layers)
+        return;
+    D3D12_RESOURCE_DIMENSION attachment_dimension =
+        has_depth ? depth_view->ImageHandle()->handle->GetDesc().Dimension
+                  : D3D12_RESOURCE_DIMENSION_UNKNOWN;
+    for (const auto* color : color_views) {
+        if (!color)
+            continue;
+        const auto dimension = color->ImageHandle()->handle->GetDesc().Dimension;
+        if (attachment_dimension != D3D12_RESOURCE_DIMENSION_UNKNOWN &&
+            dimension != attachment_dimension) {
+            SkipDraw("mismatched attachment resource types");
+            return;
+        }
+        attachment_dimension = dimension;
+    }
+    const auto matching_extent = MatchingAttachmentExtent(
+        render_area, has_depth ? extent(*depth_view) : render_area, has_depth);
+    std::array<ResourcePtr, VideoCommon::NUM_RT> color_resources{};
+    struct ColorCopy {
+        BlitSurface original;
+        BlitSurface temporary;
+        VideoCommon::ImageCopy region;
+    };
+    std::vector<ColorCopy> color_copies;
+    for (u32 slot = 0; slot < num_rts; ++slot) {
+        const auto* color = color_views[slot];
+        if (!color)
+            continue;
+        color_resources[slot] = color->ImageHandle();
+        const auto original_extent = extent(*color);
+        if (original_extent.width == matching_extent.width &&
+            original_extent.height == matching_extent.height)
+            continue;
+        auto desc = color_resources[slot]->handle->GetDesc();
+        if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D) {
+            SkipDraw("mismatched non-2D attachment extents");
+            return;
+        }
+        desc.Width = matching_extent.width;
+        desc.Height = matching_extent.height;
+        desc.DepthOrArraySize = static_cast<UINT16>(matching_extent.layers);
+        desc.MipLevels = 1;
+        desc.Alignment = 0;
+        desc.Flags &= ~D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
+        ResourcePtr temporary;
+        for (auto& entry : attachment_pool) {
+            const auto cached = entry.resource->handle->GetDesc();
+            if (entry.draw != feedback_draw && cached.Width == desc.Width &&
+                cached.Height == desc.Height && cached.DepthOrArraySize == desc.DepthOrArraySize &&
+                cached.Format == desc.Format && cached.Flags == desc.Flags &&
+                cached.SampleDesc.Count == desc.SampleDesc.Count &&
+                cached.SampleDesc.Quality == desc.SampleDesc.Quality) {
+                entry.draw = feedback_draw;
+                entry.frame = feedback_frame;
+                temporary = entry.resource;
+                break;
+            }
+        }
+        if (!temporary) {
+            temporary = context.CreateResource(desc, D3D12_HEAP_TYPE_DEFAULT,
+                                               D3D12_RESOURCE_STATE_COPY_DEST);
+            attachment_pool.push_back({temporary, nullptr, feedback_draw, feedback_frame});
+        }
+        color_resources[slot] = temporary;
+        const VideoCommon::ImageCopy copy{
+            .src_subresource = {color->range.base.level, color->range.base.layer,
+                                static_cast<s32>(render_area.layers)},
+            .dst_subresource = {0, 0, static_cast<s32>(render_area.layers)},
+            .src_offset = {0, 0, 0},
+            .dst_offset = {0, 0, 0},
+            .extent = {render_area.width, render_area.height, 1},
+        };
+        const BlitSurface original{color->ImageHandle(), color->HostFormat()};
+        const BlitSurface target{temporary, color->HostFormat()};
+        // CopyImage uses a bitwise region copy for single-sample color and a
+        // sample-preserving shader copy for MSAA (never an averaging resolve).
+        texture_runtime.BlitHelpers().CopyImage(target, original, std::span{&copy, 1});
+        color_copies.push_back({original, target, copy});
+    }
+    if (!color_copies.empty() && attachment_extent_diagnostics++ < 16) {
+        Diagnostic(fmt::format("D3D12_ATTACHMENT_EXTENTS area={}x{} layers={} matched={}x{} "
+                               "color_temporaries={}",
+                               render_area.width, render_area.height, render_area.layers,
+                               matching_extent.width, matching_extent.height, color_copies.size()));
     }
 
     // ---- 1. Gather views/samplers and tell the buffer cache what the shaders use ----
@@ -579,22 +721,28 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         }
     }
 
-    // ---- 2. Allocate every descriptor this draw needs (may submit the command list) ----
-    const u32 cbv_size = TableSize(totals.cbv);
-    const u32 srv_size = TableSize(totals.srv);
-    const u32 uav_size = TableSize(totals.uav);
-    descriptors.Reserve(cbv_size + srv_size + uav_size, TableSize(totals.sampler),
-                        std::max(num_rts, 1u), has_depth ? 1u : 0u);
-    const auto view_block = descriptors.AllocateViews(cbv_size + srv_size + uav_size);
-    const auto cbv_table = view_block.Slice(0, cbv_size);
-    const auto srv_table = view_block.Slice(cbv_size, srv_size);
-    const auto uav_table = view_block.Slice(cbv_size + srv_size, uav_size);
-    const auto sampler_table = descriptors.AllocateSamplers(TableSize(totals.sampler));
-    const auto rtv_base = descriptors.AllocateRtv(std::max(num_rts, 1u));
-    const auto dsv_handle = has_depth ? descriptors.AllocateDsv() : D3D12_CPU_DESCRIPTOR_HANDLE{};
+    // Resource creation can drain the queue under memory pressure. Do it before
+    // reserving descriptor slots, whose lifetime is tied to the recording tick.
+    for (const auto& item : view_scratch) {
+        const auto sampled = texture_cache.GetImageView(item.id).ImageHandle();
+        if (!sampled)
+            continue;
+        bool feedback = false;
+        for (const auto& color : color_resources)
+            feedback |= color == sampled;
+        const bool depth_feedback = has_depth && depth_view->ImageHandle() == sampled;
+        const bool stencil_writes =
+            regs.stencil_enable &&
+            ((regs.stencil_front_mask & 0xff) ||
+             (regs.stencil_two_side_enable && (regs.stencil_back_mask & 0xff)));
+        feedback |= depth_feedback && SelectFeedbackMode(true, regs.depth_write_enabled != 0,
+                                                         stencil_writes) == FeedbackMode::Copy;
+        if (feedback && !CopyFeedback(sampled)) {
+            SkipDraw("feedback allocation failed");
+            return;
+        }
+    }
 
-    // ---- 3. Fill the tables and collect resource states ----
-    ++feedback_draw;
     bool invalid_states = false;
     bool readonly_depth = false;
     state_scratch.clear();
@@ -615,139 +763,6 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         }
         state_scratch.emplace_back(resource, state);
     };
-    u32 cbv_i = 0, srv_i = 0, uav_i = 0, smp_i = 0;
-    const VideoCommon::ImageViewInOut* view_it = view_scratch.data();
-    const VideoCommon::SamplerId* sampler_it = sampler_scratch.data();
-    for (size_t stage = 0; stage < NUM_GRAPHICS_STAGES; ++stage) {
-        const Shader::Info* info = pipeline->StageInfo(stage);
-        if (!info)
-            continue;
-        const auto& bound = bindings.stages[stage];
-        size_t uniform_it = 0, storage_it = 0, texel_it = 0;
-        // Constant buffers, in the order of constant_buffer_descriptors.
-        for (const auto& desc : info->constant_buffer_descriptors) {
-            for (u32 i = 0; i < desc.count; ++i, ++cbv_i) {
-                if (uniform_it < bound.uniform.size()) {
-                    const auto& buffer = bound.uniform[uniform_it++];
-                    descriptors.WriteCbv(cbv_table, cbv_i, buffer);
-                    need(buffer.resource, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
-                } else {
-                    descriptors.WriteNullCbv(cbv_table, cbv_i);
-                }
-            }
-        }
-        // Textures (+ samplers), then texel buffers.
-        const u32 texel_count = Shader::NumDescriptors(info->texture_buffer_descriptors);
-        const u32 image_buffer_count = Shader::NumDescriptors(info->image_buffer_descriptors);
-        const VideoCommon::ImageViewInOut* texture_views =
-            view_it + texel_count + image_buffer_count;
-        for (const auto& desc : info->texture_descriptors) {
-            for (u32 i = 0; i < desc.count; ++i, ++srv_i, ++smp_i) {
-                ImageView& view = texture_cache.GetImageView((texture_views++)->id);
-                auto sampled = view.ImageHandle();
-                bool color_feedback = false;
-                for (const auto* color : color_views)
-                    color_feedback |= color && sampled && color->ImageHandle() == sampled;
-                const bool depth_feedback = has_depth && sampled == depth_view->ImageHandle();
-                if (color_feedback || depth_feedback) {
-                    const bool stencil_writes =
-                        regs.stencil_enable != 0 && (regs.stencil_front_mask & 0xff) != 0;
-                    if (!color_feedback &&
-                        SelectFeedbackMode(depth_feedback, regs.depth_write_enabled != 0,
-                                           stencil_writes) == FeedbackMode::ReadOnlyDepth) {
-                        readonly_depth = true;
-                    } else {
-                        sampled = CopyFeedback(sampled);
-                        if (!sampled) {
-                            SkipDraw("feedback memory budget");
-                            return;
-                        }
-                    }
-                }
-                if (descriptors.WriteImageSrv(srv_table, srv_i, view,
-                                              SrvDimension(desc.type, desc.is_multisample),
-                                              sampled))
-                    need(sampled, SrvState);
-                descriptors.WriteSampler(sampler_table, smp_i,
-                                         texture_cache.GetSampler(*sampler_it++));
-            }
-        }
-        for (u32 i = 0; i < texel_count; ++i, ++srv_i) {
-            if (texel_it < bound.texel.size()) {
-                const auto& buffer = bound.texel[texel_it++];
-                descriptors.WriteTexelSrv(srv_table, srv_i, buffer);
-                need(buffer.resource, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE |
-                                          D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-            } else {
-                descriptors.WriteNullSrv(srv_table, srv_i, D3D12_SRV_DIMENSION_BUFFER);
-            }
-        }
-        // Storage buffers, image buffers, images.
-        for (const auto& desc : info->storage_buffers_descriptors) {
-            for (u32 i = 0; i < desc.count; ++i, ++uav_i) {
-                if (storage_it < bound.storage.size()) {
-                    const auto& buffer = bound.storage[storage_it++];
-                    descriptors.WriteStorageUav(uav_table, uav_i, buffer);
-                    need(buffer.resource, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-                } else {
-                    descriptors.WriteNullUav(uav_table, uav_i);
-                }
-            }
-        }
-        const u32 image_start = uav_i;
-        uav_i += Shader::NumDescriptors(info->image_descriptors);
-        for (u32 i = 0; i < image_buffer_count; ++i, ++uav_i) {
-            if (texel_it < bound.texel.size()) {
-                const auto& buffer = bound.texel[texel_it++];
-                descriptors.WriteTexelUav(uav_table, uav_i, buffer);
-                need(buffer.resource, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-            } else {
-                descriptors.WriteNullUav(uav_table, uav_i);
-            }
-        }
-        const u32 stage_uav_end = uav_i;
-        uav_i = image_start;
-        for (const auto& desc : info->image_descriptors) {
-            const auto format = PixelFormatFromImageFormat(desc.format);
-            if (!format) {
-                SkipDraw("unsupported graphics storage image format");
-                return;
-            }
-            for (u32 i = 0; i < desc.count; ++i, ++uav_i) {
-                auto& view = texture_cache.GetImageView((texture_views++)->id);
-                if (const auto resource = view.ImageHandle()) {
-                    const auto dimension = view.Description().ViewDimension;
-                    if (!(resource->handle->GetDesc().Flags &
-                          D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) ||
-                        (dimension != D3D12_SRV_DIMENSION_TEXTURE1D &&
-                         dimension != D3D12_SRV_DIMENSION_TEXTURE1DARRAY &&
-                         dimension != D3D12_SRV_DIMENSION_TEXTURE2D &&
-                         dimension != D3D12_SRV_DIMENSION_TEXTURE2DARRAY &&
-                         dimension != D3D12_SRV_DIMENSION_TEXTURE3D)) {
-                        SkipDraw("unsupported graphics storage image view");
-                        return;
-                    }
-                }
-                descriptors.WriteImageUav(
-                    uav_table, uav_i, view,
-                    static_cast<DXGI_FORMAT>(MaxwellFormat(*format).view_format));
-                need(view.ImageHandle(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-            }
-        }
-        uav_i = stage_uav_end;
-        view_it += texel_count + image_buffer_count +
-                   Shader::NumDescriptors(info->texture_descriptors) +
-                   Shader::NumDescriptors(info->image_descriptors);
-    }
-    for (u32 i = cbv_i; i < cbv_size; ++i)
-        descriptors.WriteNullCbv(cbv_table, i);
-    for (u32 i = srv_i; i < srv_size; ++i)
-        descriptors.WriteNullSrv(srv_table, i, D3D12_SRV_DIMENSION_TEXTURE2D);
-    for (u32 i = uav_i; i < uav_size; ++i)
-        descriptors.WriteNullUav(uav_table, i);
-    for (u32 i = smp_i; i < sampler_table.count; ++i)
-        descriptors.WriteNullSampler(sampler_table, i);
-
     // Geometry buffers.
     auto& geometry = bindings.geometry;
     std::array<D3D12_VERTEX_BUFFER_VIEW, GeometryBindings::MaxVertexBuffers> vertex_views{};
@@ -916,11 +931,172 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
             need(resource, D3D12_RESOURCE_STATE_STREAM_OUT);
         }
     }
+    // ---- 2. Allocate every descriptor this draw needs (may submit the command list) ----
+    const u32 cbv_size = TableSize(totals.cbv);
+    const u32 srv_size = TableSize(totals.srv);
+    const u32 uav_size = TableSize(totals.uav);
+    descriptors.Reserve(cbv_size + srv_size + uav_size, TableSize(totals.sampler),
+                        std::max(num_rts, 1u), has_depth ? 1u : 0u);
+    const auto view_block = descriptors.AllocateViews(cbv_size + srv_size + uav_size);
+    const auto cbv_table = view_block.Slice(0, cbv_size);
+    const auto srv_table = view_block.Slice(cbv_size, srv_size);
+    const auto uav_table = view_block.Slice(cbv_size + srv_size, uav_size);
+    const auto sampler_table = descriptors.AllocateSamplers(TableSize(totals.sampler));
+    const auto rtv_base = descriptors.AllocateRtv(std::max(num_rts, 1u));
+    const auto dsv_handle = has_depth ? descriptors.AllocateDsv() : D3D12_CPU_DESCRIPTOR_HANDLE{};
+
+    if (!injected_draw_skip && BisectEnabled("NXBOX_D3D12_INJECT_DRAW_SKIP")) {
+        injected_draw_skip = true;
+        SkipDraw("injected descriptor recording failure");
+        return;
+    }
+
+    // ---- 3. Fill the tables and collect resource states ----
+    u32 cbv_i = 0, srv_i = 0, uav_i = 0, smp_i = 0;
+    const VideoCommon::ImageViewInOut* view_it = view_scratch.data();
+    const VideoCommon::SamplerId* sampler_it = sampler_scratch.data();
+    for (size_t stage = 0; stage < NUM_GRAPHICS_STAGES; ++stage) {
+        const Shader::Info* info = pipeline->StageInfo(stage);
+        if (!info)
+            continue;
+        const auto& bound = bindings.stages[stage];
+        size_t uniform_it = 0, storage_it = 0, texel_it = 0;
+        // Constant buffers, in the order of constant_buffer_descriptors.
+        for (const auto& desc : info->constant_buffer_descriptors) {
+            for (u32 i = 0; i < desc.count; ++i, ++cbv_i) {
+                if (uniform_it < bound.uniform.size()) {
+                    const auto& buffer = bound.uniform[uniform_it++];
+                    descriptors.WriteCbv(cbv_table, cbv_i, buffer);
+                    need(buffer.resource, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
+                } else {
+                    descriptors.WriteNullCbv(cbv_table, cbv_i);
+                }
+            }
+        }
+        // Textures (+ samplers), then texel buffers.
+        const u32 texel_count = Shader::NumDescriptors(info->texture_buffer_descriptors);
+        const u32 image_buffer_count = Shader::NumDescriptors(info->image_buffer_descriptors);
+        const VideoCommon::ImageViewInOut* texture_views =
+            view_it + texel_count + image_buffer_count;
+        for (const auto& desc : info->texture_descriptors) {
+            for (u32 i = 0; i < desc.count; ++i, ++srv_i, ++smp_i) {
+                ImageView& view = texture_cache.GetImageView((texture_views++)->id);
+                auto sampled = view.ImageHandle();
+                bool color_feedback = false;
+                for (const auto& color : color_resources)
+                    color_feedback |= sampled && color == sampled;
+                const bool depth_feedback = has_depth && sampled == depth_view->ImageHandle();
+                if (color_feedback || depth_feedback) {
+                    const bool stencil_writes =
+                        regs.stencil_enable != 0 &&
+                        ((regs.stencil_front_mask & 0xff) != 0 ||
+                         (regs.stencil_two_side_enable && (regs.stencil_back_mask & 0xff) != 0));
+                    if (!color_feedback &&
+                        SelectFeedbackMode(depth_feedback, regs.depth_write_enabled != 0,
+                                           stencil_writes) == FeedbackMode::ReadOnlyDepth) {
+                        readonly_depth = true;
+                    } else {
+                        sampled = CopyFeedback(sampled);
+                        if (!sampled) {
+                            SkipDraw("feedback memory budget");
+                            return;
+                        }
+                    }
+                }
+                if (descriptors.WriteImageSrv(srv_table, srv_i, view,
+                                              SrvDimension(desc.type, desc.is_multisample),
+                                              sampled))
+                    need(sampled, SrvState);
+                descriptors.WriteSampler(sampler_table, smp_i,
+                                         texture_cache.GetSampler(*sampler_it++));
+            }
+        }
+        for (u32 i = 0; i < texel_count; ++i, ++srv_i) {
+            if (texel_it < bound.texel.size()) {
+                const auto& buffer = bound.texel[texel_it++];
+                descriptors.WriteTexelSrv(srv_table, srv_i, buffer);
+                need(buffer.resource, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE |
+                                          D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+            } else {
+                descriptors.WriteNullSrv(srv_table, srv_i, D3D12_SRV_DIMENSION_BUFFER);
+            }
+        }
+        // Storage buffers, image buffers, images.
+        for (const auto& desc : info->storage_buffers_descriptors) {
+            for (u32 i = 0; i < desc.count; ++i, ++uav_i) {
+                if (storage_it < bound.storage.size()) {
+                    const auto& buffer = bound.storage[storage_it++];
+                    descriptors.WriteStorageUav(uav_table, uav_i, buffer);
+                    need(buffer.resource, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+                } else {
+                    descriptors.WriteNullUav(uav_table, uav_i);
+                }
+            }
+        }
+        const u32 image_start = uav_i;
+        uav_i += Shader::NumDescriptors(info->image_descriptors);
+        for (u32 i = 0; i < image_buffer_count; ++i, ++uav_i) {
+            if (texel_it < bound.texel.size()) {
+                const auto& buffer = bound.texel[texel_it++];
+                descriptors.WriteTexelUav(uav_table, uav_i, buffer);
+                need(buffer.resource, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            } else {
+                descriptors.WriteNullUav(uav_table, uav_i);
+            }
+        }
+        const u32 stage_uav_end = uav_i;
+        uav_i = image_start;
+        for (const auto& desc : info->image_descriptors) {
+            const auto format = PixelFormatFromImageFormat(desc.format);
+            if (!format) {
+                SkipDraw("unsupported graphics storage image format");
+                return;
+            }
+            for (u32 i = 0; i < desc.count; ++i, ++uav_i) {
+                auto& view = texture_cache.GetImageView((texture_views++)->id);
+                if (const auto resource = view.ImageHandle()) {
+                    const auto dimension = view.Description().ViewDimension;
+                    if (!(resource->handle->GetDesc().Flags &
+                          D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) ||
+                        (dimension != D3D12_SRV_DIMENSION_TEXTURE1D &&
+                         dimension != D3D12_SRV_DIMENSION_TEXTURE1DARRAY &&
+                         dimension != D3D12_SRV_DIMENSION_TEXTURE2D &&
+                         dimension != D3D12_SRV_DIMENSION_TEXTURE2DARRAY &&
+                         dimension != D3D12_SRV_DIMENSION_TEXTURE3D)) {
+                        SkipDraw("unsupported graphics storage image view");
+                        return;
+                    }
+                }
+                descriptors.WriteImageUav(
+                    uav_table, uav_i, view,
+                    static_cast<DXGI_FORMAT>(MaxwellFormat(*format).view_format));
+                need(view.ImageHandle(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            }
+        }
+        uav_i = stage_uav_end;
+        view_it += texel_count + image_buffer_count +
+                   Shader::NumDescriptors(info->texture_descriptors) +
+                   Shader::NumDescriptors(info->image_descriptors);
+    }
+    for (u32 i = cbv_i; i < cbv_size; ++i)
+        descriptors.WriteNullCbv(cbv_table, i);
+    for (u32 i = srv_i; i < srv_size; ++i)
+        descriptors.WriteNullSrv(srv_table, i, D3D12_SRV_DIMENSION_TEXTURE2D);
+    for (u32 i = uav_i; i < uav_size; ++i)
+        descriptors.WriteNullUav(uav_table, i);
+    for (u32 i = smp_i; i < sampler_table.count; ++i)
+        descriptors.WriteNullSampler(sampler_table, i);
+
     // Render targets.
     const SIZE_T rtv_stride =
         context.Device()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
     for (u32 slot = 0; slot < num_rts; ++slot) {
-        descriptors.CreateRtv({rtv_base.ptr + slot * rtv_stride}, color_views[slot]);
+        const auto replacement =
+            color_views[slot] && color_resources[slot] != color_views[slot]->ImageHandle()
+                ? color_resources[slot]
+                : ResourcePtr{};
+        descriptors.CreateRtv({rtv_base.ptr + slot * rtv_stride}, color_views[slot], replacement,
+                              render_area.layers);
     }
     if (has_depth) {
         auto flags = D3D12_DSV_FLAG_NONE;
@@ -931,13 +1107,13 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
                 format == DXGI_FORMAT_D32_FLOAT_S8X24_UINT)
                 flags |= D3D12_DSV_FLAG_READ_ONLY_STENCIL;
         }
-        descriptors.CreateDsv(dsv_handle, *depth_view, flags);
+        descriptors.CreateDsv(dsv_handle, *depth_view, flags, render_area.layers);
     }
     // Remaining attachment/UAV and storage/geometry aliases cannot have legal
     // combined states. Reject only this draw, leaving the GPU thread alive.
     for (u32 slot = 0; slot < num_rts; ++slot) {
         if (color_views[slot])
-            need(color_views[slot]->ImageHandle(), D3D12_RESOURCE_STATE_RENDER_TARGET);
+            need(color_resources[slot], D3D12_RESOURCE_STATE_RENDER_TARGET);
     }
     if (has_depth)
         need(depth_view->ImageHandle(),
@@ -974,8 +1150,27 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
             regs.viewport_scale_offset_enabled ? MakeViewport(regs, i) : MakeFullViewport(regs);
         viewports[i] = result.viewport;
         scissors[i] = MakeScissor(regs, i);
+        scissors[i].right = std::min(scissors[i].right, static_cast<LONG>(render_area.width));
+        scissors[i].bottom = std::min(scissors[i].bottom, static_cast<LONG>(render_area.height));
+        scissors[i].left = std::min(scissors[i].left, scissors[i].right);
+        scissors[i].top = std::min(scissors[i].top, scissors[i].bottom);
         if (i == 0)
             y_flip = result.y_flip;
+    }
+    if (has_depth && BisectEnabled("NXBOX_D3D12_DEPTH_TRACE") && depth_trace_draws++ < 4) {
+        const auto& viewport = viewports[0];
+        Diagnostic(fmt::format(
+            "D3D12_DEPTH_DRAW frame={} area={}x{} dsv={} depth_test={} "
+            "depth_write={} compare={} stencil={} clip={} depth_mode={} "
+            "z_scale={} z_translate={} viewport_z=[{},{}] indexed={} "
+            "vertices={} instances={} base_vertex={} base_instance={}",
+            feedback_frame, render_area.width, render_area.height, formats.depth,
+            attachment_state.depth_enable, attachment_state.depth_write,
+            attachment_state.depth_func, attachment_state.stencil_enable,
+            attachment_state.depth_clip, static_cast<u32>(regs.depth_mode),
+            regs.viewport_transform[0].scale_z, regs.viewport_transform[0].translate_z,
+            viewport.MinDepth, viewport.MaxDepth, submitted.is_indexed, submitted.num_vertices,
+            submitted.num_instances, submitted.base_vertex, submitted.base_instance));
     }
     commands->RSSetViewports(static_cast<UINT>(viewports.size()), viewports.data());
     commands->RSSetScissorRects(static_cast<UINT>(scissors.size()), scissors.data());
@@ -983,8 +1178,7 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     if (needs_index)
         commands->IASetIndexBuffer(&index_view);
 
-    const auto size = framebuffer->Size();
-    auto words = pipeline->RootConstants({size.width, size.height, y_flip});
+    auto words = pipeline->RootConstants({render_area.width, render_area.height, y_flip});
     words[8] = is_indexed ? draw_state.base_index : draw_state.vertex_buffer.first;
     words[9] = draw_state.base_instance;
     words[10] = indirect_draw_id;
@@ -992,7 +1186,8 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
                            static_cast<u32>(regs.gl_cull_face) == 0x404;
     const auto cull =
         Pso::CullMode(regs.gl_cull_test_enabled != 0, static_cast<u32>(regs.gl_cull_face));
-    if (Pso::DsvHasStencil(formats.depth) && regs.zeta_enable && regs.stencil_enable &&
+    if (attachment_state.stencil_enable && Pso::DsvHasStencil(formats.depth) && regs.zeta_enable &&
+        regs.stencil_enable &&
         Pso::IndependentStencil(regs.stencil_two_side_enable != 0, cull.mode,
                                 regs.stencil_front_ref, regs.stencil_back_ref,
                                 regs.stencil_front_func_mask, regs.stencil_back_func_mask,
@@ -1010,7 +1205,7 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
                         replicate_alpha ? regs.blend_color.a : regs.blend_color.b,
                         regs.blend_color.a};
     commands->OMSetBlendFactor(blend);
-    if (regs.zeta_enable && regs.depth_bounds_enable) {
+    if (attachment_state.depth_bounds) {
         ComPtr<ID3D12GraphicsCommandList1> commands1;
         Check(commands->QueryInterface(IID_PPV_ARGS(&commands1)),
               "D3D12 depth-bounds command interface", context.Device());
@@ -1029,6 +1224,13 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     context.MarkWork("guest draws");
     draw(commands);
     query_runtime.EndDraw();
+    query_runtime.PauseHostConditionalRendering();
+    for (const auto& copy : color_copies) {
+        auto region = copy.region;
+        std::swap(region.src_subresource, region.dst_subresource);
+        texture_runtime.BlitHelpers().CopyImage(copy.original, copy.temporary,
+                                                std::span{&region, 1});
+    }
     if (totals.uav)
         FragmentBarrier();
     for (auto& stage : bindings.stages)
@@ -1226,6 +1428,7 @@ void RasterizerD3D12::PreparePresentation() {
 }
 void RasterizerD3D12::DrawTexture() {
     const auto execute_blit = [this] {
+        ++feedback_draw;
         gpu_memory->FlushCaching();
         query_runtime.PauseHostConditionalRendering();
         std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
@@ -1393,6 +1596,13 @@ void RasterizerD3D12::Clear(u32 layer_count) try {
     values.color = regs.clear_color;
     values.depth = regs.clear_depth;
     values.stencil = static_cast<u8>(regs.clear_stencil);
+    if (depth && (selection.depth || selection.stencil) &&
+        BisectEnabled("NXBOX_D3D12_DEPTH_TRACE") && depth_trace_clears++ < 4) {
+        Diagnostic(fmt::format("D3D12_DEPTH_CLEAR frame={} depth={} stencil={} clear_depth={} "
+                               "clear_stencil={} extent={}x{}",
+                               feedback_frame, selection.depth, selection.stencil, values.depth,
+                               values.stencil, depth->size.width, depth->size.height));
+    }
     if (color) {
         const auto pixel = color->format;
         if (VideoCore::Surface::IsPixelFormatInteger(pixel)) {
@@ -1818,14 +2028,23 @@ void RasterizerD3D12::TickFrame() {
     buffer_cache.TickFrame();
     texture_cache.TickFrame();
     if (feedback_frame < 8 || feedback_frame % 120 == 0) {
+        u64 pool_bytes{};
+        for (const auto& entry : feedback_pool)
+            pool_bytes += entry.resource->allocation_size;
         Diagnostic("D3D12_FEEDBACK copies=" + std::to_string(feedback_copies) +
                    " readonly_depth=" + std::to_string(feedback_readonly_depth) +
                    " skipped_draws=" + std::to_string(skipped_draws) +
-                   " frame=" + std::to_string(feedback_frame));
+                   " frame=" + std::to_string(feedback_frame) +
+                   " pool_entries=" + std::to_string(feedback_pool.size()) +
+                   " pool_bytes=" + std::to_string(pool_bytes) +
+                   " memory_bytes=" + std::to_string(context.MemoryUsage()));
     }
     feedback_copies = feedback_readonly_depth = skipped_draws = 0;
     std::erase_if(feedback_pool,
                   [this](const auto& entry) { return entry.frame != feedback_frame; });
+    std::erase_if(attachment_pool,
+                  [this](const auto& entry) { return entry.frame != feedback_frame; });
+    depth_trace_draws = depth_trace_clears = 0;
     ++feedback_frame;
 }
 Tegra::Engines::AccelerateDMAInterface& RasterizerD3D12::AccessAccelerateDMA() {
