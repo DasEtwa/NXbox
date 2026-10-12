@@ -1245,141 +1245,151 @@ bool RasterizerD3D12::AccelerateConditionalRendering() {
 void RasterizerD3D12::PreparePresentation() {
     query_runtime.PauseHostConditionalRendering();
 }
-void RasterizerD3D12::DrawTexture() try {
-    SCOPE_EXIT {
-        m_gpu.TickWork();
-    };
-    gpu_memory->FlushCaching();
-    query_runtime.PauseHostConditionalRendering();
-    std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
-    texture_cache.SynchronizeDescriptors(false);
-    texture_cache.UpdateRenderTargets(false);
-    const auto* current = texture_cache.GetFramebuffer();
-    if (!current)
-        return;
-    Framebuffer framebuffer = *current;
-    auto* target = framebuffer.Color(framebuffer.DrawBuffer(0));
-    if (!target || !target->ImageHandle())
-        return;
-    if (!(target->ImageHandle()->handle->GetDesc().Flags &
-          D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET)) {
-        SkipDraw("DrawTexture target lacks ALLOW_RENDER_TARGET");
-        return;
-    }
-    query_runtime.PrepareDraw();
-    const auto& blit = maxwell3d->draw_manager.draw_texture_state;
-    // Descriptor discovery may relocate ImageViews; own the source snapshot.
-    const ImageView source = texture_cache.GetImageView(blit.src_texture);
-    const auto* sampler = texture_cache.GetSampler(blit.src_sampler, false);
-    auto sampled = source.ImageHandle();
-    auto description = source.Description();
-    if (!sampled || !sampler)
-        return;
-    if (sampled->handle->GetDesc().SampleDesc.Count != 1 ||
-        (description.ViewDimension != D3D12_SRV_DIMENSION_TEXTURE2D &&
-         description.ViewDimension != D3D12_SRV_DIMENSION_TEXTURE2DARRAY) ||
-        VideoCore::Surface::IsPixelFormatInteger(source.format) ||
-        VideoCore::Surface::IsPixelFormatInteger(target->format)) {
-        SkipDraw("draw_texture_state requires single-sample float/normalized 2D views");
-        return;
-    }
-    texture_cache.PrepareImage(source.image_id, false, false);
-    if (sampled == target->ImageHandle()) {
-        sampled = CopyFeedback(sampled);
-        if (!sampled) {
-            SkipDraw("DrawTexture feedback copy budget");
+void RasterizerD3D12::DrawTexture() {
+    const auto execute_blit = [this] {
+        gpu_memory->FlushCaching();
+        query_runtime.PauseHostConditionalRendering();
+        std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
+        texture_cache.SynchronizeDescriptors(false);
+        texture_cache.UpdateRenderTargets(false);
+        const auto* current = texture_cache.GetFramebuffer();
+        if (!current)
+            return;
+        Framebuffer framebuffer = *current;
+        auto* target = framebuffer.Color(framebuffer.DrawBuffer(0));
+        if (!target || !target->ImageHandle())
+            return;
+        if (!(target->ImageHandle()->handle->GetDesc().Flags &
+              D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET)) {
+            SkipDraw("DrawTexture target lacks ALLOW_RENDER_TARGET");
             return;
         }
+        query_runtime.PrepareDraw();
+        const auto& blit = maxwell3d->draw_manager.draw_texture_state;
+        // Descriptor discovery may relocate ImageViews; own the source snapshot.
+        const ImageView source = texture_cache.GetImageView(blit.src_texture);
+        const auto* sampler = texture_cache.GetSampler(blit.src_sampler, false);
+        auto sampled = source.ImageHandle();
+        auto description = source.Description();
+        if (!sampled || !sampler)
+            return;
+        if (sampled->handle->GetDesc().SampleDesc.Count != 1 ||
+            (description.ViewDimension != D3D12_SRV_DIMENSION_TEXTURE2D &&
+             description.ViewDimension != D3D12_SRV_DIMENSION_TEXTURE2DARRAY) ||
+            VideoCore::Surface::IsPixelFormatInteger(source.format) ||
+            VideoCore::Surface::IsPixelFormatInteger(target->format)) {
+            SkipDraw("draw_texture_state requires single-sample float/normalized 2D views");
+            return;
+        }
+        texture_cache.PrepareImage(source.image_id, false, false);
+        if (sampled == target->ImageHandle()) {
+            sampled = CopyFeedback(sampled);
+            if (!sampled) {
+                SkipDraw("DrawTexture feedback copy budget");
+                return;
+            }
+        }
+        if (description.ViewDimension == D3D12_SRV_DIMENSION_TEXTURE2D) {
+            const auto mip = description.Texture2D.MostDetailedMip;
+            const auto levels = description.Texture2D.MipLevels;
+            const auto plane = description.Texture2D.PlaneSlice;
+            description.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+            description.Texture2DArray = {mip, levels, 0, 1, plane, 0};
+        }
+        Pso::GraphicsPsoState state{};
+        FillGraphicsState(*maxwell3d, state);
+        state.attributes.fill({});
+        state.cull_mode = Pso::kCullNone;
+        state.cull_all = 0;
+        state.fill_mode = 3; // D3D12_FILL_MODE_SOLID
+        state.topology_type = Pso::kTopologyTypeTriangle;
+        state.depth_enable = state.depth_write = state.stencil_enable = state.depth_bounds = 0;
+        state.logic_enable = state.alpha_to_coverage = state.conservative_raster = 0;
+        state.depth_bias = 0;
+        state.bias_clamp_bits = state.slope_scaled_bias_bits = 0;
+        for (auto& blend : state.blend) {
+            blend.enable = 0;
+            blend.write_mask = 15;
+        }
+        Pso::FramebufferFormats formats{};
+        formats.colors[0] = static_cast<u32>(target->Description().Format);
+        formats.sample_count =
+            static_cast<u8>(target->ImageHandle()->handle->GetDesc().SampleDesc.Count);
+        Pso::ApplyFramebufferFormats(state, formats);
+        const std::array<StageInput, 2> stages{{
+            {Shader::Stage::VertexB, 0, Shader::Backend::HLSL::DRAW_TEXTURE_VERTEX, {}},
+            {Shader::Stage::Fragment,
+             0,
+             Shader::Backend::HLSL::DRAW_TEXTURE_FRAGMENT,
+             {0, 1, 0, 1}},
+        }};
+        auto& pipeline = default_pipeline_cache->GetGraphics(
+            state, D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP, stages);
+        descriptors.Reserve(3, 1, 1);
+        const auto tables = descriptors.AllocateViews(3);
+        const auto sampler_table = descriptors.AllocateSamplers(1);
+        const auto rtv = descriptors.AllocateRtv(1);
+        descriptors.WriteNullCbv(tables, 0);
+        context.Device()->CreateShaderResourceView(sampled->handle.Get(), &description,
+                                                   tables.Slot(1));
+        descriptors.WriteNullUav(tables, 2);
+        descriptors.WriteSampler(sampler_table, 0, *sampler);
+        descriptors.CreateRtv(rtv, target);
+        context.Transition(sampled, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        context.Transition(target->ImageHandle(), D3D12_RESOURCE_STATE_RENDER_TARGET);
+        context.Retain(sampled);
+        context.Retain(target->ImageHandle());
+        auto* commands = context.Commands();
+        descriptors.SetHeaps(commands);
+        commands->SetGraphicsRootSignature(pipeline.RootSignature());
+        commands->SetPipelineState(pipeline.PipelineState());
+        commands->SetGraphicsRootDescriptorTable(1, tables.gpu);
+        commands->SetGraphicsRootDescriptorTable(2, tables.Slice(1, 1).gpu);
+        commands->SetGraphicsRootDescriptorTable(3, tables.Slice(2, 1).gpu);
+        commands->SetGraphicsRootDescriptorTable(4, sampler_table.gpu);
+        const auto size = framebuffer.Size();
+        const std::array<float, 12> constants{blit.dst_x0,
+                                              blit.dst_y0,
+                                              blit.dst_x1,
+                                              blit.dst_y1,
+                                              blit.src_x0,
+                                              blit.src_y0,
+                                              blit.src_x1,
+                                              blit.src_y1,
+                                              static_cast<float>(size.width),
+                                              static_cast<float>(size.height),
+                                              static_cast<float>(source.size.width),
+                                              static_cast<float>(source.size.height)};
+        if (!size.width || !size.height || !source.size.width || !source.size.height)
+            return;
+        commands->SetGraphicsRoot32BitConstants(0, static_cast<UINT>(constants.size()),
+                                                constants.data(), 0);
+        commands->OMSetRenderTargets(1, &rtv, TRUE, nullptr);
+        const D3D12_VIEWPORT viewport{
+            0, 0, static_cast<float>(size.width), static_cast<float>(size.height), 0, 1};
+        const D3D12_RECT scissor{0, 0, static_cast<LONG>(size.width),
+                                 static_cast<LONG>(size.height)};
+        commands->RSSetViewports(1, &viewport);
+        commands->RSSetScissorRects(1, &scissor);
+        commands->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+        transform_feedback.Unbind();
+        query_cache.CounterEnable(VideoCommon::QueryType::ZPassPixelCount64,
+                                  maxwell3d->regs.zpass_pixel_count_enable != 0);
+        query_runtime.BeginDraw(false);
+        context.MarkWork("DrawTexture blit");
+        commands->DrawInstanced(4, 1, 0, 0);
+        query_runtime.EndDraw();
+    };
+    try {
+        execute_blit();
+    } catch (const std::exception& error) {
+        SkipDraw(error.what());
+    } catch (...) {
+        SkipDraw("unknown exception in DrawTexture");
     }
-    if (description.ViewDimension == D3D12_SRV_DIMENSION_TEXTURE2D) {
-        const auto mip = description.Texture2D.MostDetailedMip;
-        const auto levels = description.Texture2D.MipLevels;
-        const auto plane = description.Texture2D.PlaneSlice;
-        description.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
-        description.Texture2DArray = {mip, levels, 0, 1, plane, 0};
-    }
-    Pso::GraphicsPsoState state{};
-    FillGraphicsState(*maxwell3d, state);
-    state.attributes.fill({});
-    state.cull_mode = Pso::kCullNone;
-    state.cull_all = 0;
-    state.fill_mode = 3; // D3D12_FILL_MODE_SOLID
-    state.topology_type = Pso::kTopologyTypeTriangle;
-    state.depth_enable = state.depth_write = state.stencil_enable = state.depth_bounds = 0;
-    state.logic_enable = state.alpha_to_coverage = state.conservative_raster = 0;
-    state.depth_bias = 0;
-    state.bias_clamp_bits = state.slope_scaled_bias_bits = 0;
-    for (auto& blend : state.blend) {
-        blend.enable = 0;
-        blend.write_mask = 15;
-    }
-    Pso::FramebufferFormats formats{};
-    formats.colors[0] = static_cast<u32>(target->Description().Format);
-    formats.sample_count =
-        static_cast<u8>(target->ImageHandle()->handle->GetDesc().SampleDesc.Count);
-    Pso::ApplyFramebufferFormats(state, formats);
-    const std::array<StageInput, 2> stages{{
-        {Shader::Stage::VertexB, 0, Shader::Backend::HLSL::DRAW_TEXTURE_VERTEX, {}},
-        {Shader::Stage::Fragment, 0, Shader::Backend::HLSL::DRAW_TEXTURE_FRAGMENT, {0, 1, 0, 1}},
-    }};
-    auto& pipeline =
-        default_pipeline_cache->GetGraphics(state, D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP, stages);
-    descriptors.Reserve(3, 1, 1);
-    const auto tables = descriptors.AllocateViews(3);
-    const auto sampler_table = descriptors.AllocateSamplers(1);
-    const auto rtv = descriptors.AllocateRtv(1);
-    descriptors.WriteNullCbv(tables, 0);
-    context.Device()->CreateShaderResourceView(sampled->handle.Get(), &description, tables.Slot(1));
-    descriptors.WriteNullUav(tables, 2);
-    descriptors.WriteSampler(sampler_table, 0, *sampler);
-    descriptors.CreateRtv(rtv, target);
-    context.Transition(sampled, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-    context.Transition(target->ImageHandle(), D3D12_RESOURCE_STATE_RENDER_TARGET);
-    context.Retain(sampled);
-    context.Retain(target->ImageHandle());
-    auto* commands = context.Commands();
-    descriptors.SetHeaps(commands);
-    commands->SetGraphicsRootSignature(pipeline.RootSignature());
-    commands->SetPipelineState(pipeline.PipelineState());
-    commands->SetGraphicsRootDescriptorTable(1, tables.gpu);
-    commands->SetGraphicsRootDescriptorTable(2, tables.Slice(1, 1).gpu);
-    commands->SetGraphicsRootDescriptorTable(3, tables.Slice(2, 1).gpu);
-    commands->SetGraphicsRootDescriptorTable(4, sampler_table.gpu);
-    const auto size = framebuffer.Size();
-    const std::array<float, 12> constants{blit.dst_x0,
-                                          blit.dst_y0,
-                                          blit.dst_x1,
-                                          blit.dst_y1,
-                                          blit.src_x0,
-                                          blit.src_y0,
-                                          blit.src_x1,
-                                          blit.src_y1,
-                                          static_cast<float>(size.width),
-                                          static_cast<float>(size.height),
-                                          static_cast<float>(source.size.width),
-                                          static_cast<float>(source.size.height)};
-    if (!size.width || !size.height || !source.size.width || !source.size.height)
-        return;
-    commands->SetGraphicsRoot32BitConstants(0, static_cast<UINT>(constants.size()),
-                                            constants.data(), 0);
-    commands->OMSetRenderTargets(1, &rtv, TRUE, nullptr);
-    const D3D12_VIEWPORT viewport{
-        0, 0, static_cast<float>(size.width), static_cast<float>(size.height), 0, 1};
-    const D3D12_RECT scissor{0, 0, static_cast<LONG>(size.width), static_cast<LONG>(size.height)};
-    commands->RSSetViewports(1, &viewport);
-    commands->RSSetScissorRects(1, &scissor);
-    commands->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
-    transform_feedback.Unbind();
-    query_cache.CounterEnable(VideoCommon::QueryType::ZPassPixelCount64,
-                              maxwell3d->regs.zpass_pixel_count_enable != 0);
-    query_runtime.BeginDraw(false);
-    context.MarkWork("DrawTexture blit");
-    commands->DrawInstanced(4, 1, 0, 0);
-    query_runtime.EndDraw();
-} catch (const std::exception& error) {
-    SkipDraw(error.what());
-} catch (...) {
-    SkipDraw("unknown exception in DrawTexture");
+    // Tick callbacks may throw. Let the GPU-thread boundary cancel their waiters;
+    // executing them in a noexcept scope-exit destructor could terminate instead.
+    m_gpu.TickWork();
 }
 void RasterizerD3D12::Clear(u32 layer_count) try {
     transform_feedback.Unbind();
