@@ -207,6 +207,7 @@ struct TranslatorVisitor final {
     // Load/Store
     bool arm_LDRBT_imm(Cond cond, bool U, Reg n, Reg t, Imm<12> imm12);
     bool arm_LDRBT_reg(Cond cond, bool U, Reg n, Reg t, Imm<5> imm5, ShiftType shift, Reg m);
+    bool arm_LDRHT_lit(Cond cond, bool U, Reg t, Imm<4> imm8a, Imm<4> imm8b);
     bool arm_LDRHT_imm(Cond cond, bool U, Reg n, Reg t, Imm<4> imm8a, Imm<4> imm8b);
     bool arm_LDRHT_reg(Cond cond, bool U, Reg n, Reg t, Reg m);
     bool arm_LDRSBT_imm(Cond cond, bool U, Reg n, Reg t, Imm<4> imm8a, Imm<4> imm8b);

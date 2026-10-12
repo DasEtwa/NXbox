@@ -103,7 +103,7 @@ class CpuConformanceTests(unittest.TestCase):
             if re.match(r"arm_(?:LDR|STR)(?:SB|SH|B|H)?T_", row["handler"])
         ]
         self.assertEqual(len(rows), 17)
-        self.assertEqual(len({row["handler"] for row in rows}), 16)
+        self.assertEqual(len({row["handler"] for row in rows}), 17)
         for row in rows:
             self.assertEqual(row["status"], "translated")
             self.assertNotIn("UndefinedInstruction", row["guards"])
@@ -152,7 +152,7 @@ def report(destination):
         )
     lines += [
         "",
-        "17 decoder rows (8 instruction families, 16 operand forms) now translate A32 LDRBT/LDRHT/LDRSBT/LDRSHT/LDRT/STRBT/STRHT/STRT instead of raising undefined. They perform a post-indexed UNPRIV access, preserve condition execution, extend loads correctly, and write back the base after the transfer. PC and base/destination overlap remain unpredictable. The prior general fuzz exclusion is removed.",
+        "17 decoder rows (8 instruction families, 16 valid operand forms plus a PC-base guard) now dispatch A32 LDRBT/LDRHT/LDRSBT/LDRSHT/LDRT/STRBT/STRHT/STRT instead of unconditionally raising undefined. Valid forms perform a post-indexed UNPRIV access, preserve condition execution, extend loads correctly, and write back the base after the transfer. PC and base/destination overlap remain unpredictable. The prior general fuzz exclusion is removed.",
         "",
         "The six remaining unconditional unreachable handlers are privileged RFE/SRS/CPS and banked-register LDM/STM forms. They are outside the user-mode execution target; this audit does not claim their privileged semantics are implemented. Architectural UDF and reserved SIMD encodings intentionally raise exceptions. There are zero direct InterpretThisInstruction/NOT_IMPLEMENTED/UNIMPLEMENTED markers in decoder handlers.",
         "",

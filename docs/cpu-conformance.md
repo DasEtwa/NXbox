@@ -17,7 +17,7 @@ Every ordered `INST` row in the six decoder tables is enumerated below. Aliases 
 | thumb16 | 79 | 78 | 78 | 1 | 0 |
 | thumb32 | 239 | 239 | 239 | 0 | 0 |
 
-17 decoder rows (8 instruction families, 16 operand forms) now translate A32 LDRBT/LDRHT/LDRSBT/LDRSHT/LDRT/STRBT/STRHT/STRT instead of raising undefined. They perform a post-indexed UNPRIV access, preserve condition execution, extend loads correctly, and write back the base after the transfer. PC and base/destination overlap remain unpredictable. The prior general fuzz exclusion is removed.
+17 decoder rows (8 instruction families, 16 valid operand forms plus a PC-base guard) now dispatch A32 LDRBT/LDRHT/LDRSBT/LDRSHT/LDRT/STRBT/STRHT/STRT instead of unconditionally raising undefined. Valid forms perform a post-indexed UNPRIV access, preserve condition execution, extend loads correctly, and write back the base after the transfer. PC and base/destination overlap remain unpredictable. The prior general fuzz exclusion is removed.
 
 The six remaining unconditional unreachable handlers are privileged RFE/SRS/CPS and banked-register LDM/STM forms. They are outside the user-mode execution target; this audit does not claim their privileged semantics are implemented. Architectural UDF and reserved SIMD encodings intentionally raise exceptions. There are zero direct InterpretThisInstruction/NOT_IMPLEMENTED/UNIMPLEMENTED markers in decoder handlers.
 
@@ -797,7 +797,7 @@ Instruction behavior reference: [Arm Architecture Reference Manual](https://docu
 | 102 | `arm_QDADD` | QDADD | `cccc00010100nnnndddd00000101mmmm` | translated | UnpredictableInstruction | `saturated.cpp` |
 | 103 | `arm_QDSUB` | QDSUB | `cccc00010110nnnndddd00000101mmmm` | translated | UnpredictableInstruction | `saturated.cpp` |
 | 104 | `arm_PLD_reg` | PLD (reg) | `11110111uz01nnnn1111iiiiitt0mmmm` | translated | RaiseException | `hint.cpp` |
-| 105 | `arm_LDRHT_imm` | LDRHT (A1) | `cccc0000U111nnnnttttiiii1011jjjj` | translated | UnpredictableInstruction | `load_store.cpp` |
+| 105 | `arm_LDRHT_lit` | LDRHT (A1) | `cccc0000U1111111ttttiiii1011jjjj` | translated |  | `load_store.cpp` |
 | 106 | `arm_LDRHT_reg` | LDRHT (A2) | `cccc0000U011nnnntttt00001011mmmm` | translated | UnpredictableInstruction | `load_store.cpp` |
 | 107 | `arm_LDRSBT_reg` | LDRSBT (A2) | `cccc0000U011nnnntttt00001101mmmm` | translated | UnpredictableInstruction | `load_store.cpp` |
 | 108 | `arm_LDRSHT_reg` | LDRSHT (A2) | `cccc0000U011nnnntttt00001111mmmm` | translated | UnpredictableInstruction | `load_store.cpp` |

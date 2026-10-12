@@ -81,6 +81,10 @@ bool TranslatorVisitor::arm_LDRBT_reg(Cond cond, bool U, Reg n, Reg t, Imm<5> im
     return UnprivilegedTransfer(*this, U, n, t, offset, 8, true, false);
 }
 
+bool TranslatorVisitor::arm_LDRHT_lit(Cond cond, bool U, Reg t, Imm<4> imm8a, Imm<4> imm8b) {
+    return arm_LDRHT_imm(cond, U, Reg::PC, t, imm8a, imm8b);
+}
+
 bool TranslatorVisitor::arm_LDRHT_imm(Cond cond, bool U, Reg n, Reg t, Imm<4> imm8a, Imm<4> imm8b) {
     if (!ArmConditionPassed(cond)) {
         return true;
