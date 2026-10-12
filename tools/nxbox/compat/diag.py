@@ -33,7 +33,7 @@ def parse_diag(text):
                     "seconds": seconds,
                     "presents_per_5s": frames * 5 / seconds,
                 }
-                for key in ("tick_ms", "fps", "memory", "memory_limit"):
+                for key in ("tick_ms", "fps", "memory", "memory_limit", "draws", "draws_per_frame"):
                     if key in fields:
                         sample[key] = fields[key]
                 result["presents"].append(sample)
@@ -63,3 +63,31 @@ def score_game(result):
     if result.get("game_fail") or result.get("crash_file"):
         score = min(score, 20)
     return score
+
+
+def fatal_lines(text):
+    """Ignore event creation/memory logs and recovered exceptions."""
+    evidence = []
+    for line in text.splitlines():
+        event = re.search(r"\bevent=(terminate|exception)\b", line, re.IGNORECASE)
+        code = re.search(
+            r"\b(?:code|exception_code|fatal_code)=(0x[0-9a-f]+|[0-9]+)\b", line, re.IGNORECASE
+        )
+        value = int(code[1], 16 if code[1].lower().startswith("0x") else 10) if code else 0
+        fatal_event = bool(
+            event
+            and value
+            and (
+                event[1].lower() == "terminate"
+                or value & 0xC0000000 == 0xC0000000
+                or "fatal_code=" in line
+                or re.search(r"\bfatal=1\b", line)
+            )
+        )
+        if fatal_event or re.search(
+            r"\bGAME_(?:FAIL|LOAD_FAILED|MISSING)\b|\brenderer_exception\s+what=|\bD3D12_REMOVED\b|\bunhandled exception\b|\bterminate called\b",
+            line,
+            re.IGNORECASE,
+        ):
+            evidence.append(line)
+    return evidence

@@ -175,3 +175,29 @@ class Portal:
                 except PortalError as error:
                     if error.status != 404:
                         raise
+
+    def running(self, package):
+        return any(
+            p.get("PackageFullName") == package
+            for p in self.json("/api/resourcemanager/processes").get("Processes", [])
+        )
+
+    def dump_names(self, package):
+        payload = self.json("/api/debug/dump/usermode/dumps")
+        names = set()
+
+        def visit(node, belongs=False):
+            if isinstance(node, dict):
+                owner = node.get("PackageFullName", node.get("packageFullName"))
+                belongs = owner == package if owner is not None else belongs
+                name = node.get("FileName", node.get("Filename", node.get("fileName")))
+                if belongs and isinstance(name, str):
+                    names.add(name)
+                for value in node.values():
+                    visit(value, belongs)
+            elif isinstance(node, list):
+                for value in node:
+                    visit(value, belongs)
+
+        visit(payload)
+        return names

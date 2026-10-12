@@ -15,7 +15,7 @@ import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .diag import parse_diag
+from .diag import FIELDS, fatal_lines, parse_diag
 from .images import contact_sheet, png
 from .portal import Portal, PortalError, credentials
 from .run import ConsoleLock, interrupted, run_game, safe_error
@@ -69,6 +69,7 @@ def inventory(portal, package):
                 "file_name": path,
                 "name": record.get("name", path),
                 "source": "library",
+                "content_type": record.get("type", record.get("content_type", "base")),
             }
         except (ValueError, KeyError, TypeError):
             warnings.append(f"Invalid library record: {name}")
@@ -116,6 +117,37 @@ def inventory(portal, package):
     return sorted(result, key=lambda g: (g["title_id"], g["file_name"])), warnings
 
 
+def group_titles(packages):
+    """Only identified base applications launch; preserve all other inventory."""
+    groups = {}
+    for package in packages:
+        title = package["title_id"]
+        if not re.fullmatch(r"[0-9A-F]{16}", title):
+            base = title
+            kind = "unknown"
+        else:
+            value = int(title, 16)
+            # Add-on IDs occupy the next 0x1000 range; patches use base + 0x800.
+            kind = str(
+                package.get("content_type", "base" if title.endswith("000") else "additional")
+            ).lower()
+            is_dlc = kind in ("dlc", "addon", "add-on", "add_on_content") or value & 0xFFF not in (
+                0,
+                0x800,
+            )
+            base = f"{(value - 0x1000 if is_dlc else value) & ~0xFFF:016X}"
+        launchable = title.endswith("000") and kind in ("base", "application", "program", "0")
+        group = groups.setdefault(
+            base, {"title_id": base, "base_packages": [], "additional_content": []}
+        )
+        group["base_packages" if launchable else "additional_content"].append(package)
+    games = []
+    for group in groups.values():
+        for base in group["base_packages"]:
+            games.append(dict(base, additional_content=group["additional_content"]))
+    return games, list(groups.values())
+
+
 def parse_evidence(text, crash=""):
     result = parse_diag(text)
     result["fps_per_5s"] = [dict(s, fps=s["frames"] / s["seconds"]) for s in result["presents"]]
@@ -125,11 +157,7 @@ def parse_evidence(text, crash=""):
     result["failure_lines"] = [
         line
         for line in (text + "\n" + crash).splitlines()
-        if re.search(
-            r"GAME_(?:FAIL|LOAD_FAILED|MISSING)|terminate|what\(\)|exception|crash|D3D12_REMOVED",
-            line,
-            re.IGNORECASE,
-        )
+        if fatal_lines(line) or re.search(r"what\(\)|\brenderer_exception\s+what=", line)
     ]
     counts = {}
     for line in text.splitlines():
@@ -141,32 +169,45 @@ def parse_evidence(text, crash=""):
     result["infoqueue_counts"] = counts
     result["infoqueue_available"] = "InfoQueue" in text
     result["infoqueue_count_basis"] = "observed severity message lines; duplicates retained"
-    result["fatal"] = bool(
-        crash.strip()
-        or result["game_fail"]
-        or re.search(
-            r"\bterminate(?:d| called)?\b|unhandled exception|D3D12_REMOVED", text, re.IGNORECASE
-        )
-    )
+    result["fatal_lines"] = fatal_lines(text + "\n" + crash)
+    result["fatal"] = bool(result["fatal_lines"])
+    result["draws_per_frame"] = [
+        s.get("draws_per_frame", s.get("draws", 0) / s["frames"])
+        for s in result["presents"]
+        if s["frames"] > 0 and ("draws" in s or "draws_per_frame" in s)
+    ]
+    for line in text.splitlines():
+        if re.search(r"\b(?:NXBOX_)?D3D12_FRAME_PROFILE\b", line):
+            fields = {key: float(value) for key, value in FIELDS.findall(line)}
+            frames = fields.get("frames", fields.get("presents", 0))
+            draws = fields.get("draws", fields.get("draw_calls"))
+            if frames > 0 and draws is not None and draws >= 0:
+                result["draws_per_frame"].append(draws / frames)
     return result
 
 
 def classify(result, changes):
     if result.get("runner_error"):
         return "error", "Runner failure; game state unknown"
-    if result.get("fatal"):
-        return "crashed", "Fatal log marker or nonempty crash file"
+    if result.get("fatal") or result.get("new_dumps") or result.get("process_disappeared"):
+        return "crashed", "Fatal log evidence, new dump, or process exited before deadline"
     active = [s["fps"] for s in result["fps_per_5s"] if s["fps"] > 0]
     if not active:
         return "boot", "No positive presentation interval"
+    black = result.get("black_frames", [])
+    if len(black) >= 2 and all(black[1:]):
+        return "black-screen", "Presents observed; all post-launch captures are near black"
+    draws = result.get("draws_per_frame", [])
+    draw_evidence = not draws or sum(draws) / len(draws) >= 10
     if (
-        len(active) >= 3
+        draw_evidence
+        and len(active) >= 3
         and sum(c >= 0.08 for c in changes) >= 2
         and sum(active) / len(active) >= 10
     ):
         return (
             "in-game",
-            "Heuristic: sustained >=10 FPS and two changing captures (animated menus can match)",
+            "Heuristic: sustained >=10 FPS, >=10 draws/frame when available and two changing captures (animated menus can match)",
         )
     return "menus", "Presentation observed; insufficient evidence of sustained scene changes"
 
@@ -186,6 +227,34 @@ def frame_signature(data):
 
 def frame_change(before, after):
     return sum(abs(a - b) for a, b in zip(before, after)) / (len(before) * 255)
+
+
+def near_black(signature):
+    return bool(signature) and sum(value <= 12 for value in signature) / len(signature) >= 0.99
+
+
+def env_assignment(value):
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=[^\r\n\0]*", value):
+        raise argparse.ArgumentTypeError("Expected a single-line KEY=VALUE")
+    return value
+
+
+def case_environment(renderer, common=(), d3d12=()):
+    values = {"NXBOX_THREAD_PROFILE": "1"}
+    if renderer == "d3d12":
+        values.update(NXBOX_D3D12_DEBUG="1", NXBOX_D3D12_FRAME_PROFILE="1")
+    for assignment in (*common, *(d3d12 if renderer == "d3d12" else ())):
+        key, value = assignment.split("=", 1)
+        values[key] = value
+    values["NXBOX_RENDERER"] = renderer
+    return "\n".join(f"{key}={value}" for key, value in values.items())
+
+
+def disable_crash_collection(portal, full, warnings):
+    try:
+        portal.request("DELETE", "/api/debug/dump/usermode/crashcontrol", {"packageFullName": full})
+    except PortalError as error:
+        warnings.append("Crash dump collection could not be disabled: " + safe_error(error))
 
 
 def package_identity(path):
@@ -259,7 +328,14 @@ def previous_run(root, dry_run):
     ):
         try:
             report = json.loads(path.read_text())
-            if report.get("schema_version") == 2 and report.get("dry_run") == dry_run:
+            if not isinstance(report, dict):
+                continue
+            if (
+                report.get("schema_version") == 2
+                and report.get("dry_run") == dry_run
+                and isinstance(report.get("games"), list)
+                and report["games"]
+            ):
                 return path, report
         except (ValueError, OSError):
             continue
@@ -268,7 +344,7 @@ def previous_run(root, dry_run):
 
 def matrix_diff(results, previous):
     old = {(g["case_id"], g["renderer"]): g for g in previous.get("games", [])}
-    ranks = {"crashed": 0, "error": 0, "boot": 1, "menus": 2, "in-game": 3}
+    ranks = {"crashed": 0, "error": 0, "boot": 1, "black-screen": 1, "menus": 2, "in-game": 3}
     changes = []
     for game in results:
         before = old.get((game["case_id"], game["renderer"]))
@@ -351,6 +427,11 @@ def write_reports(output, report):
         lines.append(
             f"- {'**REGRESSION**' if change['regression'] else 'Change'}: `{change['case_id']}` / {change['renderer']}: {esc(json.dumps(change))}"
         )
+    lines.extend(["", "## Installed content by base title", ""])
+    for group in report.get("inventory", []):
+        lines.append(f"- `{group['title_id']}`: {len(group['base_packages'])} base package(s)")
+        for content in group["additional_content"]:
+            lines.append(f"  - `{esc(content['title_id'])}`: {esc(content['name'])} (not launched)")
     for game in report["games"]:
         prefix = f"{game['case_id']}/{game['renderer']}"
         lines.extend(
@@ -367,14 +448,17 @@ def write_reports(output, report):
                 f"Profile lines: {len(game['thread_profile'])}; failure lines: {len(game['failure_lines'])}.",
             ]
         )
-        lines.extend(f"- {esc(line)}" for line in game["failure_lines"] + game.get("errors", []))
+        lines.extend(
+            f"- {esc(line)}"
+            for line in game["failure_lines"] + game.get("errors", []) + game.get("warnings", [])
+        )
     lines.extend(
         ["", "## Inventory / cleanup notes", ""] + [f"- {esc(w)}" for w in report["warnings"]]
     )
     (output / "compat.md").write_text("\n".join(lines) + "\n")
 
 
-def run_case(portal, package, game, output, renderer, seconds):
+def run_case(portal, package, game, output, renderer, seconds, environment=None):
     from PIL import Image
 
     case = dict(game, title_id=game["case_id"])
@@ -402,10 +486,11 @@ def run_case(portal, package, game, output, renderer, seconds):
         root,
         seconds,
         5,
-        f"NXBOX_RENDERER={renderer}\nNXBOX_THREAD_PROFILE=1",
+        environment if environment is not None else case_environment(renderer),
         generic_input(seconds),
         1,
         snapshot=snapshot,
+        monitor=True,
     )
     folder = root / renderer
     text = "\n".join(
@@ -414,9 +499,15 @@ def run_case(portal, package, game, output, renderer, seconds):
     )
     crash = folder / "nxbox_crash.txt"
     result.update(parse_evidence(text, crash.read_text(errors="replace") if crash.exists() else ""))
-    result["crash_file"] = (
+    result["event_log_file"] = (
         f"{game['case_id']}/{renderer}/nxbox_crash.txt" if crash.exists() else None
     )
+    result["crash_file"] = (
+        result["event_log_file"]
+        if crash.exists() and fatal_lines(crash.read_text(errors="replace"))
+        else None
+    )
+    result["black_frames"] = [near_black(s) for s in signatures]
     changes = [frame_change(a, b) for a, b in itertools.pairwise(signatures)]
     result["state"], result["state_reason"] = classify(result, changes)
     result.update(
@@ -477,6 +568,8 @@ def main(argv=None):
     )
     parser.add_argument("--artifacts", type=Path, default=ARTIFACTS)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--env", action="append", type=env_assignment, default=[])
+    parser.add_argument("--env-d3d12", action="append", type=env_assignment, default=[])
     args = parser.parse_args(argv)
     if not re.fullmatch(r"[0-9a-fA-F]{7,40}", args.sha) or not 0 < args.seconds <= 86400:
         parser.error("sha must be 7..40 hex digits; seconds must be 0..86400")
@@ -498,6 +591,7 @@ def main(argv=None):
         "dry_run": args.dry_run,
         "previous": str(previous) if previous else None,
         "games": [],
+        "inventory": [],
         "warnings": [],
         "diff": [],
         "complete": False,
@@ -505,6 +599,7 @@ def main(argv=None):
     }
 
     def execute(games, portal=None, package=None):
+        games, report["inventory"] = group_titles(games)
         if not games:
             raise RuntimeError("No installed game packages discovered")
         for game in games:
@@ -516,7 +611,15 @@ def main(argv=None):
                 result = (
                     dry_case(game, output, renderer)
                     if args.dry_run
-                    else run_case(portal, package, game, output, renderer, args.seconds)
+                    else run_case(
+                        portal,
+                        package,
+                        game,
+                        output,
+                        renderer,
+                        args.seconds,
+                        case_environment(renderer, args.env, args.env_d3d12),
+                    )
                 )
                 report["games"].append(result)
                 report["diff"] = matrix_diff(report["games"], old)
@@ -585,9 +688,7 @@ def main(argv=None):
                 (controls / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
                 try:
                     # Disable full crash dumps; leave stored dumps intact.
-                    portal.request(
-                        "DELETE", "/api/debug/dump/usermode/crashcontrol", {"packageFullName": full}
-                    )
+                    disable_crash_collection(portal, full, report["warnings"])
                     portal.delete(full, "game.url")
                     # Explicit OpenGL global setting: NXBOX_RENDERER only forces D3D12.
                     for (name, directory), data in saved.items():
