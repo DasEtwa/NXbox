@@ -49,6 +49,27 @@ int main() {
     deadline = std::chrono::steady_clock::now() + 2s;
     while (!received && std::chrono::steady_clock::now() < deadline) std::this_thread::sleep_for(5ms);
     assert(received == 1);
+    std::atomic<int> proxy_received{};
+    auto proxy_callback = first.BindOnProxyPacketReceived([&](const ProxyPacket& p) {
+        assert(p.protocol == Protocol::UDP && !p.broadcast);
+        assert(p.local_endpoint.ip == second.GetFakeIpAddressSnapshot());
+        assert(p.remote_endpoint.ip == first.GetFakeIpAddressSnapshot());
+        assert(p.local_endpoint.portno == 12340 && p.remote_endpoint.portno == 4500);
+        assert(p.data == std::vector<u8>({1,2,3,4})); ++proxy_received;
+    });
+    ProxyPacket datagram{};
+    datagram.local_endpoint.family = Domain::INET;
+    datagram.local_endpoint.ip = second.GetFakeIpAddressSnapshot();
+    datagram.local_endpoint.portno = 12340;
+    datagram.remote_endpoint.family = Domain::INET;
+    datagram.remote_endpoint.ip = first.GetFakeIpAddressSnapshot();
+    datagram.remote_endpoint.portno = 4500;
+    datagram.protocol = Protocol::UDP; datagram.data = {1,2,3,4};
+    second.SendProxyPacket(datagram);
+    deadline = std::chrono::steady_clock::now() + 2s;
+    while (!proxy_received && std::chrono::steady_clock::now() < deadline) std::this_thread::sleep_for(5ms);
+    assert(proxy_received == 1);
+    first.Unbind(proxy_callback);
     std::atomic<RoomMember::Error> error{RoomMember::Error::UnknownError};
     auto errors = third.BindOnError([&](const auto& value) { error = value; });
     third.Join("Third", "127.0.0.1", port, 0, NoPreferredIP, "secret");
@@ -61,7 +82,7 @@ int main() {
     third.Join("Third", "127.0.0.1", port, 0, NoPreferredIP, "secret"); assert(Joined(third));
     first.Unbind(callback); third.Unbind(errors);
     first.Leave(); third.Leave(); room->Destroy(); Shutdown();
-    std::puts("T18: 8 real ENet room scenarios passed");
+    std::puts("T18: 9 real ENet room scenarios passed");
 }
 """
 
