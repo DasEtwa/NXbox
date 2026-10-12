@@ -12,6 +12,11 @@ void EmitGetAttribute(EmitContext& ctx, IR::Inst& inst, IR::Attribute attr,
         ctx.AddF32("{} = {};", inst, IR::GenericAttributeElement(attr) == 3 ? "1.0f" : "0.0f");
         return;
     }
+    // D3D12 rasterizes points at a fixed 1px size and has no point-size semantic.
+    if (attr == IR::Attribute::PointSize) {
+        ctx.AddF32("{} = 1.0f;", inst);
+        return;
+    }
     auto value = ctx.Attribute(attr, false);
     if (ctx.stage == Stage::Geometry && value.starts_with("input."))
         value.replace(0, 6, fmt::format("inputs[{}].", vertex.empty() ? "0u" : vertex));
@@ -41,6 +46,8 @@ void EmitGetAttributeU32(EmitContext& ctx, IR::Inst& inst, IR::Attribute attr,
 }
 void EmitSetAttribute(EmitContext& ctx, IR::Attribute attr, std::string_view value,
                       std::string_view) {
+    if (attr == IR::Attribute::PointSize)
+        return; // ponytail: D3D12 points are always 1px; emulate with quad expansion if a game needs it.
     if (attr == IR::Attribute::Layer || attr == IR::Attribute::ViewportIndex)
         ctx.Add("{} = asuint({});", ctx.Attribute(attr, true), value);
     else
