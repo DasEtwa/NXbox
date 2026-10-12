@@ -1,0 +1,265 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+#pragma once
+
+// Maxwell register values -> D3D12 enum values, and the packed graphics PSO key.
+// Everything here is std-only and uses raw numeric enum values (Maxwell regs on the input side,
+// D3D12/DXGI SDK values on the output side) so it can be unit tested without a Windows SDK.
+
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <type_traits>
+
+namespace D3D12::Pso {
+
+// ---- D3D12 SDK values (d3d12.h / dxgiformat.h) used by the tables --------------------------
+inline constexpr std::uint32_t kBlendZero = 1, kBlendOne = 2, kBlendAlphaFactor = 12,
+                               kBlendInvAlphaFactor = 13, kBlendFactor = 14,
+                               kBlendInvFactor = 15;
+inline constexpr std::uint32_t kCullNone = 1, kCullFront = 2, kCullBack = 3;
+inline constexpr std::uint32_t kTopologyTypePoint = 1, kTopologyTypeLine = 2,
+                               kTopologyTypeTriangle = 3, kTopologyTypePatch = 4;
+
+// ---- Blend / compare / stencil -------------------------------------------------------------
+// D3D12_BLEND from Maxwell::Blend::Factor (D3D and GL numbering). Unknown -> ONE.
+constexpr std::uint32_t BlendFactor(std::uint32_t v) {
+    if (v >= 0x1 && v <= 0xB) return v; // Zero..SrcAlphaSat share D3D12 numbering
+    switch (v) {
+    case 0xC: return 5;  // BothSourceAlpha (D3D9) -> SRC_ALPHA
+    case 0xD: return 6;  // OneMinusBothSourceAlpha -> INV_SRC_ALPHA
+    case 0xE: return kBlendFactor;
+    case 0xF: return kBlendInvFactor;
+    case 0x10: case 0x11: case 0x12: case 0x13: return v; // SRC1_*
+    case 0x4000: return 1;
+    case 0x4001: return 2;
+    case 0x4300: case 0x4301: case 0x4302: case 0x4303: case 0x4304: case 0x4305: case 0x4306:
+    case 0x4307: case 0x4308: return v - 0x4300 + 3;
+    case 0xC001: return kBlendFactor;
+    case 0xC002: return kBlendInvFactor;
+    case 0xC003: return kBlendAlphaFactor;
+    case 0xC004: return kBlendInvAlphaFactor;
+    case 0xC900: case 0xC901: case 0xC902: case 0xC903: return v - 0xC900 + 16;
+    default: return kBlendOne;
+    }
+}
+
+// D3D12_BLEND_OP from Maxwell::Blend::Equation. Unknown -> ADD.
+constexpr std::uint32_t BlendOp(std::uint32_t v) {
+    if (v >= 1 && v <= 5) return v;
+    switch (v) {
+    case 0x8006: return 1; // Add
+    case 0x800A: return 2; // Subtract
+    case 0x800B: return 3; // ReverseSubtract
+    case 0x8007: return 4; // Min
+    case 0x8008: return 5; // Max
+    default: return 1;
+    }
+}
+
+// D3D12_COMPARISON_FUNC from Maxwell::ComparisonOp. Unknown -> ALWAYS.
+constexpr std::uint32_t ComparisonFunc(std::uint32_t v) {
+    if (v >= 1 && v <= 8) return v;
+    if (v >= 0x200 && v <= 0x207) return v - 0x200 + 1;
+    return 8;
+}
+
+// D3D12_STENCIL_OP from Maxwell::StencilOp::Op. Unknown -> KEEP.
+constexpr std::uint32_t StencilOp(std::uint32_t v) {
+    if (v >= 1 && v <= 8) return v;
+    switch (v) {
+    case 0x1E00: return 1; // Keep
+    case 0: return 2;      // Zero_GL
+    case 0x1E01: return 3; // Replace
+    case 0x1E02: return 4; // IncrSaturate
+    case 0x1E03: return 5; // DecrSaturate
+    case 0x150A: return 6; // Invert
+    case 0x8507: return 7; // Incr (wrap)
+    case 0x8508: return 8; // Decr (wrap)
+    default: return 1;
+    }
+}
+
+// D3D12_CULL_MODE from the GL cull test + face. FrontAndBack is reported through `cull_all`
+// (D3D12 has no such mode; the draw must be skipped).
+struct CullInfo {
+    std::uint32_t mode;
+    bool cull_all;
+};
+constexpr CullInfo CullMode(bool enabled, std::uint32_t maxwell_face) {
+    if (!enabled) return {kCullNone, false};
+    switch (maxwell_face) {
+    case 0x404: return {kCullFront, false};
+    case 0x408: return {kCullBack, true};
+    default: return {kCullBack, false};
+    }
+}
+
+// ---- Topology ------------------------------------------------------------------------------
+// D3D12_PRIMITIVE_TOPOLOGY_TYPE for the PSO from Maxwell::PrimitiveTopology.
+constexpr std::uint32_t TopologyType(std::uint32_t t) {
+    switch (t) {
+    case 0x0: return kTopologyTypePoint;
+    case 0x1: case 0x2: case 0x3: case 0xA: case 0xB: return kTopologyTypeLine;
+    case 0xE: return kTopologyTypePatch;
+    default: return kTopologyTypeTriangle; // triangles, strips, fans, quads, polygon, adjacency
+    }
+}
+
+// D3D_PRIMITIVE_TOPOLOGY for IASetPrimitiveTopology. `needs_conversion` means the guest
+// topology has no D3D12 equivalent (LineLoop, Fan, Quads, QuadStrip, Polygon): the rasterizer
+// must expand the index buffer and draw with the returned list/strip topology.
+struct TopologyInfo {
+    std::uint32_t topology;
+    bool needs_conversion;
+};
+constexpr TopologyInfo PrimitiveTopology(std::uint32_t t, std::uint32_t patch_vertices = 3) {
+    switch (t) {
+    case 0x0: return {1, false};  // POINTLIST
+    case 0x1: return {2, false};  // LINELIST
+    case 0x2: return {3, true};   // LineLoop -> LINESTRIP + closing index
+    case 0x3: return {3, false};  // LINESTRIP
+    case 0x4: return {4, false};  // TRIANGLELIST
+    case 0x5: return {5, false};  // TRIANGLESTRIP
+    case 0x6: return {4, true};   // Fan
+    case 0x7: return {4, true};   // Quads
+    case 0x8: return {4, true};   // QuadStrip
+    case 0x9: return {4, true};   // Polygon
+    case 0xA: return {10, false}; // LINELIST_ADJ
+    case 0xB: return {11, false}; // LINESTRIP_ADJ
+    case 0xC: return {12, false}; // TRIANGLELIST_ADJ
+    case 0xD: return {13, false}; // TRIANGLESTRIP_ADJ
+    case 0xE: return {32 + (patch_vertices < 1 ? 1 : patch_vertices > 32 ? 32 : patch_vertices),
+                      false}; // n_CONTROL_POINT_PATCHLIST
+    default: return {4, false};
+    }
+}
+
+// ---- Vertex formats ------------------------------------------------------------------------
+// Maxwell::VertexAttribute::Size / Type numeric values.
+namespace VSize {
+inline constexpr std::uint32_t R32G32B32A32 = 0x01, R32G32B32 = 0x02, R16G16B16A16 = 0x03,
+                               R32G32 = 0x04, R16G16B16 = 0x05, R8G8B8A8 = 0x0A, R16G16 = 0x0F,
+                               R32 = 0x12, R8G8B8 = 0x13, R8G8 = 0x18, R16 = 0x1B, R8 = 0x1D,
+                               A2B10G10R10 = 0x30, B10G11R11 = 0x31, G8R8 = 0x32,
+                               X8B8G8R8 = 0x33, A8 = 0x34;
+}
+namespace VType {
+inline constexpr std::uint32_t SNorm = 1, UNorm = 2, SInt = 3, UInt = 4, UScaled = 5,
+                               SScaled = 6, Float = 7;
+}
+
+struct VertexFormat {
+    std::uint32_t dxgi;  // DXGI_FORMAT, 0 = unsupported
+    bool scaled;         // integer in memory, shader must convert to float (U/SScaled)
+    bool swap_rb;        // BGRA order the DXGI format cannot express; shader swizzles
+};
+
+// Maxwell (size, type, bgra) -> DXGI_FORMAT. 3-component 8/16-bit formats widen to 4
+// components (D3D12 has none); the unused component reads as 0 and the stride is unchanged.
+constexpr VertexFormat VertexFormatFor(std::uint32_t size, std::uint32_t type, bool bgra = false) {
+    using namespace VSize;
+    const bool scaled = type == VType::UScaled || type == VType::SScaled;
+    // Scaled types ride on the matching integer format.
+    const std::uint32_t t = type == VType::UScaled ? VType::UInt
+                            : type == VType::SScaled ? VType::SInt
+                                                     : type;
+    const auto pick = [&](std::uint32_t snorm, std::uint32_t unorm, std::uint32_t sint,
+                          std::uint32_t uint, std::uint32_t flt) -> std::uint32_t {
+        switch (t) {
+        case VType::SNorm: return snorm;
+        case VType::UNorm: return unorm;
+        case VType::SInt: return sint;
+        case VType::UInt: return uint;
+        case VType::Float: return flt;
+        default: return 0;
+        }
+    };
+    std::uint32_t f = 0;
+    switch (size) {
+    case R32G32B32A32: f = pick(0, 0, 4, 3, 2); break;
+    case R32G32B32: f = pick(0, 0, 8, 7, 6); break;
+    case R32G32: f = pick(0, 0, 18, 17, 16); break;
+    case R32: f = pick(0, 0, 43, 42, 41); break;
+    case R16G16B16A16:
+    case R16G16B16: f = pick(13, 11, 14, 12, 10); break;
+    case R16G16: f = pick(37, 35, 38, 36, 34); break;
+    case R16: f = pick(58, 56, 59, 57, 54); break;
+    case R8G8B8A8:
+    case R8G8B8:
+    case X8B8G8R8: f = pick(31, 28, 32, 30, 0); break;
+    case R8G8:
+    case G8R8: f = pick(51, 49, 52, 50, 0); break;
+    case R8: f = pick(63, 61, 64, 62, 0); break;
+    case A8: f = t == VType::UNorm ? 65 : t == VType::UInt ? 62 : 0; break; // A8_UNORM / R8_UINT
+    case A2B10G10R10: f = pick(0, 24, 0, 25, 0); break;
+    case B10G11R11: f = t == VType::Float ? 26 : 0; break;
+    default: break;
+    }
+    // BGRA only has a DXGI spelling for 4x8 UNorm; everything else swizzles in the shader.
+    if (bgra && f == 28) return {87, scaled, false}; // B8G8R8A8_UNORM
+    return {f, scaled, bgra && f != 0};
+}
+
+// DXGI depth-stencil view format from the typeless resource format used by the texture cache
+// (FormatInfo::resource_format). 0 = not a depth format / unsupported.
+constexpr std::uint32_t DsvFormat(std::uint32_t resource_format) {
+    switch (resource_format) {
+    case 39: return 40; // R32_TYPELESS -> D32_FLOAT
+    case 53: return 55; // R16_TYPELESS -> D16_UNORM
+    case 44: return 45; // R24G8_TYPELESS -> D24_UNORM_S8_UINT
+    case 19: return 20; // R32G8X24_TYPELESS -> D32_FLOAT_S8X24_UINT
+    default: return 0;
+    }
+}
+
+// ---- Packed graphics state key -------------------------------------------------------------
+struct BlendTargetState {
+    std::uint8_t enable, write_mask, src, dst, op, src_alpha, dst_alpha, op_alpha;
+};
+struct StencilFaceState {
+    std::uint8_t fail, depth_fail, pass, func;
+};
+struct VertexAttributeState {
+    std::uint8_t enabled;
+    std::uint8_t slot;
+    std::uint16_t offset;
+    std::uint32_t dxgi;
+    std::uint8_t instanced;
+    std::uint8_t swap_rb;
+    std::uint8_t scaled;
+    std::uint8_t pad;
+};
+
+inline constexpr std::size_t kNumRenderTargets = 8;
+inline constexpr std::size_t kNumVertexAttributes = 32;
+
+// All values already in D3D12 numbering; no padding (checked below), so it is hashed and
+// compared as raw bytes like Vulkan's FixedPipelineState.
+struct GraphicsPsoState {
+    std::uint8_t topology_type, cull_mode, fill_mode, front_ccw;
+    std::uint8_t cull_all, depth_clip, depth_enable, depth_write;
+    std::uint8_t depth_func, stencil_enable, stencil_read_mask, stencil_write_mask;
+    std::uint8_t independent_blend, num_render_targets, sample_count, patch_vertices;
+    std::int32_t depth_bias;
+    std::uint32_t slope_scaled_bias_bits, bias_clamp_bits;
+    std::uint32_t dsv_format;
+    std::array<std::uint32_t, kNumRenderTargets> rtv_formats;
+    StencilFaceState front, back;
+    std::array<BlendTargetState, kNumRenderTargets> blend;
+    std::array<VertexAttributeState, kNumVertexAttributes> attributes;
+};
+static_assert(std::has_unique_object_representations_v<GraphicsPsoState>);
+static_assert(std::is_trivially_copyable_v<GraphicsPsoState>);
+
+constexpr std::uint64_t HashBytes(const void* data, std::size_t size,
+                                  std::uint64_t seed = 0xcbf29ce484222325ull) {
+    const auto* p = static_cast<const std::uint8_t*>(data);
+    std::uint64_t h = seed;
+    for (std::size_t i = 0; i < size; ++i) {
+        h ^= p[i];
+        h *= 0x100000001b3ull;
+    }
+    return h;
+}
+
+} // namespace D3D12::Pso
