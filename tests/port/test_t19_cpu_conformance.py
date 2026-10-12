@@ -63,7 +63,7 @@ def inventory(revision=None):
                 guards = sorted(
                     set(
                         re.findall(
-                            r"\b(UndefinedInstruction|UnpredictableInstruction|UnallocatedEncoding|ReservedValue|DecodeError|RaiseException|UNREACHABLE)\(",
+                            r"\b(UndefinedInstruction|UnpredictableInstruction|UnallocatedEncoding|ReservedValue|DecodeError|RaiseException|UNREACHABLE|ASSERT|ASSERT_MSG)\(",
                             code,
                         )
                     )
@@ -190,7 +190,15 @@ def report(destination):
                     f"| {row['index']} | `{row['handler']}` | {row['name']} | `{row['bits']}` | {row['status']} | {', '.join(row['guards'])} | `{Path(row['source']).name}` |"
                 )
         lines.append("")
-    Path(destination).write_text("\n".join(lines))
+    output = "\n".join(lines)
+    marker = "## Complete ordered decoder inventory"
+    destination = Path(destination)
+    if destination.exists():
+        # Preserve the curated findings while refreshing the generated inventory.
+        existing = destination.read_text()
+        if marker in existing:
+            output = existing.split(marker, 1)[0] + marker + output.split(marker, 1)[1]
+    destination.write_text(output)
 
 
 if __name__ == "__main__":
