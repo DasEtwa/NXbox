@@ -32,6 +32,21 @@ observed host mappings, request/response fields, and IPC wire layouts under
 NXbox's GPL-3.0-or-later license. This attribution records the interoperability
 sources; it does not relicense their code.
 
+## Changed files
+
+| Files | Responsibility |
+| --- | --- |
+| `src/core/hle/service/nextendo/auth.h`, `crypto.h`, `friends.h`, `policy.h`, `runtime.h`, `token.h` | Portable protocol, routing, signing, profile isolation, social ABI |
+| `src/core/hle/service/acc/acc.cpp`, `friend/friend.cpp`, `nifm/nifm.cpp`, `sockets/sfdnsres.cpp`, `ssl/ssl.cpp` | Opt-in IPC/DNS/SSL hooks |
+| `src/eden_uwp/nextendo_online.cpp`, `nextendo_online.h`, `CMakeLists.txt` | WinRT HTTP, PasswordVault, background social worker, build registration |
+| `src/eden_uwp/ui/nextendo_screen.cpp`, `nextendo_screen.h`, `library_screen.cpp`, `strings.h`, `lang/en.inc`, `lang/pt_br.inc` | Controller settings/login and PT/EN strings |
+| `tests/port/test_t22_nextendo.py` | Executable C++ policy and mocked HTTP tests, LLVM coverage |
+| `docs/nextendo.md` | Attribution, configuration, measurements and console test plan |
+
+There are 22 changed files. Renderer, common settings, core build registration,
+application manifests, and other worktrees are untouched. Existing-file formatting
+is isolated in commit `0404d53100`.
+
 ## Operator setup
 
 Register an NXbox public PKCE application at the Nextendo developer portal, with
@@ -151,9 +166,21 @@ allowlisting, and friend wire layout.
 
 Measured after implementation (LLVM instrumentation of the six portable C++ headers):
 454/466 lines (**97.42%**), 326/374 branches (**87.17%**), and
-35/36 functions (**97.22%**). Routing alone is 110/110 lines and 112/118 branches; auth is 150/151
-lines and 111/130 branches. The full port suite result and MSVC run are recorded
-in the delivery report, with their real exit/conclusion.
+35/36 functions (**97.22%**). Routing alone is 110/110 lines and 112/118 branches;
+auth is 154/155 lines and 120/140 branches.
+
+Final acceptance on 2026-10-12:
+
+- Full port suite: **338 tests**, four existing platform skips, **exit code 0**.
+- T22 coverage suite: **12 tests**, **exit code 0**. Before: zero T22 tests and
+  no Nextendo implementation; after: the instrumented counts above.
+- [UWP/MSVC workflow 38303937433](https://github.com/NspxMiguel/NXbox/actions/runs/38303937433):
+  **success**, including Windows port tests and the UWP build, at code commit
+  `340857b5426bc203bc03dbcf92aaa2f43134af1b` on `team/t22-nextendo`.
+  Subsequent delivery changes are documentation only.
+- No Xbox online lobby or live Nextendo authentication test was performed.
+  Production activation still needs a registered public client ID, approved
+  routing addresses, and the console checks below.
 
 Run from the repository:
 
