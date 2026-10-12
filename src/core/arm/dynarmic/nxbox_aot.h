@@ -9,9 +9,11 @@ namespace Core::Aot {
 // Snapshot final executable mappings only after the loader completes. A 64 MiB cap
 // bounds transient memory per core. This does not treat the entire ASLR region as code.
 template <typename Jit, typename Report>
-void WarmMappedCode(Kernel::KProcess& process, Jit& jit, Report&& report) {
+void WarmMappedCode(Kernel::KProcess& process, Jit& jit, Report&& report,
+                    std::span<const Address> module_roots = {}) {
     const auto start = std::chrono::steady_clock::now();
     Module module;
+    module.roots.assign(module_roots.begin(), module_roots.end());
     module.roots.push_back(GetInteger(process.GetEntryPoint()));
     const auto& table = process.GetPageTable();
     auto address = GetInteger(table.GetCodeRegionStart());

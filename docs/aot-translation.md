@@ -17,6 +17,7 @@ path unchanged. Debugger sessions and processes outside the persistent-cache tit
 are excluded. At the first RunThread on each core, the integration snapshots readable
 executable and read-only mappings in the code region, after decompression, patching
 and loader relocation. It does not scan the entire ASLR region as executable code.
+NSO module entry points exposed by the loader and the process entry seed traversal.
 Each core owns a separate JIT and therefore needs separate host-code preparation.
 Transient snapshots are capped at 64 MiB per invocation, discovery at 262144 block
 starts and four million scanned candidates / traversed instructions. A truncated
