@@ -32,15 +32,11 @@ Result MiiManager::Initialize(DatabaseSessionMetadata& metadata) {
     // Seed an empty database once for database-only selectors. Existing user Miis and
     // corrupt databases are preserved; explicit Format/Delete operations still work.
     if (!is_broken_with_clear_flag && database_manager.IsEmptyDatabase()) {
-        for (u32 index = 0; index < DefaultMiiCount; ++index) {
-            StoreData store_data{};
-            store_data.BuildDefault(index);
-            const auto result = database_manager.AddOrReplace(metadata, store_data);
-            if (result.IsError()) {
-                return result;
-            }
-        }
-        return database_manager.SaveDatabase();
+        StoreData store_data{};
+        store_data.BuildDefault(0);
+        store_data.SetNickname({u'P', u'l', u'a', u'y', u'e', u'r'});
+        store_data.SetChecksum();
+        return AddOrReplace(metadata, store_data);
     }
     return load_result;
 }

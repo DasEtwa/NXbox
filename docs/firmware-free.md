@@ -82,7 +82,7 @@ were opened or used to generate the new resources in this track.
 | `src/frontend_common/firmware_manager.cpp`, `GetFirmwareVersion` | SystemVersion through settings service; installed content enumeration | Existing fallback; used to select ES, PCIe, CAPS, NVDRV and NS service command tables (T16). |
 | `src/frontend_common/firmware_files.h` and frontend firmware installers | User-provided NCA files/version | Import/discovery only, not a firmware-free resource supplier; outside T20. |
 | `src/core/file_sys/registered_cache.cpp`, `content_archive.cpp`, `bis_factory.cpp` | Registered NAND NCAs, keys for decryption | Generic content plumbing; no embedded system-data substitute. |
-| `src/core/hle/service/mii/mii_database_manager.cpp` | Emulated NAND `system/save/8000000000000030/MiiDatabase.dat` | Save data, not firmware. Seed six original defaults on empty successful initialization; preserve nonempty and corrupt databases. |
+| `src/core/hle/service/mii/mii_database_manager.cpp` | Emulated NAND `system/save/8000000000000030/MiiDatabase.dat` | Save data, not firmware. Seed one original profile on empty successful initialization; preserve nonempty and corrupt databases. |
 
 The same generic loaders read application/update/DLC content through
 `patch_manager.cpp` and `src/core/loader/*`; those are game assets, not firmware
@@ -123,7 +123,7 @@ No claim that every title renders a default Mii is made before console tests.
 The six `StoreData::BuildDefault` profiles are original Player 1–6 profiles,
 with valid field ranges, unique creator IDs and Eden's own CRC calculation.
 The existing six-default source is always available. Empty successful database
-initialization seeds all six in one save, on every platform; existing databases
+initialization seeds one original Player profile, on every platform; existing databases
 are not expanded or overwritten. Explicit Format/Delete remain effective for
 the current session; a later initialization seeds an empty database again.
 Corruption and mount/save failures still return errors.
@@ -165,8 +165,9 @@ sslT parser and zero-entry behavior. Do not add console client keys/certificates
 Nintendo endpoint authentication, or disabled TLS checks. Test zero entries
 with `GetCertificates(All)` and its invalid terminator.
 
-**T17 — Mii selector/appet completion.** Enumerate `SourceFlag::Database` after
-successful `MiiManager::Initialize`; six profiles now exist on fresh NAND.
+**T17 — Mii selector/applet completion.** Enumerate `SourceFlag::Database` after
+successful `MiiManager::Initialize`; a persisted profile exists on fresh NAND.
+Use `SourceFlag::Default` to enumerate the six original built-in defaults.
 Return the selected database index/CharInfo, signal the completion event, and
 handle cancellation/initialization errors. Do not rely on a native firmware
 Mii editor process. `AppendMiiImage`/`UpdateMiiImage` currently return success
@@ -185,7 +186,7 @@ These are structural coverage counts, not execution-line coverage:
 | Mii shape descriptors with validated payload bounds | 0/857 | 857/857 (100%) |
 | Mii texture descriptors with validated payload bounds | 0/327 | 327/327 (100%) |
 | NgWord numbered language files | 0/16 | 16/16 |
-| Fresh UWP database Miis | 1 | 6 |
+| Fresh UWP database Miis | 1 | 1 (preserved contract) |
 | Built-in default profiles | 6 inherited profiles | 6 original validated profiles |
 
 Run `cd tests/port && python3 -m unittest discover -s . -p "test_*.py"`.

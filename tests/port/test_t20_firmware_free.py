@@ -153,12 +153,12 @@ int main(int argc, char** argv) {
     MiiManager manager;
     assert(manager.Initialize(metadata).IsSuccess());
     assert(manager.GetCount(metadata, SourceFlag::Default) == 6);
-    assert(manager.GetCount(metadata, SourceFlag::Database) == 6);
+    assert(manager.GetCount(metadata, SourceFlag::Database) == 1);
     assert(manager.GetCount(metadata, SourceFlag::None) == 0);
-    std::array<StoreData, 12> stores{};
+    std::array<StoreData, 7> stores{};
     u32 count{};
     assert(manager.Get(metadata, std::span{stores}, count, (SourceFlag::Database | SourceFlag::Default)).IsSuccess());
-    assert(count == 12);
+    assert(count == 7);
     std::set<std::array<u8, 16>> ids;
     for (const auto& store : stores) {
         assert(store.IsValid() == ValidationResult::NoErrors);
@@ -169,7 +169,12 @@ int main(int argc, char** argv) {
         info.SetFromStoreData(store);
         assert(info.Verify() == ValidationResult::NoErrors);
     }
-    assert(ids.size() == 12);
+    assert(ids.size() == 7);
+    // Add five ordinary profiles to exercise filtering, index mapping and persistence.
+    for (u32 index = 1; index < 6; ++index) {
+        assert(manager.AddOrReplace(metadata, stores[index]).IsSuccess());
+    }
+    assert(manager.GetCount(metadata, SourceFlag::Database) == 6);
     NintendoFigurineDatabase counted;
     counted.CleanDatabase();
     counted.Add(stores[0]);
