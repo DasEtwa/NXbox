@@ -85,6 +85,7 @@ constexpr ComputeGroups HelperGroupCount(HelperComputePass pass, ComputeGroups e
 } // namespace D3D12
 
 #ifdef _WIN32
+#include "video_core/renderer_d3d12/d3d12_descriptor.h"
 namespace D3D12 {
 struct ComputeBufferView {
     ResourcePtr resource;
@@ -104,14 +105,15 @@ public:
     // buffers are u0 input, u1 output, u2 accumulator; texture output occupies u1
     // instead of the output buffer. Unswizzle requires a UINT-compatible UAV;
     // ASTC requires RGBA8 UNORM. All resources must have ALLOW_UNORDERED_ACCESS.
-    // Run owns fresh fence-retired descriptor heaps. It fills the last two root
-    // slots with the unswizzle XY extent to clip partial workgroups.
+    // Run reuses immutable tables in shared fence-retired descriptor heaps. It fills the last two
+    // root slots with the unswizzle XY extent to clip partial workgroups.
     void Run(HelperComputePass pass, ComputeConstants constants, ComputeGroups extent,
              std::span<const ComputeBufferView> buffers, ComputeTextureView texture = {});
 
 private:
     Context& context;
     ComputeDispatch dispatch;
+    D3D12DescriptorAllocator descriptors;
     ComPtr<ID3D12RootSignature> root_signature;
     std::array<ComPtr<ID3D12PipelineState>, static_cast<std::size_t>(HelperComputePass::Count)>
         pipelines;

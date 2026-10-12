@@ -47,7 +47,9 @@ void ComputeDispatch::UavBarrier() {
     D3D12_RESOURCE_BARRIER barrier{};
     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
     // Global ordering also covers aliasing guest storage descriptors.
+    const FrameProfile::Scope profile_barrier{context.Profile(), FramePhase::Barriers};
     context.Commands()->ResourceBarrier(1, &barrier);
+    context.Profile().Count(FrameCount::Barriers);
 }
 void ComputeDispatch::Bind(const ComputeBindings& bindings) {
     if (!bindings.pipeline || !bindings.root_signature || !bindings.resource_heap ||
@@ -89,8 +91,11 @@ void ComputeDispatch::Bind(const ComputeBindings& bindings) {
                              signature = indirect_signature] {});
     commands->OMSetRenderTargets(0, nullptr, FALSE, nullptr);
     UavBarrier();
+    std::vector<std::pair<ResourcePtr, D3D12_RESOURCE_STATES>> transitions;
+    transitions.reserve(bindings.resources.size());
     for (const auto& use : bindings.resources)
-        context.Transition(use.resource, use.state);
+        transitions.emplace_back(use.resource, use.state);
+    context.TransitionBatch(transitions);
     ID3D12DescriptorHeap* heaps[]{bindings.resource_heap.Get(), bindings.sampler_heap.Get()};
     commands->SetDescriptorHeaps(2, heaps);
     commands->SetComputeRootSignature(bindings.root_signature.Get());
@@ -104,6 +109,7 @@ void ComputeDispatch::Direct(const ComputeBindings& bindings, ComputeGroups grou
         return;
     Bind(bindings);
     context.Commands()->Dispatch(groups[0], groups[1], groups[2]);
+    context.Profile().Count(FrameCount::Dispatches);
     UavBarrier();
 }
 void ComputeDispatch::Indirect(const ComputeBindings& bindings, const ResourcePtr& arguments,
@@ -120,6 +126,7 @@ void ComputeDispatch::Indirect(const ComputeBindings& bindings, const ResourcePt
     context.Transition(arguments, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT);
     context.Commands()->ExecuteIndirect(indirect_signature.Get(), 1, arguments->handle.Get(),
                                         offset, nullptr, 0);
+    context.Profile().Count(FrameCount::Dispatches);
     UavBarrier();
 }
 } // namespace D3D12

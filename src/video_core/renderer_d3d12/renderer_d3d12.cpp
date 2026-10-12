@@ -348,6 +348,7 @@ bool RendererD3D12::HasFailed() const {
     return impl->failed;
 }
 void RendererD3D12::Composite(std::span<const Tegra::FramebufferConfig> layers) {
+    impl->context.Profile().EndFrame();
     try {
         if (IsScreenshotPending()) {
             renderer_settings.screenshot_requested = false;
