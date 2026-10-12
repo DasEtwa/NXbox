@@ -265,7 +265,7 @@ void D3D12DescriptorAllocator::WriteNullCbv(const DescriptorTable& table, u32 sl
     D3D12_CONSTANT_BUFFER_VIEW_DESC desc{};
     WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, {}, 0, &desc, sizeof(desc),
                 table.Slot(slot),
-                [&](auto handle) { context.Device()->CreateConstantBufferView(&desc, handle); });
+                [&](auto handle) { context.Device()->CreateConstantBufferView(nullptr, handle); });
 }
 void D3D12DescriptorAllocator::WriteNullSrv(const DescriptorTable& table, u32 slot,
                                             D3D12_SRV_DIMENSION dimension) {

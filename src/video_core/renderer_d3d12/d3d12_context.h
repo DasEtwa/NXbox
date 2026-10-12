@@ -11,6 +11,7 @@
 #include <memory>
 #include <mutex>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -83,11 +84,17 @@ public:
         const auto found = entries.find(key);
         if (found != entries.end()) {
             auto& entry = *found->second;
-            if (!entry.failure.empty() && !entry.reported) {
+            if (entry.failure && !entry.reported) {
                 entry.reported = true;
                 const auto failure = entry.failure;
                 lock.unlock();
-                report(failure);
+                try {
+                    std::rethrow_exception(failure);
+                } catch (const std::exception& error) {
+                    report(error.what());
+                } catch (...) {
+                    report("D3D12 async PSO compiler: non-standard exception");
+                }
                 return {};
             }
             return entry.result;
@@ -125,7 +132,7 @@ public:
 private:
     struct Entry {
         Result result;
-        std::string failure;
+        std::exception_ptr failure;
         bool reported{};
     };
     struct Job {
@@ -144,15 +151,15 @@ private:
                 jobs.pop_front();
             }
             Result result;
-            std::string failure;
+            std::exception_ptr failure;
             try {
                 result = job.compile();
                 if (!result)
-                    failure = "D3D12 async PSO compiler returned no pipeline";
-            } catch (const std::exception& error) {
-                failure = error.what();
+                    throw std::runtime_error("D3D12 async PSO compiler returned no pipeline");
             } catch (...) {
-                failure = "D3D12 async PSO compiler: non-standard exception";
+                // Preserve what() without allocating a string on the worker's
+                // exception path (including compiler allocation failures).
+                failure = std::current_exception();
             }
             {
                 const std::lock_guard lock{mutex};
