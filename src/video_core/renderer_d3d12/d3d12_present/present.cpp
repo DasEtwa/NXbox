@@ -1,0 +1,287 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+#include <array>
+#include <cmath>
+#include <limits>
+#include <string>
+#include "common/logging.h"
+#include "d3d12_present_shader_source.h"
+#include "video_core/renderer_d3d12/d3d12_present/present.h"
+#include "video_core/renderer_d3d12/d3d12_shader.h"
+
+namespace D3D12::Present {
+namespace {
+constexpr unsigned MaxPasses = 256; // Four passes for each of the renderer's 64 layers.
+constexpr unsigned PassCount = 9;
+constexpr unsigned FxaaPass = 6, EasuPass = 7, RcasPass = 8;
+constexpr DXGI_FORMAT IntermediateFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
+struct Constants {
+    Crop crop;
+    float source_width, source_height, output_width, output_height;
+    unsigned transform{}, opaque{};
+    float sharpness{};
+    unsigned unused{};
+};
+static_assert(sizeof(Constants) == 48);
+D3D12_SHADER_RESOURCE_VIEW_DESC View(Extent) {
+    D3D12_SHADER_RESOURCE_VIEW_DESC view{};
+    view.Format = IntermediateFormat;
+    view.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+    view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    view.Texture2DArray.MipLevels = 1;
+    view.Texture2DArray.ArraySize = 1;
+    return view;
+}
+} // namespace
+struct Presenter::Impl {
+    Context& context;
+    ComPtr<ID3D12RootSignature> root;
+    ComPtr<ID3D12DescriptorHeap> srv_heap, rtv_heap;
+    // Final passes use RGBA8 with each layer blend; preprocessing uses float RGBA.
+    std::array<std::array<ComPtr<ID3D12PipelineState>, 3>, 6> final;
+    std::array<ComPtr<ID3D12PipelineState>, PassCount> intermediate;
+    std::array<ResourcePtr, 3> scratch;
+    std::array<Extent, 3> scratch_extent{};
+    unsigned srv_stride{}, rtv_stride{}, cursor{};
+    bool begun{};
+
+    explicit Impl(Context& context_) : context{context_} {
+        D3D12_FEATURE_DATA_SHADER_MODEL model{D3D_SHADER_MODEL_6_0};
+        Check(context.Device()->CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL, &model,
+                                                    sizeof(model)),
+              "Presentation shader model support");
+        if (model.HighestShaderModel < D3D_SHADER_MODEL_6_0)
+            throw std::runtime_error("Presentation requires shader model 6.0");
+        D3D12_DESCRIPTOR_RANGE range{};
+        range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+        range.NumDescriptors = 1;
+        D3D12_ROOT_PARAMETER parameters[2]{};
+        parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        parameters[0].DescriptorTable = {1, &range};
+        parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+        parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        parameters[1].Constants = {0, 0, sizeof(Constants) / 4};
+        parameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        D3D12_STATIC_SAMPLER_DESC sampler{};
+        sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+        sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+        sampler.MaxAnisotropy = 1;
+        sampler.ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+        sampler.MaxLOD = D3D12_FLOAT32_MAX;
+        sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+        D3D12_ROOT_SIGNATURE_DESC root_desc{2, parameters, 1, &sampler,
+                                            D3D12_ROOT_SIGNATURE_FLAG_NONE};
+        ComPtr<ID3DBlob> serialized, errors;
+        Check(D3D12SerializeRootSignature(&root_desc, D3D_ROOT_SIGNATURE_VERSION_1, &serialized,
+                                          &errors),
+              "Serialize presentation root");
+        Check(context.Device()->CreateRootSignature(0, serialized->GetBufferPointer(),
+                                                    serialized->GetBufferSize(),
+                                                    IID_PPV_ARGS(&root)),
+              "Create presentation root");
+        D3D12_DESCRIPTOR_HEAP_DESC heap{};
+        heap.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+        heap.NumDescriptors = MaxPasses;
+        heap.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+        Check(context.Device()->CreateDescriptorHeap(&heap, IID_PPV_ARGS(&srv_heap)),
+              "Create presentation SRVs");
+        srv_stride = context.Device()->GetDescriptorHandleIncrementSize(heap.Type);
+        heap.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+        heap.NumDescriptors = MaxPasses;
+        heap.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+        Check(context.Device()->CreateDescriptorHeap(&heap, IID_PPV_ARGS(&rtv_heap)),
+              "Create presentation RTVs");
+        rtv_stride = context.Device()->GetDescriptorHandleIncrementSize(heap.Type);
+        ShaderCompiler compiler;
+        const std::string source = BuildShaderSource();
+        const auto vertex = compiler.Compile(source, L"VS", L"vs_6_0");
+        constexpr std::array entries{L"Bilinear", L"Bicubic", L"Gaussian", L"ScaleForce", L"Area",
+                                     L"Bilinear", L"Fxaa",    L"Easu",     L"Rcas"};
+        for (unsigned pass = 0; pass < PassCount; ++pass) {
+            const auto pixel = compiler.Compile(source, entries[pass], L"ps_6_0");
+            D3D12_GRAPHICS_PIPELINE_STATE_DESC desc{};
+            desc.pRootSignature = root.Get();
+            desc.VS = {vertex.data(), vertex.size()};
+            desc.PS = {pixel.data(), pixel.size()};
+            desc.SampleMask = UINT_MAX;
+            desc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+            desc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+            desc.RasterizerState.DepthClipEnable = TRUE;
+            desc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+            desc.DepthStencilState.StencilReadMask = desc.DepthStencilState.StencilWriteMask = 0xff;
+            desc.DepthStencilState.FrontFace = desc.DepthStencilState.BackFace = {
+                D3D12_STENCIL_OP_KEEP, D3D12_STENCIL_OP_KEEP, D3D12_STENCIL_OP_KEEP,
+                D3D12_COMPARISON_FUNC_ALWAYS};
+            desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+            desc.NumRenderTargets = 1;
+            desc.RTVFormats[0] = IntermediateFormat;
+            desc.SampleDesc.Count = 1;
+            auto& blend = desc.BlendState.RenderTarget[0];
+            blend.SrcBlend = blend.SrcBlendAlpha = D3D12_BLEND_ONE;
+            blend.DestBlend = blend.DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
+            blend.BlendOp = blend.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+            blend.LogicOp = D3D12_LOGIC_OP_NOOP;
+            blend.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+            Check(context.Device()->CreateGraphicsPipelineState(&desc,
+                                                                IID_PPV_ARGS(&intermediate[pass])),
+                  "Create presentation intermediate PSO");
+            if (pass >= final.size())
+                continue;
+            desc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+            for (unsigned mode = 0; mode < 3; ++mode) {
+                blend.BlendEnable = mode != 0;
+                blend.SrcBlend = mode == 2 ? D3D12_BLEND_SRC_ALPHA : D3D12_BLEND_ONE;
+                Check(context.Device()->CreateGraphicsPipelineState(
+                          &desc, IID_PPV_ARGS(&final[pass][mode])),
+                      "Create presentation final PSO");
+            }
+        }
+    }
+    ResourcePtr Scratch(unsigned index, Extent size) {
+        if (!scratch[index] || scratch_extent[index] != size) {
+            D3D12_RESOURCE_DESC desc{};
+            desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+            desc.Width = size.width;
+            desc.Height = size.height;
+            desc.DepthOrArraySize = desc.MipLevels = 1;
+            desc.Format = IntermediateFormat;
+            desc.SampleDesc.Count = 1;
+            desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+            // Context accounts committed allocations against the shared 512 MiB cap
+            // and retains replaced images until their recorded uses complete.
+            scratch[index].reset();
+            scratch[index] = context.CreateResource(desc, D3D12_HEAP_TYPE_DEFAULT,
+                                                    D3D12_RESOURCE_STATE_RENDER_TARGET);
+            scratch_extent[index] = size;
+        }
+        return scratch[index];
+    }
+    void Draw(const ResourcePtr& source, const D3D12_SHADER_RESOURCE_VIEW_DESC& view,
+              D3D12_CPU_DESCRIPTOR_HANDLE target, D3D12_VIEWPORT viewport, D3D12_RECT scissor,
+              Constants constants, ID3D12PipelineState* pipeline) {
+        if (cursor == MaxPasses)
+            throw std::runtime_error("Presentation descriptor capacity exceeded");
+        context.Transition(source, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        context.Retain(source);
+        auto cpu = srv_heap->GetCPUDescriptorHandleForHeapStart();
+        auto gpu = srv_heap->GetGPUDescriptorHandleForHeapStart();
+        cpu.ptr += static_cast<SIZE_T>(cursor) * srv_stride;
+        gpu.ptr += static_cast<UINT64>(cursor++) * srv_stride;
+        context.Device()->CreateShaderResourceView(source->handle.Get(), &view, cpu);
+        auto* commands = context.Commands();
+        ID3D12DescriptorHeap* heaps[]{srv_heap.Get()};
+        commands->SetDescriptorHeaps(1, heaps);
+        commands->SetGraphicsRootSignature(root.Get());
+        commands->SetPipelineState(pipeline);
+        commands->SetGraphicsRootDescriptorTable(0, gpu);
+        commands->SetGraphicsRoot32BitConstants(1, sizeof(constants) / 4, &constants, 0);
+        commands->OMSetRenderTargets(1, &target, FALSE, nullptr);
+        commands->RSSetViewports(1, &viewport);
+        commands->RSSetScissorRects(1, &scissor);
+        commands->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        commands->DrawInstanced(3, 1, 0, 0);
+    }
+    ResourcePtr Preprocess(unsigned pass, unsigned scratch_index, const ResourcePtr& source,
+                           const D3D12_SHADER_RESOURCE_VIEW_DESC& view, Extent output,
+                           Constants constants) {
+        auto destination = Scratch(scratch_index, output);
+        context.Transition(destination, D3D12_RESOURCE_STATE_RENDER_TARGET);
+        auto target = rtv_heap->GetCPUDescriptorHandleForHeapStart();
+        target.ptr += static_cast<SIZE_T>(cursor) * rtv_stride;
+        context.Device()->CreateRenderTargetView(destination->handle.Get(), nullptr, target);
+        constants.output_width = static_cast<float>(output.width);
+        constants.output_height = static_cast<float>(output.height);
+        Draw(source, view, target, {0, 0, constants.output_width, constants.output_height, 0, 1},
+             {0, 0, static_cast<LONG>(output.width), static_cast<LONG>(output.height)}, constants,
+             intermediate[pass].Get());
+        return destination;
+    }
+};
+Presenter::Presenter(Context& context) : impl{std::make_unique<Impl>(context)} {}
+Presenter::~Presenter() {
+    try {
+        impl->context.Finish();
+    } catch (const std::exception& error) {
+        LOG_ERROR(Render, "D3D12 presentation teardown: {}", error.what());
+    }
+}
+void Presenter::BeginFrame() {
+    impl->context.Finish();
+    impl->cursor = 0;
+    impl->begun = true;
+}
+void Presenter::DrawLayer(const Layer& layer, D3D12_CPU_DESCRIPTOR_HANDLE target,
+                          D3D12_VIEWPORT viewport, D3D12_RECT scissor, Options options) {
+    if (!impl->begun)
+        throw std::logic_error("BeginFrame must precede presentation draws");
+    if (!layer.source || !layer.source->handle ||
+        layer.view.ViewDimension != D3D12_SRV_DIMENSION_TEXTURE2DARRAY ||
+        layer.view.Texture2DArray.ArraySize != 1 || layer.view.Texture2DArray.PlaneSlice != 0)
+        throw std::invalid_argument("Presentation requires one color Texture2DArray slice");
+    if (!std::isfinite(viewport.Width) || !std::isfinite(viewport.Height) || viewport.Width < 1 ||
+        viewport.Height < 1 || viewport.Width > 3840 || viewport.Height > 2160)
+        throw std::invalid_argument("Invalid presentation viewport");
+    const Extent output{static_cast<unsigned>(viewport.Width),
+                        static_cast<unsigned>(viewport.Height)};
+    ValidateExtent(output, true);
+    const auto pass = static_cast<unsigned>(options.filter);
+    const auto blend = static_cast<unsigned>(layer.blend);
+    if (pass >= 6 || blend >= 3 || layer.transform > 7)
+        throw std::invalid_argument("Invalid presentation options");
+    RcasStrength(options.sharpness); // Validate even when FSR is not selected.
+    const unsigned needed = 1 + unsigned(options.fxaa) + (options.filter == Filter::Fsr ? 2 : 0);
+    if (needed > MaxPasses - impl->cursor)
+        throw std::runtime_error("Presentation descriptor capacity exceeded");
+    auto source = layer.source;
+    auto view = layer.view;
+    view.Texture2DArray.MipLevels = 1;
+    const auto desc = source->handle->GetDesc();
+    const unsigned mip = view.Texture2DArray.MostDetailedMip;
+    if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || desc.SampleDesc.Count != 1 ||
+        mip >= desc.MipLevels || view.Texture2DArray.FirstArraySlice >= desc.DepthOrArraySize)
+        throw std::invalid_argument("Invalid presentation source subresource");
+    const Extent extent{static_cast<unsigned>(std::max(UINT64{1}, desc.Width >> mip)),
+                        std::max(1u, desc.Height >> mip)};
+    const auto crop = NormalizeCrop(
+        layer.crop_pixels.left == 0 && layer.crop_pixels.top == 0 && layer.crop_pixels.right == 0 &&
+                layer.crop_pixels.bottom == 0
+            ? Crop{0, 0, float(layer.guest_extent.width), float(layer.guest_extent.height)}
+            : layer.crop_pixels,
+        layer.guest_extent);
+    Constants constants{{},
+                        float(extent.width),
+                        float(extent.height),
+                        float(output.width),
+                        float(output.height),
+                        0,
+                        0,
+                        std::clamp(options.sharpness, 0.f, 1.f),
+                        0};
+    if (options.fxaa) {
+        source = impl->Preprocess(FxaaPass, 0, source, view, extent, constants);
+        view = View(extent);
+    }
+    constants.crop = crop;
+    if (options.filter == Filter::Fsr) {
+        // Rotation is applied only in the final composition; upscale in source axes.
+        const Extent fsr_extent =
+            (layer.transform & 4) ? Extent{output.height, output.width} : output;
+        source = impl->Preprocess(EasuPass, 1, source, view, fsr_extent, constants);
+        view = View(fsr_extent);
+        constants.crop = {};
+        constants.source_width = float(fsr_extent.width);
+        constants.source_height = float(fsr_extent.height);
+        source = impl->Preprocess(RcasPass, 2, source, view, fsr_extent, constants);
+    }
+    constants.output_width = float(output.width);
+    constants.output_height = float(output.height);
+    constants.transform = layer.transform;
+    constants.opaque = layer.blend == Blend::Opaque;
+    impl->Draw(source, view, target, viewport, scissor, constants, impl->final[pass][blend].Get());
+}
+HRESULT Presenter::Present(IDXGISwapChain3* swapchain, bool vsync, unsigned interval) {
+    if (!swapchain)
+        throw std::invalid_argument("Missing presentation swapchain");
+    impl->begun = false;
+    return swapchain->Present(SyncInterval(vsync, interval), 0);
+}
+} // namespace D3D12::Present
