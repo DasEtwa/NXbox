@@ -6,7 +6,11 @@ installation. Each package gets a separate LocalState, saves, configuration and 
 recompile Switch code into native Xbox code.
 
 The implementation lives in `tools/nxbox-pack/`; `.github/workflows/nxbox-pack.yml` builds three
-single executable targets using Bun 1.3.14. No emulation or graphics source is changed.
+single executable targets using Bun 1.3.14. No emulation or graphics source is changed. Windows CI
+embeds its installed native Bun executable instead of downloading the baseline cross-target ZIP (Bun
+1.3.14 fails to extract that ZIP on Windows). Cross-compilation from other hosts retains the Windows
+x64 baseline target. The native Windows artifact inherits the installed Bun runtime's CPU
+requirements.
 
 ## Flow and runtime contracts
 
