@@ -48,7 +48,9 @@ jobs:
         shell: bash
         run: |
           git clone --depth 1 --branch 2.1.4 https://github.com/unicorn-engine/unicorn.git "$RUNNER_TEMP/unicorn"
-          cmake -S "$RUNNER_TEMP/unicorn" -B "$RUNNER_TEMP/unicorn-build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DUNICORN_ARCH="arm;aarch64" -DUNICORN_BUILD_TESTS=OFF -DBUILD_SHARED_LIBS=OFF -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/unicorn-install"
+          shared=OFF
+          if [[ "$RUNNER_OS" == "Linux" ]]; then shared=ON; fi
+          cmake -S "$RUNNER_TEMP/unicorn" -B "$RUNNER_TEMP/unicorn-build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DUNICORN_ARCH="arm;aarch64" -DUNICORN_BUILD_TESTS=OFF -DBUILD_SHARED_LIBS="$shared" -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/unicorn-install"
           cmake --build "$RUNNER_TEMP/unicorn-build" --parallel 2
           cmake --install "$RUNNER_TEMP/unicorn-build"
       - name: Configure CPU tests

@@ -24,6 +24,7 @@ A32Unicorn<TestEnvironment>::A32Unicorn(TestEnvironment& testenv)
     constexpr uc_mode open_mode = std::is_same_v<TestEnvironment, ArmTestEnv> ? UC_MODE_ARM : UC_MODE_THUMB;
 
     CHECKED(uc_open(UC_ARCH_ARM, open_mode, &uc));
+    CHECKED(uc_ctl_set_cpu_model(uc, UC_CPU_ARM_MAX));
     CHECKED(uc_hook_add(uc, &intr_hook, UC_HOOK_INTR, (void*)InterruptHook, this, BEGIN_ADDRESS, END_ADDRESS));
     CHECKED(uc_hook_add(uc, &mem_invalid_hook, UC_HOOK_MEM_INVALID, (void*)UnmappedMemoryHook, this, BEGIN_ADDRESS, END_ADDRESS));
     CHECKED(uc_hook_add(uc, &mem_write_prot_hook, UC_HOOK_MEM_WRITE, (void*)MemoryWriteHook, this, BEGIN_ADDRESS, END_ADDRESS));
