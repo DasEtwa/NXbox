@@ -122,16 +122,17 @@ Written up in the [port notes](docs/nxbox-port.md).
 ## Compatibility
 
 Measured on a retail Xbox Series X in Developer Mode, with copies of the games the maintainer owns.
-"Playable" means someone can play it from start to finish without graphical or stability problems:
-nothing is there yet.
+States: **Playable** (start to finish without graphical or stability problems), **In-game**
+(gameplay runs, with bugs), **Menus** (reaches menus or a hub), **Boots**, **Not tested**.
+Estimates are the maintainer's guess, not a promise; they move as bugs are found.
 
-| Game | State | What happens |
-| --- | --- | --- |
-| The Legend of Zelda: Breath of the Wild | **In focus**, not playable | Boots, plays the intro and the opening cutscene and renders the first area (Shrine of Resurrection) for minutes without losing the GPU, at about 5 to 10 FPS; too slow to play |
-| Persona 5 Royal | Not playable | The closest: boots, plays cutscenes and reaches the first playable area, with audio, but it still stutters on loads and has serious bugs |
-| Mario Kart 8 Deluxe | Not playable | Boots, then the GPU is lost after under a minute; the picture has not been checked |
-| Super Mario 3D World | Not playable | Boots; menus and gameplay do not render correctly |
-| Bayonetta | Not tested | Planned after Breath of the Wild |
+| Game | State | What happens today | Playable estimate |
+| --- | --- | --- | --- |
+| Super Mario 3D World + Bowser's Fury | **In-game** | 60 FPS on the OpenGL path: enters 3D World and reaches the hub with correct colours, but some camera angles draw black polygons and some text is missing. The native D3D12 renderer already draws the game-select screen correctly, text included, at about 24 FPS | 2–4 weeks |
+| The Legend of Zelda: Breath of the Wild (1.0, 1.6 + DLC) | **In-game** | Loads a save and runs in the Shrine of Resurrection at about 12 FPS; Link's geometry is broken. The guest CPU is the bottleneck | 1–3 months |
+| Persona 5 Royal | **In-game** | Reaches the first playable area with audio; stutters on loads and has open bugs | 3–6 weeks |
+| Mario Kart 8 Deluxe | **Menus** | Reaches the menus; the Mii picker needs the console's own firmware (installer added, not yet tested) | 4–8 weeks |
+| Bayonetta | Not tested | Planned after Breath of the Wild | — |
 
 ## How it works
 
