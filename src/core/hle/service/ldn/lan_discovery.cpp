@@ -313,8 +313,7 @@ Result LANDiscovery::Connect(const NetworkInfo& network_info_, const UserConfig&
     if (state != State::StationOpened || connecting) {
         return ResultBadState;
     }
-    if (network_info_.ldn.node_count == 0 ||
-        network_info_.ldn.node_count_max > NodeCountMax ||
+    if (network_info_.ldn.node_count == 0 || network_info_.ldn.node_count_max > NodeCountMax ||
         network_info_.ldn.node_count >= network_info_.ldn.node_count_max) {
         return ResultInvalidNodeCount;
     }
@@ -329,9 +328,8 @@ Result LANDiscovery::Connect(const NetworkInfo& network_info_, const UserConfig&
     InitNodeStateChange();
     SendPacket(Network::LDNPacketType::Connect, node_info, *host_ip);
     // Release the packet mutex while the ENet callback delivers SyncNetwork.
-    connection_event.wait_for(lock, std::chrono::seconds(5), [&] {
-        return state != State::StationOpened || !connecting;
-    });
+    connection_event.wait_for(lock, std::chrono::seconds(5),
+                              [&] { return state != State::StationOpened || !connecting; });
     connecting = false;
     if (state == State::StationConnected) {
         return ResultSuccess;
@@ -616,8 +614,7 @@ void LANDiscovery::ReceivePacket(const Network::LDNPacket& packet) {
         std::memcpy(&info, packet.data.data(), sizeof(NodeInfo));
 
         for (LanStation& station : stations) {
-            if (station.status == NodeStatus::Connected &&
-                station.node_info->ipv4_address == [&] {
+            if (station.status == NodeStatus::Connected && station.node_info->ipv4_address == [&] {
                     auto ip = packet.local_ip;
                     std::reverse(ip.begin(), ip.end());
                     return ip;
@@ -648,9 +645,10 @@ void LANDiscovery::ReceivePacket(const Network::LDNPacket& packet) {
             const auto local_ip = GetLocalIp();
             auto switch_ip = local_ip;
             std::reverse(switch_ip.begin(), switch_ip.end());
-            if (std::none_of(info.ldn.nodes.begin(), info.ldn.nodes.end(), [&](const NodeInfo& node) {
-                    return node.is_connected && node.ipv4_address == switch_ip;
-                })) {
+            if (std::none_of(info.ldn.nodes.begin(), info.ldn.nodes.end(),
+                             [&](const NodeInfo& node) {
+                                 return node.is_connected && node.ipv4_address == switch_ip;
+                             })) {
                 OnDisconnectFromHost();
                 break;
             }
@@ -670,7 +668,8 @@ void LANDiscovery::ReceivePacket(const Network::LDNPacket& packet) {
 
 void LANDiscovery::OnRoomDisconnected() {
     std::scoped_lock lock{packet_mutex};
-    if (!inited) return;
+    if (!inited)
+        return;
     disconnect_reason = DisconnectReason::SignalLost;
     if (state == State::AccessPointCreated) {
         ResetStations();
@@ -684,18 +683,19 @@ void LANDiscovery::OnRoomDisconnected() {
 void LANDiscovery::UpdateRoomMembers(const Network::RoomMember::MemberList& members) {
     std::scoped_lock lock{packet_mutex};
     const auto present = [&](const Ipv4Address& address) {
-        return std::any_of(members.begin(), members.end(), [&](const auto& member) {
-            return member.fake_ip == address;
-        });
+        return std::any_of(members.begin(), members.end(),
+                           [&](const auto& member) { return member.fake_ip == address; });
     };
     if (host_ip && !present(*host_ip)) {
         disconnect_reason = DisconnectReason::SignalLost;
         OnDisconnectFromHost();
     }
-    if (state != State::AccessPointCreated) return;
+    if (state != State::AccessPointCreated)
+        return;
     bool changed = false;
     for (auto& station : stations) {
-        if (station.status != NodeStatus::Connected) continue;
+        if (station.status != NodeStatus::Connected)
+            continue;
         auto ip = station.node_info->ipv4_address;
         std::reverse(ip.begin(), ip.end());
         if (!present(ip)) {
@@ -704,7 +704,8 @@ void LANDiscovery::UpdateRoomMembers(const Network::RoomMember::MemberList& memb
             changed = true;
         }
     }
-    if (changed) UpdateNodes();
+    if (changed)
+        UpdateNodes();
 }
 
 bool LANDiscovery::IsNodeStateChanged() {

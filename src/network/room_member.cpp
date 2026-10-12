@@ -12,8 +12,8 @@
 #include "common/polyfill_thread.h"
 #include "common/socket_types.h"
 #include "enet/enet.h"
-#include "network/packet.h"
 #include "network/ldn_packet.h"
+#include "network/packet.h"
 #include "network/room_member.h"
 
 namespace Network {
@@ -343,7 +343,8 @@ void RoomMember::RoomMemberImpl::HandleRoomInformationPacket(const ENetEvent* ev
         member_information = std::move(next_members);
         std::lock_guard username_lock(username_mutex);
         for (const auto& member : member_information) {
-            if (member.nickname == nickname) username = member.username;
+            if (member.nickname == nickname)
+                username = member.username;
         }
     }
     Invoke(info);
@@ -359,7 +360,8 @@ bool RoomMember::RoomMemberImpl::HandleJoinPacket(const ENetEvent* event) {
     // Parse the MAC Address from the packet
     IPv4Address assigned_ip{};
     packet.Read(assigned_ip);
-    if (!packet || !packet.EndOfPacket() || assigned_ip == NoPreferredIP) return false;
+    if (!packet || !packet.EndOfPacket() || assigned_ip == NoPreferredIP)
+        return false;
     std::lock_guard lock(information_mutex);
     fake_ip = assigned_ip;
     return true;

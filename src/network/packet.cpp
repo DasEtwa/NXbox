@@ -256,8 +256,7 @@ Packet& Packet::Write(const std::string& in_data) {
 }
 
 bool Packet::CheckSize(std::size_t size) {
-    is_valid = is_valid && (read_pos <= data.size()) &&
-               (size <= data.size() - read_pos);
+    is_valid = is_valid && (read_pos <= data.size()) && (size <= data.size() - read_pos);
 
     return is_valid;
 }

@@ -292,7 +292,8 @@ Result IUserLocalCommunicationService::Initialize(ClientProcessId aruid) {
         ldn_packet_received = room_member->BindOnLdnPacketReceived(
             [this](const Network::LDNPacket& packet) { OnLDNPacketReceived(packet); });
         room_state_changed = room_member->BindOnStateChanged([this](const auto& state) {
-            if (state == Network::RoomMember::State::Idle) lan_discovery.OnRoomDisconnected();
+            if (state == Network::RoomMember::State::Idle)
+                lan_discovery.OnRoomDisconnected();
         });
         room_information_changed = room_member->BindOnRoomInformationChanged(
             [this, weak_member = std::weak_ptr<Network::RoomMember>{room_member}](const auto&) {

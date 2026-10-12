@@ -12,11 +12,11 @@
 #include <shared_mutex>
 #include <sstream>
 #include <thread>
-#include "common/polyfill_thread.h"
 #include "common/logging.h"
+#include "common/polyfill_thread.h"
 #include "enet/enet.h"
-#include "network/packet.h"
 #include "network/ldn_packet.h"
+#include "network/packet.h"
 #include "network/room.h"
 #include "network/verify_user.h"
 
@@ -894,8 +894,9 @@ void Room::RoomImpl::HandleLdnPacket(const ENetEvent* event) {
     // The room assigns addresses; a peer cannot impersonate another LDN host.
     {
         std::lock_guard lock(member_mutex);
-        const auto sender = std::find_if(members.begin(), members.end(),
-                                        [&](const Member& member) { return member.peer == event->peer; });
+        const auto sender = std::find_if(members.begin(), members.end(), [&](const Member& member) {
+            return member.peer == event->peer;
+        });
         if (sender == members.end()) {
             return;
         }
