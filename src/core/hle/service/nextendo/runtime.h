@@ -86,6 +86,11 @@ inline void QueuePresence(Presence presence) {
     if (!runtime.config.enabled || presence.profile_id != runtime.identity.profile_id ||
         runtime.identity.pid == 0 || presence.status > 2)
         return;
+    if (runtime.presence.profile_id == presence.profile_id &&
+        runtime.presence.status == presence.status &&
+        runtime.presence.program_id == presence.program_id &&
+        runtime.presence.app_field == presence.app_field)
+        return;
     presence.pending = true;
     runtime.presence = std::move(presence);
 }

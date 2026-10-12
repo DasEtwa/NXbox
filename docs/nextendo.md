@@ -133,7 +133,7 @@ Friends are read from `/api/friends`, limited to 300 entries and refreshed every
 45 seconds. List IDs, 0x200-byte friend records, count, presence status, same-title
 state, and the 0xc0-byte AppField are exposed through friend IPC. Favorite/history
 filters return no matches because their metadata is not fetched. Presence updates
-are queued from IPC and sent off the service/UI threads to `/api/presence`. A 401
+are deduplicated and queued from IPC and sent off the service/UI threads to `/api/presence`. A session heartbeat is sent to `/api/nex-session`. A 401
 on social calls removes the vault session. Disabling online clears the visible
 friend/presence cache and prevents subsequent scheduled requests; an HTTP request
 already in flight may finish.
@@ -142,13 +142,13 @@ already in flight may finish.
 
 Baseline `ea3244c9c`: 326 port tests, exit code 0, four platform skips. There was
 no T22 suite or Nextendo feature: before coverage is absent, not an invented line
-percentage. T22 adds 10 executable host tests for route precedence, normalization,
+percentage. T22 adds 11 executable host tests for route precedence, normalization,
 configuration rejection, PKCE RFC 7636, mock HTTP, CSRF, single-use exchange,
 expiry/cancel, transport/server/storage failures, profile isolation, social
 allowlisting, and friend wire layout.
 
 Measured after implementation (LLVM instrumentation of the six portable C++ headers):
-432/441 lines (**97.96%**), 308/352 branches (**87.50%**), and 33/33 functions
+449/459 lines (**97.82%**), 321/364 branches (**88.19%**), and 35/35 functions
 (**100%**). Routing alone is 110/110 lines and 112/118 branches; auth is 150/151
 lines and 111/130 branches. The full port suite result and MSVC run are recorded
 in the delivery report, with their real exit/conclusion.

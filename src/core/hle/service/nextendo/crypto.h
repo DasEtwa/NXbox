@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <stdexcept>
@@ -41,6 +42,21 @@ inline std::string RandomUrl(std::size_t count) {
     return Base64Url(bytes);
 }
 
+inline std::string RandomHex(std::size_t count) {
+    std::string bytes(count, '\0');
+    if (RAND_bytes(reinterpret_cast<unsigned char*>(bytes.data()), static_cast<int>(count)) != 1) {
+        throw std::runtime_error("Nextendo random generation failed");
+    }
+    constexpr char digits[] = "0123456789abcdef";
+    std::string hex;
+    hex.reserve(count * 2);
+    for (const unsigned char byte : bytes) {
+        hex += digits[byte >> 4];
+        hex += digits[byte & 15];
+    }
+    return hex;
+}
+
 inline std::string PkceChallenge(std::string_view verifier) {
     unsigned char digest[EVP_MAX_MD_SIZE];
     unsigned size = 0;
@@ -60,7 +76,8 @@ public:
                 BIO_new_mem_buf(nextendo_pem.data(), static_cast<int>(nextendo_pem.size())),
                 BIO_free);
             if (input)
-                key_.reset(PEM_read_bio_PrivateKey(input.get(), nullptr, nullptr, nullptr));
+                key_.reset(PEM_read_bio_PrivateKey(
+                    input.get(), nullptr, [](char*, int, int, void*) { return 0; }, nullptr));
         } else {
             std::unique_ptr<EVP_PKEY_CTX, decltype(&EVP_PKEY_CTX_free)> context(
                 EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, nullptr), EVP_PKEY_CTX_free);

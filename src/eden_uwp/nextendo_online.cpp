@@ -54,7 +54,7 @@ nx::TokenProvider Provider() {
                              std::chrono::system_clock::now().time_since_epoch())
                              .count();
         try {
-            return key->Sign(nx::IdTokenClaims(identity, version, now, nx::RandomUrl(16)));
+            return key->Sign(nx::IdTokenClaims(identity, version, now, nx::RandomHex(16)));
         } catch (...) {
             return std::string{};
         }
@@ -159,6 +159,19 @@ void PollSocial(std::stop_token stop) {
         if (now >= next_refresh) {
             try {
                 RefreshFriends();
+                if (!presence.pending && !presence.profile_id.empty())
+                    PublishPresence(presence);
+                if (nx::IsEnabled()) {
+                    const auto identity = LinkedAccount();
+                    auto request =
+                        nx::SocialRequest("/api/nex-session", identity, nx::GetConfig().client_id);
+                    if (!request.url.empty()) {
+                        request.body = "{}";
+                        const auto response = Send(request);
+                        if (response && static_cast<unsigned>(response->StatusCode()) == 401)
+                            SignOut();
+                    }
+                }
             } catch (...) {
             }
             next_refresh = now + std::chrono::seconds(45);

@@ -12,161 +12,362 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = r"""
-#include <cassert>
-#include <chrono>
-#include <iostream>
-#include <stdexcept>
-#include <string>
+
 #include "core/hle/service/nextendo/auth.h"
 #include "core/hle/service/nextendo/crypto.h"
 #include "core/hle/service/nextendo/friends.h"
 #include "core/hle/service/nextendo/token.h"
+#include <cassert>
+#include <chrono>
+#include <fstream>
+#include <iostream>
+#include <iterator>
+#include <stdexcept>
+#include <string>
 using namespace Service::Nextendo;
 const Config enabled{true, "192.0.2.1", "198.51.100.2", "test-client"};
-const Identity identity{42, "Mock account", "MOCK-FC", "mock-nex-token", "profile-a"};
+const Identity identity{42, "Mock account", "MOCK-FC", "mock-nex-token",
+                        "profile-a"};
 const auto now = Authorization::Clock::time_point{};
-Authorization Flow() { return {"test-client", std::string(43, 'v'), std::string(43, 'c'), std::string(32, 's'), now}; }
-std::string Callback() { return std::string(CallbackUri) + "?code=mock%2Bcode&state=" + std::string(32, 's'); }
-int main(int argc, char** argv) {
- assert(argc == 2);
- std::string mode = argv[1];
- if (mode == "routing") {
-  for (auto host : {"nncs2-lp1.n.n.srv.nintendo.net", "nncs2-a.n.n.srv.nintendo.net",
-       "g2b309e01-lp1.s.n.srv.nintendo.net", "g2df33d01-lp1.p.srv.nintendo.net"}) {
-   auto route = ResolveHost(enabled, host); assert(route.destination == Destination::Nat); assert(route.address == enabled.nat_address);
+Authorization Flow() {
+  return {"test-client", std::string(43, 'v'), std::string(43, 'c'),
+          std::string(32, 's'), now};
+}
+std::string Callback() {
+  return std::string(CallbackUri) +
+         "?code=mock%2Bcode&state=" + std::string(32, 's');
+}
+int main(int argc, char **argv) {
+  assert(argc == 2);
+  std::string mode = argv[1];
+  if (mode == "routing") {
+    for (auto host :
+         {"nncs2-lp1.n.n.srv.nintendo.net", "nncs2-a.n.n.srv.nintendo.net",
+          "g2b309e01-lp1.s.n.srv.nintendo.net",
+          "g2df33d01-lp1.p.srv.nintendo.net"}) {
+      auto route = ResolveHost(enabled, host);
+      assert(route.destination == Destination::Nat);
+      assert(route.address == enabled.nat_address);
+    }
+    for (auto host :
+         {"g2df33d01-lp1.s.n.srv.nintendo.net", "g2-smash.s.n.srv.nintendo.net",
+          "api.accounts.nintendo.com", "a.nintendo.net", "a.nintendowifi.net",
+          "a.nintendo.co.jp", "demonware.net", "a.demonware.net",
+          "nintendo.net", "nintendo.com"}) {
+      auto route = ResolveHost(enabled, host);
+      assert(route.destination == Destination::Main);
+      assert(route.address == enabled.server_address);
+    }
+    assert(
+        ResolveHost(enabled, "G2B309E01-LP1.S.N.SRV.NINTENDO.NET.").address ==
+        enabled.nat_address);
+    assert(ResolveHost(enabled, "NNCS2-A.N.N.SRV.NINTENDO.NET.").address ==
+           enabled.nat_address);
+    for (auto host : {"nintendo.net.evil.test", "evilnintendo.net",
+                      "nextendo.network", "203.0.113.3", "example.org"}) {
+      auto route = ResolveHost(enabled, host);
+      assert(route.destination == Destination::Native);
+      assert(route.address == host);
+    }
+    for (auto host : {"nintendo.fr", "a.nintendo.co.uk", "nintendo-europe.com",
+                      "nintendoswitch.com.cn", "nintendo.pt"}) {
+      assert(ResolveHost(enabled, host).destination == Destination::Blocked);
+    }
+    for (const std::string host :
+         {"", ".", "a..b", "host/url", "https://nintendo.net",
+          "nintendo.net:443", "nintendo.net..", "nintendo.net@evil.test",
+          "a b"})
+      assert(ClassifyHost(host) == Destination::Blocked);
+    assert(ClassifyHost(std::string("nintendo.net\0.evil.test", 23)) ==
+           Destination::Blocked);
+    assert(ClassifyHost(std::string(64, 'a') + ".org") == Destination::Blocked);
+    assert(ClassifyHost(std::string(255, 'a')) == Destination::Blocked);
+    assert(ClassifyHost(std::string(63, 'a') + ".org") == Destination::Native);
   }
-  for (auto host : {"g2df33d01-lp1.s.n.srv.nintendo.net", "g2-smash.s.n.srv.nintendo.net",
-       "api.accounts.nintendo.com", "a.nintendo.net", "a.nintendowifi.net", "a.nintendo.co.jp",
-       "demonware.net", "a.demonware.net", "nintendo.net", "nintendo.com"}) {
-   auto route = ResolveHost(enabled, host); assert(route.destination == Destination::Main); assert(route.address == enabled.server_address);
+  if (mode == "configuration") {
+    assert(!Config{}.enabled);
+    assert(!Config{}.RoutesReady());
+    assert(enabled.RoutesReady());
+    for (auto address :
+         {"", "127.0.0.1", "0.0.0.0", "224.0.0.1", "255.255.255.255",
+          "169.254.1.1", "256.0.0.1", "01.2.3.4", "1.2.3", "1.2.3.4.5",
+          "1234.1.1.1", "nextendo.network", "1.2.3.", ".1.2.3", "1a.2.3.4"})
+      assert(!IsServerAddress(address));
+    assert(IsServerAddress("192.0.2.1"));
+    assert(IsServerAddress("198.51.100.2"));
+    auto broken = enabled;
+    broken.nat_address = broken.server_address;
+    assert(!broken.RoutesReady());
+    assert(ResolveHost(broken, "a.nintendo.net").destination ==
+           Destination::Blocked);
+    broken = enabled;
+    broken.server_address.clear();
+    assert(ResolveHost(broken, "a.nintendo.com").destination ==
+           Destination::Blocked);
+    assert(ResolveHost(broken, "a.example.org").destination ==
+           Destination::Native);
+    broken.enabled = false;
+    assert(ResolveHost(broken, "a.nintendo.com").address == "a.nintendo.com");
   }
-  assert(ResolveHost(enabled, "G2B309E01-LP1.S.N.SRV.NINTENDO.NET.").address == enabled.nat_address);
-  assert(ResolveHost(enabled, "NNCS2-A.N.N.SRV.NINTENDO.NET.").address == enabled.nat_address);
-  for (auto host : {"nintendo.net.evil.test", "evilnintendo.net", "nextendo.network", "203.0.113.3", "example.org"}) {
-   auto route = ResolveHost(enabled, host); assert(route.destination == Destination::Native); assert(route.address == host);
+  if (mode == "auth-success") {
+    auto flow = Flow();
+    bool stored = false;
+    int calls = 0;
+    assert(flow.AuthorizeUrl().starts_with(
+        "https://nextendo.network/api/oauth/authorize?"));
+    assert(flow.AuthorizeUrl().find("code_challenge_method=S256") !=
+           std::string::npos);
+    auto http = [&](const HttpRequest &request) {
+      ++calls;
+      assert(request.url == "https://nextendo.network/api/oauth/token");
+      assert(request.method == "POST");
+      assert(request.headers.empty());
+      assert(request.content_type == "application/x-www-form-urlencoded");
+      assert(request.body.find("code=mock%2Bcode") != std::string::npos);
+      assert(request.body.find("code_verifier=" + std::string(43, 'v')) !=
+             std::string::npos);
+      assert(request.body.find(
+                 "redirect_uri=http%3A%2F%2F127.0.0.1%3A17822%2Fcallback") !=
+             std::string::npos);
+      return HttpResponse{200, identity};
+    };
+    auto store = [&](const Identity &value) {
+      stored = true;
+      assert(value.pid == 42);
+      assert(value.profile_id == "profile-b");
+      return true;
+    };
+    assert(flow.Complete(Callback(), now, "profile-b", http, store) ==
+           AuthResult::Ready);
+    assert(calls == 1 && stored);
+    assert(flow.Complete(Callback(), now, "profile-b", http, store) ==
+           AuthResult::Ready);
+    assert(calls == 1);
   }
-  for (auto host : {"nintendo.fr", "a.nintendo.co.uk", "nintendo-europe.com", "nintendoswitch.com.cn", "nintendo.pt"}) {
-   assert(ResolveHost(enabled, host).destination == Destination::Blocked);
+  if (mode == "auth-rejection") {
+    int calls = 0;
+    auto http = [&](const HttpRequest &) {
+      ++calls;
+      return HttpResponse{200, identity};
+    };
+    auto store = [](const Identity &) {
+      assert(false);
+      return true;
+    };
+    for (const auto &callback :
+         {std::string("https://evil.test/callback?code=x&state=") +
+              std::string(32, 's'),
+          std::string(CallbackUri) + "?code=x&state=wrong",
+          Callback() + "&state=duplicate", Callback() + "#fragment",
+          std::string(CallbackUri) + "?code=%ZZ&state=" + std::string(32, 's'),
+          std::string(CallbackUri) + "?code=%00&state=" + std::string(32, 's'),
+          std::string(CallbackUri) + "?state=" + std::string(32, 's'),
+          std::string(CallbackUri) + "?malformed",
+          Callback() + "&co%64e=duplicate"}) {
+      auto flow = Flow();
+      assert(flow.Complete(callback, now, "profile-a", http, store) ==
+             AuthResult::InvalidCallback);
+    }
+    auto flow = Flow();
+    assert(flow.Complete(Callback(), now, "", http, store) ==
+           AuthResult::InvalidCallback);
+    flow = Flow();
+    assert(
+        flow.Complete(std::string(CallbackUri) +
+                          "?error=access_denied&state=" + std::string(32, 's'),
+                      now, "profile-a", http, store) == AuthResult::Rejected);
+    assert(calls == 0);
+    assert(UrlDecode("a+b%2Bc") == "a b+c");
+    assert(UrlEncode("a +&/") == "a%20%2B%26%2F");
+    assert(!UrlDecode("%"));
+    assert(!UrlDecode("%G0"));
+    assert(!UrlDecode("%0G"));
+    assert(!UrlDecode("%7F"));
+    assert(!UrlDecode("\n"));
+    assert(!Authorization("", std::string(43, 'v'), std::string(43, 'c'),
+                          std::string(32, 's'), now)
+                .AuthorizeUrl()
+                .size());
+    assert(!Authorization("client", "short", std::string(43, 'c'),
+                          std::string(32, 's'), now)
+                .AuthorizeUrl()
+                .size());
   }
-  for (const std::string host : {"", ".", "a..b", "host/url", "https://nintendo.net", "nintendo.net:443",
-        "nintendo.net..", "nintendo.net@evil.test", "a b"}) assert(ClassifyHost(host) == Destination::Blocked);
-  assert(ClassifyHost(std::string("nintendo.net\0.evil.test", 23)) == Destination::Blocked);
-  assert(ClassifyHost(std::string(64, 'a') + ".org") == Destination::Blocked);
-  assert(ClassifyHost(std::string(255, 'a')) == Destination::Blocked);
-  assert(ClassifyHost(std::string(63, 'a') + ".org") == Destination::Native);
- }
- if (mode == "configuration") {
-  assert(!Config{}.enabled); assert(!Config{}.RoutesReady());
-  assert(enabled.RoutesReady());
-  for (auto address : {"", "127.0.0.1", "0.0.0.0", "224.0.0.1", "255.255.255.255", "169.254.1.1",
-       "256.0.0.1", "01.2.3.4", "1.2.3", "1.2.3.4.5", "1234.1.1.1", "nextendo.network", "1.2.3.", ".1.2.3", "1a.2.3.4"}) assert(!IsServerAddress(address));
-  assert(IsServerAddress("192.0.2.1")); assert(IsServerAddress("198.51.100.2"));
-  auto broken = enabled; broken.nat_address = broken.server_address; assert(!broken.RoutesReady());
-  assert(ResolveHost(broken, "a.nintendo.net").destination == Destination::Blocked);
-  broken = enabled; broken.server_address.clear();
-  assert(ResolveHost(broken, "a.nintendo.com").destination == Destination::Blocked);
-  assert(ResolveHost(broken, "a.example.org").destination == Destination::Native);
-  broken.enabled = false;
-  assert(ResolveHost(broken, "a.nintendo.com").address == "a.nintendo.com");
- }
- if (mode == "auth-success") {
-  auto flow = Flow(); bool stored = false; int calls = 0;
-  assert(flow.AuthorizeUrl().starts_with("https://nextendo.network/api/oauth/authorize?"));
-  assert(flow.AuthorizeUrl().find("code_challenge_method=S256") != std::string::npos);
-  auto http = [&](const HttpRequest& request) {
-   ++calls;
-   assert(request.url == "https://nextendo.network/api/oauth/token");
-   assert(request.method == "POST"); assert(request.headers.empty());
-   assert(request.content_type == "application/x-www-form-urlencoded");
-   assert(request.body.find("code=mock%2Bcode") != std::string::npos);
-   assert(request.body.find("code_verifier=" + std::string(43, 'v')) != std::string::npos);
-   assert(request.body.find("redirect_uri=http%3A%2F%2F127.0.0.1%3A17822%2Fcallback") != std::string::npos);
-   return HttpResponse{200, identity};
-  };
-  auto store = [&](const Identity& value) { stored = true; assert(value.pid == 42); assert(value.profile_id == "profile-b"); return true; };
-  assert(flow.Complete(Callback(), now, "profile-b", http, store) == AuthResult::Ready);
-  assert(calls == 1 && stored);
-  assert(flow.Complete(Callback(), now, "profile-b", http, store) == AuthResult::Ready);
-  assert(calls == 1);
- }
- if (mode == "auth-rejection") {
-  int calls = 0; auto http = [&](const HttpRequest&) { ++calls; return HttpResponse{200, identity}; };
-  auto store = [](const Identity&) { assert(false); return true; };
-  for (const auto& callback : {std::string("https://evil.test/callback?code=x&state=") + std::string(32,'s'),
-     std::string(CallbackUri)+"?code=x&state=wrong", Callback()+"&state=duplicate", Callback()+"#fragment",
-     std::string(CallbackUri)+"?code=%ZZ&state="+std::string(32,'s'),
-     std::string(CallbackUri)+"?code=%00&state="+std::string(32,'s'),
-     std::string(CallbackUri)+"?state="+std::string(32,'s'),
-     std::string(CallbackUri)+"?malformed", Callback()+"&co%64e=duplicate"}) {
-   auto flow = Flow(); assert(flow.Complete(callback, now, "profile-a", http, store) == AuthResult::InvalidCallback);
+  if (mode == "auth-expiry") {
+    auto http = [](const HttpRequest &) {
+      assert(false);
+      return HttpResponse{};
+    };
+    auto store = [](const Identity &) {
+      assert(false);
+      return true;
+    };
+    auto flow = Flow();
+    assert(flow.Complete(Callback(), now + std::chrono::minutes(5), "profile-a",
+                         http, store) == AuthResult::Expired);
+    flow = Flow();
+    flow.Cancel();
+    assert(flow.Complete(Callback(), now, "profile-a", http, store) ==
+           AuthResult::Cancelled);
   }
-  auto flow = Flow(); assert(flow.Complete(Callback(), now, "", http, store) == AuthResult::InvalidCallback);
-  flow = Flow(); assert(flow.Complete(std::string(CallbackUri)+"?error=access_denied&state="+std::string(32,'s'), now, "profile-a", http, store) == AuthResult::Rejected);
-  assert(calls == 0);
-  assert(UrlDecode("a+b%2Bc") == "a b+c"); assert(UrlEncode("a +&/") == "a%20%2B%26%2F");
-  assert(!UrlDecode("%")); assert(!UrlDecode("%G0")); assert(!UrlDecode("%0G")); assert(!UrlDecode("%7F")); assert(!UrlDecode("\n"));
-  assert(!Authorization("",std::string(43,'v'),std::string(43,'c'),std::string(32,'s'),now).AuthorizeUrl().size());
-  assert(!Authorization("client","short",std::string(43,'c'),std::string(32,'s'),now).AuthorizeUrl().size());
- }
- if (mode == "auth-expiry") {
-  auto http = [](const HttpRequest&) { assert(false); return HttpResponse{}; };
-  auto store = [](const Identity&) { assert(false); return true; };
-  auto flow = Flow(); assert(flow.Complete(Callback(), now + std::chrono::minutes(5), "profile-a", http, store) == AuthResult::Expired);
-  flow = Flow(); flow.Cancel(); assert(flow.Complete(Callback(), now, "profile-a", http, store) == AuthResult::Cancelled);
- }
- if (mode == "auth-failures") {
-  for (unsigned status : {0u, 301u, 400u, 401u, 403u, 429u, 500u}) {
-   auto flow = Flow(); assert(flow.Complete(Callback(),now,"profile-a",[&](const HttpRequest&){return HttpResponse{status, identity};},[](const Identity&){assert(false);return true;}) == AuthResult::Rejected);
+  if (mode == "auth-failures") {
+    for (unsigned status : {0u, 301u, 400u, 401u, 403u, 429u, 500u}) {
+      auto flow = Flow();
+      assert(flow.Complete(
+                 Callback(), now, "profile-a",
+                 [&](const HttpRequest &) {
+                   return HttpResponse{status, identity};
+                 },
+                 [](const Identity &) {
+                   assert(false);
+                   return true;
+                 }) == AuthResult::Rejected);
+    }
+    for (auto invalid :
+         {Identity{}, Identity{42, "", "", "", "profile-a"},
+          Identity{42, "", "", "token\r\nInjected", "profile-a"},
+          Identity{42, "", "", std::string(16385, 'a'), "profile-a"}}) {
+      auto flow = Flow();
+      assert(
+          flow.Complete(
+              Callback(), now, "profile-a",
+              [&](const HttpRequest &) { return HttpResponse{200, invalid}; },
+              [](const Identity &) {
+                assert(false);
+                return true;
+              }) == AuthResult::Rejected);
+    }
+    auto flow = Flow();
+    int calls = 0;
+    auto http = [&](const HttpRequest &) -> HttpResponse {
+      ++calls;
+      throw std::runtime_error("mock timeout");
+    };
+    assert(flow.Complete(Callback(), now, "profile-a", http,
+                         [](const Identity &) { return true; }) ==
+           AuthResult::Rejected);
+    assert(flow.Complete(Callback(), now, "profile-a", http,
+                         [](const Identity &) { return true; }) ==
+           AuthResult::Rejected);
+    assert(calls == 1);
+    flow = Flow();
+    assert(flow.Complete(
+               Callback(), now, "profile-a",
+               [](const HttpRequest &) { return HttpResponse{200, identity}; },
+               [](const Identity &) { return false; }) ==
+           AuthResult::StorageFailed);
   }
-  for (auto invalid : {Identity{}, Identity{42,"","","","profile-a"}, Identity{42,"","","token\r\nInjected","profile-a"}, Identity{42,"","",std::string(16385,'a'),"profile-a"}}) {
-   auto flow = Flow(); assert(flow.Complete(Callback(),now,"profile-a",[&](const HttpRequest&){return HttpResponse{200, invalid};},[](const Identity&){assert(false);return true;}) == AuthResult::Rejected);
+  if (mode == "runtime") {
+    Configure({});
+    SetIdentity(identity, [](const Identity &, std::uint64_t,
+                             std::string_view) { return "mock-id-token"; });
+    assert(!IsEnabled());
+    assert(GetIdentity("profile-a").pid == 0);
+    assert(GetIdToken("profile-a", 1, "1.0").empty());
+    Configure(enabled);
+    assert(IsEnabled());
+    assert(GetIdentity("profile-a").pid == 42);
+    assert(GetIdentity("profile-b").pid == 0);
+    assert(GetIdToken("profile-a", 1, "1.0") == "mock-id-token");
+    assert(GetIdToken("profile-b", 1, "1.0").empty());
+    assert(RouteHost("a.nintendo.net").address == enabled.server_address);
+    auto broken = enabled;
+    broken.nat_address.clear();
+    Configure(broken);
+    assert(GetIdentity("profile-a").pid == 0);
+    assert(GetIdToken("profile-a", 1, "").empty());
+    Configure(enabled);
+    SetIdentity(identity);
+    assert(GetIdToken("profile-a", 1, "").empty());
+    SetIdentity({});
+    assert(GetIdentity("profile-a").pid == 0);
   }
-  auto flow = Flow(); int calls = 0;
-  auto http = [&](const HttpRequest&) -> HttpResponse {++calls;throw std::runtime_error("mock timeout");};
-  assert(flow.Complete(Callback(),now,"profile-a",http,[](const Identity&){return true;}) == AuthResult::Rejected);
-  assert(flow.Complete(Callback(),now,"profile-a",http,[](const Identity&){return true;}) == AuthResult::Rejected); assert(calls == 1);
-  flow = Flow(); assert(flow.Complete(Callback(),now,"profile-a",[](const HttpRequest&){return HttpResponse{200,identity};},[](const Identity&){return false;}) == AuthResult::StorageFailed);
- }
- if (mode == "runtime") {
-  Configure({}); SetIdentity(identity, [](const Identity&,std::uint64_t,std::string_view){return "mock-id-token";});
-  assert(!IsEnabled()); assert(GetIdentity("profile-a").pid == 0); assert(GetIdToken("profile-a",1,"1.0").empty());
-  Configure(enabled); assert(IsEnabled()); assert(GetIdentity("profile-a").pid == 42); assert(GetIdentity("profile-b").pid == 0);
-  assert(GetIdToken("profile-a",1,"1.0") == "mock-id-token"); assert(GetIdToken("profile-b",1,"1.0").empty());
-  assert(RouteHost("a.nintendo.net").address == enabled.server_address);
-  auto broken=enabled;broken.nat_address.clear();Configure(broken); assert(GetIdentity("profile-a").pid == 0);assert(GetIdToken("profile-a",1,"").empty());
-  Configure(enabled);SetIdentity(identity);assert(GetIdToken("profile-a",1,"").empty());
-  SetIdentity({});assert(GetIdentity("profile-a").pid == 0);
- }
- if (mode == "social") {
-  for (auto path : {"/api/friends","/api/online-status","/api/presence","/api/nex-session"}) {
-   auto request=SocialRequest(path,identity,"client");assert(request.url.starts_with("https://nextendo.network/api/"));assert(request.headers.at("Authorization") == "Bearer mock-nex-token");assert(request.headers.at("X-Nextendo-Client-Id") == "client");
+  if (mode == "social") {
+    for (auto path : {"/api/friends", "/api/online-status", "/api/presence",
+                      "/api/nex-session"}) {
+      auto request = SocialRequest(path, identity, "client");
+      assert(request.url.starts_with("https://nextendo.network/api/"));
+      assert(request.headers.at("Authorization") == "Bearer mock-nex-token");
+      assert(request.headers.at("X-Nextendo-Client-Id") == "client");
+    }
+    assert(SocialRequest("/api/friends", identity, "").headers.size() == 1);
+    for (auto path : {"/api/oauth/token", "https://evil.test/api/friends",
+                      "/api/friends/../token"})
+      assert(SocialRequest(path, identity, "client").url.empty());
+    assert(SocialRequest("/api/friends", Identity{}, "client").url.empty());
+    assert(
+        SocialRequest("/api/friends", identity, "bad\r\nclient").url.empty());
+    auto bad = identity;
+    bad.nex_token = "bad\r\ntoken";
+    assert(SocialRequest("/api/friends", bad, "client").url.empty());
+    Configure(enabled);
+    SetIdentity(identity);
+    QueuePresence({"profile-b", 2, 10});
+    assert(!runtime.presence.pending);
+    QueuePresence({"profile-a", 3, 10});
+    assert(!runtime.presence.pending);
+    QueuePresence({"profile-a", 2, 10});
+    assert(runtime.presence.pending && runtime.presence.program_id == 10);
+    runtime.presence.pending = false;
+    QueuePresence({"profile-a", 2, 10});
+    assert(!runtime.presence.pending);
+    QueuePresence({"profile-a", 1, 10});
+    assert(runtime.presence.pending);
+    runtime.friends.push_back({84, "Mock friend", 2, 10});
+    assert(GetFriends("profile-a").size() == 1);
+    assert(GetFriends("profile-b").empty());
+    auto bytes = SerializeFriend(runtime.friends[0], 10);
+    assert(bytes.size() == 512);
+    assert(bytes[0] == 84 && bytes[0x10] == 84);
+    assert(bytes[0x18] == 'M');
+    assert(bytes[0x58] == 2);
+    assert(bytes[0x5c] == 1);
+    assert(bytes[0x128] == 1);
+    assert(bytes[0x120] == 0);
+    assert(SerializeFriend(runtime.friends[0], 11)[0x5c] == 0);
+    auto long_name = runtime.friends[0];
+    long_name.name = std::string(31, 'a') + "é";
+    auto unicode = SerializeFriend(long_name, 10);
+    assert(unicode[0x18 + 31] == 0);
+    assert(SerializeFriend(FriendEntry{}, 10)[0x128] == 0);
+    Configure({});
+    assert(GetFriends("profile-a").empty());
+    assert(!runtime.presence.pending);
+    assert(runtime.friends.empty());
   }
-  assert(SocialRequest("/api/friends",identity,"").headers.size() == 1);
-  for (auto path : {"/api/oauth/token","https://evil.test/api/friends","/api/friends/../token"}) assert(SocialRequest(path,identity,"client").url.empty());
-  assert(SocialRequest("/api/friends",Identity{},"client").url.empty());
-  assert(SocialRequest("/api/friends",identity,"bad\r\nclient").url.empty());
-  auto bad=identity;bad.nex_token="bad\r\ntoken";assert(SocialRequest("/api/friends",bad,"client").url.empty());
-  Configure(enabled);SetIdentity(identity);
-  QueuePresence({"profile-b",2,10});assert(!runtime.presence.pending);
-  QueuePresence({"profile-a",3,10});assert(!runtime.presence.pending);
-  QueuePresence({"profile-a",2,10});assert(runtime.presence.pending && runtime.presence.program_id == 10);
-  runtime.friends.push_back({84,"Mock friend",2,10});assert(GetFriends("profile-a").size()==1);assert(GetFriends("profile-b").empty());
-  auto bytes=SerializeFriend(runtime.friends[0],10);assert(bytes.size()==512);assert(bytes[0]==84 && bytes[0x10]==84);assert(bytes[0x18]=='M');assert(bytes[0x58]==2);assert(bytes[0x5c]==1);assert(bytes[0x128]==1);assert(bytes[0x120]==0);
-  assert(SerializeFriend(runtime.friends[0],11)[0x5c]==0);
-  auto long_name=runtime.friends[0];long_name.name=std::string(31,'a')+"é";auto unicode=SerializeFriend(long_name,10);assert(unicode[0x18+31]==0);
-  assert(SerializeFriend(FriendEntry{},10)[0x128]==0);
-  Configure({});assert(GetFriends("profile-a").empty());assert(!runtime.presence.pending);assert(runtime.friends.empty());
- }
- if (mode == "crypto") {
-  assert(PkceChallenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk") == "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM");
-  assert(Base64Url("").empty());assert(Base64Url("f")=="Zg");assert(Base64Url("fo")=="Zm8");assert(Base64Url("foo")=="Zm9v");
-  auto random=RandomUrl(32);assert(random.size()==43);assert(random != RandomUrl(32));
-  bool rejected=false;try{IdTokenSigner signer("invalid mock PEM");}catch(const std::runtime_error&){rejected=true;}assert(rejected);
-  assert(IdTokenClaims({},"",10,"nonce").empty());assert(IdTokenClaims(identity,"",-1,"nonce").empty());assert(IdTokenClaims(identity,"",10,"").empty());
-  assert(JsonString("\"\\\n")=="\"\\\"\\\\\\u000a\"");
-  IdTokenSigner signer;
-  std::cout << signer.Sign(IdTokenClaims(identity,"3.0.4",1000,"mock-nonce"));
- }
+  if (mode == "crypto") {
+    assert(PkceChallenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk") ==
+           "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM");
+    assert(Base64Url("").empty());
+    assert(Base64Url("f") == "Zg");
+    assert(Base64Url("fo") == "Zm8");
+    assert(Base64Url("foo") == "Zm9v");
+    auto random = RandomUrl(32);
+    assert(random.size() == 43);
+    assert(random != RandomUrl(32));
+    const auto hex = RandomHex(16);
+    assert(hex.size() == 32);
+    assert(hex.find_first_not_of("0123456789abcdef") == std::string::npos);
+    bool rejected = false;
+    try {
+      IdTokenSigner signer("invalid mock PEM");
+    } catch (const std::runtime_error &) {
+      rejected = true;
+    }
+    assert(rejected);
+    assert(IdTokenClaims({}, "", 10, "nonce").empty());
+    assert(IdTokenClaims(identity, "", -1, "nonce").empty());
+    assert(IdTokenClaims(identity, "", 10, "").empty());
+    assert(JsonString("\"\\\n") == "\"\\\"\\\\\\u000a\"");
+    std::string pem;
+    if (const auto path = std::getenv("T22_TEST_SIGNING_KEY_FILE")) {
+      std::ifstream file(path);
+      pem.assign(std::istreambuf_iterator<char>(file), {});
+    }
+    IdTokenSigner signer(pem);
+    std::cout << signer.Sign(
+        IdTokenClaims(identity, "3.0.4", 1000, "mock-nonce"));
+  }
 }
 """
 
@@ -303,6 +504,77 @@ class NextendoTests(unittest.TestCase):
         self.assertEqual(
             len(base64.urlsafe_b64decode(signature + "=" * (-len(signature) % 4))), 256
         )
+
+    def test_imported_mock_key_signature_verifies(self):
+        private = self.directory / "mock-private.pem"
+        public = self.directory / "mock-public.pem"
+        signature = self.directory / "mock-signature.bin"
+        message = self.directory / "mock-message.txt"
+        subprocess.run(
+            [
+                "openssl",
+                "genpkey",
+                "-algorithm",
+                "RSA",
+                "-pkeyopt",
+                "rsa_keygen_bits:2048",
+                "-out",
+                str(private),
+            ],
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["openssl", "pkey", "-in", str(private), "-pubout", "-out", str(public)],
+            check=True,
+            capture_output=True,
+        )
+        environment = dict(os.environ)
+        environment["T22_TEST_SIGNING_KEY_FILE"] = str(private)
+        if self.coverage:
+            environment["LLVM_PROFILE_FILE"] = str(self.directory / "imported-%p.profraw")
+        token = subprocess.run(
+            [str(self.binary), "crypto"],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=environment,
+            timeout=20,
+        ).stdout
+        header, payload, raw_signature = token.split(".")
+        message.write_bytes((header + "." + payload).encode())
+        signature.write_bytes(
+            base64.urlsafe_b64decode(raw_signature + "=" * (-len(raw_signature) % 4))
+        )
+        subprocess.run(
+            [
+                "openssl",
+                "dgst",
+                "-sha256",
+                "-verify",
+                str(public),
+                "-signature",
+                str(signature),
+                str(message),
+            ],
+            check=True,
+            capture_output=True,
+        )
+        message.write_bytes(message.read_bytes() + b"tampered")
+        result = subprocess.run(
+            [
+                "openssl",
+                "dgst",
+                "-sha256",
+                "-verify",
+                str(public),
+                "-signature",
+                str(signature),
+                str(message),
+            ],
+            capture_output=True,
+        )
+        self.assertNotEqual(result.returncode, 0)
 
     def test_live_hooks_and_vault_do_not_depend_on_console_identity(self):
         dns = (ROOT / "src/core/hle/service/sockets/sfdnsres.cpp").read_text()
