@@ -88,6 +88,7 @@ RasterizerOpenGL::RasterizerOpenGL(Core::Frontend::EmuWindow& emu_window_, Tegra
     nxbox_shader_probe_enabled = NxboxShaderProbe::Settings().DrawEnabled();
     if (nxbox_shader_probe_enabled) {
         NxboxShaderProbe::FrameState() = {};
+        NxboxShaderProbe::CycleFrameState() = {};
     }
 #endif
 }
@@ -260,10 +261,12 @@ void RasterizerOpenGL::PrepareDraw(bool is_indexed, Func&& draw_func) {
     if (nxbox_shader_probe_enabled) {
         const auto& config = NxboxShaderProbe::Settings();
         auto& frames = NxboxShaderProbe::FrameState();
+        NxboxShaderProbe::BeginCycleFrame(config);
         if (config.SkipEnabled() || (config.ids && frames.frame % config.every == 0)) {
             const auto& key = pipeline->Key();
             const auto hash = key.Hash();
-            const bool skip = config.Skip(hash);
+            const bool skip = config.Skip(
+                hash, config.cycle.count != 0 ? NxboxShaderProbe::CycleFrameState().phase : 0);
             frames.Record(config, hash, key.unique_hashes, skip);
             if (skip) {
                 return;
@@ -714,6 +717,9 @@ void RasterizerOpenGL::TickFrame() {
 #ifdef NXBOX_UWP
     if (nxbox_shader_probe_enabled) {
         NxboxShaderProbe::FrameState().End(NxboxShaderProbe::Settings(), EdenXbox::Diagnostic);
+        if (NxboxShaderProbe::Settings().cycle.count != 0) {
+            NxboxShaderProbe::CycleFrameState().frame_begun = false;
+        }
     }
 #endif
     // Ticking a frame means that buffers will be swapped, calling glFlush implicitly.

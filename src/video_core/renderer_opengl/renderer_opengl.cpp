@@ -18,6 +18,7 @@
 
 #include "common/assert.h"
 #include "common/logging.h"
+#include "common/nxbox_shader_probe_uwp.h"
 #include "common/settings.h"
 #include "core/core_timing.h"
 #include "core/frontend/emu_window.h"
@@ -164,7 +165,8 @@ void RendererOpenGL::Composite(std::span<const Tegra::FramebufferConfig> framebu
 // Diagnostic frame probe: with NXBOX_FRAME_DUMP_DIR set, every 150th composed frame is drawn
 // into a small off-screen target (the same pass the screenshot uses) and written as a PPM, with
 // its peak and mean brightness logged. The console's own screenshots of the app come out black,
-// so this is the only way to see what the game actually produced.
+// so this is the only way to see what the game actually produced. A pipeline cycle instead
+// captures one frame at each phase's midpoint, using the phase that rendered this frame.
 void RendererOpenGL::DumpProbeFrame(std::span<const Tegra::FramebufferConfig> framebuffers) {
     static const char* const dump_dir = std::getenv("NXBOX_FRAME_DUMP_DIR");
     if (dump_dir == nullptr || *dump_dir == '\0') {
@@ -174,7 +176,20 @@ void RendererOpenGL::DumpProbeFrame(std::span<const Tegra::FramebufferConfig> fr
     // taken once 20 seconds have passed since the last one.
     static auto last_dump = std::chrono::steady_clock::now();
     const auto now = std::chrono::steady_clock::now();
-    if (m_current_frame % 150 != 0 && now - last_dump < std::chrono::seconds(20)) {
+    bool cycle_dump = false;
+    u64 cycle_phase = 0;
+#ifdef NXBOX_UWP
+    const auto& cycle = NxboxShaderProbe::Settings().cycle;
+    if (cycle.count != 0) {
+        auto& state = NxboxShaderProbe::CycleFrameState();
+        if (!state.TakeProbe(cycle, NxboxShaderProbe::CycleTick())) {
+            return;
+        }
+        cycle_dump = true;
+        cycle_phase = state.phase;
+    }
+#endif
+    if (!cycle_dump && m_current_frame % 150 != 0 && now - last_dump < std::chrono::seconds(20)) {
         return;
     }
     last_dump = now;
@@ -213,7 +228,16 @@ void RendererOpenGL::DumpProbeFrame(std::span<const Tegra::FramebufferConfig> fr
     std::error_code ec;
     std::filesystem::create_directories(dump_dir, ec);
     const std::filesystem::path file =
-        std::filesystem::path(dump_dir) / fmt::format("frame_{:06}.ppm", m_current_frame);
+        std::filesystem::path(dump_dir) /
+        (cycle_dump ? fmt::format("frame_{:06}_phase_{}.ppm", m_current_frame, cycle_phase)
+                    : fmt::format("frame_{:06}.ppm", m_current_frame));
+#ifdef NXBOX_UWP
+    if (cycle_dump) {
+        EdenXbox::Diagnostic(fmt::format(
+            "FRAME_PROBE frame={} phase={} start_tick={} file={}", m_current_frame, cycle_phase,
+            NxboxShaderProbe::CycleFrameState().start_tick, file.filename().string()));
+    }
+#endif
     std::ofstream out(file, std::ios::binary);
     out << "P6\n" << width << ' ' << height << "\n255\n";
     std::vector<char> rgb(size_t{width} * height * 3);

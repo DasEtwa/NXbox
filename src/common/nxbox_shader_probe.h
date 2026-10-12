@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <limits>
 #include <map>
 #include <string>
 #include <string_view>
@@ -91,6 +92,84 @@ struct Bucket {
     }
 };
 
+struct Cycle {
+    Hash count{}, duration_ms{}, outer_count{}, outer_index{};
+    bool Parse(std::string_view text) {
+        const auto colon = text.find(':');
+        Hash n{}, seconds{};
+        if (colon == text.npos || !Number(text.substr(0, colon), n, 10) || n == 0 ||
+            n == std::numeric_limits<Hash>::max() || !Number(text.substr(colon + 1), seconds, 10) ||
+            seconds == 0 || seconds > std::numeric_limits<Hash>::max() / 2000) {
+            return false;
+        }
+        count = n;
+        duration_ms = seconds * 1000;
+        return true;
+    }
+    bool ParseWithin(std::string_view text) {
+        const auto colon = text.find(':');
+        Hash n{}, k{};
+        if (colon == text.npos || !Number(text.substr(0, colon), n, 10) || n == 0 ||
+            !Number(text.substr(colon + 1), k, 10) || k >= n) {
+            return false;
+        }
+        outer_count = n;
+        outer_index = k;
+        return true;
+    }
+    bool Contains(Hash hash, Hash phase) const {
+        if (count == 0 || phase == 0 || phase > count) {
+            return false;
+        }
+        if (outer_count != 0) {
+            if (hash % outer_count != outer_index) {
+                return false;
+            }
+            // Split the outer bucket's quotient, rather than reusing correlated low bits.
+            hash /= outer_count;
+        }
+        return hash % count == phase - 1;
+    }
+};
+
+// Render-thread state; phase changes only at the first guest draw of a frame.
+struct CycleState {
+    Hash origin_tick{}, start_tick{}, ordinal{}, phase{};
+    bool started{}, active{}, dumped{}, frame_begun{};
+    bool Advance(const Cycle& cycle, Hash tick) {
+        if (cycle.count == 0) {
+            return false;
+        }
+        if (!started) {
+            started = true;
+            origin_tick = tick;
+        }
+        const Hash elapsed = tick >= origin_tick ? tick - origin_tick : 0;
+        const Hash warmup = cycle.duration_ms * 2;
+        if (elapsed < warmup) {
+            return false;
+        }
+        const Hash next = (elapsed - warmup) / cycle.duration_ms;
+        if (active && next == ordinal) {
+            return false;
+        }
+        active = true;
+        dumped = false;
+        ordinal = next;
+        phase = ordinal % (cycle.count + 1);
+        start_tick = tick - (elapsed - warmup) % cycle.duration_ms;
+        return true;
+    }
+    bool TakeProbe(const Cycle& cycle, Hash tick) {
+        if (!active || dumped || tick < start_tick || tick - start_tick < cycle.duration_ms / 2 ||
+            tick - start_tick >= cycle.duration_ms) {
+            return false;
+        }
+        dumped = true;
+        return true;
+    }
+};
+
 inline std::string Hex(Hash value) {
     char text[17];
     std::snprintf(text, sizeof(text), "%016llx", static_cast<unsigned long long>(value));
@@ -102,13 +181,17 @@ struct Config {
     Hash every{60};
     Selection skip, dump;
     Bucket bucket;
+    Cycle cycle;
     bool SkipEnabled() const {
-        return !skip.ranges.empty() || bucket.count != 0;
+        return !skip.ranges.empty() || bucket.count != 0 || cycle.count != 0;
     }
     bool DrawEnabled() const {
         return ids || SkipEnabled();
     }
-    bool Skip(Hash hash) const {
+    bool Skip(Hash hash, Hash phase = 0) const {
+        if (cycle.count != 0) {
+            return cycle.Contains(hash, phase);
+        }
         return skip.Contains(hash) || bucket.Contains(hash);
     }
     bool Dump(Hash pipeline, const std::array<Hash, 6>& stages) const {

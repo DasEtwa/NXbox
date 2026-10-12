@@ -516,7 +516,9 @@ identifies the generator function and names the generated Mesa reader where usef
 | `NXBOX_DRAW_BUCKET_LOG`        | Unset                                                 | File for bounded skipped-hash reports; frontend sets LocalState\bucket.txt and removes its previous copy when DRAW_BUCKETS is present.                   | Yes         | patch_bisect_switches → d3d12_draw.cpp; src/eden_uwp/mesa_window.cpp                                        |
 | `NXBOX_DRAW_DIAG` | Off | Exact `1` logs graphics exits, GL/converter drops, shader link/DXIL failures and state feature counts every presented frame. Includes guest viewport swizzle requests before unsupported GL omission. See [SM3DW text investigation](sm3dw-text.md). | Yes | patch_mesa_uwp.py:patch_draw_diag; mesa_draw_diag.h; mesa_gl_draw_diag.h; gl_rasterizer.cpp; mesa_window.cpp |
 | `NXBOX_FRAME_DUMP`             | Off                                                   | Leading `1` sets FRAME_DUMP_DIR to LocalState\framedump.                                                                                                 | Yes         | src/eden_uwp/mesa_window.cpp:MesaRuntime::Initialize                                                        |
-| `NXBOX_FRAME_DUMP_DIR`         | Unset                                                 | Nonempty directory writes composed-frame PPM probes every 150 frames.                                                                                    | Yes         | src/video_core/renderer_opengl/renderer_opengl.cpp:DumpProbeFrame                                           |
+| `NXBOX_FRAME_DUMP_DIR`         | Unset                                                 | Nonempty directory writes composed-frame PPM probes every 150 frames or 20 seconds; with SKIP_PIPELINE_CYCLE, once at each phase midpoint.                  | Yes         | src/video_core/renderer_opengl/renderer_opengl.cpp:DumpProbeFrame                                           |
+| `NXBOX_SKIP_PIPELINE_CYCLE` | Off | `n:seconds` cycles baseline then each of n hash buckets in one run, after a two-interval warmup. | Yes | src/common/nxbox_shader_probe_uwp.h; gl_rasterizer.cpp |
+| `NXBOX_SKIP_PIPELINE_CYCLE_WITHIN` | Unset | `n:k` restricts cycling to outer bucket `hash mod n == k`, splitting its quotient into inner buckets. | Yes | src/common/nxbox_shader_probe.h:Cycle |
 | `NXBOX_GPU_PROFILE`            | Off                                                   | Exact `1` adds GPU timestamps to journaled main-list commands; needs SYNC_BATCH enabled and JOURNAL=1 for useful command attribution.                    | Yes         | tools/nxbox/mesa_gpu_profile.h:nxbox_profile_on                                                             |
 | `NXBOX_GEOMETRY_DIAG` | Off | Exact `1` counts draws with misaligned VB addresses/strides/element offsets, unknown/emulated formats, misaligned/oversized referenced CBVs and SO. Eden separately counts cached UBO bindings before GL validation and retains the first suspect range. Reports the first 16 observations, then every 4096; read once. | Yes | src/common/nxbox_geometry_diag.h; patch_mesa_uwp.py:patch_geometry_diag; gl_buffer_cache.cpp |
 | `NXBOX_JOURNAL`                | Off in NXbox                                          | `1` requests command journaling; helper disables on exact `0` and requires SYNC_BATCH (standalone helper otherwise defaults on).                         | Yes         | tools/nxbox/mesa_sync_batch.h:nxbox_journal_reset; frontend default in mesa_window.cpp                      |
@@ -825,7 +827,8 @@ fragment depth writes, unsupported split stencil references/masks and independen
 ## Guest graphics shader bisection (no GPU debugger)
 
 For scene-dependent SM3DW black polygons, blue stipple or olive slabs, hold the camera
-and compare the same scene after each launch. A static view staying broken for minutes
+and compare baseline and exclusions within one launch using the cycle below. A static
+view staying broken for minutes
 is not evidence of a timer/upload race. These controls identify which guest graphics
 pipelines draw the surfaces; they do not establish whether the eventual fault is in
 Eden translation, Mesa lowering, textures or vertex input.
@@ -839,6 +842,9 @@ NXBOX_SHADER_IDS_EVERY=60
 # Enable one exclusion at a time:
 # NXBOX_SKIP_PIPELINE_HALF=0:0/2
 # NXBOX_SKIP_PIPELINES=0123456789abcdef,1000000000000000-1fffffffffffffff
+# NXBOX_SKIP_PIPELINE_CYCLE=2:10
+# NXBOX_SKIP_PIPELINE_CYCLE_WITHIN=2:0
+# NXBOX_FRAME_DUMP=1
 # NXBOX_DUMP_SHADERS=0123456789abcdef
 ```
 
@@ -866,13 +872,49 @@ draw/transform feedback. Skipping changes render targets, depth, shader side eff
 queries, so disappearance of an artifact is evidence of involvement, not proof of a bad
 shader. The sampled set still includes excluded pipelines through their `skip` counts.
 
+`NXBOX_SKIP_PIPELINE_CYCLE=n:seconds` accepts positive decimal integers and runs on
+a monotonic millisecond clock starting at the first configured guest graphics draw
+(the renderer cannot distinguish a game's menu/loading screen from gameplay). Nothing
+is skipped for the first `2 * seconds`. Phase 0 then runs for `seconds` as a baseline;
+phases 1 through n each run for `seconds`, skipping hashes with `hash mod n == phase - 1`.
+The sequence repeats `0,1,...,n,0,1,...`. For `2:10`, warmup is 0–20s, baseline is
+20–30s, bucket 0 is 30–40s, bucket 1 is 40–50s, and baseline returns at 50s.
+Each phase starts on the first guest draw of a frame, remains fixed through composition,
+and logs `SKIP_CYCLE phase=<k> start_tick=<ms> buckets=<n>` to `eden_uwp_diag.txt`.
+`start_tick` is the scheduled phase boundary on the same steady clock as `FRAME_PROBE`
+ticks. A delayed frame jumps to the current interval without replaying expired phases.
+While enabled, cycling takes precedence over `NXBOX_SKIP_PIPELINES` and
+`NXBOX_SKIP_PIPELINE_HALF`, ensuring phase 0 skips nothing. With cycling off there are
+no added clock reads, hash calculations, frame captures or diagnostic writes.
+
+Enable `NXBOX_FRAME_DUMP=1` (or set `NXBOX_FRAME_DUMP_DIR`) alongside cycling to
+replace the periodic probe with one capture at the first composed frame at or after
+each phase's midpoint, still within that phase. Warmup produces no cycle captures.
+Files are `frame_<frame>_phase_<k>.ppm`, and a `FRAME_PROBE` diagnostic line records
+the frame, phase, start tick and filename. Repeated cycles keep separate files. If no
+frame is rendered in an interval's second half, that interval cannot produce a capture;
+increase `seconds` for slow scenes. Keep the camera still and allow enough warmup to
+reach the scene, then collect a baseline and one frame per bucket without relaunching.
+
+`NXBOX_SKIP_PIPELINE_CYCLE_WITHIN=n:k` accepts a positive decimal outer count and
+zero-based decimal bucket (`0 <= k < n`). Only hashes with `hash mod n == k` can
+be skipped; within that set the cycle bucket is `(hash / n) mod cycle_n` (integer
+division). Thus a 2-way cycle within `2:0` tests hashes modulo 4 equal to 0 and 2,
+and within `2:1` it tests 1 and 3. This quotient split avoids empty or identical
+children when both levels use the same count. Baseline still skips nothing, including
+inside the outer bucket. WITHIN alone does nothing; malformed values are logged and
+ignored. For deeper levels, use the implicated child's equivalent outer modulo bucket.
+
 Console procedure:
 
 1. Capture a baseline screenshot and sampled pipeline set for the broken scene.
-2. Try `NXBOX_SKIP_PIPELINE_HALF=0:0/2`, then `0:1/2`, restarting and returning to the
-   same camera each time. Compare broken surfaces as well as missing legitimate objects.
-3. Subdivide the implicated bucket: bucket `k` of `n` splits into `k` and `k+n` of
-   `2n` with the same seed. Stop when a small candidate set remains. Confirm candidates
+2. Set `NXBOX_SKIP_PIPELINE_CYCLE=2:10` and `NXBOX_FRAME_DUMP=1`, restart once,
+   reach the scene during warmup, then keep the camera still through phases 0, 1 and 2.
+   Compare broken surfaces as well as missing legitimate objects in the phase captures.
+3. Subdivide the implicated bucket using `NXBOX_SKIP_PIPELINE_CYCLE_WITHIN=2:k`;
+   bucket `k` of `n` splits into `k` and `k+n` of `2n`. For example, phase 2 within
+   `2:0` implicates outer bucket `4:2` for the next run. Stop when a small candidate
+   set remains. Remove cycle controls and confirm candidates
    individually with `NXBOX_SKIP_PIPELINES` and compare other affected camera views.
 4. Remove exclusions, set `NXBOX_DUMP_SHADERS` to the candidate pipeline hash(es) or
    per-stage unique shader hash(es), restart and revisit the scene. Stage selection dumps

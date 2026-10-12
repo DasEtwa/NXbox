@@ -2,6 +2,7 @@
 #pragma once
 
 #ifdef NXBOX_UWP
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
@@ -33,6 +34,14 @@ inline const Config& Settings() {
             !result.bucket.Parse(env("NXBOX_SKIP_PIPELINE_HALF"))) {
             invalid("NXBOX_SKIP_PIPELINE_HALF");
         }
+        if (!env("NXBOX_SKIP_PIPELINE_CYCLE").empty() &&
+            !result.cycle.Parse(env("NXBOX_SKIP_PIPELINE_CYCLE"))) {
+            invalid("NXBOX_SKIP_PIPELINE_CYCLE");
+        }
+        if (!env("NXBOX_SKIP_PIPELINE_CYCLE_WITHIN").empty() &&
+            !result.cycle.ParseWithin(env("NXBOX_SKIP_PIPELINE_CYCLE_WITHIN"))) {
+            invalid("NXBOX_SKIP_PIPELINE_CYCLE_WITHIN");
+        }
         if (!result.dump.Parse(env("NXBOX_DUMP_SHADERS"), false)) {
             invalid("NXBOX_DUMP_SHADERS");
         }
@@ -44,6 +53,33 @@ inline const Config& Settings() {
 inline Frames& FrameState() {
     static Frames frames;
     return frames;
+}
+
+inline CycleState& CycleFrameState() {
+    static CycleState state;
+    return state;
+}
+
+inline Hash CycleTick() {
+    return static_cast<Hash>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                 std::chrono::steady_clock::now().time_since_epoch())
+                                 .count());
+}
+
+inline void BeginCycleFrame(const Config& config) {
+    if (config.cycle.count == 0) {
+        return;
+    }
+    auto& state = CycleFrameState();
+    if (state.frame_begun) {
+        return;
+    }
+    state.frame_begun = true;
+    if (state.Advance(config.cycle, CycleTick())) {
+        EdenXbox::Diagnostic("SKIP_CYCLE phase=" + std::to_string(state.phase) +
+                             " start_tick=" + std::to_string(state.start_tick) +
+                             " buckets=" + std::to_string(config.cycle.count));
+    }
 }
 
 inline std::filesystem::path DumpFolder() {
