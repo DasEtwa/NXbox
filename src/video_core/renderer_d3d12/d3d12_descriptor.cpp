@@ -314,8 +314,9 @@ void D3D12DescriptorAllocator::WriteTexelUav(const DescriptorTable& table, u32 s
 
 bool D3D12DescriptorAllocator::WriteImageSrv(const DescriptorTable& table, u32 slot,
                                              const ImageView& view,
-                                             D3D12_SRV_DIMENSION fallback_dimension) {
-    const auto resource = view.ImageHandle();
+                                             D3D12_SRV_DIMENSION fallback_dimension,
+                                             const ResourcePtr& replacement) {
+    const auto resource = replacement ? replacement : view.ImageHandle();
     if (!resource) {
         WriteNullSrv(table, slot, fallback_dimension);
         return false;
@@ -362,13 +363,14 @@ void D3D12DescriptorAllocator::CreateRtv(D3D12_CPU_DESCRIPTOR_HANDLE handle,
     context.Device()->CreateRenderTargetView(resource->handle.Get(), &rtv, handle);
 }
 
-void D3D12DescriptorAllocator::CreateDsv(D3D12_CPU_DESCRIPTOR_HANDLE handle,
-                                         const ImageView& view) {
+void D3D12DescriptorAllocator::CreateDsv(D3D12_CPU_DESCRIPTOR_HANDLE handle, const ImageView& view,
+                                         D3D12_DSV_FLAGS flags) {
     const auto resource = view.ImageHandle();
     if (!resource)
         throw std::runtime_error("D3D12 depth view without image");
     D3D12_DEPTH_STENCIL_VIEW_DESC dsv{};
     dsv.Format = DsvFormat(view.Description().Format);
+    dsv.Flags = flags;
     dsv.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2DARRAY;
     dsv.Texture2DArray = {static_cast<UINT>(view.range.base.level),
                           static_cast<UINT>(view.range.base.layer),

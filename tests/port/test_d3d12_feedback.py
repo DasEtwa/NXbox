@@ -1,0 +1,81 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Check feedback decisions and nonfatal draw validation without a Windows SDK."""
+
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+DRIVER = r"""
+#include <cassert>
+#include <initializer_list>
+#include <cstdint>
+#include <limits>
+#include "video_core/renderer_d3d12/d3d12_feedback.h"
+#include "video_core/renderer_d3d12/d3d12_buffer_view.h"
+int main() {
+    using namespace D3D12;
+    // Color always snapshots; depth snapshots when either plane can write.
+    for (bool depth : {false, true}) {
+        for (bool depth_writes : {false, true}) {
+            for (bool stencil_writes : {false, true}) {
+                const bool readonly = depth && !depth_writes && !stencil_writes;
+                assert((SelectFeedbackMode(depth, depth_writes, stencil_writes) ==
+                        FeedbackMode::ReadOnlyDepth) == readonly);
+            }
+        }
+    }
+    // D3D12 states: RTV=4, UAV=8, DEPTH_WRITE=16, DEPTH_READ=32, SRVs=64|128.
+    constexpr std::uint32_t writes = 4 | 8 | 16;
+    for (auto read : {1u, 2u, 32u, 64u, 128u, 192u, 224u}) {
+        assert(CompatibleDrawStates(read, 192, writes));
+        for (auto write : {4u, 8u, 16u}) {
+            assert(!CompatibleDrawStates(read, write, writes));
+            assert(!CompatibleDrawStates(write, read, writes));
+            assert(CompatibleDrawStates(write, write, writes));
+        }
+    }
+    assert(!CompatibleDrawStates(4, 8, writes));
+    assert(!CompatibleDrawStates(16, 8, writes));
+    assert(IsValidBufferView(4096, 256, 128, 128));
+    assert(!IsValidBufferView(0, 256, 0, 128));
+    assert(!IsValidBufferView(4096, 256, 0, 0));
+    assert(!IsValidBufferView(4096, 256, 257, 1));
+    assert(!IsValidBufferView(4096, 256, 128, 129));
+    constexpr auto max64 = std::numeric_limits<std::uint64_t>::max();
+    constexpr auto max32 = std::numeric_limits<std::uint32_t>::max();
+    assert(!IsValidBufferView(max64 - 1, 256, 2, 1));
+    assert(!IsValidBufferView(max64 - 1, 256, 0, 2));
+    // UINT-sized geometry views cannot silently truncate a 4 GiB guest range.
+    assert(IsValidBufferView(4096, max64, 0, max32));
+    assert(!IsValidBufferView(4096, max64, 0, std::uint64_t{max32} + 1));
+}
+"""
+
+
+class D3D12FeedbackTests(unittest.TestCase):
+    def test_feedback_and_draw_validation(self):
+        with tempfile.TemporaryDirectory(prefix="nxbox-d3d12-feedback-") as temp:
+            source = Path(temp) / "feedback.cpp"
+            binary = Path(temp) / "feedback"
+            source.write_text(DRIVER)
+            subprocess.run(
+                [
+                    "clang++",
+                    "-std=c++20",
+                    "-Wall",
+                    "-Wextra",
+                    "-Werror",
+                    "-fsanitize=address,undefined",
+                    "-I",
+                    str(ROOT / "src"),
+                    str(source),
+                    "-o",
+                    str(binary),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run([str(binary)], check=True, timeout=30)

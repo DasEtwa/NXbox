@@ -108,7 +108,7 @@ public:
     void WriteTexelUav(const DescriptorTable& table, u32 slot, const BoundBuffer& buffer);
     // Returns false (and writes a null view) when the view has no backing image.
     bool WriteImageSrv(const DescriptorTable& table, u32 slot, const ImageView& view,
-                       D3D12_SRV_DIMENSION fallback_dimension);
+                       D3D12_SRV_DIMENSION fallback_dimension, const ResourcePtr& replacement = {});
     void WriteSampler(const DescriptorTable& table, u32 slot, const Sampler& sampler);
 
     bool WriteImageUav(const DescriptorTable& table, u32 slot, const ImageView& view,
@@ -123,7 +123,8 @@ public:
     // Render target views derived from an image view's subresource range.
     // nullptr (or a view without image) creates a null RTV that discards writes.
     void CreateRtv(D3D12_CPU_DESCRIPTOR_HANDLE handle, const ImageView* view);
-    void CreateDsv(D3D12_CPU_DESCRIPTOR_HANDLE handle, const ImageView& view);
+    void CreateDsv(D3D12_CPU_DESCRIPTOR_HANDLE handle, const ImageView& view,
+                   D3D12_DSV_FLAGS flags = D3D12_DSV_FLAG_NONE);
 
 private:
     struct Ring {

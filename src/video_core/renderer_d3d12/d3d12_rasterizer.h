@@ -137,6 +137,20 @@ private:
     VideoCommon::ComputeUniformBufferSizes compute_uniform_sizes{};
     std::vector<VideoCommon::ImageViewInOut> view_scratch;
     std::vector<VideoCommon::SamplerId> sampler_scratch;
+    ResourcePtr CopyFeedback(const ResourcePtr& source);
+    void SkipDraw(const char* reason);
+    struct FeedbackTexture {
+        ResourcePtr resource;
+        const Resource* source{};
+        u64 draw{};
+        u64 frame{};
+    };
+    std::vector<FeedbackTexture> feedback_pool;
+    u64 feedback_draw{};
+    u64 feedback_frame{};
+    u64 feedback_copies{};
+    u64 feedback_readonly_depth{};
+    u64 skipped_draws{};
     ResourcePtr zero_vertex_buffer;
     std::vector<std::pair<ResourcePtr, D3D12_RESOURCE_STATES>> state_scratch;
     ComPtr<ID3D12CommandSignature> draw_signature;

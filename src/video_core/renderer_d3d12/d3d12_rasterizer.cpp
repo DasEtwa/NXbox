@@ -15,6 +15,7 @@
 #include "video_core/host1x/host1x.h"
 #include "video_core/memory_manager.h"
 #include "video_core/renderer_d3d12/d3d12_buffer_view.h"
+#include "video_core/renderer_d3d12/d3d12_feedback.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_cache.h"
 #include "video_core/renderer_d3d12/d3d12_rasterizer.h"
 #include "video_core/textures/texture.h"
@@ -214,6 +215,64 @@ constexpr D3D12_RESOURCE_STATES BufferReadState =
     D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
 } // namespace
 
+void RasterizerD3D12::SkipDraw(const char* reason) {
+    ++skipped_draws;
+    if (skipped_draws <= 4 && (feedback_frame < 8 || feedback_frame % 120 == 0))
+        Diagnostic(std::string{"D3D12_DRAW_SKIP reason="} + reason);
+    for (auto& stage : bindings.stages)
+        stage.Clear();
+}
+
+ResourcePtr RasterizerD3D12::CopyFeedback(const ResourcePtr& source) {
+    auto desc = source->handle->GetDesc();
+    desc.Flags &= ~D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
+    FeedbackTexture* selected{};
+    for (auto& entry : feedback_pool) {
+        if (entry.draw == feedback_draw && entry.source == source.get())
+            return entry.resource;
+        const auto other = entry.resource->handle->GetDesc();
+        if (entry.draw != feedback_draw && desc.Dimension == other.Dimension &&
+            desc.Alignment == other.Alignment && desc.Width == other.Width &&
+            desc.Height == other.Height && desc.DepthOrArraySize == other.DepthOrArraySize &&
+            desc.MipLevels == other.MipLevels && desc.Format == other.Format &&
+            desc.SampleDesc.Count == other.SampleDesc.Count &&
+            desc.SampleDesc.Quality == other.SampleDesc.Quality && desc.Layout == other.Layout &&
+            desc.Flags == other.Flags) {
+            selected = &entry;
+        }
+    }
+    if (!selected) {
+        // Evict inactive shapes before allocating. Pending command lists still retain
+        // them until their fence completes; never bypass the global memory budget.
+        std::erase_if(feedback_pool, [this](const auto& entry) {
+            return entry.frame != feedback_frame && entry.draw != feedback_draw;
+        });
+        const auto allocation = context.Device()->GetResourceAllocationInfo(0, 1, &desc);
+        u64 pool_bytes{};
+        for (const auto& entry : feedback_pool)
+            pool_bytes += entry.resource->allocation_size;
+        constexpr u64 PoolLimit = 64ULL << 20;
+        if (allocation.SizeInBytes == UINT64_MAX || allocation.SizeInBytes > PoolLimit ||
+            pool_bytes > PoolLimit - allocation.SizeInBytes ||
+            allocation.SizeInBytes > MemoryBudget::Limit - context.MemoryUsage())
+            return {};
+        feedback_pool.push_back({context.CreateResource(desc, D3D12_HEAP_TYPE_DEFAULT,
+                                                        D3D12_RESOURCE_STATE_COPY_DEST)});
+        selected = &feedback_pool.back();
+    }
+    selected->source = source.get();
+    selected->draw = feedback_draw;
+    selected->frame = feedback_frame;
+    context.Transition(source, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    context.Transition(selected->resource, D3D12_RESOURCE_STATE_COPY_DEST);
+    // Preserve every mip, layer and depth/stencil plane: SRVs can span more
+    // subresources than the attachment view (including mip-generation feedback).
+    context.Commands()->CopyResource(selected->resource->handle.Get(), source->handle.Get());
+    context.MarkWork("attachment feedback copies");
+    ++feedback_copies;
+    return selected->resource;
+}
+
 // Binds everything a draw needs and invokes draw(commands, params-independent). Order matters:
 // every descriptor allocation (which may submit the open command list when a ring is full)
 // happens BEFORE any per-draw state is recorded.
@@ -385,6 +444,38 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         buffer_cache.any_buffer_uploaded = false;
     }
 
+    // Guest mappings can shrink between cache bindings. Do not hand invalid
+    // buffer ranges to the descriptor API or poison the whole GPU thread.
+    for (const auto& stage : bindings.stages) {
+        const auto valid = [](const auto& buffer, u64 alignment) {
+            return !buffer.resource || !buffer.size ||
+                   (buffer.offset % alignment == 0 &&
+                    IsValidBufferView(buffer.resource->handle->GetGPUVirtualAddress(),
+                                      buffer.resource->handle->GetDesc().Width, buffer.offset,
+                                      buffer.size));
+        };
+        for (const auto& buffer : stage.uniform) {
+            if (!valid(buffer, 256)) {
+                SkipDraw("invalid constant buffer view");
+                return;
+            }
+        }
+        for (const auto& buffer : stage.storage) {
+            if (!valid(buffer, 4)) {
+                SkipDraw("invalid storage buffer view");
+                return;
+            }
+        }
+        for (const auto& buffer : stage.texel) {
+            const auto format =
+                MaxwellFormat(static_cast<VideoCore::Surface::PixelFormat>(buffer.pixel_format));
+            if (format.bytes_per_block && !valid(buffer, format.bytes_per_block)) {
+                SkipDraw("invalid texel buffer view");
+                return;
+            }
+        }
+    }
+
     // ---- 2. Allocate every descriptor this draw needs (may submit the command list) ----
     const u32 cbv_size = TableSize(totals.cbv);
     const u32 srv_size = TableSize(totals.srv);
@@ -400,17 +491,22 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     const auto dsv_handle = has_depth ? descriptors.AllocateDsv() : D3D12_CPU_DESCRIPTOR_HANDLE{};
 
     // ---- 3. Fill the tables and collect resource states ----
+    ++feedback_draw;
+    bool invalid_states = false;
+    bool readonly_depth = false;
     state_scratch.clear();
-    const auto need = [this](const ResourcePtr& resource, D3D12_RESOURCE_STATES state) {
+    const auto need = [this, &invalid_states](const ResourcePtr& resource,
+                                              D3D12_RESOURCE_STATES state) {
         if (!resource)
             return;
         for (auto& [known, known_state] : state_scratch) {
             if (known != resource)
                 continue;
-            if (known_state != state && (known_state == D3D12_RESOURCE_STATE_UNORDERED_ACCESS ||
-                                         state == D3D12_RESOURCE_STATE_UNORDERED_ACCESS))
-                throw std::runtime_error(
-                    "D3D12 draw aliases UAV storage with a read-only buffer/view");
+            constexpr u32 WriteStates = D3D12_RESOURCE_STATE_UNORDERED_ACCESS |
+                                        D3D12_RESOURCE_STATE_RENDER_TARGET |
+                                        D3D12_RESOURCE_STATE_DEPTH_WRITE;
+            if (!CompatibleDrawStates(known_state, state, WriteStates))
+                invalid_states = true;
             known_state |= state;
             return;
         }
@@ -444,8 +540,29 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         for (const auto& desc : info->texture_descriptors) {
             for (u32 i = 0; i < desc.count; ++i, ++srv_i, ++smp_i) {
                 ImageView& view = texture_cache.GetImageView((texture_views++)->id);
-                if (descriptors.WriteImageSrv(srv_table, srv_i, view, SrvDimension(desc.type)))
-                    need(view.ImageHandle(), SrvState);
+                auto sampled = view.ImageHandle();
+                bool color_feedback = false;
+                for (const auto* color : color_views)
+                    color_feedback |= color && sampled && color->ImageHandle() == sampled;
+                const bool depth_feedback = has_depth && sampled == depth_view->ImageHandle();
+                if (color_feedback || depth_feedback) {
+                    const bool stencil_writes =
+                        regs.stencil_enable != 0 && (regs.stencil_front_mask & 0xff) != 0;
+                    if (!color_feedback &&
+                        SelectFeedbackMode(depth_feedback, regs.depth_write_enabled != 0,
+                                           stencil_writes) == FeedbackMode::ReadOnlyDepth) {
+                        readonly_depth = true;
+                    } else {
+                        sampled = CopyFeedback(sampled);
+                        if (!sampled) {
+                            SkipDraw("feedback memory budget");
+                            return;
+                        }
+                    }
+                }
+                if (descriptors.WriteImageSrv(srv_table, srv_i, view, SrvDimension(desc.type),
+                                              sampled))
+                    need(sampled, SrvState);
                 descriptors.WriteSampler(sampler_table, smp_i,
                                          texture_cache.GetSampler(*sampler_it++));
             }
@@ -487,10 +604,25 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         uav_i = image_start;
         for (const auto& desc : info->image_descriptors) {
             const auto format = PixelFormatFromImageFormat(desc.format);
-            if (!format)
-                throw std::runtime_error("D3D12 unsupported graphics storage image format");
+            if (!format) {
+                SkipDraw("unsupported graphics storage image format");
+                return;
+            }
             for (u32 i = 0; i < desc.count; ++i, ++uav_i) {
                 auto& view = texture_cache.GetImageView((texture_views++)->id);
+                if (const auto resource = view.ImageHandle()) {
+                    const auto dimension = view.Description().ViewDimension;
+                    if (!(resource->handle->GetDesc().Flags &
+                          D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) ||
+                        (dimension != D3D12_SRV_DIMENSION_TEXTURE1D &&
+                         dimension != D3D12_SRV_DIMENSION_TEXTURE1DARRAY &&
+                         dimension != D3D12_SRV_DIMENSION_TEXTURE2D &&
+                         dimension != D3D12_SRV_DIMENSION_TEXTURE2DARRAY &&
+                         dimension != D3D12_SRV_DIMENSION_TEXTURE3D)) {
+                        SkipDraw("unsupported graphics storage image view");
+                        return;
+                    }
+                }
                 descriptors.WriteImageUav(
                     uav_table, uav_i, view,
                     static_cast<DXGI_FORMAT>(MaxwellFormat(*format).view_format));
@@ -527,8 +659,11 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
             vertex_views[i] = {zero_vertex_buffer->handle->GetGPUVirtualAddress(), 65536, 0};
             continue;
         }
-        ValidateBufferView(slot.resource->handle->GetGPUVirtualAddress(),
-                           slot.resource->handle->GetDesc().Width, slot.offset, slot.size);
+        if (!IsValidBufferView(slot.resource->handle->GetGPUVirtualAddress(),
+                               slot.resource->handle->GetDesc().Width, slot.offset, slot.size)) {
+            SkipDraw("invalid vertex buffer view");
+            return;
+        }
         vertex_views[i] = {slot.resource->handle->GetGPUVirtualAddress() + slot.offset,
                            static_cast<UINT>(slot.size), slot.stride};
         need(slot.resource, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
@@ -555,9 +690,12 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
             }
             return;
         }
-        ValidateBufferView(geometry.index->handle->GetGPUVirtualAddress(),
-                           geometry.index->handle->GetDesc().Width, geometry.index_offset,
-                           geometry.index_size);
+        if (!IsValidBufferView(geometry.index->handle->GetGPUVirtualAddress(),
+                               geometry.index->handle->GetDesc().Width, geometry.index_offset,
+                               geometry.index_size)) {
+            SkipDraw("invalid index buffer view");
+            return;
+        }
         index_view = {geometry.index->handle->GetGPUVirtualAddress() + geometry.index_offset,
                       static_cast<UINT>(geometry.index_size),
                       geometry.index_is_32bit ? DXGI_FORMAT_R32_UINT : DXGI_FORMAT_R16_UINT};
@@ -569,32 +707,38 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     for (u32 slot = 0; slot < num_rts; ++slot) {
         descriptors.CreateRtv({rtv_base.ptr + slot * rtv_stride}, color_views[slot]);
     }
-    if (has_depth)
-        descriptors.CreateDsv(dsv_handle, *depth_view);
-    const auto validate_attachment = [this](const ResourcePtr& resource) {
-        for (const auto& [used, state] : state_scratch) {
-            if (used == resource)
-                throw std::runtime_error("D3D12 draw aliases an attachment with a shader resource");
+    if (has_depth) {
+        auto flags = D3D12_DSV_FLAG_NONE;
+        if (readonly_depth) {
+            flags = D3D12_DSV_FLAG_READ_ONLY_DEPTH;
+            const auto format = DsvFormat(depth_view->Description().Format);
+            if (format == DXGI_FORMAT_D24_UNORM_S8_UINT ||
+                format == DXGI_FORMAT_D32_FLOAT_S8X24_UINT)
+                flags |= D3D12_DSV_FLAG_READ_ONLY_STENCIL;
         }
-    };
+        descriptors.CreateDsv(dsv_handle, *depth_view, flags);
+    }
+    // Remaining attachment/UAV and storage/geometry aliases cannot have legal
+    // combined states. Reject only this draw, leaving the GPU thread alive.
     for (u32 slot = 0; slot < num_rts; ++slot) {
         if (color_views[slot])
-            validate_attachment(color_views[slot]->ImageHandle());
+            need(color_views[slot]->ImageHandle(), D3D12_RESOURCE_STATE_RENDER_TARGET);
     }
     if (has_depth)
-        validate_attachment(depth_view->ImageHandle());
+        need(depth_view->ImageHandle(),
+             readonly_depth ? D3D12_RESOURCE_STATE_DEPTH_READ : D3D12_RESOURCE_STATE_DEPTH_WRITE);
+    if (invalid_states) {
+        SkipDraw("conflicting resource states");
+        return;
+    }
+    if (readonly_depth)
+        ++feedback_readonly_depth;
 
     // ---- 4. Record state (no more allocations from here on) ----
     auto* const commands = context.Commands();
     descriptors.SetHeaps(commands);
     for (const auto& [resource, state] : state_scratch)
         context.Transition(resource, state);
-    for (u32 slot = 0; slot < num_rts; ++slot) {
-        if (color_views[slot])
-            context.Transition(color_views[slot]->ImageHandle(), D3D12_RESOURCE_STATE_RENDER_TARGET);
-    }
-    if (has_depth)
-        context.Transition(depth_view->ImageHandle(), D3D12_RESOURCE_STATE_DEPTH_WRITE);
 
     commands->SetGraphicsRootSignature(root_signature);
     commands->SetPipelineState(pso);
@@ -1171,6 +1315,16 @@ void RasterizerD3D12::TickFrame() {
     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
     buffer_cache.TickFrame();
     texture_cache.TickFrame();
+    if (feedback_frame < 8 || feedback_frame % 120 == 0) {
+        Diagnostic("D3D12_FEEDBACK copies=" + std::to_string(feedback_copies) +
+                   " readonly_depth=" + std::to_string(feedback_readonly_depth) +
+                   " skipped_draws=" + std::to_string(skipped_draws) +
+                   " frame=" + std::to_string(feedback_frame));
+    }
+    feedback_copies = feedback_readonly_depth = skipped_draws = 0;
+    std::erase_if(feedback_pool,
+                  [this](const auto& entry) { return entry.frame != feedback_frame; });
+    ++feedback_frame;
 }
 Tegra::Engines::AccelerateDMAInterface& RasterizerD3D12::AccessAccelerateDMA() {
     return m_accelerate_dma;
