@@ -120,8 +120,8 @@ void FillGraphicsState(Tegra::Engines::Maxwell3D& maxwell3d, Pso::GraphicsPsoSta
     s.patch_vertices = static_cast<u8>(regs.patch_vertices);
 
     // Rasterizer. Front face flips with the window origin like the Vulkan backend.
-    const auto cull = Pso::CullMode(regs.gl_cull_test_enabled != 0,
-                                    static_cast<u32>(regs.gl_cull_face));
+    const auto cull =
+        Pso::CullMode(regs.gl_cull_test_enabled != 0, static_cast<u32>(regs.gl_cull_face));
     s.cull_mode = static_cast<u8>(cull.mode);
     s.cull_all = cull.cull_all;
     bool ccw = regs.gl_front_face == Maxwell::FrontFace::CounterClockWise;
