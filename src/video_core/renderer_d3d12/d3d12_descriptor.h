@@ -121,7 +121,7 @@ public:
     static constexpr u32 DsvHeapSize = 512;
 
     explicit D3D12DescriptorAllocator(Context& context, u32 view_capacity = ViewHeapSize,
-                                       u32 sampler_capacity = SamplerHeapSize);
+                                      u32 sampler_capacity = SamplerHeapSize);
 
     // Rebind for every draw: helpers can replace heaps within the same command list.
     // Reserve the whole draw/dispatch before allocating from any ring. Reclaiming
@@ -190,9 +190,10 @@ private:
     };
     struct DescriptorKeyHash {
         size_t operator()(const DescriptorKey& key) const noexcept {
-            const std::string_view bytes{reinterpret_cast<const char*>(key.description.data()), key.size};
-            return std::hash<std::string_view>{}(bytes) ^ std::hash<std::uintptr_t>{}(key.resource) ^
-                   (static_cast<size_t>(key.kind) << 1);
+            const std::string_view bytes{reinterpret_cast<const char*>(key.description.data()),
+                                         key.size};
+            return std::hash<std::string_view>{}(bytes) ^
+                   std::hash<std::uintptr_t>{}(key.resource) ^ (static_cast<size_t>(key.kind) << 1);
         }
     };
     struct CachedDescriptor {

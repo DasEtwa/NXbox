@@ -84,9 +84,11 @@ D3D12_SAMPLER_DESC MakeSamplerDesc(const Tegra::Texture::TSCEntry& entry) {
     return desc;
 }
 
-D3D12DescriptorAllocator::D3D12DescriptorAllocator(Context& context, u32 view_capacity, u32 sampler_capacity)
+D3D12DescriptorAllocator::D3D12DescriptorAllocator(Context& context, u32 view_capacity,
+                                                   u32 sampler_capacity)
     : context{context}, views{view_capacity}, samplers{sampler_capacity} {
-    if (!view_capacity || view_capacity > ViewHeapSize || !sampler_capacity || sampler_capacity > SamplerHeapSize)
+    if (!view_capacity || view_capacity > ViewHeapSize || !sampler_capacity ||
+        sampler_capacity > SamplerHeapSize)
         throw std::invalid_argument("D3D12 descriptor heap capacity outside supported limits");
     Init(views, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, view_capacity, true);
     Init(samplers, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, sampler_capacity, true);
@@ -115,9 +117,9 @@ void D3D12DescriptorAllocator::RefreshCaches() {
     slot_contents.clear();
     // Sampler descriptions do not reference resources and stay valid across ticks.
 }
-void D3D12DescriptorAllocator::WriteCached(
-    D3D12_DESCRIPTOR_HEAP_TYPE type, const ResourcePtr& resource, u32 kind, const void* desc,
-    size_t size, D3D12_CPU_DESCRIPTOR_HANDLE destination) {
+void D3D12DescriptorAllocator::WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE type,
+                                           const ResourcePtr& resource, u32 kind, const void* desc,
+                                           size_t size, D3D12_CPU_DESCRIPTOR_HANDLE destination) {
     const FrameProfile::Scope profile_write{context.Profile(), FramePhase::DescriptorWrites};
     RefreshCaches();
     DescriptorKey key;
@@ -148,11 +150,13 @@ void D3D12DescriptorAllocator::WriteCached(
             break;
         }
         case 1:
-            context.Device()->CreateShaderResourceView(resource ? resource->handle.Get() : nullptr,
+            context.Device()->CreateShaderResourceView(
+                resource ? resource->handle.Get() : nullptr,
                 static_cast<const D3D12_SHADER_RESOURCE_VIEW_DESC*>(desc), handle);
             break;
         case 2:
-            context.Device()->CreateUnorderedAccessView(resource ? resource->handle.Get() : nullptr, nullptr,
+            context.Device()->CreateUnorderedAccessView(
+                resource ? resource->handle.Get() : nullptr, nullptr,
                 static_cast<const D3D12_UNORDERED_ACCESS_VIEW_DESC*>(desc), handle);
             break;
         case 3:
