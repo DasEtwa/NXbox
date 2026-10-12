@@ -37,15 +37,19 @@ honor the same lock protocol; it cannot protect against tools that overwrite for
 The runner stops existing NXbox processes, installs the supplied package, waits for asynchronous
 deployment, selects the exact manifest name/version/architecture of the supplied NXbox package, then enumerates `LocalState/library/<TITLEID>.json`
 records plus every `.nsp`, `.xci`, `.nsz` in `LocalState/games`. Library records provide actual IDs,
-names and absolute paths. Uncached filenames without an ID get a stable `unknown-<hash>` identity;
-they are still tested. Package-path identities distinguish multiple files for a single title.
-Updates/DLC or compressed packages can fail to boot and are reported rather than silently excluded.
+names and absolute paths. Uncached filenames without an ID get a stable `unknown-<hash>` identity and are reported without launching.
+Only base applications with a title ID ending in `000` are launched; explicit update/DLC types
+are excluded even when their ID ends in `000`. Package-path identities distinguish multiple base
+files. Updates (`base + 0x800`) and DLC (`base + 0x1000 + index`) are grouped under their base
+in JSON inventory and Markdown, including orphan content with no installed base.
 Cached removable-drive paths are attempted and flagged; uncached files on inaccessible external
 storage cannot be discovered through the app sandbox endpoint. This is discovery of accessible
 packages, not a parser for encrypted game contents or a claim that all cache entries remain installed.
 
 Full crash-dump collection is disabled for NXbox before testing, matching the local preflight
-policy; stored dumps are retained and collection remains disabled afterward. No account or
+policy; stored dumps are retained. If the console rejects crashcontrol (including HTTP 500),
+the runner records a warning and continues; collection may remain enabled. It does not retry
+or delete stored dumps. No account or
 certificate settings are changed. Previous launch controls, including `game.url`, global settings
 and existing per-title settings, are backed up in `previous-controls/` and restored byte-for-byte
 in `finally`. Both settings labels (`backend` and `renderer_backend`) are overridden temporarily
@@ -58,7 +62,11 @@ not rolled back. Generic input can change saves or activate menu selections: use
 
 Each case presses A and PLUS/Start periodically and holds the right stick after 45 seconds
 using the existing in-app `NXBOX_INPUT_SCRIPT` protocol. No title-specific scripts are needed.
-`NXBOX_THREAD_PROFILE=1` enables CPU/wait telemetry. Guest frame dumping is disabled to avoid
+`NXBOX_THREAD_PROFILE=1` enables CPU/wait telemetry. D3D12 also defaults to
+`NXBOX_D3D12_DEBUG=1` and `NXBOX_D3D12_FRAME_PROFILE=1`. Repeat `--env KEY=VALUE`
+for all cases and `--env-d3d12 KEY=VALUE` for D3D12 only. D3D12 overrides common values;
+later assignments win. Renderer selection and input/frame-dump controls remain runner-owned.
+For example: `--env NXBOX_THREAD_PROFILE=1 --env-d3d12 NXBOX_D3D12_DEBUG=0`. Guest frame dumping is disabled to avoid
 unbounded on-console dumps. Device Portal screenshots are captured at launch and roughly every
 30 seconds (portal latency can delay them), decoded to PPM for sheets and sampled at 32x18 for
 pixel changes. Raw screenshots and logs are retained locally. Failed captures are recorded.
@@ -78,10 +86,22 @@ States have explicit reasons:
 - **boot**: no positive presentation interval, including missing diagnostics.
 - **menus**: presentation observed without enough sustained frame-change evidence.
 - **in-game**: at least three positive intervals averaging at least 10 FPS, plus two capture
-  transitions with mean RGB difference at least 8%. Animated menus and overlays can satisfy this
+  transitions with mean RGB difference at least 8%, and at least 10 draws per frame when
+  draw telemetry is available (`GAME_PRESENT` or `D3D12_FRAME_PROFILE`). Missing draw telemetry
+  remains unknown and uses FPS/capture evidence. Animated menus and overlays can satisfy this
   heuristic; static gameplay can remain classified as menus. This is not proof of playability.
-- **crashed**: GAME_FAIL/load failure/missing marker, terminate, unhandled exception,
-  D3D12_REMOVED, or nonempty crash file. A recovered `what()` line alone does not imply a crash.
+- **black-screen**: positive presents and at least two screenshots, with every post-launch
+  signature near black (at least 99% of sampled RGB channels <=12/255). The launch capture
+  is ignored to avoid classifying startup black as a persistent failure.
+- **crashed**: GAME_FAIL/load failure/missing marker, `event=terminate`/`event=exception`
+  with a fatal code (nonzero terminate exit, Windows error-severity exception,
+  or explicit `fatal_code`/`fatal=1`), `renderer_exception what=`, unhandled exception, terminate called,
+  D3D12_REMOVED, a new package-scoped dump, or process disappearance before the deadline.
+  Routine event/memory logs and `CreateEvent GpuChannelSMExceptionBreakpoint*` are not fatal.
+  A recovered `what()` line alone does not imply a crash. Process polling allows activation
+  grace (up to 15 seconds) if the process has not yet been observed. Dump inventory failures
+  are warnings and cannot be used as crash evidence. Dump filenames are compared before launch
+  and before runner-initiated stop using the [Device Portal dump API](https://learn.microsoft.com/en-us/windows/mixed-reality/develop/advanced-concepts/device-portal-api-reference).
 - **error**: runner failure, with game state unknown.
 
 ## Artifacts and comparison
@@ -90,7 +110,8 @@ Every invocation writes `~/.local/share/nxbox/artifacts/matrix-<sha>-<UTC-date>/
 `compat.json` (schema 2), `diff.json`, a matrix overview contact sheet, per-case logs/screenshots/contact sheets, and launch-control
 backups. Reports are checkpointed after each case and on interruption; `complete` records whether
 all cases and cleanup finished. Do not commit these artifacts: they can contain private paths,
-URLs or game screenshots. The newest schema-2 run of the same live/dry-run type is the baseline.
+URLs or game screenshots. The newest schema-2 run of the same live/dry-run type **with recorded cases** is the baseline.
+Empty/aborted runs and malformed reports are skipped; partial runs with cases remain eligible.
 Regressions are highlighted for lower state rank, FPS drops over 20%, or higher observed InfoQueue
 counts. New and missing cases are separate changes. Duration/settings can differ between runs;
 interpret the heuristic diff with the evidence, especially when comparing menus versus gameplay.

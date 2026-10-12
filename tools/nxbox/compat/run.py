@@ -10,7 +10,7 @@ import time
 import uuid
 from pathlib import Path
 
-from .diag import parse_diag, score_game
+from .diag import fatal_lines, parse_diag, score_game
 from .images import contact_sheet, read_ppm
 from .portal import Portal, PortalError, credentials
 
@@ -117,7 +117,17 @@ def safe_error(error):
 
 
 def run_game(
-    portal, package, game, output, seconds, poll, environment, script, max_frames, snapshot=None
+    portal,
+    package,
+    game,
+    output,
+    seconds,
+    poll,
+    environment,
+    script,
+    max_frames,
+    snapshot=None,
+    monitor=False,
 ):
     full_name = package["PackageFullName"]
     folder = output / game["title_id"]
@@ -136,6 +146,13 @@ def run_game(
         "errors": [],
     }
     evidence_ready = False
+    old_dumps = None
+    result["warnings"] = []
+    if monitor:
+        try:
+            old_dumps = portal.dump_names(full_name)
+        except PortalError as error:
+            result["warnings"].append("Dump inventory unavailable: " + safe_error(error))
     try:
         portal.stop(full_name)
         # Archive stale evidence before clearing it so it cannot score the next game.
@@ -173,12 +190,19 @@ def run_game(
         start = time.monotonic()
         portal.launch(package)
         next_snapshot = 0.0
+        observed_process = False
         while True:
             elapsed = time.monotonic() - start
+            if monitor and elapsed < seconds:
+                running = portal.running(full_name)
+                if not running and (observed_process or elapsed >= min(15, seconds / 2)):
+                    result["process_disappeared"] = True
+                    break
+                observed_process = observed_process or running
             if snapshot and elapsed >= next_snapshot:
                 try:
                     snapshot(elapsed, folder)
-                except Exception as error:
+                except Exception as error:  # noqa: BLE001 - Keep collecting after capture failures.
                     result["errors"].append(safe_error(error))
                 next_snapshot = elapsed + 30
             data = portal.pull(full_name, "eden_uwp_diag.txt", optional=True)
@@ -196,6 +220,11 @@ def run_game(
     except Exception as error:  # noqa: BLE001 - Preserve evidence and redact errors at boundaries.
         result["runner_error"] = safe_error(error)
     finally:
+        if monitor and old_dumps is not None and evidence_ready:
+            try:
+                result["new_dumps"] = sorted(portal.dump_names(full_name) - old_dumps)
+            except PortalError as error:
+                result["warnings"].append("Dump inventory unavailable: " + safe_error(error))
         # Attempt every evidence pull independently, then stop even when collection fails.
         try:
             if evidence_ready:
@@ -208,7 +237,9 @@ def run_game(
                         data = portal.pull(full_name, name, directory, optional=True)
                         if data is not None:
                             (folder / name).write_bytes(data)
-                            if name == "nxbox_crash.txt" and data.strip():
+                            if name == "nxbox_crash.txt" and fatal_lines(
+                                data.decode("utf-8", "replace")
+                            ):
                                 result["crash_file"] = f"{game['title_id']}/{name}"
                     except Exception as error:  # noqa: BLE001 - Preserve evidence and redact errors at boundaries.
                         result["errors"].append(safe_error(error))
