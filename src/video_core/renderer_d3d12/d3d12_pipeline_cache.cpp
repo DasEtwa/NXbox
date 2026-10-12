@@ -290,8 +290,8 @@ void FillGraphicsState(Tegra::Engines::Maxwell3D& maxwell3d, Pso::GraphicsPsoSta
     for (size_t i = 0; i < Pso::kNumVertexAttributes; ++i) {
         const auto& in = regs.vertex_attrib_format[i];
         auto& out = s.attributes[i];
-        const auto format = Pso::VertexFormatFor(static_cast<u32>(in.size.Value()),
-                                                 static_cast<u32>(in.type.Value()), in.bgra != 0);
+        const auto format = Pso::VertexFormatForInputAssembler(
+            static_cast<u32>(in.size.Value()), static_cast<u32>(in.type.Value()), in.bgra != 0);
         out.enabled = in.constant == 0 && format.dxgi != 0;
         out.slot = static_cast<u8>(in.buffer);
         out.offset = static_cast<u16>(in.offset);
@@ -300,21 +300,6 @@ void FillGraphicsState(Tegra::Engines::Maxwell3D& maxwell3d, Pso::GraphicsPsoSta
         out.divisor = regs.vertex_streams[in.buffer].frequency;
         out.swap_rb = format.swap_rb;
         out.scaled = format.scaled;
-        // BGRA texture formats and A8 are not portable IA formats. Repack to RGBA.
-        if (out.dxgi == 87) {
-            out.dxgi = 28;
-            out.swap_rb = true;
-        }
-        if (out.swap_rb && static_cast<u32>(in.size.Value()) != Pso::VSize::A2B10G10R10 &&
-            static_cast<u32>(in.size.Value()) != Pso::VSize::B10G11R11) {
-            const u32 width = Pso::VertexComponentBytes(static_cast<u32>(in.size.Value()));
-            const u32 expanded = width == 4   ? Pso::VSize::R32G32B32A32
-                                 : width == 2 ? Pso::VSize::R16G16B16A16
-                                              : Pso::VSize::R8G8B8A8;
-            out.dxgi = Pso::VertexFormatFor(expanded, static_cast<u32>(in.type.Value())).dxgi;
-        }
-        if (in.size == Maxwell::VertexAttribute::Size::Size_A8)
-            out.dxgi = in.type == Maxwell::VertexAttribute::Type::UNorm ? 28 : 30;
     }
 }
 

@@ -365,12 +365,24 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
             return;
         }
         if (view && view->ImageHandle()) {
-            // Conservative alias handling: one writable RTV per resource. A null
-            // duplicate discards that output without binding overlapping subresources.
+            // Only overlapping RTV subresources conflict. Distinct mips/layers
+            // of one resource remain legal independent color attachments.
             bool duplicate = false;
-            for (u32 previous = 0; previous < slot; ++previous)
-                duplicate |= color_views[previous] &&
-                             color_views[previous]->ImageHandle() == view->ImageHandle();
+            const auto resource_desc = view->ImageHandle()->handle->GetDesc();
+            for (u32 previous = 0; previous < slot; ++previous) {
+                const auto* prior = color_views[previous];
+                if (!prior || prior->ImageHandle() != view->ImageHandle())
+                    continue;
+                const bool same_mip = resource_desc.SampleDesc.Count > 1 ||
+                                      prior->range.base.level == view->range.base.level;
+                duplicate |=
+                    same_mip &&
+                    (resource_desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D ||
+                     Pso::RenderTargetLayersOverlap(static_cast<u32>(prior->range.base.layer),
+                                                    static_cast<u32>(prior->range.extent.layers),
+                                                    static_cast<u32>(view->range.base.layer),
+                                                    static_cast<u32>(view->range.extent.layers)));
+            }
             if (!duplicate) {
                 color_views[slot] = view;
                 formats.colors[slot] = static_cast<u32>(view->Description().Format);
@@ -1249,6 +1261,12 @@ void RasterizerD3D12::DrawTexture() try {
     auto* target = framebuffer.Color(framebuffer.DrawBuffer(0));
     if (!target || !target->ImageHandle())
         return;
+    if (!(target->ImageHandle()->handle->GetDesc().Flags &
+          D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET)) {
+        SkipDraw("DrawTexture target lacks ALLOW_RENDER_TARGET");
+        return;
+    }
+    query_runtime.PrepareDraw();
     const auto& blit = maxwell3d->draw_manager.draw_texture_state;
     // Descriptor discovery may relocate ImageViews; own the source snapshot.
     const ImageView source = texture_cache.GetImageView(blit.src_texture);
@@ -1352,6 +1370,8 @@ void RasterizerD3D12::DrawTexture() try {
     commands->RSSetScissorRects(1, &scissor);
     commands->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
     transform_feedback.Unbind();
+    query_cache.CounterEnable(VideoCommon::QueryType::ZPassPixelCount64,
+                              maxwell3d->regs.zpass_pixel_count_enable != 0);
     query_runtime.BeginDraw(false);
     context.MarkWork("DrawTexture blit");
     commands->DrawInstanced(4, 1, 0, 0);

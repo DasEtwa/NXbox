@@ -6,7 +6,7 @@
 namespace Shader::Backend::HLSL {
 void EmitGetAttribute(EmitContext& ctx, IR::Inst& inst, IR::Attribute attr,
                       std::string_view vertex) {
-    if (IR::IsGeneric(attr) && ctx.stage == Stage::Fragment &&
+    if (IR::IsGeneric(attr) && (ctx.stage == Stage::Fragment || ctx.stage == Stage::Geometry) &&
         !ctx.runtime_info.previous_stage_stores.Generic(IR::GenericAttributeIndex(attr),
                                                         IR::GenericAttributeElement(attr))) {
         ctx.AddF32("{} = {};", inst, IR::GenericAttributeElement(attr) == 3 ? "1.0f" : "0.0f");

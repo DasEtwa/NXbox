@@ -383,7 +383,8 @@ inline void RepackVertexFormat(std::span<std::uint8_t> destination,
         }
         if (size == VSize::G8R8) {
             std::swap(target[0], target[1]);
-        } else if (swap_rb && size == VSize::A2B10G10R10) {
+        }
+        if (swap_rb && size == VSize::A2B10G10R10) {
             std::uint32_t packed{};
             std::memcpy(&packed, target, sizeof(packed));
             packed = (packed & 0xc00ffc00u) | ((packed & 0x3ffu) << 20) | ((packed >> 20) & 0x3ffu);
@@ -482,6 +483,31 @@ constexpr VertexFormat VertexFormatFor(std::uint32_t size, std::uint32_t type, b
     return {f, scaled, bgra && f != 0};
 }
 
+// IA formats are distinct from texture/view formats. The CPU repacker and HLSL
+// signatures implement the conversion policy represented by these flags.
+constexpr VertexFormat VertexFormatForInputAssembler(std::uint32_t size, std::uint32_t type,
+                                                     bool bgra = false) {
+    auto format = VertexFormatFor(size, type, bgra);
+    if (format.dxgi == 87) {
+        format.dxgi = 28;
+        format.swap_rb = true;
+    }
+    if (format.swap_rb && size == VSize::B10G11R11)
+        return {}; // Unequal-width packed BGRA needs conversion to floating components.
+    if (format.swap_rb && size != VSize::A2B10G10R10) {
+        const auto width = VertexComponentBytes(size);
+        const auto expanded = width == 4   ? VSize::R32G32B32A32
+                              : width == 2 ? VSize::R16G16B16A16
+                                           : VSize::R8G8B8A8;
+        format.dxgi = VertexFormatFor(expanded, type).dxgi;
+    }
+    if (size == VSize::A8) {
+        format = VertexFormatFor(VSize::R8G8B8A8, type);
+        format.swap_rb = false; // Alpha is invariant under BGRA swizzling.
+    }
+    return format;
+}
+
 // DXGI depth-stencil view format from the typeless resource format used by the texture cache
 // (FormatInfo::resource_format). 0 = not a depth format / unsupported.
 constexpr std::uint32_t DsvFormat(std::uint32_t resource_format) {
@@ -524,6 +550,12 @@ struct VertexAttributeState {
 
 inline constexpr std::size_t kNumRenderTargets = 8;
 inline constexpr std::size_t kNumVertexAttributes = 32;
+
+constexpr bool RenderTargetLayersOverlap(std::uint32_t first_a, std::uint32_t count_a,
+                                         std::uint32_t first_b, std::uint32_t count_b) {
+    return count_a && count_b && std::uint64_t{first_a} < std::uint64_t{first_b} + count_b &&
+           std::uint64_t{first_b} < std::uint64_t{first_a} + count_a;
+}
 
 // Actual bound views, in fragment-output slot order. Zero means unbound.
 struct FramebufferFormats {

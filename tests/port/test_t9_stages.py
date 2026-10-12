@@ -31,6 +31,10 @@ int main() {
     static_assert(VertexAlignment(VSize::R8G8B8A8) == 4);
     static_assert(VertexRequiredBytes(101, 20, 4) == 2024);
     static_assert(VertexRequiredBytes(400, 0, 16) == 16);
+    static_assert(RenderTargetLayersOverlap(1, 2, 2, 3));
+    static_assert(!RenderTargetLayersOverlap(1, 1, 2, 1));
+    static_assert(!RenderTargetLayersOverlap(0, 0, 0, 2));
+    static_assert(RenderTargetLayersOverlap(0xffffffff, 2, 0xffffffff, 1));
     // Attribute at guest offset 14, stride 7, inclusive limit cuts final vertex.
     std::array<std::uint8_t, 19> guest{};
     for (std::size_t i = 0; i < guest.size(); ++i) guest[i] = i + 1;
@@ -75,6 +79,9 @@ int main() {
 #include "video_core/renderer_d3d12/d3d12_pso_tables.h"
 using namespace D3D12::Pso;
 int main() {
+    static_assert(VertexFormatForInputAssembler(VSize::A8, VType::SNorm).dxgi == 31);
+    static_assert(VertexFormatForInputAssembler(VSize::R8G8B8A8, VType::UNorm, true).dxgi == 28);
+    static_assert(VertexFormatForInputAssembler(VSize::B10G11R11, VType::Float, true).dxgi == 0);
     std::array<std::uint8_t, 6> guest{1,2,3,4,5,6};
     std::array<std::uint8_t, 8> out{};
     RepackVertexFormat(out, guest, 3, VSize::R8G8B8, VType::UNorm, true);
@@ -121,6 +128,57 @@ int main() {
             )
             subprocess.run([str(binary)], check=True, timeout=10)
 
+    def test_input_format_inventory(self):
+        compiler = shutil.which("clang++") or shutil.which("g++")
+        if not compiler:
+            self.skipTest("C++20 compiler unavailable")
+        maxwell = (ROOT / "src/video_core/engines/maxwell_3d.h").read_text()
+        enum = maxwell.split("enum class Size : u32 {", 1)[1].split("};", 1)[0]
+        sizes = [int(value, 16) for value in re.findall(r"Size_\w+ = (0x\w+)", enum)]
+        self.assertEqual(len(sizes), 17, "review newly added Maxwell vertex sizes")
+        source = r"""
+#include <cassert>
+#include "video_core/renderer_d3d12/d3d12_pso_tables.h"
+int main() {
+    using namespace D3D12::Pso;
+    const unsigned sizes[] = {SIZES};
+    unsigned baseline=0, mapped=0, native=0;
+    for (auto size:sizes) for(unsigned type=1;type<=7;++type) for(bool bgra:{false,true}) {
+        const auto old = VertexFormatFor(size,type,bgra);
+        const auto current = VertexFormatForInputAssembler(size,type,bgra);
+        mapped += old.dxgi != 0;
+        baseline += old.dxgi && !old.swap_rb && !old.scaled &&
+                    size != VSize::R16G16B16 && size != VSize::R8G8B8;
+        native += current.dxgi != 0;
+        if (current.dxgi) {
+            assert(current.dxgi != 87 && current.dxgi != 65);
+            assert(VertexStorageByteSize(size,current.swap_rb) >= VertexByteSize(size));
+        }
+    }
+    assert(baseline==54 && mapped==182 && native==187);
+}
+""".replace("SIZES", ",".join(map(str, sizes)))
+        with tempfile.TemporaryDirectory() as temp:
+            cpp, binary = Path(temp) / "inventory.cpp", Path(temp) / "inventory"
+            cpp.write_text(source)
+            subprocess.run(
+                [
+                    compiler,
+                    "-std=c++20",
+                    "-Wall",
+                    "-Wextra",
+                    "-Werror",
+                    "-I",
+                    str(ROOT / "src"),
+                    str(cpp),
+                    "-o",
+                    str(binary),
+                ],
+                check=True,
+                timeout=60,
+            )
+            subprocess.run([str(binary)], check=True, timeout=10)
+
     def test_runtime_contracts(self):
         rasterizer = (NATIVE / "d3d12_rasterizer.cpp").read_text()
         cache = (NATIVE / "d3d12_pipeline_cache.cpp").read_text()
@@ -129,7 +187,7 @@ int main() {
         self.assertIn("regs.primitive_restart.index", rasterizer)
         self.assertIn("submitted.num_instances - 1", rasterizer)
         self.assertIn("slot.size - attribute.offset", rasterizer)
-        self.assertIn("color_views[previous]->ImageHandle() == view->ImageHandle()", rasterizer)
+        self.assertIn("Pso::RenderTargetLayersOverlap", rasterizer)
         self.assertIn("failed_graphics.find(key)", cache)
         self.assertIn("failed_graphics.emplace(key, error.what())", cache)
         self.assertIn("guest_graphics.emplace(request, nullptr)", cache)
