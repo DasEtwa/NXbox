@@ -21,9 +21,36 @@ Every ordered `INST` row in the six decoder tables is enumerated below. Aliases 
 
 The six remaining unconditional unreachable handlers are privileged RFE/SRS/CPS and banked-register LDM/STM forms. They are outside the user-mode execution target; this audit does not claim their privileged semantics are implemented. Architectural UDF and reserved SIMD encodings intentionally raise exceptions. There are zero direct InterpretThisInstruction/NOT_IMPLEMENTED/UNIMPLEMENTED markers in decoder handlers.
 
+## Generic fixes measured in this wave
+
+In addition to the A32 decoder gaps, executable differential tests exposed and verified these x64 backend fixes:
+
+- Halfword CLZ on AVX-512 discarded the upper four lanes while narrowing eight widened values. VPMOVDW now preserves all eight lanes.
+- SM4 substitution-box loads used an absolute LEA operand that cannot represent an arbitrary 64-bit host address. A full-width MOV now loads the table address.
+- The FP rounding thunk unpacked rounding mode and exactness from different bytes than the caller packed them into. The byte layout now agrees.
+- Non-exact scalar and vector rounding raised x86 precision status and consequently guest FPSR.IXC. The native round immediate now suppresses precision exceptions for these instructions.
+- Signed-to-unsigned saturating shift fallbacks let C++ integer promotion conceal byte/halfword overflow and truncated wide results to int. Unsigned lane-sized intermediates preserve saturation and result width.
+- Runtime signed 32-bit division by zero retained the dividend instead of returning zero. The zero-divisor branch now clears the result, preserving the INT_MIN/-1 overflow case.
+
 ## Differential evidence
 
-The targeted Catch2 `[conformance]` test runs 4,096 deterministic randomized cases against the existing Unicorn A32 reference harness (16 forms × 256 states). It compares registers, CPSR, extended registers, FPSCR and written memory through RunTestInstance. Cases cover add/subtract, all executable condition codes, random NZCV/carry, all register shift kinds including zero shifts/RRX, sign extension and post-indexed writeback. Existing full A64/A32/Thumb randomized suites also run in CI with Unicorn enabled. A passing source audit cannot replace these executable tests.
+| Deterministic regression | Cases |
+|---|---:|
+| A32 unprivileged transfers | 4096 |
+| A64 halfword CLZ lanes | 1024 |
+| SM4E / SM4EKEY and operand aliasing | 512 |
+| Scalar FRINT across seven operations and 16/32/64-bit widths | 5376 |
+| Vector FRINT across seven operations and 32/64-bit widths | 896 |
+| Signed-to-unsigned saturation across all widths and immediate shifts | 3840 |
+| A64 signed division boundaries | 1024 |
+| A32 / T32 signed division boundaries | 512 |
+| **Total** | **17280** |
+
+All eight targeted Catch2 cases passed on Windows and Ubuntu x64 with **157184 assertions** in [run 38310121816](https://github.com/NspxMiguel/NXbox/actions/runs/38310121816). This establishes the tested regressions, not complete ISA conformance. Rounding tests compare FPSR.IXC explicitly; saturation tests compare FPSR.QC. Integer tests compare registers, memory and execution state against Unicorn.
+
+The dedicated workflow also runs the complete default dynarmic suite, with failures preserved as a nonzero exit. The broad fuzz runs still exposed memory/state discrepancies and an abort; their current status must be read from CI. They are not hidden or excluded to obtain a green result. A full source audit cannot replace executable tests or a real-hardware oracle.
+
+The harness uses Unicorn 2.1.4 MAX CPU models to execute v8/FP16/crypto instructions. It selects the A32 register bank before seeding SP/LR, uses modern instruction counts and PC semantics, resets per-case state, permits writes to synthetic pages, and observes committed memory bytes. The final A32 page is mapped before execution to avoid a reproduced Unicorn lazy-mapping recovery error near 0xffffffff. `DYNARMIC_FUZZ_SEED=19` reproduces each host's random stream; standard-library distribution implementations may differ between Windows and Linux.
 
 ## Scope limits and priorities
 
