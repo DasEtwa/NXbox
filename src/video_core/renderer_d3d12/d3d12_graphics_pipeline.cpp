@@ -118,8 +118,8 @@ GraphicsPipeline::GraphicsPipeline(ID3D12Device* device, ComPtr<ID3D12RootSignat
             throw std::runtime_error("D3D12 disk graphics PSO creation failed");
         return;
     }
-    Check(device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&pso)),
-          "CreateGraphicsPipelineState");
+    CheckPipeline(device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&pso)),
+                  "CreateGraphicsPipelineState", device, key);
 }
 
 } // namespace D3D12

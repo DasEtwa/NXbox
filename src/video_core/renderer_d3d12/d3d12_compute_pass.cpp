@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "video_core/renderer_d3d12/d3d12_compute_pass.h"
+#include "video_core/renderer_d3d12/d3d12_pso_tables.h"
 
 #include <limits>
 #include <string_view>
@@ -47,8 +48,10 @@ ComputePasses::ComputePasses(Context& context)
         D3D12_COMPUTE_PIPELINE_STATE_DESC desc{};
         desc.pRootSignature = root_signature.Get();
         desc.CS = {dxil.data(), dxil.size()};
-        Check(context.Device()->CreateComputePipelineState(&desc, IID_PPV_ARGS(&pipelines[i])),
-              "create helper compute pipeline");
+        CheckPipeline(
+            context.Device()->CreateComputePipelineState(&desc, IID_PPV_ARGS(&pipelines[i])),
+            "create helper compute pipeline", context.Device(),
+            Pso::HashBytes(desc.CS.pShaderBytecode, desc.CS.BytecodeLength));
     }
 }
 ResourcePtr ComputePasses::UploadInput(const ResourcePtr& staging, std::uint64_t offset,
@@ -157,11 +160,11 @@ void ComputePasses::Run(HelperComputePass pass, ComputeConstants constants, Comp
     heap.NumDescriptors = 5; // null CBV, null SRV, three UAVs
     heap.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     Check(context.Device()->CreateDescriptorHeap(&heap, IID_PPV_ARGS(&resource_heap)),
-          "create helper resource heap");
+          "create helper resource heap", context.Device());
     heap.Type = D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER;
     heap.NumDescriptors = 1;
     Check(context.Device()->CreateDescriptorHeap(&heap, IID_PPV_ARGS(&sampler_heap)),
-          "create helper sampler heap");
+          "create helper sampler heap", context.Device());
     const auto increment =
         context.Device()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     auto cpu = resource_heap->GetCPUDescriptorHandleForHeapStart();

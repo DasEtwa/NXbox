@@ -17,8 +17,8 @@ ComputePipeline::ComputePipeline(ID3D12Device* device, ComPtr<ID3D12RootSignatur
             throw std::runtime_error("D3D12 disk compute PSO creation failed");
         return;
     }
-    Check(device->CreateComputePipelineState(&desc, IID_PPV_ARGS(&pso)),
-          "CreateComputePipelineState");
+    CheckPipeline(device->CreateComputePipelineState(&desc, IID_PPV_ARGS(&pso)),
+                  "CreateComputePipelineState", device, key);
 }
 
 } // namespace D3D12

@@ -55,11 +55,11 @@ ComPtr<ID3D12RootSignature> CreateRootSignature(ID3D12Device* device, Descriptor
                   std::string_view{static_cast<const char*>(error->GetBufferPointer()),
                                    error->GetBufferSize()});
     }
-    Check(hr, "D3D12SerializeRootSignature");
+    Check(hr, "D3D12SerializeRootSignature", device);
     ComPtr<ID3D12RootSignature> signature;
     Check(device->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(),
                                       IID_PPV_ARGS(&signature)),
-          "CreateRootSignature");
+          "CreateRootSignature", device);
     return signature;
 }
 

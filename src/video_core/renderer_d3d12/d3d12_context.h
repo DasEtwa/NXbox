@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include <exception>
 #include <functional>
 #include <memory>
 #include <span>
+#include <string_view>
 #include <vector>
 #include <d3d12.h>
 #include <wrl/client.h>
@@ -12,7 +14,9 @@
 
 namespace D3D12 {
 using Microsoft::WRL::ComPtr;
-void Check(HRESULT result, const char* operation);
+void Diagnostic(std::string_view message) noexcept;
+void Check(HRESULT result, const char* operation, ID3D12Device* device = nullptr);
+void CheckPipeline(HRESULT result, const char* operation, ID3D12Device* device, u64 hash);
 struct MemoryBudget {
     u64 used{};
     static constexpr u64 Limit = 512ULL << 20;
@@ -43,6 +47,8 @@ public:
     ID3D12GraphicsCommandList* Commands();
     u64 Submit();
     void Finish();
+    void ReportFailure(const std::exception& error) noexcept;
+    void LogInfoQueue() noexcept;
     void Wait(u64 tick);
     bool IsFree(u64 tick) const;
     u64 CurrentTick() const {

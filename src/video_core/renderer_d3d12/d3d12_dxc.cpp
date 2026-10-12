@@ -23,7 +23,7 @@ const wchar_t* StageTarget(Shader::Stage stage) {
     }
 }
 
-DxilBlob DxcCache::Compile(std::string_view hlsl, Shader::Stage stage) {
+DxilBlob DxcCache::Compile(std::string_view hlsl, Shader::Stage stage, u64 pipeline_hash) {
     const wchar_t* target = StageTarget(stage);
     u64 hash = Pso::HashBytes(hlsl.data(), hlsl.size());
     const auto stage_value = static_cast<u32>(stage);
@@ -34,7 +34,8 @@ DxilBlob DxcCache::Compile(std::string_view hlsl, Shader::Stage stage) {
             return it->second.dxil;
         }
     }
-    auto dxil = std::make_shared<const std::vector<u8>>(compiler.Compile(hlsl, L"main", target));
+    auto dxil = std::make_shared<const std::vector<u8>>(
+        compiler.Compile(hlsl, L"main", target, pipeline_hash));
     entries.emplace(hash, Entry{std::string{hlsl}, target, dxil});
     return dxil;
 }

@@ -17,16 +17,16 @@
 #endif
 
 #include "common/assert.h"
-#include "common/scope_exit.h"
+#include "common/container_hash.h"
+#include "common/deferred_exception.h"
 #include "common/fs/fs.h"
 #include "common/fs/path_util.h"
+#include "common/scope_exit.h"
 #include "common/settings.h"
-#include "common/container_hash.h"
-#include "video_core/engines/maxwell_3d.h"
-#include "video_core/engines/maxwell_3d.h"
 #include "video_core/dirty_flags.h"
-#include "video_core/rasterizer_interface.h"
+#include "video_core/engines/maxwell_3d.h"
 #include "video_core/macro.h"
+#include "video_core/rasterizer_interface.h"
 
 #include "common/assert.h"
 #include "common/bit_field.h"
@@ -744,6 +744,7 @@ struct MacroJITx64Impl final : public Xbyak::CodeGenerator, public DynamicCached
         Core::System* system = nullptr;
         std::array<u32, Macro::NUM_MACRO_REGISTERS> registers{};
         u32 carry_flag{};
+        Common::DeferredException failure;
     };
     static_assert(offsetof(JITState, maxwell3d) == 0, "Maxwell3D is not at 0x0");
     using ProgramType = void (*)(JITState*, const u32*, const u32*);
@@ -774,6 +775,7 @@ void MacroJITx64Impl::Execute(Core::System& system, Engines::Maxwell3D& maxwell3
     state.system = &system;
     state.registers = {};
     program(&state, parameters.data(), parameters.data() + parameters.size());
+    state.failure.Rethrow();
 }
 
 void MacroJITx64Impl::Compile_ALU(Core::System& system, Macro::Opcode opcode) {
@@ -1001,18 +1003,23 @@ void MacroJITx64Impl::Compile_Read(Core::System& system, Macro::Opcode opcode) {
     Compile_ProcessResult(system, opcode.result_operation, opcode.dst);
 }
 
-static void MacroJIT_SendThunk(Core::System* system, Engines::Maxwell3D* maxwell3d, Macro::MethodAddress method_address, u32 value) {
-    maxwell3d->CallMethod(*system, method_address.address, value, true);
+static bool MacroJIT_SendThunk(MacroJITx64Impl::JITState* state,
+                               Macro::MethodAddress method_address, u32 value) noexcept {
+    state->failure.Invoke(
+        [&] { state->maxwell3d->CallMethod(*state->system, method_address.address, value, true); });
+    return state->failure.HasError();
 }
 
 void MacroJITx64Impl::Compile_Send(Core::System& system, Xbyak::Reg32 value) {
     Common::X64::ABI_PushRegistersAndAdjustStack(*this, PersistentCallerSavedRegs(), 0);
-    mov(Common::X64::ABI_PARAM1, qword[STATE + offsetof(JITState, system)]);
-    mov(Common::X64::ABI_PARAM2, qword[STATE + offsetof(JITState, maxwell3d)]);
-    mov(Common::X64::ABI_PARAM3.cvt32(), METHOD_ADDRESS);
-    mov(Common::X64::ABI_PARAM4.cvt32(), value);
+    mov(Common::X64::ABI_PARAM1, STATE);
+    mov(Common::X64::ABI_PARAM2.cvt32(), METHOD_ADDRESS);
+    mov(Common::X64::ABI_PARAM3.cvt32(), value);
     Common::X64::CallFarFunction(*this, &MacroJIT_SendThunk);
     Common::X64::ABI_PopRegistersAndAdjustStack(*this, PersistentCallerSavedRegs(), 0);
+
+    test(eax, eax);
+    jnz(end_of_code, T_NEAR);
 
     Xbyak::Label dont_process{};
     // Get increment

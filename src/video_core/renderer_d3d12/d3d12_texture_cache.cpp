@@ -56,7 +56,7 @@ ResourcePtr MakeTexture(Context& context, const VideoCommon::ImageInfo& info, Fo
     D3D12_FEATURE_DATA_FORMAT_SUPPORT support{static_cast<DXGI_FORMAT>(format.view_format)};
     Check(context.Device()->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &support,
                                                 sizeof(support)),
-          "texture format support");
+          "texture format support", context.Device());
     const auto required =
         desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE1D   ? D3D12_FORMAT_SUPPORT1_TEXTURE1D
         : desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D ? D3D12_FORMAT_SUPPORT1_TEXTURE3D
@@ -69,7 +69,7 @@ ResourcePtr MakeTexture(Context& context, const VideoCommon::ImageInfo& info, Fo
             DsvFormat(static_cast<DXGI_FORMAT>(format.view_format))};
         Check(context.Device()->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &depth_support,
                                                     sizeof(depth_support)),
-              "depth format support");
+              "depth format support", context.Device());
         if (depth_support.Support1 & D3D12_FORMAT_SUPPORT1_DEPTH_STENCIL)
             desc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
     } else if ((support.Support1 & D3D12_FORMAT_SUPPORT1_RENDER_TARGET) &&
@@ -82,7 +82,7 @@ ResourcePtr MakeTexture(Context& context, const VideoCommon::ImageInfo& info, Fo
                                   : static_cast<DXGI_FORMAT>(format.view_format)};
         Check(context.Device()->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &uav_support,
                                                     sizeof(uav_support)),
-              "texture UAV support");
+              "texture UAV support", context.Device());
         if (uav_support.Support2 & D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE)
             desc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
     }

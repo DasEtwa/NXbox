@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <algorithm>
 #include <array>
-#include <exception>
 #include <bit>
 #include <cmath>
 #include <cstring>
+#include <exception>
 #include <tuple>
 #include <vector>
+#include <fmt/format.h>
 
 #include "common/fs/path_util.h"
 #include "common/logging.h"
@@ -231,7 +232,8 @@ GraphicsPipeline& PipelineCache::GetGraphics(const Pso::GraphicsPsoState& state,
     }
     std::vector<StageProgram> programs;
     for (const auto& stage : stages) {
-        programs.push_back({stage.stage, dxc.Compile(stage.hlsl, stage.stage)});
+        programs.push_back(
+            {stage.stage, dxc.Compile(stage.hlsl, stage.stage, Pso::HashBytes(&key, sizeof(key)))});
     }
     ID3D12RootSignature* signature = GetRootSignature(total);
     auto pipeline = std::make_unique<GraphicsPipeline>(
@@ -246,7 +248,7 @@ ComputePipeline& PipelineCache::GetCompute(const StageInput& stage) {
     if (const auto it = compute.find(key); it != compute.end()) {
         return *it->second;
     }
-    auto dxil = dxc.Compile(stage.hlsl, Shader::Stage::Compute);
+    auto dxil = dxc.Compile(stage.hlsl, Shader::Stage::Compute, key);
     auto pipeline = std::make_unique<ComputePipeline>(
         context.Device(), GetRootSignature(stage.counts), dxil, disk.get(), key,
         Recipe(nullptr, 0, std::span{&stage, size_t{1}}));
@@ -460,6 +462,8 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline() {
         guest_graphics.emplace(request, &pipeline);
         return &pipeline;
     } catch (const Shader::Exception& error) {
+        Diagnostic(fmt::format("D3D12 HLSL pipeline={:016x} what={}",
+                               Pso::HashBytes(&request, sizeof(request)), error.what()));
         LOG_ERROR(Render, "D3D12 guest translation failed; explicit stub fallback: {}",
                   error.what());
         try {
@@ -474,10 +478,14 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline() {
             guest_graphics.emplace(request, &fallback);
             return &fallback;
         } catch (const std::exception& failure) {
-            LOG_ERROR(Render, "D3D12 fallback PSO failed: {}", failure.what());
+            Diagnostic(fmt::format("D3D12 fallback pipeline={:016x} what={}",
+                                   Pso::HashBytes(&request, sizeof(request)), failure.what()));
         }
     } catch (const std::exception& error) {
-        LOG_ERROR(Render, "D3D12 guest PSO failed: {}", error.what());
+        Diagnostic(fmt::format("D3D12 graphics pipeline={:016x} what={}",
+                               Pso::HashBytes(&request, sizeof(request)), error.what()));
+        if (FAILED(context.Device()->GetDeviceRemovedReason()))
+            context.ReportFailure(error);
     }
     guest_graphics.emplace(request, nullptr);
     return nullptr;
@@ -519,7 +527,10 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() {
         guest_compute.emplace(request, &pipeline);
         return &pipeline;
     } catch (const std::exception& error) {
-        LOG_ERROR(Render, "D3D12 guest compute translation/PSO failed: {}", error.what());
+        Diagnostic(
+            fmt::format("D3D12 compute HLSL/PSO pipeline={:016x} what={}", request, error.what()));
+        if (FAILED(context.Device()->GetDeviceRemovedReason()))
+            context.ReportFailure(error);
         guest_compute.emplace(request, nullptr);
         return nullptr;
     }

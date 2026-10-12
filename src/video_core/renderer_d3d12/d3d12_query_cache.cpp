@@ -27,7 +27,8 @@ ComPtr<ID3D12QueryHeap> CreateHeap(Context& context, D3D12_QUERY_HEAP_TYPE type,
     desc.Type = type;
     desc.Count = count;
     ComPtr<ID3D12QueryHeap> heap;
-    Check(context.Device()->CreateQueryHeap(&desc, IID_PPV_ARGS(&heap)), "CreateQueryHeap");
+    Check(context.Device()->CreateQueryHeap(&desc, IID_PPV_ARGS(&heap)), "CreateQueryHeap",
+          context.Device());
     return heap;
 }
 D3D12_QUERY_TYPE SOType(u32 stream) {
@@ -409,7 +410,7 @@ QueryCacheRuntime::Timestamp QueryCacheRuntime::CaptureTimestamp() {
     auto heap = CreateHeap(impl->context, D3D12_QUERY_HEAP_TYPE_TIMESTAMP, 1);
     Timestamp timestamp{impl->readback.Request(8), impl->context.CurrentTick(), 0};
     Check(impl->context.Queue()->GetTimestampFrequency(&timestamp.frequency),
-          "GetTimestampFrequency");
+          "GetTimestampFrequency", impl->context.Device());
     auto* commands = impl->context.Commands();
     commands->EndQuery(heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 0);
     impl->context.Retain(timestamp.result.buffer);

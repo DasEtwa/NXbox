@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <stdexcept>
+#include <fmt/format.h>
 #include <windows.h>
 #include <wrl/client.h>
 #include "common/logging.h"
 #include "video_core/renderer_d3d12/d3d12_context.h"
+#include "video_core/renderer_d3d12/d3d12_pso_tables.h"
 #include "video_core/renderer_d3d12/d3d12_shader.h"
 
 namespace D3D12 {
@@ -63,28 +65,44 @@ ShaderCompiler::ShaderCompiler() : impl{std::make_unique<Impl>()} {
 }
 ShaderCompiler::~ShaderCompiler() = default;
 std::vector<u8> ShaderCompiler::Compile(std::string_view source, const wchar_t* entry,
-                                        const wchar_t* target) {
-    DxcBuffer buffer{source.data(), source.size(), CP_UTF8};
-    LPCWSTR arguments[]{L"-E", entry, L"-T", target, L"-HV", L"2021", L"-Ges", L"-O3"};
-    ComPtr<DxcOperationResult> result;
-    Check(impl->compiler->Compile(&buffer, arguments, static_cast<UINT32>(std::size(arguments)),
-                                  nullptr, ResultInterface,
-                                  reinterpret_cast<void**>(result.GetAddressOf())),
-          "DXC Compile");
-    HRESULT status{};
-    Check(result->GetStatus(&status), "DXC GetStatus");
-    ComPtr<DxcBlobEncoding> errors;
-    Check(result->GetErrorBuffer(&errors), "DXC GetErrorBuffer");
-    if (errors && errors->GetBufferSize())
-        LOG_WARNING(Render, "DXC: {}",
-                    std::string_view{static_cast<const char*>(errors->GetBufferPointer()),
-                                     errors->GetBufferSize()});
-    Check(status, "DXC shader compilation/validation");
-    ComPtr<DxcBlob> blob;
-    Check(result->GetResult(&blob), "DXC GetResult");
-    if (!blob || !blob->GetBufferSize())
-        throw std::runtime_error("D3D12 DXC returned empty DXIL");
-    const auto* begin = static_cast<const u8*>(blob->GetBufferPointer());
-    return {begin, begin + blob->GetBufferSize()};
+                                        const wchar_t* target, u64 pipeline_hash) {
+    if (!pipeline_hash)
+        pipeline_hash = Pso::HashBytes(source.data(), source.size());
+    try {
+        DxcBuffer buffer{source.data(), source.size(), CP_UTF8};
+        LPCWSTR arguments[]{L"-E", entry, L"-T", target, L"-HV", L"2021", L"-Ges", L"-O3"};
+        ComPtr<DxcOperationResult> result;
+        Check(impl->compiler->Compile(&buffer, arguments, static_cast<UINT32>(std::size(arguments)),
+                                      nullptr, ResultInterface,
+                                      reinterpret_cast<void**>(result.GetAddressOf())),
+              "DXC Compile");
+        HRESULT status{};
+        Check(result->GetStatus(&status), "DXC GetStatus");
+        ComPtr<DxcBlobEncoding> errors;
+        Check(result->GetErrorBuffer(&errors), "DXC GetErrorBuffer");
+        if (errors && errors->GetBufferSize()) {
+            const std::string_view text{static_cast<const char*>(errors->GetBufferPointer()),
+                                        errors->GetBufferSize()};
+            LOG_WARNING(Render, "DXC: {}", text);
+            if (FAILED(status)) {
+                size_t end{};
+                for (size_t lines = 0; end < text.size() && end < 4096 && lines < 8; ++end)
+                    lines += text[end] == '\n';
+                Diagnostic(fmt::format("D3D12 DXC pipeline={:016x} HRESULT={:#010x} errors={}",
+                                       pipeline_hash, static_cast<u32>(status),
+                                       text.substr(0, end)));
+            }
+        }
+        Check(status, "DXC shader compilation/validation");
+        ComPtr<DxcBlob> blob;
+        Check(result->GetResult(&blob), "DXC GetResult");
+        if (!blob || !blob->GetBufferSize())
+            throw std::runtime_error("D3D12 DXC returned empty DXIL");
+        const auto* begin = static_cast<const u8*>(blob->GetBufferPointer());
+        return {begin, begin + blob->GetBufferSize()};
+    } catch (const std::exception& error) {
+        Diagnostic(fmt::format("D3D12 DXC pipeline={:016x} what={}", pipeline_hash, error.what()));
+        throw;
+    }
 }
 } // namespace D3D12

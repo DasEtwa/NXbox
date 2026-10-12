@@ -23,7 +23,7 @@ const wchar_t* StageTarget(Shader::Stage stage);
 class DxcCache {
 public:
     // Throws (via Check) on a compile/validation error; the DXC log goes to LOG_WARNING.
-    DxilBlob Compile(std::string_view hlsl, Shader::Stage stage);
+    DxilBlob Compile(std::string_view hlsl, Shader::Stage stage, u64 pipeline_hash = 0);
     size_t Size() const {
         return entries.size();
     }

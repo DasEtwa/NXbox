@@ -12,6 +12,7 @@
 #include <thread>
 #ifdef _WIN32
 #include <dxgi1_4.h>
+#include "video_core/renderer_d3d12/d3d12_context.h"
 #endif
 
 namespace D3D12 {
@@ -377,8 +378,8 @@ Microsoft::WRL::ComPtr<ID3D12PipelineState> DiskPipelineCache::LoadOrCreateGraph
         impl->Write({DiskRecordKind::Graphics, key, DiskBytes(recipe.begin(), recipe.end())});
         return pso;
     }
-    if (FAILED(impl->device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&pso))))
-        return {};
+    CheckPipeline(impl->device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&pso)),
+                  "CreateGraphicsPipelineState", impl->device.Get(), key);
     if (impl->library && SUCCEEDED(impl->library->StorePipeline(name.c_str(), pso.Get())))
         impl->library_dirty = true;
     impl->Write({DiskRecordKind::Graphics, key, DiskBytes(recipe.begin(), recipe.end())});
@@ -398,8 +399,8 @@ Microsoft::WRL::ComPtr<ID3D12PipelineState> DiskPipelineCache::LoadOrCreateCompu
         impl->Write({DiskRecordKind::Compute, key, DiskBytes(recipe.begin(), recipe.end())});
         return pso;
     }
-    if (FAILED(impl->device->CreateComputePipelineState(&desc, IID_PPV_ARGS(&pso))))
-        return {};
+    CheckPipeline(impl->device->CreateComputePipelineState(&desc, IID_PPV_ARGS(&pso)),
+                  "CreateComputePipelineState", impl->device.Get(), key);
     if (impl->library && SUCCEEDED(impl->library->StorePipeline(name.c_str(), pso.Get())))
         impl->library_dirty = true;
     impl->Write({DiskRecordKind::Compute, key, DiskBytes(recipe.begin(), recipe.end())});

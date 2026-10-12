@@ -14,6 +14,7 @@
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/host1x/host1x.h"
 #include "video_core/memory_manager.h"
+#include "video_core/renderer_d3d12/d3d12_buffer_view.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_cache.h"
 #include "video_core/renderer_d3d12/d3d12_rasterizer.h"
 #include "video_core/textures/texture.h"
@@ -500,6 +501,8 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         const auto& slot = geometry.vertex[i];
         if (!slot.resource || !slot.size)
             continue;
+        ValidateBufferView(slot.resource->handle->GetGPUVirtualAddress(),
+                           slot.resource->handle->GetDesc().Width, slot.offset, slot.size);
         vertex_views[i] = {slot.resource->handle->GetGPUVirtualAddress() + slot.offset,
                            static_cast<UINT>(slot.size), slot.stride};
         need(slot.resource, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
@@ -523,6 +526,9 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
             }
             return;
         }
+        ValidateBufferView(geometry.index->handle->GetGPUVirtualAddress(),
+                           geometry.index->handle->GetDesc().Width, geometry.index_offset,
+                           geometry.index_size);
         index_view = {geometry.index->handle->GetGPUVirtualAddress() + geometry.index_offset,
                       static_cast<UINT>(geometry.index_size),
                       geometry.index_is_32bit ? DXGI_FORMAT_R32_UINT : DXGI_FORMAT_R16_UINT};
@@ -666,7 +672,7 @@ ID3D12CommandSignature* RasterizerD3D12::IndirectSignature(bool indexed) {
         desc.NumArgumentDescs = 1;
         desc.pArgumentDescs = &argument;
         Check(context.Device()->CreateCommandSignature(&desc, nullptr, IID_PPV_ARGS(&signature)),
-              "CreateCommandSignature");
+              "CreateCommandSignature", context.Device());
     }
     return signature.Get();
 }

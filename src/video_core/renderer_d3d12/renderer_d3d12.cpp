@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "video_core/renderer_d3d12/d3d12_pso_tables.h"
 #include "video_core/renderer_d3d12/renderer_d3d12.h"
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <stdexcept>
 #include <dxgi1_4.h>
 #include <windows.h>
@@ -57,7 +59,7 @@ struct RendererD3D12::Impl {
     UINT srv_stride{};
     u32 width{};
     u32 height{};
-    bool failed{};
+    std::atomic<bool> failed{};
 
     ~Impl() {
         // Drain before destroying swapchain buffers, descriptors or PSOs.
@@ -77,7 +79,8 @@ struct RendererD3D12::Impl {
             buffers[i] = std::make_shared<Resource>();
             buffers[i]->heap = D3D12_HEAP_TYPE_DEFAULT;
             buffers[i]->state = D3D12_RESOURCE_STATE_PRESENT;
-            Check(swapchain->GetBuffer(i, IID_PPV_ARGS(&buffers[i]->handle)), "GetBuffer");
+            Check(swapchain->GetBuffer(i, IID_PPV_ARGS(&buffers[i]->handle)), "GetBuffer",
+                  context.Device());
             context.Device()->CreateRenderTargetView(buffers[i]->handle.Get(), nullptr, Rtv(i));
         }
     }
@@ -104,15 +107,15 @@ struct RendererD3D12::Impl {
         ComPtr<ID3DBlob> serialized, errors;
         Check(D3D12SerializeRootSignature(&root_desc, D3D_ROOT_SIGNATURE_VERSION_1, &serialized,
                                           &errors),
-              "SerializeRootSignature");
+              "SerializeRootSignature", context.Device());
         Check(context.Device()->CreateRootSignature(0, serialized->GetBufferPointer(),
                                                     serialized->GetBufferSize(),
                                                     IID_PPV_ARGS(&root)),
-              "CreateRootSignature");
+              "CreateRootSignature", context.Device());
         D3D12_FEATURE_DATA_SHADER_MODEL model{D3D_SHADER_MODEL_6_0};
         Check(context.Device()->CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL, &model,
                                                     sizeof(model)),
-              "shader model support");
+              "shader model support", context.Device());
         if (model.HighestShaderModel < D3D_SHADER_MODEL_6_0)
             throw std::runtime_error("D3D12 presentation requires shader model 6.0");
         ShaderCompiler compiler;
@@ -144,8 +147,10 @@ struct RendererD3D12::Impl {
         for (UINT i = 0; i < pipelines.size(); ++i) {
             blend.BlendEnable = i != 0;
             blend.SrcBlend = i == 2 ? D3D12_BLEND_SRC_ALPHA : D3D12_BLEND_ONE;
-            Check(context.Device()->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&pipelines[i])),
-                  "Create present PSO");
+            CheckPipeline(
+                context.Device()->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&pipelines[i])),
+                "Create present PSO", context.Device(),
+                Pso::HashBytes(desc.PS.pShaderBytecode, desc.PS.BytecodeLength));
         }
     }
     void Initialize(Core::Frontend::EmuWindow& window) {
@@ -153,7 +158,8 @@ struct RendererD3D12::Impl {
         if (info.type != Core::Frontend::WindowSystemType::Windows || !info.render_surface)
             throw std::runtime_error("D3D12 requires a UWP CoreWindow ABI surface");
         ComPtr<IDXGIFactory2> factory;
-        Check(CreateDXGIFactory2(0, IID_PPV_ARGS(&factory)), "CreateDXGIFactory2");
+        Check(CreateDXGIFactory2(0, IID_PPV_ARGS(&factory)), "CreateDXGIFactory2",
+              context.Device());
         width = std::max(1u, window.GetFramebufferLayout().width);
         height = std::max(1u, window.GetFramebufferLayout().height);
         DXGI_SWAP_CHAIN_DESC1 desc{};
@@ -170,19 +176,19 @@ struct RendererD3D12::Impl {
         Check(factory->CreateSwapChainForCoreWindow(context.Queue(),
                                                     static_cast<IUnknown*>(info.render_surface),
                                                     &desc, nullptr, &chain),
-              "CreateSwapChainForCoreWindow");
-        Check(chain.As(&swapchain), "Query IDXGISwapChain3");
+              "CreateSwapChainForCoreWindow", context.Device());
+        Check(chain.As(&swapchain), "Query IDXGISwapChain3", context.Device());
         D3D12_DESCRIPTOR_HEAP_DESC heap{};
         heap.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
         heap.NumDescriptors = BufferCount;
         Check(context.Device()->CreateDescriptorHeap(&heap, IID_PPV_ARGS(&rtv_heap)),
-              "Create RTV heap");
+              "Create RTV heap", context.Device());
         rtv_stride = context.Device()->GetDescriptorHandleIncrementSize(heap.Type);
         heap.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
         heap.NumDescriptors = MaxLayers;
         heap.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
         Check(context.Device()->CreateDescriptorHeap(&heap, IID_PPV_ARGS(&srv_heap)),
-              "Create SRV heap");
+              "Create SRV heap", context.Device());
         srv_stride = context.Device()->GetDescriptorHandleIncrementSize(heap.Type);
         AcquireBuffers();
         InitializePipeline();
@@ -200,7 +206,7 @@ struct RendererD3D12::Impl {
                 buffer.reset();
             Check(swapchain->ResizeBuffers(BufferCount, new_width, new_height,
                                            DXGI_FORMAT_R8G8B8A8_UNORM, 0),
-                  "ResizeBuffers");
+                  "ResizeBuffers", context.Device());
             width = new_width;
             height = new_height;
             AcquireBuffers();
@@ -272,7 +278,7 @@ struct RendererD3D12::Impl {
         }
         context.Transition(buffers[index], D3D12_RESOURCE_STATE_PRESENT);
         context.Submit();
-        Check(swapchain->Present(1, 0), "Present");
+        Check(swapchain->Present(1, 0), "Present", context.Device());
     }
 };
 RendererD3D12::RendererD3D12(Core::Frontend::EmuWindow& window,
@@ -280,11 +286,23 @@ RendererD3D12::RendererD3D12(Core::Frontend::EmuWindow& window,
                              std::unique_ptr<Core::Frontend::GraphicsContext> context_)
     : RendererBase(window, std::move(context_)), impl(std::make_unique<Impl>()), gpu(gpu_),
       rasterizer(gpu_, memory, impl->context) {
-    impl->Initialize(window);
-    impl->Present(window.GetFramebufferLayout(), {}, rasterizer);
-    impl->context.Finish();
+    try {
+        impl->Initialize(window);
+        impl->Present(window.GetFramebufferLayout(), {}, rasterizer);
+        impl->context.Finish();
+    } catch (const std::exception& error) {
+        ReportFailure(error);
+        throw;
+    }
 }
 RendererD3D12::~RendererD3D12() = default;
+void RendererD3D12::ReportFailure(const std::exception& error) noexcept {
+    impl->failed = true;
+    impl->context.ReportFailure(error);
+}
+bool RendererD3D12::HasFailed() const {
+    return impl->failed;
+}
 void RendererD3D12::Composite(std::span<const Tegra::FramebufferConfig> layers) {
     if (IsScreenshotPending()) {
         renderer_settings.screenshot_requested = false;
@@ -304,10 +322,7 @@ void RendererD3D12::Composite(std::span<const Tegra::FramebufferConfig> layers) 
             ++m_current_frame;
             render_window.OnFrameDisplayed();
         } catch (const std::exception& error) {
-            impl->failed = true;
-            LOG_ERROR(Render, "D3D12 presentation stopped: {}", error.what());
-            SetEnvironmentVariableA("NXBOX_D3D12_COMMAND_FAILURE", "1");
-            SetEnvironmentVariableA("NXBOX_D3D12_FIRST_FAILURE", error.what());
+            ReportFailure(error);
         }
     }
     gpu.RendererFrameEndNotify();

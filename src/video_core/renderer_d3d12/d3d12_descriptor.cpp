@@ -97,7 +97,7 @@ void D3D12DescriptorAllocator::Init(Ring& ring, D3D12_DESCRIPTOR_HEAP_TYPE type,
     desc.NumDescriptors = capacity;
     desc.Flags = visible ? D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE : D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
     Check(context.Device()->CreateDescriptorHeap(&desc, IID_PPV_ARGS(&ring.heap)),
-          "CreateDescriptorHeap");
+          "CreateDescriptorHeap", context.Device());
     ring.stride = context.Device()->GetDescriptorHandleIncrementSize(type);
     ring.cpu = ring.heap->GetCPUDescriptorHandleForHeapStart();
     ring.shader_visible = visible;

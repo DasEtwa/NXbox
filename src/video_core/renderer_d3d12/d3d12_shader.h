@@ -9,7 +9,8 @@ class ShaderCompiler {
 public:
     ShaderCompiler();
     ~ShaderCompiler();
-    std::vector<u8> Compile(std::string_view source, const wchar_t* entry, const wchar_t* target);
+    std::vector<u8> Compile(std::string_view source, const wchar_t* entry, const wchar_t* target,
+                            u64 pipeline_hash = 0);
 
 private:
     struct Impl;

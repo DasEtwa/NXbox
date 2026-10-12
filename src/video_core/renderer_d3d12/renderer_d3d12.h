@@ -13,6 +13,8 @@ public:
                            std::unique_ptr<Core::Frontend::GraphicsContext> context);
     ~RendererD3D12() override;
 
+    void ReportFailure(const std::exception& error) noexcept;
+    bool HasFailed() const;
     void Composite(std::span<const Tegra::FramebufferConfig> layers) override;
     std::vector<u8> GetAppletCaptureBuffer() override;
     VideoCore::RasterizerInterface* ReadRasterizer() override;

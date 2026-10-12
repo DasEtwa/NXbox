@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <algorithm>
 #include "video_core/renderer_d3d12/d3d12_clear.h"
+#include "video_core/renderer_d3d12/d3d12_pso_tables.h"
 
 namespace D3D12::ClearOperations {
 Rect Intersect(Rect area, Rect clip) {
@@ -86,11 +87,11 @@ struct ClearRenderer::Impl {
         ComPtr<ID3DBlob> serialized, errors;
         Check(D3D12SerializeRootSignature(&description, D3D_ROOT_SIGNATURE_VERSION_1, &serialized,
                                           &errors),
-              "Serialize clear root signature");
+              "Serialize clear root signature", context.Device());
         Check(context.Device()->CreateRootSignature(0, serialized->GetBufferPointer(),
                                                     serialized->GetBufferSize(),
                                                     IID_PPV_ARGS(&root)),
-              "Create clear root signature");
+              "Create clear root signature", context.Device());
     }
     ComPtr<ID3D12PipelineState> Pipeline(const ClearAttachment& target, unsigned pixel,
                                          unsigned mask, bool depth, unsigned stencil_mask) {
@@ -131,8 +132,9 @@ struct ClearRenderer::Impl {
             desc.RTVFormats[0] = target.format;
         }
         ComPtr<ID3D12PipelineState> pipeline;
-        Check(context.Device()->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&pipeline)),
-              "Create masked clear pipeline");
+        CheckPipeline(context.Device()->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&pipeline)),
+                      "Create masked clear pipeline", context.Device(),
+                      Pso::HashBytes(desc.PS.pShaderBytecode, desc.PS.BytecodeLength));
         pipelines.emplace(key, pipeline);
         return pipeline;
     }

@@ -25,11 +25,11 @@ ComPtr<ID3D12RootSignature> CreateComputeRootSignature(ID3D12Device* device,
     desc.pParameters = parameters.data();
     ComPtr<ID3DBlob> blob, errors;
     Check(D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &errors),
-          "serialize compute root signature");
+          "serialize compute root signature", device);
     ComPtr<ID3D12RootSignature> root;
     Check(device->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(),
                                       IID_PPV_ARGS(&root)),
-          "create compute root signature");
+          "create compute root signature", device);
     return root;
 }
 ComputeDispatch::ComputeDispatch(Context& context) : context{context} {
@@ -41,7 +41,7 @@ ComputeDispatch::ComputeDispatch(Context& context) : context{context} {
     desc.pArgumentDescs = &argument;
     Check(
         context.Device()->CreateCommandSignature(&desc, nullptr, IID_PPV_ARGS(&indirect_signature)),
-        "create indirect compute signature");
+        "create indirect compute signature", context.Device());
 }
 void ComputeDispatch::UavBarrier() {
     D3D12_RESOURCE_BARRIER barrier{};

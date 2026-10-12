@@ -17,6 +17,9 @@
 #include "video_core/gpu_thread.h"
 #include "video_core/host1x/host1x.h"
 #include "video_core/renderer_base.h"
+#ifdef HAS_D3D12
+#include "video_core/renderer_d3d12/renderer_d3d12.h"
+#endif
 
 #ifdef NXBOX_UWP
 // Declared directly: windows.h in the video core clashes with glad.
@@ -54,18 +57,36 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
             if (stop_token.stop_requested()) {
                 break;
             }
-            const NxboxStall::Scope busy_scope{NxboxStall::Kind::GpuBusy};
-            if (auto* submit_list = std::get_if<SubmitListCommand>(&next.data)) {
-                scheduler.Push(system.GPU(), submit_list->channel, std::move(submit_list->entries));
-            } else if (std::holds_alternative<GPUTickCommand>(next.data)) {
-                system.GPU().TickWork();
-            } else if (const auto* flush = std::get_if<FlushRegionCommand>(&next.data)) {
-                renderer.ReadRasterizer()->FlushRegion(flush->addr, flush->size);
-            } else if (const auto* invalidate = std::get_if<InvalidateRegionCommand>(&next.data)) {
-                renderer.ReadRasterizer()->OnCacheInvalidation(invalidate->addr, invalidate->size);
-            } else {
-                ASSERT(false);
+            // Keep consuming queued fences after a renderer failure so synchronous
+            // callers and game shutdown cannot deadlock behind a stopped GPU thread.
+#ifdef HAS_D3D12
+            auto* native_d3d12 = dynamic_cast<D3D12::RendererD3D12*>(&renderer);
+            try {
+                if (!native_d3d12 || !native_d3d12->HasFailed()) {
+#endif
+                    const NxboxStall::Scope busy_scope{NxboxStall::Kind::GpuBusy};
+                    if (auto* submit_list = std::get_if<SubmitListCommand>(&next.data)) {
+                        scheduler.Push(system.GPU(), submit_list->channel,
+                                       std::move(submit_list->entries));
+                    } else if (std::holds_alternative<GPUTickCommand>(next.data)) {
+                        system.GPU().TickWork();
+                    } else if (const auto* flush = std::get_if<FlushRegionCommand>(&next.data)) {
+                        renderer.ReadRasterizer()->FlushRegion(flush->addr, flush->size);
+                    } else if (const auto* invalidate =
+                                   std::get_if<InvalidateRegionCommand>(&next.data)) {
+                        renderer.ReadRasterizer()->OnCacheInvalidation(invalidate->addr,
+                                                                       invalidate->size);
+                    } else {
+                        ASSERT(false);
+                    }
+#ifdef HAS_D3D12
+                }
+            } catch (const std::exception& error) {
+                if (!native_d3d12)
+                    throw;
+                native_d3d12->ReportFailure(error);
             }
+#endif
             state.signaled_fence.store(next.fence);
             if (next.block) {
                 // We have to lock the write_lock to ensure that the condition_variable wait not get a
