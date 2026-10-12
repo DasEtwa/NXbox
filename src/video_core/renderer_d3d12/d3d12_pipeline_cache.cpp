@@ -426,6 +426,12 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(const Pso::Framebuffer
             auto& program = programs[index];
             if (index == 0)
                 program.stage = Shader::Stage::VertexB;
+            if (program.stage == Shader::Stage::Fragment) {
+                // Guest shaders may export more colors than this framebuffer binds.
+                // Specialize the DXIL signature together with the PSO attachment key.
+                for (size_t slot = 0; slot < formats.colors.size(); ++slot)
+                    program.info.stores_frag_color[slot] &= formats.colors[slot] != 0;
+            }
             const auto runtime = GraphicsRuntime(maxwell3d->regs, program, previous);
             Shader::Maxwell::ConvertLegacyToGeneric(program, runtime);
             sources[index] =

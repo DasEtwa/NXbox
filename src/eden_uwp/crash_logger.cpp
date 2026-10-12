@@ -99,7 +99,7 @@ void Address(Crash::Line& line, const void* address) noexcept {
 
 USHORT Capture(void** frames) noexcept {
     __try {
-        return RtlCaptureStackBackTrace(0, 24, frames, nullptr);
+        return RtlCaptureStackBackTrace(0, 96, frames, nullptr);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return 0;
     }
@@ -139,7 +139,7 @@ void RecordCrash(const char* event, DWORD code, EXCEPTION_POINTERS* info = nullp
     }
     // This is the handler/caller stack, not a reconstruction of the interrupted stack. The
     // exception PC above is authoritative. Use the UWP stack capture without DbgHelp symbols.
-    void* frames[24]{};
+    void* frames[96]{};
     const auto count = Capture(frames);
     if (!count) {
         CrashEvent("stack_unavailable");
@@ -172,6 +172,21 @@ LONG WINAPI Vectored(EXCEPTION_POINTERS* info) noexcept {
 #endif
 
 [[noreturn]] void FatalRuntime(const char* event, DWORD code) noexcept {
+    // A SIGABRT from C++ unwinding previously hid the exception and truncated the
+    // caller stack before it reached guest rendering code.
+    if (const auto exception = std::current_exception()) {
+        try {
+            std::rethrow_exception(exception);
+        } catch (const std::exception& error) {
+            Crash::Line line;
+            Prefix(line, "active_exception");
+            line.Add(" what=");
+            line.Add(error.what());
+            Write(line);
+        } catch (...) {
+            CrashEvent("active_exception_unknown");
+        }
+    }
     RecordCrash(event, code);
     RaiseFailFastException(nullptr, nullptr, 0);
     std::_Exit(3);

@@ -77,6 +77,19 @@ void Fragment() {
     Contains(text, "SV_Depth");
     Require(bindings.texture == 1, "Texture counter");
     std::ofstream("hlsl_fragment.hlsl") << text;
+    // Attachment specialization clears export metadata but keeps the original IR.
+    // Stores into unbound targets must disappear from both declarations and body.
+    f.Add(IR::Opcode::SetFragColor, {IR::Value{3u}, IR::Value{0u}, red});
+    Bindings masked_bindings;
+    const auto masked = f.Emit(masked_bindings);
+    Require(masked.find("SV_Target3") == masked.npos, "Unbound target signature");
+    Require(masked.find("output.color3") == masked.npos, "Unbound target store");
+    f.program.info.stores_frag_color[0] = false;
+    Bindings depth_bindings;
+    const auto depth_only = f.Emit(depth_bindings);
+    Require(depth_only.find("SV_Target") == depth_only.npos, "Depth-only color signature");
+    Require(depth_only.find("output.color0") == depth_only.npos, "Depth-only color store");
+    Contains(depth_only, "SV_Depth");
 }
 void Compute() {
     Fixture f{Stage::Compute};
