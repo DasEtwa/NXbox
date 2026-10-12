@@ -45,3 +45,49 @@ add_executable(input-state-tests input_state.cpp)
 target_compile_features(input-state-tests PRIVATE cxx_std_17)
 target_include_directories(input-state-tests PRIVATE ../../src)
 add_test(NAME input-state-transitions COMMAND input-state-tests)
+
+add_executable(hlsl-helper-tests hlsl_helpers.cpp)
+target_compile_features(hlsl-helper-tests PRIVATE cxx_std_20)
+target_include_directories(hlsl-helper-tests PRIVATE ../../src)
+add_test(NAME hlsl-root-binding-helpers COMMAND hlsl-helper-tests)
+
+# IR fixtures require Eden's existing fmt/Boost headers, but no GPU or renderer.
+find_package(fmt CONFIG QUIET)
+find_path(HLSL_BOOST_INCLUDE_DIR boost/container/small_vector.hpp)
+if(fmt_FOUND AND HLSL_BOOST_INCLUDE_DIR)
+  include(../../src/shader_recompiler/backend/hlsl/CMakeLists.txt)
+  add_executable(hlsl-ir-tests hlsl_ir.cpp ${HLSL_BACKEND_SOURCES}
+    ../../src/shader_recompiler/frontend/ir/basic_block.cpp
+    ../../src/shader_recompiler/frontend/ir/value.cpp
+    ../../src/shader_recompiler/frontend/ir/microinstruction.cpp
+    ../../src/shader_recompiler/frontend/ir/type.cpp
+    ../../src/shader_recompiler/frontend/ir/opcodes.cpp
+    ../../src/shader_recompiler/frontend/ir/patch.cpp)
+  target_compile_features(hlsl-ir-tests PRIVATE cxx_std_20)
+  target_include_directories(hlsl-ir-tests PRIVATE ../../src)
+  target_include_directories(hlsl-ir-tests SYSTEM PRIVATE ${HLSL_BOOST_INCLUDE_DIR})
+  target_link_libraries(hlsl-ir-tests PRIVATE fmt::fmt)
+  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    target_compile_options(hlsl-ir-tests PRIVATE -fbracket-depth=1024)
+  endif()
+  add_test(NAME hlsl-ir-emission COMMAND hlsl-ir-tests)
+  set_tests_properties(hlsl-ir-emission PROPERTIES FIXTURES_SETUP hlsl-emission)
+endif()
+
+find_program(HLSL_DXC_EXECUTABLE dxc)
+if(TARGET hlsl-ir-tests AND HLSL_DXC_EXECUTABLE)
+  foreach(fixture vertex fragment compute waves resources arithmetic)
+    if(fixture STREQUAL "vertex")
+      set(hlsl_target vs_6_0)
+    elseif(fixture STREQUAL "fragment" OR fixture STREQUAL "resources")
+      set(hlsl_target ps_6_0)
+    else()
+      set(hlsl_target cs_6_0)
+    endif()
+    add_test(NAME hlsl-dxc-${fixture}
+      COMMAND ${HLSL_DXC_EXECUTABLE} -T ${hlsl_target} -E main
+        ${CMAKE_CURRENT_BINARY_DIR}/hlsl_${fixture}.hlsl
+        -Fo ${CMAKE_CURRENT_BINARY_DIR}/hlsl_${fixture}.dxil)
+    set_tests_properties(hlsl-dxc-${fixture} PROPERTIES FIXTURES_REQUIRED hlsl-emission)
+  endforeach()
+endif()
