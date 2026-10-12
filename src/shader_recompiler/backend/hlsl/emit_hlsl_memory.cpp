@@ -349,33 +349,25 @@ void EmitWriteGlobal128(EmitContext& ctx, std::string_view address, std::string_
     ctx.Add("nx_global_write128({}, {});", address, value);
 }
 void EmitLoadGlobalU8(EmitContext& ctx, IR::Inst& inst, std::string_view address) {
-    ctx.AddU32("{} = bitfieldExtract(uint(nx_global_load32({} & ~uint64_t(3u))), int((uint({}) & "
-               "3u) * 8u), 8);",
-               inst, address, address);
+    ctx.AddU32("{} = nx_global_load_subword({}, 8u);", inst, address);
 }
 void EmitWriteGlobalU8(EmitContext& ctx, std::string_view address, std::string_view value) {
     ctx.Add("nx_global_write_subword({}, {}, 8u);", address, value);
 }
 void EmitLoadGlobalS8(EmitContext& ctx, IR::Inst& inst, std::string_view address) {
-    ctx.AddU32("{} = bitfieldExtract(int(nx_global_load32({} & ~uint64_t(3u))), int((uint({}) & "
-               "3u) * 8u), 8);",
-               inst, address, address);
+    ctx.AddU32("{} = bitfieldExtract(int(nx_global_load_subword({}, 8u)), 0, 8);", inst, address);
 }
 void EmitWriteGlobalS8(EmitContext& ctx, std::string_view address, std::string_view value) {
     ctx.Add("nx_global_write_subword({}, {}, 8u);", address, value);
 }
 void EmitLoadGlobalU16(EmitContext& ctx, IR::Inst& inst, std::string_view address) {
-    ctx.AddU32("{} = bitfieldExtract(uint(nx_global_load32({} & ~uint64_t(3u))), int((uint({}) & "
-               "2u) * 8u), 16);",
-               inst, address, address);
+    ctx.AddU32("{} = nx_global_load_subword({}, 16u);", inst, address);
 }
 void EmitWriteGlobalU16(EmitContext& ctx, std::string_view address, std::string_view value) {
     ctx.Add("nx_global_write_subword({}, {}, 16u);", address, value);
 }
 void EmitLoadGlobalS16(EmitContext& ctx, IR::Inst& inst, std::string_view address) {
-    ctx.AddU32("{} = bitfieldExtract(int(nx_global_load32({} & ~uint64_t(3u))), int((uint({}) & "
-               "2u) * 8u), 16);",
-               inst, address, address);
+    ctx.AddU32("{} = bitfieldExtract(int(nx_global_load_subword({}, 16u)), 0, 16);", inst, address);
 }
 void EmitWriteGlobalS16(EmitContext& ctx, std::string_view address, std::string_view value) {
     ctx.Add("nx_global_write_subword({}, {}, 16u);", address, value);

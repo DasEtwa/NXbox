@@ -483,6 +483,8 @@ void GlobalAndRegisterState() {
   Profile profile{};
   profile.support_int64_atomics = true;
   const auto text = f.Emit(bindings, profile);
+  Contains(text, "nx_global_load_subword(");
+  Contains(text, "nx_global_size - (address - nx_global_base) >= bits / 8u");
   Contains(text, "nx_global_write_subword(");
   Contains(text, "nx_global_matched");
   Contains(text, "nx_regs[0]");

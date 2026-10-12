@@ -153,20 +153,38 @@ EmitContext::EmitContext(IR::Program& program, Bindings& bindings, const Profile
         }
     }
     if (info.uses_global_memory) {
-        header += "void nx_global_write_subword(uint64_t address, uint value, uint bits) {\n";
+        header += "uint nx_global_load_subword(uint64_t address, uint bits) {\n"
+                  "address &= ~uint64_t(bits == 16u ? 1u : 0u);\n";
+        for (size_t i = 0; i < info.storage_buffers_descriptors.size(); ++i) {
+            const auto code_start = code.size();
+            GlobalMemoryAccess(i, "address", 1);
+            header += code.substr(code_start);
+            code.resize(code_start);
+            header +=
+                fmt::format("if (nx_global_size - (address - nx_global_base) >= bits / 8u) {{ "
+                            "uint offset = uint(address - nx_global_base); "
+                            "return bitfieldExtract(ssbo{}.Load(offset & ~3u), int((offset & 3u) * "
+                            "8u), int(bits)); "
+                            "}} }} }}\n",
+                            i);
+        }
+        header += "return 0u; }\n";
+        header += "void nx_global_write_subword(uint64_t address, uint value, uint bits) {\n"
+                  "address &= ~uint64_t(bits == 16u ? 1u : 0u);\n";
         for (size_t i = 0; i < info.storage_buffers_descriptors.size(); ++i) {
             const auto code_start = code.size();
             GlobalMemoryAccess(i, "address", 1);
             header += code.substr(code_start);
             code.resize(code_start);
             header += fmt::format(
+                "if (nx_global_size - (address - nx_global_base) >= bits / 8u) {{ "
                 "uint offset = uint(address - nx_global_base); uint aligned = offset & ~3u; "
                 "uint shift = (offset & (bits == 8u ? 3u : 2u)) * 8u; "
                 "uint old_value = ssbo{0}.Load(aligned); uint previous; "
                 "do {{ uint new_value = bitfieldInsert(old_value, value, int(shift), int(bits)); "
                 "ssbo{0}.InterlockedCompareExchange(aligned, old_value, new_value, previous); "
                 "if (previous == old_value) break; old_value = previous; }} while (true); "
-                "return; }} }}\n",
+                "return; }} }} }}\n",
                 i);
         }
         header += "}\n";
