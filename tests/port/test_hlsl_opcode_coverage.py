@@ -7,13 +7,13 @@ that Vulkan/GLSL also require lowering before emission).
 
 import json
 import os
-from pathlib import Path
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 BACKEND = ROOT / "src/shader_recompiler/backend/hlsl"
@@ -33,7 +33,7 @@ def without_literals(source):
         r'//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'',
         lambda match: " " * len(match.group()),
         source,
-        flags=re.S,
+        flags=re.DOTALL,
     )
 
 
@@ -61,7 +61,7 @@ def emitters():
 
 
 def coverage():
-    opcodes = re.findall(r"^OPCODE\((\w+)", OPCODES.read_text(), flags=re.M)
+    opcodes = re.findall(r"^OPCODE\((\w+)", OPCODES.read_text(), flags=re.MULTILINE)
     definitions = emitters()
     missing = sorted(set(opcodes) - definitions.keys())
     rejected = sorted(name for name in opcodes if definitions.get(name, {}).get("rejected", False))
@@ -140,7 +140,7 @@ class HlslOpcodeCoverageTests(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory(prefix="nxbox-hlsl-coverage-") as directory:
             result = subprocess.run(
-                [binary], cwd=directory, capture_output=True, text=True, timeout=120
+                [binary], cwd=directory, check=False, capture_output=True, text=True, timeout=120
             )
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn("Numeric opcodes emitted: 189", result.stdout)
@@ -161,6 +161,7 @@ class HlslOpcodeCoverageTests(unittest.TestCase):
                         "-Fo",
                         str(source.with_suffix(".dxil")),
                     ],
+                    check=False,
                     capture_output=True,
                     text=True,
                     timeout=240,
@@ -182,6 +183,7 @@ class HlslOpcodeCoverageTests(unittest.TestCase):
                     "main",
                     str(Path(directory) / "hlsl_atomic64.hlsl"),
                 ],
+                check=False,
                 capture_output=True,
                 text=True,
                 timeout=120,
