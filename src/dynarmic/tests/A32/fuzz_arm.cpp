@@ -783,9 +783,18 @@ TEST_CASE("A32: Thumb IT skipped-slot differential", "[thumb][unicorn][conforman
             }
             regs[15] = 0;
             const u32 cpsr = (static_cast<u32>(iteration % 2) << 30) | 0x1f0;
-            // End at the IT block boundary; the trailing MOV must remain unexecuted.
+            // JIT Run retires whole blocks, so compare the complete three-slot block.
             RunTestInstance(jit, uni, jit_env, uni_env, regs, vecs,
-                            {instruction, 0x2001, 0x2102}, cpsr, 0, 2, {}, true);
+                            {instruction, 0x2001, 0x2102}, cpsr, 0, 3, {}, true);
+            // Check the reference budget independently at the IT block boundary.
+            uni.SetCpsr(cpsr);
+            uni.SetRegisters(regs);
+            uni.SetCpsr(cpsr);
+            uni.ClearPageCache();
+            uni_env.ticks_left = 2;
+            uni.Run();
+            REQUIRE(uni.GetPC() == 4);
+            REQUIRE(uni.GetRegisters()[1] == regs[1]);
         }
     }
 }
