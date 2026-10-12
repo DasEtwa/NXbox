@@ -287,6 +287,16 @@ class D3D12StateCoverageTests(unittest.TestCase):
             )
             subprocess.run([str(binary)], check=True, timeout=30)
 
+    def test_last_quad_fallback_only_rejects_loaded_flat_varyings(self):
+        source = (NATIVE / "d3d12_pipeline_cache.cpp").read_text()
+        guard = source.split("const char* UnsupportedState", 1)[1].split("u8 StencilFaceMask", 1)[0]
+        self.assertNotIn("provoking_vertex=Last", guard)
+        self.assertIn("program.info.loads.Generic(attribute)", source)
+        self.assertIn(
+            "program.info.interpolation[attribute] == Shader::Interpolation::Flat", source
+        )
+        self.assertIn("sizeof(regs.provoking_vertex)", source)
+
     def test_guest_shader_failures_skip_instead_of_rendering_stub_outputs(self):
         source = (NATIVE / "d3d12_pipeline_cache.cpp").read_text()
         self.assertNotIn("StubHlsl", source)

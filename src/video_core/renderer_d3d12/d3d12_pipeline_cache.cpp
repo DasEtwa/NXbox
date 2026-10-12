@@ -49,9 +49,6 @@ const char* UnsupportedState(const Maxwell& regs, u32 topology) {
     if (regs.IsShaderConfigEnabled(Maxwell::ShaderType::TessellationInit) ||
         regs.IsShaderConfigEnabled(Maxwell::ShaderType::Tessellation))
         return "tessellation.params require HLSL hull/domain stage linkage";
-    if (topology == 7 && regs.provoking_vertex == Maxwell::ProvokingVertex::Last)
-        return "provoking_vertex=Last for quads requires flat-value replication without changing "
-               "diagonal";
     if (regs.transform_feedback_enabled)
         return "transform_feedback/stream_out_layout require HLSL linkage and stream-output root "
                "signature";
@@ -550,6 +547,8 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(
                                     sizeof(regs.vertex_attrib_format), specialization);
     specialization = Pso::HashBytes(&topology.topology, sizeof(topology.topology), specialization);
     specialization =
+        Pso::HashBytes(&regs.provoking_vertex, sizeof(regs.provoking_vertex), specialization);
+    specialization =
         Pso::HashBytes(&regs.mandated_early_z, sizeof(regs.mandated_early_z), specialization);
     specialization =
         Pso::HashBytes(&regs.alpha_test_enabled, sizeof(regs.alpha_test_enabled), specialization);
@@ -600,6 +599,20 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(
             }
             const auto runtime = GraphicsRuntime(maxwell3d->regs, program, previous);
             Shader::Maxwell::ConvertLegacyToGeneric(program, runtime);
+            if (program.stage == Shader::Stage::Fragment &&
+                maxwell3d->draw_manager.draw_state.topology == Maxwell::PrimitiveTopology::Quads &&
+                regs.provoking_vertex == Maxwell::ProvokingVertex::Last) {
+                for (size_t attribute = 0; attribute < program.info.interpolation.size();
+                     ++attribute) {
+                    if (program.info.loads.Generic(attribute) &&
+                        program.info.interpolation[attribute] == Shader::Interpolation::Flat) {
+                        ReportUnsupported("provoking_vertex=Last for flat quads requires "
+                                          "flat-value replication without changing diagonal");
+                        guest_graphics.emplace(request, nullptr);
+                        return nullptr;
+                    }
+                }
+            }
             sources[index] =
                 Shader::Backend::HLSL::EmitHLSL(translation.profile, runtime, program, bindings);
             const auto counts = CountStageTables(program.info);
