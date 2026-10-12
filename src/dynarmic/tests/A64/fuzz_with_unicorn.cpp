@@ -767,6 +767,7 @@ TEST_CASE("A64: Complex floating point differential", "[a64][unicorn][conformanc
                             INFO("variant=" << variant << " size=" << size << " instruction=" << instruction);
                             RunTestInstance(jit, uni, jit_env, uni_env, conf, regs, vecs, 0,
                                             {instruction}, 0, fpcr);
+                            REQUIRE(uni.GetFpsr() == jit.GetFpsr());
                         }
                     }
                 }
