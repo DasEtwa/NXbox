@@ -328,6 +328,7 @@ class LiveMockTests(unittest.TestCase):
                 patch.object(matrix, "package_identity", return_value="NSPX.NXbox_1.2.3.4_x64_"),
                 patch.object(matrix, "inventory", return_value=(games, [])),
                 patch.object(matrix, "run_case", side_effect=case),
+                patch.object(matrix, "require_pillow"),
             ):
                 args = [
                     "--sha",

@@ -12,13 +12,16 @@ import sys
 import time
 import xml.etree.ElementTree as ET
 import zipfile
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .diag import parse_diag
 from .images import contact_sheet, png
 from .portal import Portal, PortalError, credentials
 from .run import ConsoleLock, interrupted, run_game, safe_error
+
+UTC = timezone.utc  # noqa: UP017 - The port suite also runs on system Python 3.9.
+
 
 ARTIFACTS = Path.home() / ".local/share/nxbox/artifacts"
 CONTROL_FILES = ("nxbox_env.txt", "game.txt", "game.url", "skip_library.txt", "eden_settings.txt")
@@ -166,6 +169,12 @@ def classify(result, changes):
             "Heuristic: sustained >=10 FPS and two changing captures (animated menus can match)",
         )
     return "menus", "Presentation observed; insufficient evidence of sustained scene changes"
+
+
+def require_pillow():
+    from PIL import Image
+
+    return Image
 
 
 def frame_signature(data):
@@ -476,7 +485,7 @@ def main(argv=None):
     if len(set(args.renderers)) != len(args.renderers):
         parser.error("renderers must be unique")
     if not args.dry_run:
-        from PIL import Image  # noqa: F401 - Fail before touching the console if unavailable.
+        require_pillow()  # Fail before touching the console if unavailable.
 
         prefix = package_identity(args.appx)
     args.artifacts.mkdir(parents=True, exist_ok=True)
