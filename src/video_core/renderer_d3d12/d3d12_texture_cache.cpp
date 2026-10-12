@@ -461,7 +461,7 @@ void Image::Transfer(const StagingBufferRef& input,
 ImageView::ImageView(TextureCacheRuntime&, const VideoCommon::ImageViewInfo& info,
                      VideoCommon::ImageId id, Image& image)
     : ImageViewBase{info, image.info, id, image.gpu_addr}, sample_count{image.info.num_samples},
-      image_type{image.info.type}, resource{image.Handle()} {
+      image_type{image.info.type}, host_format{image.HostFormat()}, resource{image.Handle()} {
     if (!resource)
         return;
     const auto view_info = MaxwellFormat(info.format);
@@ -567,13 +567,13 @@ ImageView::ImageView(TextureCacheRuntime&, const VideoCommon::NullImageViewParam
 ImageView::ImageView(TextureCacheRuntime&, const VideoCommon::ImageInfo& info,
                      const VideoCommon::ImageViewInfo& view, GPUVAddr addr)
     : ImageViewBase{info, view, addr}, buffer_size{VideoCommon::CalculateGuestSizeInBytes(info)},
-      sample_count{info.num_samples}, image_type{info.type} {}
+      sample_count{info.num_samples}, image_type{info.type}, host_format{MaxwellFormat(info.format)} {}
 void ImageView::LogUnsupported(std::string_view condition) const {
     VideoCommon::ImageInfo info;
     info.format = format;
     info.num_samples = sample_count;
     info.type = image_type;
-    UnsupportedImage(info, MaxwellFormat(format), condition);
+    UnsupportedImage(info, HostFormat(), condition);
 }
 void TextureCacheRuntime::TransitionImageLayout(Image& image) {
     if (image.Handle())
@@ -583,7 +583,7 @@ ResourcePtr TextureCacheRuntime::ResolveFramebuffer(ImageView& view) {
     const auto source = view.ImageHandle();
     if (!source)
         return {};
-    const auto format = MaxwellFormat(view.format);
+    const auto format = view.HostFormat();
     if (format.depth) {
         view.LogUnsupported("depth/stencil image cannot be presented as color");
         return {};
@@ -659,10 +659,10 @@ void TextureCacheRuntime::BlitImage(Framebuffer*, ImageView& dst, ImageView& src
                                     Tegra::Engines::Fermi2D::Operation operation) {
     if (!dst.ImageHandle() || !src.ImageHandle())
         return;
-    const BlitSurface source{src.ImageHandle(), MaxwellFormat(src.format),
+    const BlitSurface source{src.ImageHandle(), src.HostFormat(),
                              static_cast<u32>(src.range.base.level),
                              static_cast<u32>(src.range.base.layer)};
-    const BlitSurface target{dst.ImageHandle(), MaxwellFormat(dst.format),
+    const BlitSurface target{dst.ImageHandle(), dst.HostFormat(),
                              static_cast<u32>(dst.range.base.level),
                              static_cast<u32>(dst.range.base.layer)};
     try {
@@ -711,8 +711,8 @@ void TextureCacheRuntime::ConvertImage(Framebuffer*, ImageView& dst, ImageView& 
     copy.extent = {static_cast<u32>(desc.Width >> dst.range.base.level),
                    desc.Height >> dst.range.base.level, 1};
     try {
-        BlitHelpers().CopyImage({dst.ImageHandle(), MaxwellFormat(dst.format)},
-                                {src.ImageHandle(), MaxwellFormat(src.format)},
+        BlitHelpers().CopyImage({dst.ImageHandle(), dst.HostFormat()},
+                                {src.ImageHandle(), src.HostFormat()},
                                 std::span{&copy, 1});
     } catch (const std::logic_error& error) {
         src.LogUnsupported(error.what());

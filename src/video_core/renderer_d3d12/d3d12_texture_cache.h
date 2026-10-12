@@ -159,6 +159,12 @@ public:
     ResourcePtr ImageHandle() const {
         return resource;
     }
+    FormatInfo HostFormat() const {
+        auto result = host_format;
+        if (resource)
+            result.view_format = static_cast<u32>(description.Format);
+        return result;
+    }
     void LogUnsupported(std::string_view condition) const;
     const D3D12_SHADER_RESOURCE_VIEW_DESC& Description() const {
         return description;
@@ -175,6 +181,7 @@ private:
     u32 buffer_size{};
     u32 sample_count{1};
     VideoCommon::ImageType image_type{VideoCommon::ImageType::e2D};
+    FormatInfo host_format{};
     ResourcePtr resource;
     D3D12_SHADER_RESOURCE_VIEW_DESC description{};
 };
