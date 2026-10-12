@@ -731,29 +731,30 @@ ImageView::ImageView(TextureCacheRuntime&, const VideoCommon::ImageViewInfo& inf
     description.Format = static_cast<DXGI_FORMAT>(VideoCore::Surface::IsPixelFormatASTC(info.format)
                                                       ? image.HostFormat().view_format
                                                       : view_info.view_format);
-    const auto sources = info.Swizzle();
+    const auto sources =
+        info.IsRenderTarget()
+            ? std::array{Tegra::Texture::SwizzleSource::R, Tegra::Texture::SwizzleSource::G,
+                         Tegra::Texture::SwizzleSource::B, Tegra::Texture::SwizzleSource::A}
+            : info.Swizzle();
     UINT mapping[4]{};
     for (size_t i = 0; i < 4; ++i) {
         const auto source = sources[i];
-        mapping[i] = source == Tegra::Texture::SwizzleSource::Zero ? 4
-                     : source == Tegra::Texture::SwizzleSource::OneFloat ||
-                             source == Tegra::Texture::SwizzleSource::OneInt
-                         ? 5
-                         : view_info.components[static_cast<UINT>(source) - 2];
+        const auto value = static_cast<UINT>(source);
+        if (value == 1 || value > 7) {
+            UnsupportedImage(image.info, image.HostFormat(),
+                             fmt::format("invalid component swizzle selector {}", value));
+            resource.reset();
+            return;
+        }
+        mapping[i] = FormatComponent(view_info, value);
     }
     description.Shader4ComponentMapping =
         D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(mapping[0], mapping[1], mapping[2], mapping[3]);
     UINT view_plane{};
     if (host_format.depth) {
-        const bool stencil_first =
-            info.format == VideoCore::Surface::PixelFormat::S8_UINT_D24_UNORM;
-        const bool stencil_only = info.format == VideoCore::Surface::PixelFormat::S8_UINT;
         const bool any_red =
             std::ranges::find(sources, Tegra::Texture::SwizzleSource::R) != sources.end();
-        const bool depth_selected = host_format.planes == 1 ||
-                                    info.format == VideoCore::Surface::PixelFormat::X8_D24_UNORM ||
-                                    (!stencil_only && (stencil_first ? !any_red : any_red));
-        view_plane = depth_selected ? 0u : 1u;
+        view_plane = DepthViewPlane(host_format, any_red, info.IsRenderTarget());
         if (view_plane)
             description.Format = host_format.resource_format == 19
                                      ? DXGI_FORMAT_X32_TYPELESS_G8X24_UINT
@@ -761,8 +762,6 @@ ImageView::ImageView(TextureCacheRuntime&, const VideoCommon::ImageViewInfo& inf
         for (size_t i = 0; i < 4; ++i) {
             if (mapping[i] < 2)
                 mapping[i] = view_plane ? 1u : 0u;
-            if (stencil_only && mapping[i] == 0)
-                mapping[i] = 1;
         }
         description.Shader4ComponentMapping =
             D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(mapping[0], mapping[1], mapping[2], mapping[3]);

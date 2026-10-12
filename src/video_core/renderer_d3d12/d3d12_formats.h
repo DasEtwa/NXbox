@@ -195,6 +195,21 @@ constexpr FormatInfo LookupFormat(std::string_view name) {
     return {name, 0, 0, 0, 0, 0, false, false, 0};
 }
 
+// Maxwell reserves selector 1; attachment views use a separate sentinel.
+// Never index a four-component array with an unchecked guest selector.
+constexpr std::uint32_t FormatComponent(FormatInfo format, std::uint32_t source) {
+    if (source >= 2 && source <= 5)
+        return format.components[source - 2];
+    return source == 6 || source == 7 ? 5u : 4u;
+}
+constexpr unsigned DepthViewPlane(FormatInfo format, bool any_red, bool attachment) {
+    if (attachment || format.planes == 1 || format.name == "X8_D24_UNORM")
+        return 0;
+    if (format.name == "S8_UINT")
+        return 1;
+    return format.name == "S8_UINT_D24_UNORM" ? (any_red ? 1u : 0u) : (any_red ? 0u : 1u);
+}
+
 namespace FormatDetail {
 // ETC2 RGB decoder adapted from etcdec v0.91, https://github.com/iOrange/etcdec.
 // Local changes: inline linkage, defined sign extension, unaligned input loads.

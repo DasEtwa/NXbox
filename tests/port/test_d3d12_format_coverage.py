@@ -23,6 +23,22 @@ int main() {
         assert(format.planes == (format.conversion == FormatConversion::DepthStencil ? 2u : 1u));
     }
     assert(!LookupFormat("Invalid").Supported());
+    for (const auto& format : FormatTable) {
+        for (unsigned selector = 0; selector < 256; ++selector) assert(FormatComponent(format, selector) <= 5);
+        assert(FormatComponent(format, 0) == 4 && FormatComponent(format, 1) == 4);
+        assert(FormatComponent(format, 6) == 5 && FormatComponent(format, 7) == 5);
+        if (format.depth) {
+            assert(format.DsvFormat() != 0);
+            assert(DepthViewPlane(format, true, true) == 0);
+            assert(DepthViewPlane(format, false, true) == 0);
+        }
+    }
+    assert(DepthViewPlane(LookupFormat("S8_UINT"), true, false) == 1);
+    assert(DepthViewPlane(LookupFormat("S8_UINT_D24_UNORM"), true, false) == 1);
+    assert(DepthViewPlane(LookupFormat("S8_UINT_D24_UNORM"), false, false) == 0);
+    assert(DepthViewPlane(LookupFormat("D24_UNORM_S8_UINT"), true, false) == 0);
+    assert(DepthViewPlane(LookupFormat("D24_UNORM_S8_UINT"), false, false) == 1);
+    assert(FormatComponent(LookupFormat("R16G16B16X16_FLOAT"), 5) == 5);
     for (const auto name : {"B5G6R5_UNORM", "A1B5G5R5_UNORM", "A5B5G5R1_UNORM", "A4B4G4R4_UNORM", "G4R4_UNORM"}) {
         for (unsigned bits = 0; bits < (1u << (8 * PackedBytes(name))); ++bits) {
             std::array<std::uint8_t, 4> guest{}, restored{}, host{};
