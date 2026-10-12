@@ -213,6 +213,7 @@ class T8PerfTests(unittest.TestCase):
             "D3D12DescriptorAllocator::FindTable("
         )[0]
         self.assertNotIn("std::function", writer)
+        self.assertNotIn("[&](auto handle)", descriptors)
         self.assertNotIn("std::string key", writer)
         self.assertIn("DescriptorKey key", writer)
         run = helpers.split("void ComputePasses::Run(")[1]

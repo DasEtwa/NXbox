@@ -328,9 +328,7 @@ void D3D12DescriptorAllocator::WriteNullSrv(const DescriptorTable& table, u32 sl
         desc.Texture2D.MipLevels = 1;
         break;
     }
-    WriteCached(
-        D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, {}, 1, &desc, sizeof(desc), table.Slot(slot),
-        [&](auto handle) { context.Device()->CreateShaderResourceView(nullptr, &desc, handle); });
+    WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, {}, 1, &desc, sizeof(desc), table.Slot(slot));
 }
 void D3D12DescriptorAllocator::WriteNullUav(const DescriptorTable& table, u32 slot) {
     D3D12_UNORDERED_ACCESS_VIEW_DESC desc{};
