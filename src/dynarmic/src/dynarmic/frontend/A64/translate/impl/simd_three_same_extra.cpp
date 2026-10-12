@@ -157,7 +157,7 @@ bool TranslatorVisitor::FCADD_vec(bool Q, Imm<2> size, Vec Vm, Imm<1> rot, Vec V
         rotated = ir.VectorSetElement(esize, rotated, second, element3);
     }
 
-    ir.SetQ(Vd, ir.FPVectorAdd(esize, operand1, rotated));
+    V(datasize, Vd, ir.FPVectorAdd(esize, operand1, rotated));
     return true;
 }
 
