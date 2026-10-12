@@ -1,11 +1,54 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
+#include <vector>
 #include <deque>
 #include <optional>
 
 namespace D3D12 {
+// Soft cache target: reserve space for the CPU/JIT and adapt to the actual process limit.
+constexpr std::uint64_t BufferMemoryTarget(std::uint64_t limit, std::uint64_t usage,
+                                           std::uint64_t cache) {
+    constexpr std::uint64_t reserve = 256ULL << 20;
+    const auto available = limit > usage ? limit - usage : 0;
+    const auto growth = available > reserve ? available - reserve : 0;
+    const auto target = limit / 2;
+    return std::min(target, cache + std::min(growth, UINT64_MAX - cache));
+}
+std::uint64_t NativeBufferMemoryTarget(std::uint64_t cache) noexcept;
+
+// Heap placement slots. Release never allocates, so completion-thread deleters stay noexcept.
+class BufferHeapSlots {
+public:
+    static constexpr std::uint64_t Alignment = 65536;
+    explicit BufferHeapSlots(std::uint32_t count) : slots(count) {}
+    std::optional<std::uint32_t> Allocate(std::uint32_t count) {
+        if (!count || count > slots.size())
+            return std::nullopt;
+        std::uint32_t run = 0;
+        for (std::uint32_t i = 0; i < slots.size(); ++i) {
+            run = slots[i] ? 0 : run + 1;
+            if (run == count) {
+                const auto start = i + 1 - count;
+                std::fill_n(slots.begin() + start, count, true);
+                used += count;
+                return start;
+            }
+        }
+        return std::nullopt;
+    }
+    void Release(std::uint32_t start, std::uint32_t count) noexcept {
+        std::fill_n(slots.begin() + start, count, false);
+        used -= count;
+    }
+    std::uint32_t Used() const noexcept { return used; }
+private:
+    std::vector<bool> slots;
+    std::uint32_t used{};
+};
+
 // Std-only ring math for descriptor heaps. Allocations are contiguous, tagged with the
 // submission tick that will finish using them, and reclaimed in FIFO order by Retire().
 // A request that does not fit at the end of the heap wraps to 0, and the skipped tail is

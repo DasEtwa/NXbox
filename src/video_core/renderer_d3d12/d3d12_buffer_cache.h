@@ -6,6 +6,7 @@
 #include "video_core/buffer_cache/usage_tracker.h"
 #include "video_core/renderer_d3d12/d3d12_context.h"
 #include "video_core/renderer_d3d12/d3d12_descriptor.h"
+#include "video_core/renderer_d3d12/d3d12_ring_allocator.h"
 
 namespace D3D12 {
 class BufferCacheRuntime;
@@ -58,7 +59,7 @@ public:
         context.Finish();
     }
     u64 GetDeviceLocalMemory() const {
-        return MemoryBudget::Limit;
+        return NativeBufferMemoryTarget(context.MemoryUsage());
     }
     u64 GetDeviceMemoryUsage() const {
         return context.MemoryUsage();
