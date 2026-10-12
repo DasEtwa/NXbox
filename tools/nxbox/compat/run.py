@@ -116,7 +116,9 @@ def safe_error(error):
     return f"Runner operation failed ({type(error).__name__})"
 
 
-def run_game(portal, package, game, output, seconds, poll, environment, script, max_frames):
+def run_game(
+    portal, package, game, output, seconds, poll, environment, script, max_frames, snapshot=None
+):
     full_name = package["PackageFullName"]
     folder = output / game["title_id"]
     folder.mkdir()
@@ -156,7 +158,9 @@ def run_game(portal, package, game, output, seconds, poll, environment, script, 
             if ":" in filename or "/" in filename or "\\" in filename
             else "games\\" + filename
         )
-        env = environment.rstrip() + "\nNXBOX_FRAME_DUMP=1\n"
+        env = environment.rstrip() + (
+            "\nNXBOX_FRAME_DUMP=0\n" if snapshot else "\nNXBOX_FRAME_DUMP=1\n"
+        )
         selected_script = game.get("input_script", script)
         if selected_script:
             env += f"NXBOX_INPUT_SCRIPT={selected_script}\n"
@@ -168,7 +172,15 @@ def run_game(portal, package, game, output, seconds, poll, environment, script, 
             portal.push(full_name, name, data)
         start = time.monotonic()
         portal.launch(package)
+        next_snapshot = 0.0
         while True:
+            elapsed = time.monotonic() - start
+            if snapshot and elapsed >= next_snapshot:
+                try:
+                    snapshot(elapsed, folder)
+                except Exception as error:
+                    result["errors"].append(safe_error(error))
+                next_snapshot = elapsed + 30
             data = portal.pull(full_name, "eden_uwp_diag.txt", optional=True)
             if data is not None:
                 (folder / "eden_uwp_diag.txt").write_bytes(data)
