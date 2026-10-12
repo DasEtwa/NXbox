@@ -278,7 +278,7 @@ inline void etcdec__decompress_legacy_etc_mode(unsigned long long block, int r0,
 
             /* block A */
             m = x0 + y0 * 4;
-            idx = (((block >> (m + 16)) & 1) << 1) | ((block >> m) & 1);
+            idx = static_cast<int>((((block >> (m + 16)) & 1) << 1) | ((block >> m) & 1));
             m = (x0 * destinationPitch) + (y0 * 4);
             if (isOpaque || idx != 2) {
                 decompressed[m + 0] =
@@ -294,7 +294,7 @@ inline void etcdec__decompress_legacy_etc_mode(unsigned long long block, int r0,
 
             // block B
             m = x1 + y1 * 4;
-            idx = (((block >> (m + 16)) & 1) << 1) | ((block >> m) & 1);
+            idx = static_cast<int>((((block >> (m + 16)) & 1) << 1) | ((block >> m) & 1));
             m = (x1 * destinationPitch) + (y1 * 4);
             if (isOpaque || idx != 2) {
                 decompressed[m + 0] =
@@ -386,7 +386,7 @@ inline void etcdec__decompress_etc_mode_t_h(unsigned long long block, int mode,
     for (i = 0; i < 4; ++i) {
         for (j = 0; j < 4; ++j) {
             k = i + j * 4;
-            idx = (((block >> (k + 16)) & 1) << 1) | ((block >> k) & 1);
+            idx = static_cast<int>((((block >> (k + 16)) & 1) << 1) | ((block >> k) & 1));
             /* if isOpaque == 0 and idx is "msb=1 & lsb=0" (== 2) -> pixel is completely transparent
              */
             if (isOpaque || idx != 2) {

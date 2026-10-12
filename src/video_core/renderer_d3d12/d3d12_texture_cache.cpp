@@ -748,18 +748,20 @@ ImageView::ImageView(TextureCacheRuntime&, const VideoCommon::ImageViewInfo& inf
         const bool stencil_first =
             info.format == VideoCore::Surface::PixelFormat::S8_UINT_D24_UNORM;
         const bool stencil_only = info.format == VideoCore::Surface::PixelFormat::S8_UINT;
-        const auto depth_source =
-            stencil_first ? Tegra::Texture::SwizzleSource::G : Tegra::Texture::SwizzleSource::R;
-        const bool depth_selected =
-            !stencil_only && std::ranges::find(sources, depth_source) != sources.end();
+        const bool any_red =
+            std::ranges::find(sources, Tegra::Texture::SwizzleSource::R) != sources.end();
+        const bool depth_selected = info.format == VideoCore::Surface::PixelFormat::X8_D24_UNORM ||
+                                    (!stencil_only && (stencil_first ? !any_red : any_red));
         view_plane = depth_selected ? 0u : 1u;
         if (view_plane)
             description.Format = host_format.resource_format == 19
                                      ? DXGI_FORMAT_X32_TYPELESS_G8X24_UINT
                                      : DXGI_FORMAT_X24_TYPELESS_G8_UINT;
         for (size_t i = 0; i < 4; ++i) {
-            if (mapping[i] < 4)
+            if (mapping[i] < 2)
                 mapping[i] = view_plane ? 1u : 0u;
+            if (stencil_only && mapping[i] == 0)
+                mapping[i] = 1;
         }
         description.Shader4ComponentMapping =
             D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(mapping[0], mapping[1], mapping[2], mapping[3]);

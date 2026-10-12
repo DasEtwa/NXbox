@@ -99,6 +99,169 @@ int main() {
 """
 
 
+RUNTIME_DRIVER = r"""
+#include <algorithm>
+#include <array>
+#include <cassert>
+#include <cstdint>
+#include <cstring>
+#include <functional>
+#include <memory>
+#include <span>
+#include <string_view>
+#include <vector>
+#include "video_core/renderer_d3d12/d3d12_formats.h"
+using u8=std::uint8_t; using u32=std::uint32_t; using u64=std::uint64_t;
+using s32=std::int32_t; using UINT=unsigned; using UINT16=std::uint16_t; using UINT64=std::uint64_t;
+namespace VideoCommon {
+enum class ImageType { e2D, e3D };
+struct Extent3D { u32 width{},height{},depth{}; };
+struct Offset3D { s32 x{},y{},z{}; };
+struct Subresource { s32 base_level{},base_layer{},num_layers{}; };
+struct BufferImageCopy {
+    u64 buffer_offset{}; u32 buffer_row_length{},buffer_image_height{};
+    Subresource image_subresource; Offset3D image_offset; Extent3D image_extent;
+};
+struct ImageInfo {
+    std::string_view format; ImageType type{ImageType::e2D}; Extent3D size;
+    struct { s32 levels{1}, layers{2}; } resources;
+};
+}
+namespace VideoCore::Surface {
+u32 BytesPerBlock(std::string_view name) {
+    const auto f=D3D12::LookupFormat(name);
+    if(f.conversion==D3D12::FormatConversion::PackedColor) return D3D12::PackedBytes(name);
+    if(name=="S8_UINT") return 1;
+    if(f.conversion==D3D12::FormatConversion::Etc2) return name.find("RGBA")!=name.npos ? 16 : 8;
+    if(f.conversion==D3D12::FormatConversion::Eac) return f.bytes_per_block*4;
+    return f.bytes_per_block;
+}
+u32 DefaultBlockWidth(std::string_view name) { const auto f=D3D12::LookupFormat(name); return f.conversion==D3D12::FormatConversion::Etc2 || f.conversion==D3D12::FormatConversion::Eac ? 4 : 1; }
+u32 DefaultBlockHeight(std::string_view name) { return DefaultBlockWidth(name); }
+}
+struct D3D12_RESOURCE_DESC { u64 Width{}; UINT Height{},Format{}; UINT16 DepthOrArraySize{},MipLevels{}; };
+struct D3D12_SUBRESOURCE_FOOTPRINT { UINT Format{},Width{},Height{},Depth{},RowPitch{}; };
+struct D3D12_PLACED_SUBRESOURCE_FOOTPRINT { u64 Offset{}; D3D12_SUBRESOURCE_FOOTPRINT Footprint; };
+constexpr int D3D12_RESOURCE_STATE_COPY_SOURCE=1, D3D12_RESOURCE_STATE_COPY_DEST=2;
+constexpr int D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT=1, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX=2;
+struct Resource {
+    D3D12_RESOURCE_DESC desc;
+    std::vector<u8> bytes;
+    std::span<u8> mapped;
+    std::vector<std::vector<u8>> planes;
+    struct Handle {
+        Resource* pointer;
+        Resource* Get() const { return pointer; }
+        Resource* operator->() const { return pointer; }
+    } handle{this};
+    D3D12_RESOURCE_DESC GetDesc() const { return desc; }
+};
+using ResourcePtr=std::shared_ptr<Resource>;
+struct StagingBufferRef { ResourcePtr buffer; size_t offset{}; std::span<u8> mapped_span; };
+struct D3D12_TEXTURE_COPY_LOCATION {
+    Resource* pResource{}; int Type{}; D3D12_PLACED_SUBRESOURCE_FOOTPRINT PlacedFootprint;
+    UINT SubresourceIndex{};
+};
+struct D3D12_BOX { UINT left{},top{},front{},right{},bottom{},back{}; };
+namespace D3D12 {
+unsigned warnings{};
+void UnsupportedImage(const VideoCommon::ImageInfo&,FormatInfo,std::string_view) { ++warnings; }
+UINT Subresource(const VideoCommon::ImageInfo& info,s32 level,s32 layer) { return static_cast<UINT>(level+layer*info.resources.levels); }
+struct FakeDevice {
+    void GetCopyableFootprints(const D3D12_RESOURCE_DESC* desc, UINT plane, UINT, UINT64,
+                              D3D12_PLACED_SUBRESOURCE_FOOTPRINT* out, UINT* rows, UINT64* row_bytes, UINT64* total) {
+        const bool depth=desc->Format==44 || desc->Format==19;
+        const UINT bytes=depth ? (plane ? 1 : 4) : desc->Format==9 ? 8 : desc->Format==53 ? 2 : 4;
+        *row_bytes=desc->Width*bytes;
+        const UINT pitch=(static_cast<UINT>(*row_bytes)+255)&~255u;
+        *rows=desc->Height; *total=u64{pitch}*desc->Height*desc->DepthOrArraySize;
+        out->Footprint={desc->Format, static_cast<UINT>(desc->Width),desc->Height,desc->DepthOrArraySize,pitch};
+    }
+};
+struct FakeCommands {
+    void CopyTextureRegion(const D3D12_TEXTURE_COPY_LOCATION* target, UINT x, UINT y, UINT z,
+                           const D3D12_TEXTURE_COPY_LOCATION* source,const D3D12_BOX* box) {
+        const bool download=target->Type==D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+        const auto& linear=download ? *target : *source;
+        const auto& texture=download ? *source : *target;
+        const auto& fp=linear.PlacedFootprint.Footprint;
+        const UINT plane=texture.SubresourceIndex/(texture.pResource->desc.MipLevels*texture.pResource->desc.DepthOrArraySize);
+        const UINT bytes=fp.Format==44 || fp.Format==19 ? (plane ? 1 : 4) : fp.Format==9 ? 8 : fp.Format==53 ? 2 : 4;
+        auto& resident=texture.pResource->planes.at(texture.SubresourceIndex);
+        const UINT sx=download && box ? box->left : x;
+        const UINT sy=download && box ? box->top : y;
+        const UINT sz=download && box ? box->front : z;
+        for(UINT d=0;d<fp.Depth;++d) for(UINT row=0;row<fp.Height;++row) {
+            auto* tight=resident.data()+((sz+d)*texture.pResource->desc.Height*texture.pResource->desc.Width+(sy+row)*texture.pResource->desc.Width+sx)*bytes;
+            auto* padded=linear.pResource->bytes.data()+linear.PlacedFootprint.Offset+(u64{d}*fp.Height+row)*fp.RowPitch;
+            if(download) std::memcpy(padded,tight,fp.Width*bytes);
+            else std::memcpy(tight,padded,fp.Width*bytes);
+        }
+    }
+};
+struct Context {
+    FakeDevice device; FakeCommands commands; std::vector<std::function<void()>> pending;
+    FakeDevice* Device() { return &device; } FakeCommands* Commands() { return &commands; }
+    void Retain(const ResourcePtr&) {} void Transition(const ResourcePtr&,int) {} void MarkWork(const char*) {}
+    void AfterCompletion(std::function<void()> callback) { pending.push_back(std::move(callback)); }
+    void Finish() { for(auto& callback:pending) callback(); pending.clear(); }
+};
+struct TextureCacheRuntime {
+    Context context;
+    StagingBufferRef UploadStagingBuffer(size_t size) {
+        auto buffer=std::make_shared<Resource>(); buffer->bytes.resize(size+512,0xCD); buffer->mapped=buffer->bytes;
+        return {buffer,512,buffer->mapped.subspan(512)};
+    }
+    StagingBufferRef DownloadStagingBuffer(size_t size) { return UploadStagingBuffer(size); }
+};
+struct Image {
+    VideoCommon::ImageInfo info; FormatInfo host_format; ResourcePtr resource; TextureCacheRuntime* runtime{};
+    bool TransferConverted(const StagingBufferRef&,std::span<const VideoCommon::BufferImageCopy>,bool);
+};
+__CONVERTED__
+} // namespace D3D12
+int main() {
+    using namespace D3D12;
+    for(const auto& format:FormatTable) {
+        if(format.conversion==FormatConversion::None) continue;
+        TextureCacheRuntime runtime;
+        Image image;
+        image.info.format=format.name; image.info.size={5,3,1}; image.host_format=format; image.runtime=&runtime;
+        image.resource=std::make_shared<Resource>();
+        image.resource->desc={5,3,format.resource_format,2,1};
+        for(UINT plane=0;plane<format.planes;++plane) for(unsigned layer=0;layer<2;++layer)
+            image.resource->planes.emplace_back(5*3*(format.depth ? (plane ? 1u : 4u) : format.bytes_per_block));
+        const u32 block=VideoCore::Surface::DefaultBlockWidth(format.name);
+        const u32 bytes=VideoCore::Surface::BytesPerBlock(format.name);
+        const u32 rows=(3+block-1)/block, pitch=(8/block)*bytes;
+        auto map=runtime.UploadStagingBuffer(pitch*rows*2+19);
+        for(size_t i=0;i<map.mapped_span.size();++i) map.mapped_span[i]=static_cast<u8>(i*37);
+        const auto original=std::vector<u8>(map.mapped_span.begin(),map.mapped_span.end());
+        VideoCommon::BufferImageCopy copy{19,8,block==4 ? 4u : 3u,{0,0,2},{0,0,0},{5,3,1}};
+        assert(image.TransferConverted(map,std::span{&copy,1},false));
+        if(format.conversion==FormatConversion::PackedColor || format.depth) {
+            // Overwrite only the live guest pixel bytes, leaving padding unchanged.
+            for(unsigned layer=0;layer<2;++layer) for(unsigned y=0;y<3;++y)
+                std::memset(map.mapped_span.data()+19+layer*pitch*rows+y*pitch,0,5*bytes);
+            assert(image.TransferConverted(map,std::span{&copy,1},true));
+            runtime.context.Finish();
+            // X8 and D32S8 padding is not stored on the GPU.
+            for(unsigned layer=0;layer<2;++layer) for(unsigned y=0;y<3;++y) for(unsigned x=0;x<5;++x)
+                for(unsigned b=0;b<bytes;++b) {
+                    if((format.name=="X8_D24_UNORM" && b==3) || (format.name=="D32_FLOAT_S8_UINT" && b>=5)) continue;
+                    const auto position=19+layer*pitch*rows+y*pitch+x*bytes+b;
+                    assert(map.mapped_span[position]==original[position]);
+                }
+        }
+        const auto before=warnings;
+        copy.buffer_offset=map.mapped_span.size();
+        assert(!image.TransferConverted(map,std::span{&copy,1},false));
+        assert(warnings==before+1);
+    }
+}
+"""
+
+
 class D3D12FormatCoverageTests(unittest.TestCase):
     def test_every_pixel_format_has_host_storage(self):
         surface = (ROOT / "src/video_core/surface.h").read_text()
@@ -148,3 +311,30 @@ class D3D12FormatCoverageTests(unittest.TestCase):
             "plane * static_cast<UINT>",
         ]:
             self.assertIn(token, source)
+
+    def test_runtime_conversion_transfers(self):
+        source = (ROOT / "src/video_core/renderer_d3d12/d3d12_texture_cache.cpp").read_text()
+        start = source.index("bool Image::TransferConverted(")
+        end = source.index("ImageView::ImageView(", start)
+        with tempfile.TemporaryDirectory(prefix="nxbox-t1-runtime-") as temp:
+            cpp = Path(temp) / "runtime.cpp"
+            binary = Path(temp) / "runtime"
+            cpp.write_text(RUNTIME_DRIVER.replace("__CONVERTED__", source[start:end]))
+            subprocess.run(
+                [
+                    "clang++",
+                    "-std=c++20",
+                    "-Wall",
+                    "-Wextra",
+                    "-Werror",
+                    "-fsanitize=address,undefined",
+                    "-fno-sanitize-recover=all",
+                    "-I",
+                    str(ROOT / "src"),
+                    str(cpp),
+                    "-o",
+                    str(binary),
+                ],
+                check=True,
+            )
+            subprocess.run([str(binary)], check=True, timeout=60)
