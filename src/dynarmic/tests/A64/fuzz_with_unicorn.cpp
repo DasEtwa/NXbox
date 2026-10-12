@@ -576,8 +576,13 @@ TEST_CASE("A64: Scalar rounding differential", "[a64][unicorn][conformance]") {
     std::mt19937 random{0x1950};
     A64Unicorn::RegisterArray regs{};
     const std::array<u32, 7> operations{
-        0x1e244020, 0x1e24c020, 0x1e254020, 0x1e25c020,
-        0x1e264020, 0x1e274020, 0x1e27c020,
+        0x1e244020,
+        0x1e24c020,
+        0x1e254020,
+        0x1e25c020,
+        0x1e264020,
+        0x1e274020,
+        0x1e27c020,
     };  // FRINTN/P/M/Z/A/X/I S0, S1.
     const std::array<u32, 3> types{0, 1, 3};  // Single, double, half.
 
@@ -586,9 +591,7 @@ TEST_CASE("A64: Scalar rounding differential", "[a64][unicorn][conformance]") {
             for (size_t iteration = 0; iteration < 256; ++iteration) {
                 A64Unicorn::VectorArray vecs{};
                 vecs[1][0] = (static_cast<u64>(random()) << 32) | random();
-                const u32 fpcr = (static_cast<u32>(iteration % 4) << 22) |
-                                 ((random() & 1) << 24) | ((random() & 1) << 25) |
-                                 ((random() & 1) << 19);
+                const u32 fpcr = (static_cast<u32>(iteration % 4) << 22) | ((random() & 1) << 24) | ((random() & 1) << 25) | ((random() & 1) << 19);
                 const u32 instruction = operation | (type << 22);
                 INFO("instruction=" << instruction << " fpcr=" << fpcr);
                 RunTestInstance(jit, uni, jit_env, uni_env, conf, regs, vecs, 0,
@@ -615,8 +618,7 @@ TEST_CASE("A64: Signed to unsigned saturating shifts differential", "[a64][unico
                 for (auto& part : vecs[1]) {
                     part = (static_cast<u64>(random()) << 32) | random();
                 }
-                const u32 instruction = 0x6f006420 | ((element_size + shift) << 16) |
-                                        static_cast<u32>(iteration % 2);
+                const u32 instruction = 0x6f006420 | ((element_size + shift) << 16) | static_cast<u32>(iteration % 2);
                 INFO("element_size=" << element_size << " shift=" << shift);
                 RunTestInstance(jit, uni, jit_env, uni_env, conf, regs, vecs, 0,
                                 {instruction}, 0, 0);
