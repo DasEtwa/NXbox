@@ -24,12 +24,14 @@ class TextEntry {
 public:
     enum class Result { Editing, Confirmed, Cancelled };
 
-    TextEntry(std::wstring title, std::wstring initial);
+    TextEntry(std::wstring title, std::wstring initial, bool secret = false);
 
     Result Update(const Input& input);
     void Draw(Renderer& renderer, Clock::time_point now) const;
 
-    const std::wstring& Text() const { return text_; }
+    const std::wstring& Text() const {
+        return text_;
+    }
 
 private:
     enum class Action { Char, Shift, Backspace, Insert, Ok, Cancel };
@@ -37,7 +39,7 @@ private:
     struct Key {
         std::wstring label;
         Action action;
-        float width; // in key units; a plain key is 1
+        float width;         // in key units; a plain key is 1
         std::wstring insert; // the text a Char or Insert key types
     };
 
@@ -50,6 +52,7 @@ private:
     std::wstring title_;
     std::wstring text_;
     std::size_t caret_ = 0;
+    bool secret_ = false;
     bool shift_ = false;
     int row_ = 1;
     int column_ = 0;

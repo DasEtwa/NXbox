@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -27,27 +28,28 @@ namespace EdenXbox::SaveSync {
 //   ... boot the game, play, close it ...
 //   SyncAfterExit(title_id, on_progress, name);
 //
-// Files, all under LocalState:
-//   savesync.json        {"client_id": "...", "client_secret": "..."}, pushed by the owner. NXbox
-//                        carries no OAuth credential of its own (SwitchSaveSync keeps its client
-//                        out of its public repository), so this file is what makes NXbox use the
-//                        SAME OAuth client as the Switch. That matters: the Drive scope is
-//                        drive.file, which only shows files created by the same OAuth client.
-//                        Optional keys: "endpoint" (an https URL of SwitchSaveSync's auth server,
-//                        used instead of client_id/client_secret, the same way SwitchSaveSync's
-//                        google.cfg does) and "owner" (the account-folder name to use instead of
-//                        the Eden profile name, so it can match the Switch account's nickname).
-//   savesync_token.json  the Google refresh token (written by PollDeviceLogin, never logged).
-//   savesync_state.json  per save: the fingerprint of the last sync and the cloud folder used.
-//   savesync_backup\     the Xbox save as it was before a cloud save replaced it (one copy each).
-//   savesync_staging\    scratch space, emptied after each run.
+// OAuth credentials are injected at build time; refresh tokens use the UWP PasswordVault.
+// LocalState contains only sync fingerprints, folder mappings, staging and save backups.
 
 // ---------------------------------------------------------------------------------------------
 // Sign-in (OAuth device flow: the TV shows a code, the phone signs in)
 // ---------------------------------------------------------------------------------------------
 
-/// True when savesync.json holds a usable credential. When false, sign-in and sync cannot work.
+/// True when this build has Google credentials or a WebDAV account has been configured.
 bool IsConfigured();
+void ResetSyncCancellation();
+void CancelSync();
+bool SelectAccount(std::uint64_t title_id, const std::string& game_name, const std::string& owner,
+                   const std::string& profile_uuid = {}, bool device_save = false);
+bool ConfigureWebDav(const std::string& url, const std::string& user, const std::string& password);
+bool IsWebDav();
+std::string ActiveProfileUuid();
+// System save IDs are independent of application IDs in Eden. The caller must supply that
+// identity rather than guessing which OS save belongs to a game.
+struct SystemSave {
+    std::uint64_t save_id = 0;
+    bool system_space = true;
+};
 
 /// True when a refresh token is stored. It is not validated against Google; a revoked token shows
 /// up as SyncStatus::NotSignedIn on the next sync (and the stored token is removed).
@@ -101,8 +103,8 @@ enum class SyncStage {
 
 struct SyncProgress {
     SyncStage stage = SyncStage::Connecting;
-    std::uint32_t done = 0;  // steps finished in this stage
-    std::uint32_t total = 0; // steps expected in this stage, 0 when not known yet
+    std::uint64_t done = 0;  // bytes transferred in this stage
+    std::uint64_t total = 0; // bytes expected in this stage, 0 when not known yet
     std::string item;        // file being transferred, may be empty
 };
 
@@ -110,8 +112,9 @@ struct SyncProgress {
 using ProgressCallback = std::function<void(const SyncProgress&)>;
 
 enum class SyncStatus {
+    AccountRequired, // choose a cloud account folder before the first sync
     Failed,        // something went wrong; the Xbox save is unchanged or was put back (see message)
-    NotConfigured, // savesync.json is missing or has no usable credential
+    NotConfigured, // the build has no Google credentials or configured WebDAV account
     NotSignedIn,   // no refresh token, or Google revoked it: sign in again
     NothingToSync, // no save on this console and none in the cloud
     UpToDate,      // both sides already identical; nothing was written
@@ -122,6 +125,7 @@ enum class SyncStatus {
 
 struct SyncResult {
     SyncStatus status = SyncStatus::Failed;
+    std::vector<std::string> account_folders;
     std::string message;      // short English text for logs and as a fallback
     std::string cloud_folder; // "<game folder>/<account folder>" when known
 
@@ -149,25 +153,32 @@ struct SyncResult {
 /// NACP names. It may be empty only after one successful sync of this save, because the cloud
 /// folder is then remembered in savesync_state.json.
 SyncResult SyncBeforeBoot(std::uint64_t title_id, const ProgressCallback& progress = {},
-                          const std::string& game_name = {});
+                          const std::string& game_name = {},
+                          std::optional<SystemSave> system_save = {},
+                          const std::string& profile_uuid = {}, bool device_save = false);
 
 /// The same reconciliation, meant for after the game closed and Eden released the save files.
 SyncResult SyncAfterExit(std::uint64_t title_id, const ProgressCallback& progress = {},
-                         const std::string& game_name = {});
+                         const std::string& game_name = {},
+                         std::optional<SystemSave> system_save = {},
+                         const std::string& profile_uuid = {}, bool device_save = false);
 
 enum class ConflictChoice {
     KeepXbox,  // the Xbox save overwrites the cloud copy
+    KeepBoth,  // back up Xbox locally, then continue with the cloud save
     KeepCloud, // the cloud copy overwrites the Xbox save (the old one goes to savesync_backup)
 };
 
 /// Applies the user's answer to a Conflict. It refuses (Failed) to replace a side with nothing.
 SyncResult ResolveConflict(std::uint64_t title_id, ConflictChoice choice,
-                           const ProgressCallback& progress = {},
-                           const std::string& game_name = {});
+                           const ProgressCallback& progress = {}, const std::string& game_name = {},
+                           std::optional<SystemSave> system_save = {},
+                           const std::string& profile_uuid = {}, bool device_save = false);
 
 /// The game name SwitchSaveSync uses for a title: the first non-empty application name among the
 /// first 16 NACP language entries (FileSys::NACP::GetApplicationNames()), independent of the
-/// console language. Empty when there is none.
-std::string GameNameFromNames(const std::vector<std::string>& nacp_application_names);
+/// console language. With no name, uses SwitchSaveSync's unknown-title folder when an ID is given.
+std::string GameNameFromNames(const std::vector<std::string>& nacp_application_names,
+                              std::uint64_t title_id = 0);
 
 } // namespace EdenXbox::SaveSync

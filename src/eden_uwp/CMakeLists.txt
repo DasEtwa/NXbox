@@ -21,7 +21,9 @@ add_executable(eden-uwp WIN32
     game_download.cpp
     shader_share.cpp
     shader_share.h
-    save_sync.cpp
+    save_sync/backend.cpp
+    save_sync/policy.h
+    save_sync/qrcodegen.cpp
     save_sync.h
     game_download.h
     http_vfs_file.cpp
@@ -142,3 +144,17 @@ if (MSVC)
         target_link_libraries(eden-uwp PRIVATE delayimp.lib)
     endif()
 endif()
+
+option(NXBOX_ENABLE_SAVE_SYNC "Enable cloud save synchronization" ON)
+set(NXBOX_GDRIVE_CLIENT_ID "$ENV{NXBOX_GDRIVE_CLIENT_ID}")
+set(NXBOX_GDRIVE_CLIENT_SECRET "$ENV{NXBOX_GDRIVE_CLIENT_SECRET}")
+if (NOT NXBOX_ENABLE_SAVE_SYNC)
+    set(NXBOX_GDRIVE_CLIENT_ID "")
+    set(NXBOX_GDRIVE_CLIENT_SECRET "")
+endif()
+foreach(_credential CLIENT_ID CLIENT_SECRET)
+    string(HEX "${NXBOX_GDRIVE_${_credential}}" _hex)
+    string(REGEX REPLACE "(..)" "0x\\1," NXBOX_${_credential}_BYTES "${_hex}")
+endforeach()
+configure_file(save_sync/credentials.h.in ${CMAKE_CURRENT_BINARY_DIR}/save_sync_credentials.h @ONLY)
+target_include_directories(eden-uwp PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
