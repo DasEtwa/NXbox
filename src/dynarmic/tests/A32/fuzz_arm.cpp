@@ -452,26 +452,24 @@ static void RunTestInstance(Dynarmic::A32::Jit& jit,
     REQUIRE((uni.GetFpscr() & 0xF8000000) == (jit.Fpscr() & 0xF8000000));
     bool memory_equal = true;
     std::string memory_difference;
-    if (uni_env.modified_memory != jit_env.modified_memory) {
-        // Unaligned Unicorn write hooks can include unchanged adjacent bytes.
-        // Compare architectural RAM contents across the union of touched addresses.
-        const auto compare_byte = [&](u32 address) {
-            const auto reference = uni_env.MemoryRead(address, sizeof(u8));
-            const auto actual = jit_env.MemoryRead(address, sizeof(u8));
-            if (reference != actual) {
-                memory_equal = false;
-                memory_difference += fmt::format("{:08x}: reference={:02x} jit={:02x}\n", address, reference, actual);
-            }
-        };
-        for (const auto& [address, value] : uni_env.modified_memory) {
-            (void)value;
-            compare_byte(address);
+    // Hooks run before stores commit and can describe physical split accesses.
+    // Read live Unicorn RAM across the union of touched byte addresses instead.
+    const auto compare_byte = [&](u32 address) {
+        const auto reference = uni.ReadMemoryByte(address);
+        const auto actual = jit_env.MemoryRead(address, sizeof(u8));
+        if (reference != actual) {
+            memory_equal = false;
+            memory_difference += fmt::format("{:08x}: reference={:02x} jit={:02x}\n", address, reference, actual);
         }
-        for (const auto& [address, value] : jit_env.modified_memory) {
-            (void)value;
-            if (!uni_env.modified_memory.contains(address)) {
-                compare_byte(address);
-            }
+    };
+    for (const auto& [address, value] : uni_env.modified_memory) {
+        (void)value;
+        compare_byte(address);
+    }
+    for (const auto& [address, value] : jit_env.modified_memory) {
+        (void)value;
+        if (!uni_env.modified_memory.contains(address)) {
+            compare_byte(address);
         }
     }
     INFO("RAM differences=" << memory_difference);

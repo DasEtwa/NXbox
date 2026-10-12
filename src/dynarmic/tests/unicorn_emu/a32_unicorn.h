@@ -45,6 +45,8 @@ public:
 
     void Run();
 
+    u8 ReadMemoryByte(u32 address) const;
+
     u32 GetSP() const;
     void SetSP(u32 value);
 

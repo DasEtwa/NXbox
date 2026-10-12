@@ -127,6 +127,17 @@ void A32Unicorn<TestEnvironment>::SetPC(u32 value) {
 }
 
 template<class TestEnvironment>
+u8 A32Unicorn<TestEnvironment>::ReadMemoryByte(u32 address) const {
+    u8 value;
+    const auto error = uc_mem_read(uc, address, &value, sizeof(value));
+    if (error == UC_ERR_READ_UNMAPPED) {
+        return static_cast<u8>(testenv.MemoryRead(address, sizeof(value)));
+    }
+    CHECKED(error);
+    return value;
+}
+
+template<class TestEnvironment>
 u32 A32Unicorn<TestEnvironment>::GetSP() const {
     u32 sp;
     CHECKED(uc_reg_read(uc, UC_ARM_REG_SP, &sp));
