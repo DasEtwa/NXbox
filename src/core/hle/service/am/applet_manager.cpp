@@ -248,6 +248,13 @@ void AppletManager::RequestExit() {
     }
 }
 
+void AppletManager::HomeButtonPressed() {
+    std::scoped_lock lk{m_lock};
+    if (m_window_system) {
+        m_window_system->OnHomeButtonPressed(ButtonPressDuration::ShortPressing);
+    }
+}
+
 void AppletManager::OperationModeChanged() {
     std::scoped_lock lk{m_lock};
     if (m_window_system) {

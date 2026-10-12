@@ -8,6 +8,7 @@
 #include "core/hle/kernel/k_transfer_memory.h"
 #include "core/hle/service/am/applet_data_broker.h"
 #include "core/hle/service/am/applet_manager.h"
+#include "core/hle/service/am/applet_policy.h"
 #include "core/hle/service/am/frontend/applets.h"
 #include "core/hle/service/am/library_applet_storage.h"
 #include "core/hle/service/am/process_creation.h"
@@ -26,13 +27,8 @@ namespace {
 
 bool ShouldCreateGuestApplet(AppletId applet_id) {
 #ifdef NXBOX_UWP
-    // UWP has no firmware-applet UI. HLE selects the active user, completes Mii requests and
-    // accepts the already-connected pad for controller support (the firmware applet never exits).
-    if (applet_id == AppletId::MiiEdit || applet_id == AppletId::ProfileSelect ||
-        applet_id == AppletId::Controller) {
-        return false;
-    }
-#endif
+    return PreferLocalFirmwareApplet(applet_id);
+#else
 #define X(Name, name)                                                                              \
     if (applet_id == AppletId::Name &&                                                             \
         Settings::values.name##_applet_mode.GetValue() != Settings::AppletMode::LLE) {             \
@@ -58,6 +54,7 @@ bool ShouldCreateGuestApplet(AppletId applet_id) {
 #undef X
 
     return true;
+#endif
 }
 
 AppletProgramId AppletIdToProgramId(AppletId applet_id) {
@@ -137,6 +134,8 @@ std::shared_ptr<ILibraryAppletAccessor> CreateGuestApplet(Core::System& system,
         window_system.TrackApplet(applet, false);
         return std::make_shared<ILibraryAppletAccessor>(system, broker, applet);
     }
+    LOG_WARNING(Service_AM, "LLE applet initialization failed; falling back to HLE: applet_id={}",
+                applet_id);
     // Couldn't initialize the guest process
     return {};
 }
@@ -159,6 +158,9 @@ std::shared_ptr<ILibraryAppletAccessor> CreateFrontendApplet(Core::System& syste
     applet->caller_applet = caller_applet;
     applet->caller_applet_broker = storage;
     applet->frontend = system.GetFrontendAppletHolder().GetApplet(applet, applet_id, mode);
+    if (!applet->frontend) {
+        return {};
+    }
     {
         std::scoped_lock lk{caller_applet->lock};
         caller_applet->child_applets.push_back(applet);
@@ -192,15 +194,16 @@ Result ILibraryAppletCreator::CreateLibraryApplet(
     LOG_DEBUG(Service_AM, "called with applet_id={} applet_mode={}", applet_id,
               library_applet_mode);
 
-    std::shared_ptr<ILibraryAppletAccessor> library_applet;
-    if (ShouldCreateGuestApplet(applet_id)) {
-        library_applet =
-            CreateGuestApplet(system, m_window_system, m_applet, applet_id, library_applet_mode);
-    }
-    if (!library_applet) {
-        library_applet =
-            CreateFrontendApplet(system, m_window_system, m_applet, applet_id, library_applet_mode);
-    }
+    auto library_applet = CreateAppletWithFallback(
+        ShouldCreateGuestApplet(applet_id),
+        [&] {
+            return CreateGuestApplet(system, m_window_system, m_applet, applet_id,
+                                     library_applet_mode);
+        },
+        [&] {
+            return CreateFrontendApplet(system, m_window_system, m_applet, applet_id,
+                                        library_applet_mode);
+        });
     if (!library_applet) {
         LOG_ERROR(Service_AM, "Applet doesn't exist! applet_id={}", applet_id);
         R_THROW(ResultUnknown);
@@ -218,15 +221,16 @@ Result ILibraryAppletCreator::CreateLibraryAppletEx(
     LOG_DEBUG(Service_AM, "called with applet_id={} applet_mode={} thread_id={}", applet_id,
               library_applet_mode, thread_id);
 
-    std::shared_ptr<ILibraryAppletAccessor> library_applet;
-    if (ShouldCreateGuestApplet(applet_id)) {
-        library_applet =
-            CreateGuestApplet(system, m_window_system, m_applet, applet_id, library_applet_mode);
-    }
-    if (!library_applet) {
-        library_applet =
-            CreateFrontendApplet(system, m_window_system, m_applet, applet_id, library_applet_mode);
-    }
+    auto library_applet = CreateAppletWithFallback(
+        ShouldCreateGuestApplet(applet_id),
+        [&] {
+            return CreateGuestApplet(system, m_window_system, m_applet, applet_id,
+                                     library_applet_mode);
+        },
+        [&] {
+            return CreateFrontendApplet(system, m_window_system, m_applet, applet_id,
+                                        library_applet_mode);
+        });
     if (!library_applet) {
         LOG_ERROR(Service_AM, "Applet doesn't exist! applet_id={}", applet_id);
         R_THROW(ResultUnknown);

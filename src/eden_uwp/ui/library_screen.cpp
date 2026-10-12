@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "eden_uwp/applet_boot.h"
 #include "eden_uwp/ui/library_screen.h"
 
 #include <algorithm>
@@ -123,7 +124,8 @@ constexpr int kSettingSaveSync = 0;
 constexpr int kSettingSources = 1;
 constexpr int kSettingUsb = 2;
 constexpr int kSettingCredits = 3;
-constexpr int kSettingsRowCount = 4;
+constexpr int kSettingSystemMenu = 4;
+constexpr int kSettingsRowCount = 5;
 
 constexpr std::size_t Idx(int index) {
     return static_cast<std::size_t>(index);
@@ -774,6 +776,14 @@ private:
 
     // A on a settings row.
     void ActivateSetting(Clock::time_point now) {
+        if (settings_row_ == kSettingSystemMenu) {
+            result_ = std::string(SwitchHomeBootTarget);
+            launched_ = -1;
+            launching_ = true;
+            launch_started_ = now;
+            input_.ConsumeUntilRelease();
+            return;
+        }
         if (settings_row_ == kSettingCredits) {
             OpenCredits();
             return;
@@ -1352,7 +1362,7 @@ private:
             }
             if (layer_ == Layer::Rail &&
                 (settings_row_ == kSettingSources || settings_row_ == kSettingUsb ||
-                 settings_row_ == kSettingCredits)) {
+                 settings_row_ == kSettingCredits || settings_row_ == kSettingSystemMenu)) {
                 hints.push_back({Theme::kButtonA, L"A", Tr(Text::HintSelect)});
             }
         } else if (HasGame()) {
@@ -1409,10 +1419,15 @@ private:
         const Row credits_row = {Tr(Text::CreditsRowTitle), Tr(Text::CreditsRowState),
                                  Theme::kTextSecondary, Tr(Text::CreditsRowHint)};
         const std::array<Row, kSettingsRowCount> rows = {
-            {sync_row, sources_row, usb_row, credits_row}};
-        constexpr float kRowTop = 560.0f;
+            {sync_row,
+             sources_row,
+             usb_row,
+             credits_row,
+             {Tr(Text::SystemMenuTitle), Tr(Text::SystemMenuBoot), Theme::kTextSecondary,
+              Tr(Text::SystemMenuHint)}}};
+        constexpr float kRowTop = 500.0f;
         constexpr float kRowHeight = 88.0f;
-        constexpr float kRowPitch = 96.0f;
+        constexpr float kRowPitch = 92.0f;
         constexpr float kRowRadius = 22.0f;
         for (int i = 0; i < kSettingsRowCount; ++i) {
             const float y = kRowTop + static_cast<float>(i) * kRowPitch;

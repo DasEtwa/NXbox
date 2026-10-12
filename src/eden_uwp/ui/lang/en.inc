@@ -280,3 +280,6 @@
     {Text::SyncDavUser, L"WebDAV username"},
     {Text::SyncDavPassword, L"WebDAV app password"},
     {Text::SyncDavFailed, L"Use an HTTPS URL, username and app password. Try again."},
+    {Text::SystemMenuTitle, L"System menu"},
+    {Text::SystemMenuBoot, L"Boot to Switch HOME menu"},
+    {Text::SystemMenuHint, L"Use your installed firmware. View + Menu opens HOME."},

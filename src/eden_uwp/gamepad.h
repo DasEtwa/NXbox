@@ -13,6 +13,7 @@
 #include <winrt/Windows.System.h>
 
 #include "common/settings.h"
+#include "eden_uwp/applet_boot.h"
 #include "eden_uwp/diagnostic.h"
 #include "eden_uwp/input_script.h"
 #include "eden_uwp/pad_style.h"
@@ -94,6 +95,11 @@ public:
         if (devices.Size() != 0) {
             reading = devices.GetAt(0).GetCurrentReading();
         }
+        const bool view = (reading.Buttons & GamepadButtons::View) != GamepadButtons::None ||
+                          (keys & (1u << Settings::NativeButton::Minus)) != 0;
+        const bool menu = (reading.Buttons & GamepadButtons::Menu) != GamepadButtons::None ||
+                          (keys & (1u << Settings::NativeButton::Plus)) != 0;
+        home_pressed = home_edge.Update(view, menu);
         // Player 1 stays connected, as the keyboard keeps it on desktop Eden. Disconnecting when
         // no Xbox pad was visible made games re-open the controller-support applet in a loop:
         // Persona 5 Royal every ~5 s, and Breath of the Wild 43 times in 13 s, leaking each
@@ -126,6 +132,10 @@ public:
             if (i == Settings::NativeButton::ZR)
                 pressed = reading.RightTrigger > 0.5;
             pressed = pressed || (keys & (1u << i)) != 0;
+            if (view && menu &&
+                (i == Settings::NativeButton::Minus || i == Settings::NativeButton::Plus)) {
+                pressed = false;
+            }
             SetButton(pad, i, pressed);
         }
         const auto key_axis = [keys](int positive, int negative, double value) {
@@ -155,7 +165,17 @@ public:
         return true;
     }
 
+    bool HomePressed() const {
+        return home_pressed;
+    }
+    void ResetHomeButton() {
+        home_edge.Reset();
+        home_pressed = false;
+    }
+
 private:
+    HomeButtonEdge home_edge;
+    bool home_pressed{};
     /// NXBOX_PAD_AUTOSTYLE (default on): when the game changes its supported style set, present the
     /// pad as a type that set allows and signal a fresh connection, so games that look at the
     /// style only on a connect event (Super Mario 3D World's controller screen) see a valid pad.

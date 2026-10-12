@@ -286,3 +286,6 @@
     {Text::SyncDavUser, L"Usuário WebDAV"},
     {Text::SyncDavPassword, L"Senha de aplicativo WebDAV"},
     {Text::SyncDavFailed, L"Use endereço HTTPS, usuário e senha de aplicativo. Tente novamente."},
+    {Text::SystemMenuTitle, L"Menu do sistema"},
+    {Text::SystemMenuBoot, L"Iniciar no menu HOME do Switch"},
+    {Text::SystemMenuHint, L"Use o firmware instalado. View + Menu abre o HOME."},

@@ -46,6 +46,11 @@ struct Applet {
     std::optional<ProcessHolder> process_holder;
     bool is_process_running{};
 
+    // Retain initial input references until the guest produces output or returns normally.
+    std::vector<std::shared_ptr<IStorage>> fallback_input;
+    bool guest_returned{};
+    bool guest_output_sent{};
+
     // Creation state
     AppletId applet_id{};
     AppletResourceUserId aruid{};
