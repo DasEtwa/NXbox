@@ -64,9 +64,7 @@ def coverage():
     opcodes = re.findall(r"^OPCODE\((\w+)", OPCODES.read_text(), flags=re.M)
     definitions = emitters()
     missing = sorted(set(opcodes) - definitions.keys())
-    rejected = sorted(
-        name for name in opcodes if definitions.get(name, {}).get("rejected", False)
-    )
+    rejected = sorted(name for name in opcodes if definitions.get(name, {}).get("rejected", False))
     lowered = [
         name
         for name in rejected
@@ -152,18 +150,38 @@ class HlslOpcodeCoverageTests(unittest.TestCase):
                 if not dxc:
                     continue
                 compiled = subprocess.run(
-                    [dxc, "-WX", "-T", profile, "-E", "main", str(source), "-Fo", str(source.with_suffix(".dxil"))],
+                    [
+                        dxc,
+                        "-WX",
+                        "-T",
+                        profile,
+                        "-E",
+                        "main",
+                        str(source),
+                        "-Fo",
+                        str(source.with_suffix(".dxil")),
+                    ],
                     capture_output=True,
                     text=True,
                     timeout=240,
                 )
-                self.assertEqual(compiled.returncode, 0, name + ": " + compiled.stdout + compiled.stderr)
+                self.assertEqual(
+                    compiled.returncode, 0, name + ": " + compiled.stdout + compiled.stderr
+                )
                 self.assertGreater(source.with_suffix(".dxil").stat().st_size, 0, name)
             if not dxc:
                 self.skipTest("IR emission passed; DXC unavailable (set DXC to validate DXIL)")
             # Native 64-bit instructions must not accidentally validate as SM 6.0.
             rejected = subprocess.run(
-                [dxc, "-WX", "-T", "cs_6_0", "-E", "main", str(Path(directory) / "hlsl_atomic64.hlsl")],
+                [
+                    dxc,
+                    "-WX",
+                    "-T",
+                    "cs_6_0",
+                    "-E",
+                    "main",
+                    str(Path(directory) / "hlsl_atomic64.hlsl"),
+                ],
                 capture_output=True,
                 text=True,
                 timeout=120,

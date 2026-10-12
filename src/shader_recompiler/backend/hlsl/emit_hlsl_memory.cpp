@@ -59,7 +59,8 @@ void EmitGetCbufU32x2(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding
 
 void EmitLoadSharedU8(EmitContext& ctx, IR::Inst& inst, std::string_view offset) {
     if (ctx.uses_shared_wide) {
-        ctx.AddU32("{} = bitfieldExtract(uint(nx_shared_load32({})), int(({} & 3u) * 8u), 8);", inst, offset, offset);
+        ctx.AddU32("{} = bitfieldExtract(uint(nx_shared_load32({})), int(({} & 3u) * 8u), 8);",
+                   inst, offset, offset);
         return;
     }
 
@@ -69,7 +70,8 @@ void EmitLoadSharedU8(EmitContext& ctx, IR::Inst& inst, std::string_view offset)
 
 void EmitLoadSharedS8(EmitContext& ctx, IR::Inst& inst, std::string_view offset) {
     if (ctx.uses_shared_wide) {
-        ctx.AddU32("{} = bitfieldExtract(int(nx_shared_load32({})), int(({} & 3u) * 8u), 8);", inst, offset, offset);
+        ctx.AddU32("{} = bitfieldExtract(int(nx_shared_load32({})), int(({} & 3u) * 8u), 8);", inst,
+                   offset, offset);
         return;
     }
 
@@ -79,7 +81,8 @@ void EmitLoadSharedS8(EmitContext& ctx, IR::Inst& inst, std::string_view offset)
 
 void EmitLoadSharedU16(EmitContext& ctx, IR::Inst& inst, std::string_view offset) {
     if (ctx.uses_shared_wide) {
-        ctx.AddU32("{} = bitfieldExtract(uint(nx_shared_load32({})), int(({} & 2u) * 8u), 16);", inst, offset, offset);
+        ctx.AddU32("{} = bitfieldExtract(uint(nx_shared_load32({})), int(({} & 2u) * 8u), 16);",
+                   inst, offset, offset);
         return;
     }
 
@@ -89,7 +92,8 @@ void EmitLoadSharedU16(EmitContext& ctx, IR::Inst& inst, std::string_view offset
 
 void EmitLoadSharedS16(EmitContext& ctx, IR::Inst& inst, std::string_view offset) {
     if (ctx.uses_shared_wide) {
-        ctx.AddU32("{} = bitfieldExtract(int(nx_shared_load32({})), int(({} & 2u) * 8u), 16);", inst, offset, offset);
+        ctx.AddU32("{} = bitfieldExtract(int(nx_shared_load32({})), int(({} & 2u) * 8u), 16);",
+                   inst, offset, offset);
         return;
     }
 
@@ -109,7 +113,8 @@ void EmitLoadSharedU32(EmitContext& ctx, IR::Inst& inst, std::string_view offset
 
 void EmitLoadSharedU64(EmitContext& ctx, IR::Inst& inst, std::string_view offset) {
     if (ctx.uses_shared_wide) {
-        ctx.AddU32x2("{} = uint2(nx_shared_load32({} + 0u), nx_shared_load32({} + 4u));", inst, offset, offset);
+        ctx.AddU32x2("{} = uint2(nx_shared_load32({} + 0u), nx_shared_load32({} + 4u));", inst,
+                     offset, offset);
         return;
     }
 
@@ -119,7 +124,9 @@ void EmitLoadSharedU64(EmitContext& ctx, IR::Inst& inst, std::string_view offset
 
 void EmitLoadSharedU128(EmitContext& ctx, IR::Inst& inst, std::string_view offset) {
     if (ctx.uses_shared_wide) {
-        ctx.AddU32x4("{} = uint4(nx_shared_load32({} + 0u), nx_shared_load32({} + 4u), nx_shared_load32({} + 8u), nx_shared_load32({} + 12u));", inst, offset, offset, offset, offset);
+        ctx.AddU32x4("{} = uint4(nx_shared_load32({} + 0u), nx_shared_load32({} + 4u), "
+                     "nx_shared_load32({} + 8u), nx_shared_load32({} + 12u));",
+                     inst, offset, offset, offset, offset);
         return;
     }
 
@@ -169,8 +176,10 @@ void EmitWriteSharedU32(EmitContext& ctx, std::string_view offset, std::string_v
 
 void EmitWriteSharedU64(EmitContext& ctx, std::string_view offset, std::string_view value) {
     if (ctx.uses_shared_wide) {
-        ctx.Add("nx_shared_write_subword({} + 0u, {}, 32u);", offset, fmt::format("{}.{}", value, "xyzw"[0]));
-        ctx.Add("nx_shared_write_subword({} + 4u, {}, 32u);", offset, fmt::format("{}.{}", value, "xyzw"[1]));
+        ctx.Add("nx_shared_write_subword({} + 0u, {}, 32u);", offset,
+                fmt::format("{}.{}", value, "xyzw"[0]));
+        ctx.Add("nx_shared_write_subword({} + 4u, {}, 32u);", offset,
+                fmt::format("{}.{}", value, "xyzw"[1]));
         return;
     }
 
@@ -181,10 +190,14 @@ void EmitWriteSharedU64(EmitContext& ctx, std::string_view offset, std::string_v
 
 void EmitWriteSharedU128(EmitContext& ctx, std::string_view offset, std::string_view value) {
     if (ctx.uses_shared_wide) {
-        ctx.Add("nx_shared_write_subword({} + 0u, {}, 32u);", offset, fmt::format("{}.{}", value, "xyzw"[0]));
-        ctx.Add("nx_shared_write_subword({} + 4u, {}, 32u);", offset, fmt::format("{}.{}", value, "xyzw"[1]));
-        ctx.Add("nx_shared_write_subword({} + 8u, {}, 32u);", offset, fmt::format("{}.{}", value, "xyzw"[2]));
-        ctx.Add("nx_shared_write_subword({} + 12u, {}, 32u);", offset, fmt::format("{}.{}", value, "xyzw"[3]));
+        ctx.Add("nx_shared_write_subword({} + 0u, {}, 32u);", offset,
+                fmt::format("{}.{}", value, "xyzw"[0]));
+        ctx.Add("nx_shared_write_subword({} + 4u, {}, 32u);", offset,
+                fmt::format("{}.{}", value, "xyzw"[1]));
+        ctx.Add("nx_shared_write_subword({} + 8u, {}, 32u);", offset,
+                fmt::format("{}.{}", value, "xyzw"[2]));
+        ctx.Add("nx_shared_write_subword({} + 12u, {}, 32u);", offset,
+                fmt::format("{}.{}", value, "xyzw"[3]));
         return;
     }
 
@@ -336,25 +349,33 @@ void EmitWriteGlobal128(EmitContext& ctx, std::string_view address, std::string_
     ctx.Add("nx_global_write128({}, {});", address, value);
 }
 void EmitLoadGlobalU8(EmitContext& ctx, IR::Inst& inst, std::string_view address) {
-    ctx.AddU32("{} = bitfieldExtract(uint(nx_global_load32({} & ~uint64_t(3u))), int((uint({}) & 3u) * 8u), 8);", inst, address, address);
+    ctx.AddU32("{} = bitfieldExtract(uint(nx_global_load32({} & ~uint64_t(3u))), int((uint({}) & "
+               "3u) * 8u), 8);",
+               inst, address, address);
 }
 void EmitWriteGlobalU8(EmitContext& ctx, std::string_view address, std::string_view value) {
     ctx.Add("nx_global_write_subword({}, {}, 8u);", address, value);
 }
 void EmitLoadGlobalS8(EmitContext& ctx, IR::Inst& inst, std::string_view address) {
-    ctx.AddU32("{} = bitfieldExtract(int(nx_global_load32({} & ~uint64_t(3u))), int((uint({}) & 3u) * 8u), 8);", inst, address, address);
+    ctx.AddU32("{} = bitfieldExtract(int(nx_global_load32({} & ~uint64_t(3u))), int((uint({}) & "
+               "3u) * 8u), 8);",
+               inst, address, address);
 }
 void EmitWriteGlobalS8(EmitContext& ctx, std::string_view address, std::string_view value) {
     ctx.Add("nx_global_write_subword({}, {}, 8u);", address, value);
 }
 void EmitLoadGlobalU16(EmitContext& ctx, IR::Inst& inst, std::string_view address) {
-    ctx.AddU32("{} = bitfieldExtract(uint(nx_global_load32({} & ~uint64_t(3u))), int((uint({}) & 2u) * 8u), 16);", inst, address, address);
+    ctx.AddU32("{} = bitfieldExtract(uint(nx_global_load32({} & ~uint64_t(3u))), int((uint({}) & "
+               "2u) * 8u), 16);",
+               inst, address, address);
 }
 void EmitWriteGlobalU16(EmitContext& ctx, std::string_view address, std::string_view value) {
     ctx.Add("nx_global_write_subword({}, {}, 16u);", address, value);
 }
 void EmitLoadGlobalS16(EmitContext& ctx, IR::Inst& inst, std::string_view address) {
-    ctx.AddU32("{} = bitfieldExtract(int(nx_global_load32({} & ~uint64_t(3u))), int((uint({}) & 2u) * 8u), 16);", inst, address, address);
+    ctx.AddU32("{} = bitfieldExtract(int(nx_global_load32({} & ~uint64_t(3u))), int((uint({}) & "
+               "2u) * 8u), 16);",
+               inst, address, address);
 }
 void EmitWriteGlobalS16(EmitContext& ctx, std::string_view address, std::string_view value) {
     ctx.Add("nx_global_write_subword({}, {}, 16u);", address, value);

@@ -5,10 +5,11 @@
 #include "shader_recompiler/runtime_info.h"
 namespace Shader::Backend::HLSL {
 namespace {
-void Atomic64(EmitContext& ctx, IR::Inst& inst, std::string_view resource,
-              std::string_view offset, std::string_view value) {
+void Atomic64(EmitContext& ctx, IR::Inst& inst, std::string_view resource, std::string_view offset,
+              std::string_view value) {
     if (!ctx.profile.support_int64_atomics)
-        throw NotImplementedException("HLSL {} requires SM 6.6 and D3D12 native buffer int64 atomics", inst.GetOpcode());
+        throw NotImplementedException(
+            "HLSL {} requires SM 6.6 and D3D12 native buffer int64 atomics", inst.GetOpcode());
     const auto result = ctx.var_alloc.Define(inst, HlslVarType::U64);
     std::string operation;
     switch (inst.GetOpcode()) {
@@ -54,7 +55,8 @@ void Atomic64(EmitContext& ctx, IR::Inst& inst, std::string_view resource,
     ctx.Add("{{ uint64_t old_value = {0}.Load<uint64_t>({1}); uint64_t previous; "
             "uint64_t value = {2}; do {{ uint64_t new_value = {3}; "
             "{0}.InterlockedCompareExchange64({1}, old_value, new_value, previous); "
-            "if (previous == old_value) break; old_value = previous; }} while (true); {4} = old_value; }}",
+            "if (previous == old_value) break; old_value = previous; }} while (true); {4} = "
+            "old_value; }}",
             resource, offset, value, operation, result);
 }
 } // namespace
@@ -469,94 +471,101 @@ void EmitStorageAtomicExchange32x2(EmitContext& ctx, IR::Inst& inst, const IR::V
             "{}.y);",
             binding.U32(), o, value, result, binding.U32(), o, value, result);
 }
-void EmitGlobalAtomicIAdd32(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value) {
+void EmitGlobalAtomicIAdd32(EmitContext& ctx, IR::Inst& inst, std::string_view address,
+                            std::string_view value) {
     const auto result = ctx.var_alloc.Define(inst, inst.Type());
     ctx.Add("{} = 0;", result);
     ctx.Add("{{ bool nx_global_matched = false;");
     for (size_t buffer_index = 0; buffer_index < ctx.storage_bindings.size(); ++buffer_index) {
         ctx.Add("if (!nx_global_matched) {{");
         ctx.GlobalMemoryAccess(buffer_index, address, 4);
-    const auto o = "uint(" + std::string(address) + " - nx_global_base)";
-    const auto resource = fmt::format("ssbo{}", static_cast<u32>(buffer_index));
-    ctx.Add("{}.InterlockedAdd({}, {}, {});", resource, o, value, result);
+        const auto o = "uint(" + std::string(address) + " - nx_global_base)";
+        const auto resource = fmt::format("ssbo{}", static_cast<u32>(buffer_index));
+        ctx.Add("{}.InterlockedAdd({}, {}, {});", resource, o, value, result);
         ctx.Add("nx_global_matched = true; }} }} }}");
     }
     ctx.Add("}}");
 }
-void EmitGlobalAtomicSMin32(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value) {
+void EmitGlobalAtomicSMin32(EmitContext& ctx, IR::Inst& inst, std::string_view address,
+                            std::string_view value) {
     const auto result = ctx.var_alloc.Define(inst, inst.Type());
     ctx.Add("{} = 0;", result);
     ctx.Add("{{ bool nx_global_matched = false;");
     for (size_t buffer_index = 0; buffer_index < ctx.storage_bindings.size(); ++buffer_index) {
         ctx.Add("if (!nx_global_matched) {{");
         ctx.GlobalMemoryAccess(buffer_index, address, 4);
-    const auto o = "uint(" + std::string(address) + " - nx_global_base)";
-    const auto resource = fmt::format("ssbo{}", static_cast<u32>(buffer_index));
-    ctx.Add("{{ uint old_value = {}.Load({}); uint previous; do {{ uint new_value = "
-            "uint(min(int(old_value), int({}))); {}.InterlockedCompareExchange({}, old_value, "
-            "new_value, previous); if (previous == old_value) break; old_value = previous; }} "
-            "while (true); {} = old_value; }}",
-            resource, o, value, resource, o, result);
+        const auto o = "uint(" + std::string(address) + " - nx_global_base)";
+        const auto resource = fmt::format("ssbo{}", static_cast<u32>(buffer_index));
+        ctx.Add("{{ uint old_value = {}.Load({}); uint previous; do {{ uint new_value = "
+                "uint(min(int(old_value), int({}))); {}.InterlockedCompareExchange({}, old_value, "
+                "new_value, previous); if (previous == old_value) break; old_value = previous; }} "
+                "while (true); {} = old_value; }}",
+                resource, o, value, resource, o, result);
         ctx.Add("nx_global_matched = true; }} }} }}");
     }
     ctx.Add("}}");
 }
-void EmitGlobalAtomicUMin32(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value) {
+void EmitGlobalAtomicUMin32(EmitContext& ctx, IR::Inst& inst, std::string_view address,
+                            std::string_view value) {
     const auto result = ctx.var_alloc.Define(inst, inst.Type());
     ctx.Add("{} = 0;", result);
     ctx.Add("{{ bool nx_global_matched = false;");
     for (size_t buffer_index = 0; buffer_index < ctx.storage_bindings.size(); ++buffer_index) {
         ctx.Add("if (!nx_global_matched) {{");
         ctx.GlobalMemoryAccess(buffer_index, address, 4);
-    const auto o = "uint(" + std::string(address) + " - nx_global_base)";
-    const auto resource = fmt::format("ssbo{}", static_cast<u32>(buffer_index));
-    ctx.Add("{}.InterlockedMin({}, {}, {});", resource, o, value, result);
+        const auto o = "uint(" + std::string(address) + " - nx_global_base)";
+        const auto resource = fmt::format("ssbo{}", static_cast<u32>(buffer_index));
+        ctx.Add("{}.InterlockedMin({}, {}, {});", resource, o, value, result);
         ctx.Add("nx_global_matched = true; }} }} }}");
     }
     ctx.Add("}}");
 }
-void EmitGlobalAtomicSMax32(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value) {
+void EmitGlobalAtomicSMax32(EmitContext& ctx, IR::Inst& inst, std::string_view address,
+                            std::string_view value) {
     const auto result = ctx.var_alloc.Define(inst, inst.Type());
     ctx.Add("{} = 0;", result);
     ctx.Add("{{ bool nx_global_matched = false;");
     for (size_t buffer_index = 0; buffer_index < ctx.storage_bindings.size(); ++buffer_index) {
         ctx.Add("if (!nx_global_matched) {{");
         ctx.GlobalMemoryAccess(buffer_index, address, 4);
-    const auto o = "uint(" + std::string(address) + " - nx_global_base)";
-    const auto resource = fmt::format("ssbo{}", static_cast<u32>(buffer_index));
-    ctx.Add("{{ uint old_value = {}.Load({}); uint previous; do {{ uint new_value = "
-            "uint(max(int(old_value), int({}))); {}.InterlockedCompareExchange({}, old_value, "
-            "new_value, previous); if (previous == old_value) break; old_value = previous; }} "
-            "while (true); {} = old_value; }}",
-            resource, o, value, resource, o, result);
+        const auto o = "uint(" + std::string(address) + " - nx_global_base)";
+        const auto resource = fmt::format("ssbo{}", static_cast<u32>(buffer_index));
+        ctx.Add("{{ uint old_value = {}.Load({}); uint previous; do {{ uint new_value = "
+                "uint(max(int(old_value), int({}))); {}.InterlockedCompareExchange({}, old_value, "
+                "new_value, previous); if (previous == old_value) break; old_value = previous; }} "
+                "while (true); {} = old_value; }}",
+                resource, o, value, resource, o, result);
         ctx.Add("nx_global_matched = true; }} }} }}");
     }
     ctx.Add("}}");
 }
-void EmitGlobalAtomicUMax32(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value) {
+void EmitGlobalAtomicUMax32(EmitContext& ctx, IR::Inst& inst, std::string_view address,
+                            std::string_view value) {
     const auto result = ctx.var_alloc.Define(inst, inst.Type());
     ctx.Add("{} = 0;", result);
     ctx.Add("{{ bool nx_global_matched = false;");
     for (size_t buffer_index = 0; buffer_index < ctx.storage_bindings.size(); ++buffer_index) {
         ctx.Add("if (!nx_global_matched) {{");
         ctx.GlobalMemoryAccess(buffer_index, address, 4);
-    const auto o = "uint(" + std::string(address) + " - nx_global_base)";
-    const auto resource = fmt::format("ssbo{}", static_cast<u32>(buffer_index));
-    ctx.Add("{}.InterlockedMax({}, {}, {});", resource, o, value, result);
+        const auto o = "uint(" + std::string(address) + " - nx_global_base)";
+        const auto resource = fmt::format("ssbo{}", static_cast<u32>(buffer_index));
+        ctx.Add("{}.InterlockedMax({}, {}, {});", resource, o, value, result);
         ctx.Add("nx_global_matched = true; }} }} }}");
     }
     ctx.Add("}}");
 }
-void EmitGlobalAtomicInc32(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value) {
+void EmitGlobalAtomicInc32(EmitContext& ctx, IR::Inst& inst, std::string_view address,
+                           std::string_view value) {
     const auto result = ctx.var_alloc.Define(inst, inst.Type());
     ctx.Add("{} = 0;", result);
     ctx.Add("{{ bool nx_global_matched = false;");
     for (size_t buffer_index = 0; buffer_index < ctx.storage_bindings.size(); ++buffer_index) {
         ctx.Add("if (!nx_global_matched) {{");
         ctx.GlobalMemoryAccess(buffer_index, address, 4);
-    const auto o = "uint(" + std::string(address) + " - nx_global_base)";
-    const auto resource = fmt::format("ssbo{}", static_cast<u32>(buffer_index));
-    ctx.Add("{{ uint old_value = {}.Load({}); uint previous; do {{ uint new_value = old_value >= "
+        const auto o = "uint(" + std::string(address) + " - nx_global_base)";
+        const auto resource = fmt::format("ssbo{}", static_cast<u32>(buffer_index));
+        ctx.Add(
+            "{{ uint old_value = {}.Load({}); uint previous; do {{ uint new_value = old_value >= "
             "{} ? 0u : old_value + 1u; {}.InterlockedCompareExchange({}, old_value, new_value, "
             "previous); if (previous == old_value) break; old_value = previous; }} while (true); "
             "{} = old_value; }}",
@@ -565,16 +574,18 @@ void EmitGlobalAtomicInc32(EmitContext& ctx, IR::Inst& inst, std::string_view ad
     }
     ctx.Add("}}");
 }
-void EmitGlobalAtomicDec32(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value) {
+void EmitGlobalAtomicDec32(EmitContext& ctx, IR::Inst& inst, std::string_view address,
+                           std::string_view value) {
     const auto result = ctx.var_alloc.Define(inst, inst.Type());
     ctx.Add("{} = 0;", result);
     ctx.Add("{{ bool nx_global_matched = false;");
     for (size_t buffer_index = 0; buffer_index < ctx.storage_bindings.size(); ++buffer_index) {
         ctx.Add("if (!nx_global_matched) {{");
         ctx.GlobalMemoryAccess(buffer_index, address, 4);
-    const auto o = "uint(" + std::string(address) + " - nx_global_base)";
-    const auto resource = fmt::format("ssbo{}", static_cast<u32>(buffer_index));
-    ctx.Add("{{ uint old_value = {}.Load({}); uint previous; do {{ uint new_value = old_value == "
+        const auto o = "uint(" + std::string(address) + " - nx_global_base)";
+        const auto resource = fmt::format("ssbo{}", static_cast<u32>(buffer_index));
+        ctx.Add(
+            "{{ uint old_value = {}.Load({}); uint previous; do {{ uint new_value = old_value == "
             "0u || old_value > {} ? {} : old_value - 1u; {}.InterlockedCompareExchange({}, "
             "old_value, new_value, previous); if (previous == old_value) break; old_value = "
             "previous; }} while (true); {} = old_value; }}",
@@ -583,85 +594,94 @@ void EmitGlobalAtomicDec32(EmitContext& ctx, IR::Inst& inst, std::string_view ad
     }
     ctx.Add("}}");
 }
-void EmitGlobalAtomicAnd32(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value) {
+void EmitGlobalAtomicAnd32(EmitContext& ctx, IR::Inst& inst, std::string_view address,
+                           std::string_view value) {
     const auto result = ctx.var_alloc.Define(inst, inst.Type());
     ctx.Add("{} = 0;", result);
     ctx.Add("{{ bool nx_global_matched = false;");
     for (size_t buffer_index = 0; buffer_index < ctx.storage_bindings.size(); ++buffer_index) {
         ctx.Add("if (!nx_global_matched) {{");
         ctx.GlobalMemoryAccess(buffer_index, address, 4);
-    const auto o = "uint(" + std::string(address) + " - nx_global_base)";
-    const auto resource = fmt::format("ssbo{}", static_cast<u32>(buffer_index));
-    ctx.Add("{}.InterlockedAnd({}, {}, {});", resource, o, value, result);
+        const auto o = "uint(" + std::string(address) + " - nx_global_base)";
+        const auto resource = fmt::format("ssbo{}", static_cast<u32>(buffer_index));
+        ctx.Add("{}.InterlockedAnd({}, {}, {});", resource, o, value, result);
         ctx.Add("nx_global_matched = true; }} }} }}");
     }
     ctx.Add("}}");
 }
-void EmitGlobalAtomicOr32(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value) {
+void EmitGlobalAtomicOr32(EmitContext& ctx, IR::Inst& inst, std::string_view address,
+                          std::string_view value) {
     const auto result = ctx.var_alloc.Define(inst, inst.Type());
     ctx.Add("{} = 0;", result);
     ctx.Add("{{ bool nx_global_matched = false;");
     for (size_t buffer_index = 0; buffer_index < ctx.storage_bindings.size(); ++buffer_index) {
         ctx.Add("if (!nx_global_matched) {{");
         ctx.GlobalMemoryAccess(buffer_index, address, 4);
-    const auto o = "uint(" + std::string(address) + " - nx_global_base)";
-    const auto resource = fmt::format("ssbo{}", static_cast<u32>(buffer_index));
-    ctx.Add("{}.InterlockedOr({}, {}, {});", resource, o, value, result);
+        const auto o = "uint(" + std::string(address) + " - nx_global_base)";
+        const auto resource = fmt::format("ssbo{}", static_cast<u32>(buffer_index));
+        ctx.Add("{}.InterlockedOr({}, {}, {});", resource, o, value, result);
         ctx.Add("nx_global_matched = true; }} }} }}");
     }
     ctx.Add("}}");
 }
-void EmitGlobalAtomicXor32(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value) {
+void EmitGlobalAtomicXor32(EmitContext& ctx, IR::Inst& inst, std::string_view address,
+                           std::string_view value) {
     const auto result = ctx.var_alloc.Define(inst, inst.Type());
     ctx.Add("{} = 0;", result);
     ctx.Add("{{ bool nx_global_matched = false;");
     for (size_t buffer_index = 0; buffer_index < ctx.storage_bindings.size(); ++buffer_index) {
         ctx.Add("if (!nx_global_matched) {{");
         ctx.GlobalMemoryAccess(buffer_index, address, 4);
-    const auto o = "uint(" + std::string(address) + " - nx_global_base)";
-    const auto resource = fmt::format("ssbo{}", static_cast<u32>(buffer_index));
-    ctx.Add("{}.InterlockedXor({}, {}, {});", resource, o, value, result);
+        const auto o = "uint(" + std::string(address) + " - nx_global_base)";
+        const auto resource = fmt::format("ssbo{}", static_cast<u32>(buffer_index));
+        ctx.Add("{}.InterlockedXor({}, {}, {});", resource, o, value, result);
         ctx.Add("nx_global_matched = true; }} }} }}");
     }
     ctx.Add("}}");
 }
-void EmitGlobalAtomicExchange32(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value) {
+void EmitGlobalAtomicExchange32(EmitContext& ctx, IR::Inst& inst, std::string_view address,
+                                std::string_view value) {
     const auto result = ctx.var_alloc.Define(inst, inst.Type());
     ctx.Add("{} = 0;", result);
     ctx.Add("{{ bool nx_global_matched = false;");
     for (size_t buffer_index = 0; buffer_index < ctx.storage_bindings.size(); ++buffer_index) {
         ctx.Add("if (!nx_global_matched) {{");
         ctx.GlobalMemoryAccess(buffer_index, address, 4);
-    const auto o = "uint(" + std::string(address) + " - nx_global_base)";
-    const auto resource = fmt::format("ssbo{}", static_cast<u32>(buffer_index));
-    ctx.Add("{}.InterlockedExchange({}, {}, {});", resource, o, value, result);
+        const auto o = "uint(" + std::string(address) + " - nx_global_base)";
+        const auto resource = fmt::format("ssbo{}", static_cast<u32>(buffer_index));
+        ctx.Add("{}.InterlockedExchange({}, {}, {});", resource, o, value, result);
         ctx.Add("nx_global_matched = true; }} }} }}");
     }
     ctx.Add("}}");
 }
-void EmitGlobalAtomicIAdd32x2(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value) {
+void EmitGlobalAtomicIAdd32x2(EmitContext& ctx, IR::Inst& inst, std::string_view address,
+                              std::string_view value) {
     const auto result = ctx.var_alloc.Define(inst, inst.Type());
     ctx.Add("{} = 0;", result);
     ctx.Add("{{ bool nx_global_matched = false;");
     for (size_t buffer_index = 0; buffer_index < ctx.storage_bindings.size(); ++buffer_index) {
         ctx.Add("if (!nx_global_matched) {{");
         ctx.GlobalMemoryAccess(buffer_index, address, 8);
-    const auto o = "uint(" + std::string(address) + " - nx_global_base)";
-    ctx.Add("ssbo{}.InterlockedAdd({}, {}.x, {}.x); ssbo{}.InterlockedAdd({} + 4u, {}.y, {}.y);",
-            static_cast<u32>(buffer_index), o, value, result, static_cast<u32>(buffer_index), o, value, result);
+        const auto o = "uint(" + std::string(address) + " - nx_global_base)";
+        ctx.Add(
+            "ssbo{}.InterlockedAdd({}, {}.x, {}.x); ssbo{}.InterlockedAdd({} + 4u, {}.y, {}.y);",
+            static_cast<u32>(buffer_index), o, value, result, static_cast<u32>(buffer_index), o,
+            value, result);
         ctx.Add("nx_global_matched = true; }} }} }}");
     }
     ctx.Add("}}");
 }
-void EmitGlobalAtomicSMin32x2(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value) {
+void EmitGlobalAtomicSMin32x2(EmitContext& ctx, IR::Inst& inst, std::string_view address,
+                              std::string_view value) {
     const auto result = ctx.var_alloc.Define(inst, inst.Type());
     ctx.Add("{} = 0;", result);
     ctx.Add("{{ bool nx_global_matched = false;");
     for (size_t buffer_index = 0; buffer_index < ctx.storage_bindings.size(); ++buffer_index) {
         ctx.Add("if (!nx_global_matched) {{");
         ctx.GlobalMemoryAccess(buffer_index, address, 8);
-    const auto o = "uint(" + std::string(address) + " - nx_global_base)";
-    ctx.Add("for (uint component = 0u; component < 2u; ++component) {{ uint byte_offset = {} + "
+        const auto o = "uint(" + std::string(address) + " - nx_global_base)";
+        ctx.Add(
+            "for (uint component = 0u; component < 2u; ++component) {{ uint byte_offset = {} + "
             "component * 4u; uint old_value = ssbo{}.Load(byte_offset); uint previous; do {{ uint "
             "new_value = uint(min(int(old_value), int({}[component]))); "
             "ssbo{}.InterlockedCompareExchange(byte_offset, old_value, new_value, previous); if "
@@ -672,29 +692,34 @@ void EmitGlobalAtomicSMin32x2(EmitContext& ctx, IR::Inst& inst, std::string_view
     }
     ctx.Add("}}");
 }
-void EmitGlobalAtomicUMin32x2(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value) {
+void EmitGlobalAtomicUMin32x2(EmitContext& ctx, IR::Inst& inst, std::string_view address,
+                              std::string_view value) {
     const auto result = ctx.var_alloc.Define(inst, inst.Type());
     ctx.Add("{} = 0;", result);
     ctx.Add("{{ bool nx_global_matched = false;");
     for (size_t buffer_index = 0; buffer_index < ctx.storage_bindings.size(); ++buffer_index) {
         ctx.Add("if (!nx_global_matched) {{");
         ctx.GlobalMemoryAccess(buffer_index, address, 8);
-    const auto o = "uint(" + std::string(address) + " - nx_global_base)";
-    ctx.Add("ssbo{}.InterlockedMin({}, {}.x, {}.x); ssbo{}.InterlockedMin({} + 4u, {}.y, {}.y);",
-            static_cast<u32>(buffer_index), o, value, result, static_cast<u32>(buffer_index), o, value, result);
+        const auto o = "uint(" + std::string(address) + " - nx_global_base)";
+        ctx.Add(
+            "ssbo{}.InterlockedMin({}, {}.x, {}.x); ssbo{}.InterlockedMin({} + 4u, {}.y, {}.y);",
+            static_cast<u32>(buffer_index), o, value, result, static_cast<u32>(buffer_index), o,
+            value, result);
         ctx.Add("nx_global_matched = true; }} }} }}");
     }
     ctx.Add("}}");
 }
-void EmitGlobalAtomicSMax32x2(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value) {
+void EmitGlobalAtomicSMax32x2(EmitContext& ctx, IR::Inst& inst, std::string_view address,
+                              std::string_view value) {
     const auto result = ctx.var_alloc.Define(inst, inst.Type());
     ctx.Add("{} = 0;", result);
     ctx.Add("{{ bool nx_global_matched = false;");
     for (size_t buffer_index = 0; buffer_index < ctx.storage_bindings.size(); ++buffer_index) {
         ctx.Add("if (!nx_global_matched) {{");
         ctx.GlobalMemoryAccess(buffer_index, address, 8);
-    const auto o = "uint(" + std::string(address) + " - nx_global_base)";
-    ctx.Add("for (uint component = 0u; component < 2u; ++component) {{ uint byte_offset = {} + "
+        const auto o = "uint(" + std::string(address) + " - nx_global_base)";
+        ctx.Add(
+            "for (uint component = 0u; component < 2u; ++component) {{ uint byte_offset = {} + "
             "component * 4u; uint old_value = ssbo{}.Load(byte_offset); uint previous; do {{ uint "
             "new_value = uint(max(int(old_value), int({}[component]))); "
             "ssbo{}.InterlockedCompareExchange(byte_offset, old_value, new_value, previous); if "
@@ -705,104 +730,122 @@ void EmitGlobalAtomicSMax32x2(EmitContext& ctx, IR::Inst& inst, std::string_view
     }
     ctx.Add("}}");
 }
-void EmitGlobalAtomicUMax32x2(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value) {
+void EmitGlobalAtomicUMax32x2(EmitContext& ctx, IR::Inst& inst, std::string_view address,
+                              std::string_view value) {
     const auto result = ctx.var_alloc.Define(inst, inst.Type());
     ctx.Add("{} = 0;", result);
     ctx.Add("{{ bool nx_global_matched = false;");
     for (size_t buffer_index = 0; buffer_index < ctx.storage_bindings.size(); ++buffer_index) {
         ctx.Add("if (!nx_global_matched) {{");
         ctx.GlobalMemoryAccess(buffer_index, address, 8);
-    const auto o = "uint(" + std::string(address) + " - nx_global_base)";
-    ctx.Add("ssbo{}.InterlockedMax({}, {}.x, {}.x); ssbo{}.InterlockedMax({} + 4u, {}.y, {}.y);",
-            static_cast<u32>(buffer_index), o, value, result, static_cast<u32>(buffer_index), o, value, result);
+        const auto o = "uint(" + std::string(address) + " - nx_global_base)";
+        ctx.Add(
+            "ssbo{}.InterlockedMax({}, {}.x, {}.x); ssbo{}.InterlockedMax({} + 4u, {}.y, {}.y);",
+            static_cast<u32>(buffer_index), o, value, result, static_cast<u32>(buffer_index), o,
+            value, result);
         ctx.Add("nx_global_matched = true; }} }} }}");
     }
     ctx.Add("}}");
 }
-void EmitGlobalAtomicAnd32x2(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value) {
+void EmitGlobalAtomicAnd32x2(EmitContext& ctx, IR::Inst& inst, std::string_view address,
+                             std::string_view value) {
     const auto result = ctx.var_alloc.Define(inst, inst.Type());
     ctx.Add("{} = 0;", result);
     ctx.Add("{{ bool nx_global_matched = false;");
     for (size_t buffer_index = 0; buffer_index < ctx.storage_bindings.size(); ++buffer_index) {
         ctx.Add("if (!nx_global_matched) {{");
         ctx.GlobalMemoryAccess(buffer_index, address, 8);
-    const auto o = "uint(" + std::string(address) + " - nx_global_base)";
-    ctx.Add("ssbo{}.InterlockedAnd({}, {}.x, {}.x); ssbo{}.InterlockedAnd({} + 4u, {}.y, {}.y);",
-            static_cast<u32>(buffer_index), o, value, result, static_cast<u32>(buffer_index), o, value, result);
+        const auto o = "uint(" + std::string(address) + " - nx_global_base)";
+        ctx.Add(
+            "ssbo{}.InterlockedAnd({}, {}.x, {}.x); ssbo{}.InterlockedAnd({} + 4u, {}.y, {}.y);",
+            static_cast<u32>(buffer_index), o, value, result, static_cast<u32>(buffer_index), o,
+            value, result);
         ctx.Add("nx_global_matched = true; }} }} }}");
     }
     ctx.Add("}}");
 }
-void EmitGlobalAtomicOr32x2(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value) {
+void EmitGlobalAtomicOr32x2(EmitContext& ctx, IR::Inst& inst, std::string_view address,
+                            std::string_view value) {
     const auto result = ctx.var_alloc.Define(inst, inst.Type());
     ctx.Add("{} = 0;", result);
     ctx.Add("{{ bool nx_global_matched = false;");
     for (size_t buffer_index = 0; buffer_index < ctx.storage_bindings.size(); ++buffer_index) {
         ctx.Add("if (!nx_global_matched) {{");
         ctx.GlobalMemoryAccess(buffer_index, address, 8);
-    const auto o = "uint(" + std::string(address) + " - nx_global_base)";
-    ctx.Add("ssbo{}.InterlockedOr({}, {}.x, {}.x); ssbo{}.InterlockedOr({} + 4u, {}.y, {}.y);",
-            static_cast<u32>(buffer_index), o, value, result, static_cast<u32>(buffer_index), o, value, result);
+        const auto o = "uint(" + std::string(address) + " - nx_global_base)";
+        ctx.Add("ssbo{}.InterlockedOr({}, {}.x, {}.x); ssbo{}.InterlockedOr({} + 4u, {}.y, {}.y);",
+                static_cast<u32>(buffer_index), o, value, result, static_cast<u32>(buffer_index), o,
+                value, result);
         ctx.Add("nx_global_matched = true; }} }} }}");
     }
     ctx.Add("}}");
 }
-void EmitGlobalAtomicXor32x2(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value) {
+void EmitGlobalAtomicXor32x2(EmitContext& ctx, IR::Inst& inst, std::string_view address,
+                             std::string_view value) {
     const auto result = ctx.var_alloc.Define(inst, inst.Type());
     ctx.Add("{} = 0;", result);
     ctx.Add("{{ bool nx_global_matched = false;");
     for (size_t buffer_index = 0; buffer_index < ctx.storage_bindings.size(); ++buffer_index) {
         ctx.Add("if (!nx_global_matched) {{");
         ctx.GlobalMemoryAccess(buffer_index, address, 8);
-    const auto o = "uint(" + std::string(address) + " - nx_global_base)";
-    ctx.Add("ssbo{}.InterlockedXor({}, {}.x, {}.x); ssbo{}.InterlockedXor({} + 4u, {}.y, {}.y);",
-            static_cast<u32>(buffer_index), o, value, result, static_cast<u32>(buffer_index), o, value, result);
+        const auto o = "uint(" + std::string(address) + " - nx_global_base)";
+        ctx.Add(
+            "ssbo{}.InterlockedXor({}, {}.x, {}.x); ssbo{}.InterlockedXor({} + 4u, {}.y, {}.y);",
+            static_cast<u32>(buffer_index), o, value, result, static_cast<u32>(buffer_index), o,
+            value, result);
         ctx.Add("nx_global_matched = true; }} }} }}");
     }
     ctx.Add("}}");
 }
-void EmitGlobalAtomicExchange32x2(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value) {
+void EmitGlobalAtomicExchange32x2(EmitContext& ctx, IR::Inst& inst, std::string_view address,
+                                  std::string_view value) {
     const auto result = ctx.var_alloc.Define(inst, inst.Type());
     ctx.Add("{} = 0;", result);
     ctx.Add("{{ bool nx_global_matched = false;");
     for (size_t buffer_index = 0; buffer_index < ctx.storage_bindings.size(); ++buffer_index) {
         ctx.Add("if (!nx_global_matched) {{");
         ctx.GlobalMemoryAccess(buffer_index, address, 8);
-    const auto o = "uint(" + std::string(address) + " - nx_global_base)";
-    ctx.Add("ssbo{}.InterlockedExchange({}, {}.x, {}.x); ssbo{}.InterlockedExchange({} + 4u, {}.y, "
+        const auto o = "uint(" + std::string(address) + " - nx_global_base)";
+        ctx.Add(
+            "ssbo{}.InterlockedExchange({}, {}.x, {}.x); ssbo{}.InterlockedExchange({} + 4u, {}.y, "
             "{}.y);",
-            static_cast<u32>(buffer_index), o, value, result, static_cast<u32>(buffer_index), o, value, result);
+            static_cast<u32>(buffer_index), o, value, result, static_cast<u32>(buffer_index), o,
+            value, result);
         ctx.Add("nx_global_matched = true; }} }} }}");
     }
     ctx.Add("}}");
 }
-void EmitGlobalAtomicAddF32(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value) {
+void EmitGlobalAtomicAddF32(EmitContext& ctx, IR::Inst& inst, std::string_view address,
+                            std::string_view value) {
     const auto result = ctx.var_alloc.Define(inst, inst.Type());
     ctx.Add("{} = 0;", result);
     ctx.Add("{{ bool nx_global_matched = false;");
     for (size_t buffer_index = 0; buffer_index < ctx.storage_bindings.size(); ++buffer_index) {
         ctx.Add("if (!nx_global_matched) {{");
         ctx.GlobalMemoryAccess(buffer_index, address, 4);
-    const auto o = "uint(" + std::string(address) + " - nx_global_base)";
-    const auto result = ctx.var_alloc.Define(inst, HlslVarType::F32);
-    ctx.Add("{{ uint old_value = ssbo{}.Load({}); uint previous; do {{ uint new_value = "
-            "asuint(asfloat(old_value) + {}); ssbo{}.InterlockedCompareExchange({}, old_value, "
-            "new_value, previous); if (previous == old_value) break; old_value = previous; }} "
-            "while (true); {} = asfloat(old_value); }}",
-            static_cast<u32>(buffer_index), o, value, static_cast<u32>(buffer_index), o, result);
+        const auto o = "uint(" + std::string(address) + " - nx_global_base)";
+        const auto result = ctx.var_alloc.Define(inst, HlslVarType::F32);
+        ctx.Add("{{ uint old_value = ssbo{}.Load({}); uint previous; do {{ uint new_value = "
+                "asuint(asfloat(old_value) + {}); ssbo{}.InterlockedCompareExchange({}, old_value, "
+                "new_value, previous); if (previous == old_value) break; old_value = previous; }} "
+                "while (true); {} = asfloat(old_value); }}",
+                static_cast<u32>(buffer_index), o, value, static_cast<u32>(buffer_index), o,
+                result);
         ctx.Add("nx_global_matched = true; }} }} }}");
     }
     ctx.Add("}}");
 }
-void EmitGlobalAtomicAddF16x2(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value) {
+void EmitGlobalAtomicAddF16x2(EmitContext& ctx, IR::Inst& inst, std::string_view address,
+                              std::string_view value) {
     const auto result = ctx.var_alloc.Define(inst, inst.Type());
     ctx.Add("{} = 0;", result);
     ctx.Add("{{ bool nx_global_matched = false;");
     for (size_t buffer_index = 0; buffer_index < ctx.storage_bindings.size(); ++buffer_index) {
         ctx.Add("if (!nx_global_matched) {{");
         ctx.GlobalMemoryAccess(buffer_index, address, 8);
-    const auto o = "uint(" + std::string(address) + " - nx_global_base)";
-    ctx.Add("{{ uint old_value = ssbo{}.Load({}); uint previous; do {{ uint new_value = "
+        const auto o = "uint(" + std::string(address) + " - nx_global_base)";
+        ctx.Add(
+            "{{ uint old_value = ssbo{}.Load({}); uint previous; do {{ uint new_value = "
             "packHalf2x16(unpackHalf2x16(old_value) + {}); ssbo{}.InterlockedCompareExchange({}, "
             "old_value, new_value, previous); if (previous == old_value) break; old_value = "
             "previous; }} while (true); {} = old_value; }}",
@@ -811,15 +854,17 @@ void EmitGlobalAtomicAddF16x2(EmitContext& ctx, IR::Inst& inst, std::string_view
     }
     ctx.Add("}}");
 }
-void EmitGlobalAtomicAddF32x2(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value) {
+void EmitGlobalAtomicAddF32x2(EmitContext& ctx, IR::Inst& inst, std::string_view address,
+                              std::string_view value) {
     const auto result = ctx.var_alloc.Define(inst, inst.Type());
     ctx.Add("{} = 0;", result);
     ctx.Add("{{ bool nx_global_matched = false;");
     for (size_t buffer_index = 0; buffer_index < ctx.storage_bindings.size(); ++buffer_index) {
         ctx.Add("if (!nx_global_matched) {{");
         ctx.GlobalMemoryAccess(buffer_index, address, 8);
-    const auto o = "uint(" + std::string(address) + " - nx_global_base)";
-    ctx.Add("{{ uint old_value = ssbo{}.Load({}); uint previous; do {{ uint new_value = "
+        const auto o = "uint(" + std::string(address) + " - nx_global_base)";
+        ctx.Add(
+            "{{ uint old_value = ssbo{}.Load({}); uint previous; do {{ uint new_value = "
             "packHalf2x16(unpackHalf2x16(old_value) + {}); ssbo{}.InterlockedCompareExchange({}, "
             "old_value, new_value, previous); if (previous == old_value) break; old_value = "
             "previous; }} while (true); {} = old_value; }}",
@@ -828,15 +873,17 @@ void EmitGlobalAtomicAddF32x2(EmitContext& ctx, IR::Inst& inst, std::string_view
     }
     ctx.Add("}}");
 }
-void EmitGlobalAtomicMinF16x2(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value) {
+void EmitGlobalAtomicMinF16x2(EmitContext& ctx, IR::Inst& inst, std::string_view address,
+                              std::string_view value) {
     const auto result = ctx.var_alloc.Define(inst, inst.Type());
     ctx.Add("{} = 0;", result);
     ctx.Add("{{ bool nx_global_matched = false;");
     for (size_t buffer_index = 0; buffer_index < ctx.storage_bindings.size(); ++buffer_index) {
         ctx.Add("if (!nx_global_matched) {{");
         ctx.GlobalMemoryAccess(buffer_index, address, 8);
-    const auto o = "uint(" + std::string(address) + " - nx_global_base)";
-    ctx.Add("{{ uint old_value = ssbo{}.Load({}); uint previous; do {{ uint new_value = "
+        const auto o = "uint(" + std::string(address) + " - nx_global_base)";
+        ctx.Add(
+            "{{ uint old_value = ssbo{}.Load({}); uint previous; do {{ uint new_value = "
             "packHalf2x16(min(unpackHalf2x16(old_value), {})); "
             "ssbo{}.InterlockedCompareExchange({}, old_value, new_value, previous); if (previous "
             "== old_value) break; old_value = previous; }} while (true); {} = old_value; }}",
@@ -845,15 +892,17 @@ void EmitGlobalAtomicMinF16x2(EmitContext& ctx, IR::Inst& inst, std::string_view
     }
     ctx.Add("}}");
 }
-void EmitGlobalAtomicMinF32x2(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value) {
+void EmitGlobalAtomicMinF32x2(EmitContext& ctx, IR::Inst& inst, std::string_view address,
+                              std::string_view value) {
     const auto result = ctx.var_alloc.Define(inst, inst.Type());
     ctx.Add("{} = 0;", result);
     ctx.Add("{{ bool nx_global_matched = false;");
     for (size_t buffer_index = 0; buffer_index < ctx.storage_bindings.size(); ++buffer_index) {
         ctx.Add("if (!nx_global_matched) {{");
         ctx.GlobalMemoryAccess(buffer_index, address, 8);
-    const auto o = "uint(" + std::string(address) + " - nx_global_base)";
-    ctx.Add("{{ uint old_value = ssbo{}.Load({}); uint previous; do {{ uint new_value = "
+        const auto o = "uint(" + std::string(address) + " - nx_global_base)";
+        ctx.Add(
+            "{{ uint old_value = ssbo{}.Load({}); uint previous; do {{ uint new_value = "
             "packHalf2x16(min(unpackHalf2x16(old_value), {})); "
             "ssbo{}.InterlockedCompareExchange({}, old_value, new_value, previous); if (previous "
             "== old_value) break; old_value = previous; }} while (true); {} = old_value; }}",
@@ -862,15 +911,17 @@ void EmitGlobalAtomicMinF32x2(EmitContext& ctx, IR::Inst& inst, std::string_view
     }
     ctx.Add("}}");
 }
-void EmitGlobalAtomicMaxF16x2(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value) {
+void EmitGlobalAtomicMaxF16x2(EmitContext& ctx, IR::Inst& inst, std::string_view address,
+                              std::string_view value) {
     const auto result = ctx.var_alloc.Define(inst, inst.Type());
     ctx.Add("{} = 0;", result);
     ctx.Add("{{ bool nx_global_matched = false;");
     for (size_t buffer_index = 0; buffer_index < ctx.storage_bindings.size(); ++buffer_index) {
         ctx.Add("if (!nx_global_matched) {{");
         ctx.GlobalMemoryAccess(buffer_index, address, 8);
-    const auto o = "uint(" + std::string(address) + " - nx_global_base)";
-    ctx.Add("{{ uint old_value = ssbo{}.Load({}); uint previous; do {{ uint new_value = "
+        const auto o = "uint(" + std::string(address) + " - nx_global_base)";
+        ctx.Add(
+            "{{ uint old_value = ssbo{}.Load({}); uint previous; do {{ uint new_value = "
             "packHalf2x16(max(unpackHalf2x16(old_value), {})); "
             "ssbo{}.InterlockedCompareExchange({}, old_value, new_value, previous); if (previous "
             "== old_value) break; old_value = previous; }} while (true); {} = old_value; }}",
@@ -879,15 +930,17 @@ void EmitGlobalAtomicMaxF16x2(EmitContext& ctx, IR::Inst& inst, std::string_view
     }
     ctx.Add("}}");
 }
-void EmitGlobalAtomicMaxF32x2(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value) {
+void EmitGlobalAtomicMaxF32x2(EmitContext& ctx, IR::Inst& inst, std::string_view address,
+                              std::string_view value) {
     const auto result = ctx.var_alloc.Define(inst, inst.Type());
     ctx.Add("{} = 0;", result);
     ctx.Add("{{ bool nx_global_matched = false;");
     for (size_t buffer_index = 0; buffer_index < ctx.storage_bindings.size(); ++buffer_index) {
         ctx.Add("if (!nx_global_matched) {{");
         ctx.GlobalMemoryAccess(buffer_index, address, 8);
-    const auto o = "uint(" + std::string(address) + " - nx_global_base)";
-    ctx.Add("{{ uint old_value = ssbo{}.Load({}); uint previous; do {{ uint new_value = "
+        const auto o = "uint(" + std::string(address) + " - nx_global_base)";
+        ctx.Add(
+            "{{ uint old_value = ssbo{}.Load({}); uint previous; do {{ uint new_value = "
             "packHalf2x16(max(unpackHalf2x16(old_value), {})); "
             "ssbo{}.InterlockedCompareExchange({}, old_value, new_value, previous); if (previous "
             "== old_value) break; old_value = previous; }} while (true); {} = old_value; }}",
@@ -896,173 +949,208 @@ void EmitGlobalAtomicMaxF32x2(EmitContext& ctx, IR::Inst& inst, std::string_view
     }
     ctx.Add("}}");
 }
-void EmitStorageAtomicIAdd64(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding, const IR::Value& offset, std::string_view value) {
+void EmitStorageAtomicIAdd64(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding,
+                             const IR::Value& offset, std::string_view value) {
     Atomic64(ctx, inst, fmt::format("ssbo{}", binding.U32()), ctx.var_alloc.Consume(offset), value);
 }
-void EmitStorageAtomicSMin64(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding, const IR::Value& offset, std::string_view value) {
+void EmitStorageAtomicSMin64(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding,
+                             const IR::Value& offset, std::string_view value) {
     Atomic64(ctx, inst, fmt::format("ssbo{}", binding.U32()), ctx.var_alloc.Consume(offset), value);
 }
-void EmitStorageAtomicUMin64(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding, const IR::Value& offset, std::string_view value) {
+void EmitStorageAtomicUMin64(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding,
+                             const IR::Value& offset, std::string_view value) {
     Atomic64(ctx, inst, fmt::format("ssbo{}", binding.U32()), ctx.var_alloc.Consume(offset), value);
 }
-void EmitStorageAtomicSMax64(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding, const IR::Value& offset, std::string_view value) {
+void EmitStorageAtomicSMax64(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding,
+                             const IR::Value& offset, std::string_view value) {
     Atomic64(ctx, inst, fmt::format("ssbo{}", binding.U32()), ctx.var_alloc.Consume(offset), value);
 }
-void EmitStorageAtomicUMax64(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding, const IR::Value& offset, std::string_view value) {
+void EmitStorageAtomicUMax64(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding,
+                             const IR::Value& offset, std::string_view value) {
     Atomic64(ctx, inst, fmt::format("ssbo{}", binding.U32()), ctx.var_alloc.Consume(offset), value);
 }
-void EmitStorageAtomicAnd64(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding, const IR::Value& offset, std::string_view value) {
+void EmitStorageAtomicAnd64(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding,
+                            const IR::Value& offset, std::string_view value) {
     Atomic64(ctx, inst, fmt::format("ssbo{}", binding.U32()), ctx.var_alloc.Consume(offset), value);
 }
-void EmitStorageAtomicOr64(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding, const IR::Value& offset, std::string_view value) {
+void EmitStorageAtomicOr64(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding,
+                           const IR::Value& offset, std::string_view value) {
     Atomic64(ctx, inst, fmt::format("ssbo{}", binding.U32()), ctx.var_alloc.Consume(offset), value);
 }
-void EmitStorageAtomicXor64(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding, const IR::Value& offset, std::string_view value) {
+void EmitStorageAtomicXor64(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding,
+                            const IR::Value& offset, std::string_view value) {
     Atomic64(ctx, inst, fmt::format("ssbo{}", binding.U32()), ctx.var_alloc.Consume(offset), value);
 }
-void EmitStorageAtomicExchange64(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding, const IR::Value& offset, std::string_view value) {
+void EmitStorageAtomicExchange64(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding,
+                                 const IR::Value& offset, std::string_view value) {
     Atomic64(ctx, inst, fmt::format("ssbo{}", binding.U32()), ctx.var_alloc.Consume(offset), value);
 }
-void EmitGlobalAtomicIAdd64(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value) {
+void EmitGlobalAtomicIAdd64(EmitContext& ctx, IR::Inst& inst, std::string_view address,
+                            std::string_view value) {
     const auto result = ctx.var_alloc.Define(inst, HlslVarType::U64);
     ctx.Add("{} = uint64_t(0u);", result);
     ctx.Add("{{ bool nx_global_matched = false;");
     for (size_t buffer_index = 0; buffer_index < ctx.storage_bindings.size(); ++buffer_index) {
         ctx.Add("if (!nx_global_matched) {{");
         ctx.GlobalMemoryAccess(buffer_index, address, 8);
-        Atomic64(ctx, inst, fmt::format("ssbo{}", buffer_index), "uint(" + std::string(address) + " - nx_global_base)", value);
+        Atomic64(ctx, inst, fmt::format("ssbo{}", buffer_index),
+                 "uint(" + std::string(address) + " - nx_global_base)", value);
         ctx.Add("nx_global_matched = true; }} }} }}");
     }
     ctx.Add("}}");
 }
-void EmitGlobalAtomicSMin64(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value) {
+void EmitGlobalAtomicSMin64(EmitContext& ctx, IR::Inst& inst, std::string_view address,
+                            std::string_view value) {
     const auto result = ctx.var_alloc.Define(inst, HlslVarType::U64);
     ctx.Add("{} = uint64_t(0u);", result);
     ctx.Add("{{ bool nx_global_matched = false;");
     for (size_t buffer_index = 0; buffer_index < ctx.storage_bindings.size(); ++buffer_index) {
         ctx.Add("if (!nx_global_matched) {{");
         ctx.GlobalMemoryAccess(buffer_index, address, 8);
-        Atomic64(ctx, inst, fmt::format("ssbo{}", buffer_index), "uint(" + std::string(address) + " - nx_global_base)", value);
+        Atomic64(ctx, inst, fmt::format("ssbo{}", buffer_index),
+                 "uint(" + std::string(address) + " - nx_global_base)", value);
         ctx.Add("nx_global_matched = true; }} }} }}");
     }
     ctx.Add("}}");
 }
-void EmitGlobalAtomicUMin64(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value) {
+void EmitGlobalAtomicUMin64(EmitContext& ctx, IR::Inst& inst, std::string_view address,
+                            std::string_view value) {
     const auto result = ctx.var_alloc.Define(inst, HlslVarType::U64);
     ctx.Add("{} = uint64_t(0u);", result);
     ctx.Add("{{ bool nx_global_matched = false;");
     for (size_t buffer_index = 0; buffer_index < ctx.storage_bindings.size(); ++buffer_index) {
         ctx.Add("if (!nx_global_matched) {{");
         ctx.GlobalMemoryAccess(buffer_index, address, 8);
-        Atomic64(ctx, inst, fmt::format("ssbo{}", buffer_index), "uint(" + std::string(address) + " - nx_global_base)", value);
+        Atomic64(ctx, inst, fmt::format("ssbo{}", buffer_index),
+                 "uint(" + std::string(address) + " - nx_global_base)", value);
         ctx.Add("nx_global_matched = true; }} }} }}");
     }
     ctx.Add("}}");
 }
-void EmitGlobalAtomicSMax64(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value) {
+void EmitGlobalAtomicSMax64(EmitContext& ctx, IR::Inst& inst, std::string_view address,
+                            std::string_view value) {
     const auto result = ctx.var_alloc.Define(inst, HlslVarType::U64);
     ctx.Add("{} = uint64_t(0u);", result);
     ctx.Add("{{ bool nx_global_matched = false;");
     for (size_t buffer_index = 0; buffer_index < ctx.storage_bindings.size(); ++buffer_index) {
         ctx.Add("if (!nx_global_matched) {{");
         ctx.GlobalMemoryAccess(buffer_index, address, 8);
-        Atomic64(ctx, inst, fmt::format("ssbo{}", buffer_index), "uint(" + std::string(address) + " - nx_global_base)", value);
+        Atomic64(ctx, inst, fmt::format("ssbo{}", buffer_index),
+                 "uint(" + std::string(address) + " - nx_global_base)", value);
         ctx.Add("nx_global_matched = true; }} }} }}");
     }
     ctx.Add("}}");
 }
-void EmitGlobalAtomicUMax64(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value) {
+void EmitGlobalAtomicUMax64(EmitContext& ctx, IR::Inst& inst, std::string_view address,
+                            std::string_view value) {
     const auto result = ctx.var_alloc.Define(inst, HlslVarType::U64);
     ctx.Add("{} = uint64_t(0u);", result);
     ctx.Add("{{ bool nx_global_matched = false;");
     for (size_t buffer_index = 0; buffer_index < ctx.storage_bindings.size(); ++buffer_index) {
         ctx.Add("if (!nx_global_matched) {{");
         ctx.GlobalMemoryAccess(buffer_index, address, 8);
-        Atomic64(ctx, inst, fmt::format("ssbo{}", buffer_index), "uint(" + std::string(address) + " - nx_global_base)", value);
+        Atomic64(ctx, inst, fmt::format("ssbo{}", buffer_index),
+                 "uint(" + std::string(address) + " - nx_global_base)", value);
         ctx.Add("nx_global_matched = true; }} }} }}");
     }
     ctx.Add("}}");
 }
-void EmitGlobalAtomicInc64(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value) {
+void EmitGlobalAtomicInc64(EmitContext& ctx, IR::Inst& inst, std::string_view address,
+                           std::string_view value) {
     const auto result = ctx.var_alloc.Define(inst, HlslVarType::U64);
     ctx.Add("{} = uint64_t(0u);", result);
     ctx.Add("{{ bool nx_global_matched = false;");
     for (size_t buffer_index = 0; buffer_index < ctx.storage_bindings.size(); ++buffer_index) {
         ctx.Add("if (!nx_global_matched) {{");
         ctx.GlobalMemoryAccess(buffer_index, address, 8);
-        Atomic64(ctx, inst, fmt::format("ssbo{}", buffer_index), "uint(" + std::string(address) + " - nx_global_base)", value);
+        Atomic64(ctx, inst, fmt::format("ssbo{}", buffer_index),
+                 "uint(" + std::string(address) + " - nx_global_base)", value);
         ctx.Add("nx_global_matched = true; }} }} }}");
     }
     ctx.Add("}}");
 }
-void EmitGlobalAtomicDec64(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value) {
+void EmitGlobalAtomicDec64(EmitContext& ctx, IR::Inst& inst, std::string_view address,
+                           std::string_view value) {
     const auto result = ctx.var_alloc.Define(inst, HlslVarType::U64);
     ctx.Add("{} = uint64_t(0u);", result);
     ctx.Add("{{ bool nx_global_matched = false;");
     for (size_t buffer_index = 0; buffer_index < ctx.storage_bindings.size(); ++buffer_index) {
         ctx.Add("if (!nx_global_matched) {{");
         ctx.GlobalMemoryAccess(buffer_index, address, 8);
-        Atomic64(ctx, inst, fmt::format("ssbo{}", buffer_index), "uint(" + std::string(address) + " - nx_global_base)", value);
+        Atomic64(ctx, inst, fmt::format("ssbo{}", buffer_index),
+                 "uint(" + std::string(address) + " - nx_global_base)", value);
         ctx.Add("nx_global_matched = true; }} }} }}");
     }
     ctx.Add("}}");
 }
-void EmitGlobalAtomicAnd64(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value) {
+void EmitGlobalAtomicAnd64(EmitContext& ctx, IR::Inst& inst, std::string_view address,
+                           std::string_view value) {
     const auto result = ctx.var_alloc.Define(inst, HlslVarType::U64);
     ctx.Add("{} = uint64_t(0u);", result);
     ctx.Add("{{ bool nx_global_matched = false;");
     for (size_t buffer_index = 0; buffer_index < ctx.storage_bindings.size(); ++buffer_index) {
         ctx.Add("if (!nx_global_matched) {{");
         ctx.GlobalMemoryAccess(buffer_index, address, 8);
-        Atomic64(ctx, inst, fmt::format("ssbo{}", buffer_index), "uint(" + std::string(address) + " - nx_global_base)", value);
+        Atomic64(ctx, inst, fmt::format("ssbo{}", buffer_index),
+                 "uint(" + std::string(address) + " - nx_global_base)", value);
         ctx.Add("nx_global_matched = true; }} }} }}");
     }
     ctx.Add("}}");
 }
-void EmitGlobalAtomicOr64(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value) {
+void EmitGlobalAtomicOr64(EmitContext& ctx, IR::Inst& inst, std::string_view address,
+                          std::string_view value) {
     const auto result = ctx.var_alloc.Define(inst, HlslVarType::U64);
     ctx.Add("{} = uint64_t(0u);", result);
     ctx.Add("{{ bool nx_global_matched = false;");
     for (size_t buffer_index = 0; buffer_index < ctx.storage_bindings.size(); ++buffer_index) {
         ctx.Add("if (!nx_global_matched) {{");
         ctx.GlobalMemoryAccess(buffer_index, address, 8);
-        Atomic64(ctx, inst, fmt::format("ssbo{}", buffer_index), "uint(" + std::string(address) + " - nx_global_base)", value);
+        Atomic64(ctx, inst, fmt::format("ssbo{}", buffer_index),
+                 "uint(" + std::string(address) + " - nx_global_base)", value);
         ctx.Add("nx_global_matched = true; }} }} }}");
     }
     ctx.Add("}}");
 }
-void EmitGlobalAtomicXor64(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value) {
+void EmitGlobalAtomicXor64(EmitContext& ctx, IR::Inst& inst, std::string_view address,
+                           std::string_view value) {
     const auto result = ctx.var_alloc.Define(inst, HlslVarType::U64);
     ctx.Add("{} = uint64_t(0u);", result);
     ctx.Add("{{ bool nx_global_matched = false;");
     for (size_t buffer_index = 0; buffer_index < ctx.storage_bindings.size(); ++buffer_index) {
         ctx.Add("if (!nx_global_matched) {{");
         ctx.GlobalMemoryAccess(buffer_index, address, 8);
-        Atomic64(ctx, inst, fmt::format("ssbo{}", buffer_index), "uint(" + std::string(address) + " - nx_global_base)", value);
+        Atomic64(ctx, inst, fmt::format("ssbo{}", buffer_index),
+                 "uint(" + std::string(address) + " - nx_global_base)", value);
         ctx.Add("nx_global_matched = true; }} }} }}");
     }
     ctx.Add("}}");
 }
-void EmitGlobalAtomicExchange64(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value) {
+void EmitGlobalAtomicExchange64(EmitContext& ctx, IR::Inst& inst, std::string_view address,
+                                std::string_view value) {
     const auto result = ctx.var_alloc.Define(inst, HlslVarType::U64);
     ctx.Add("{} = uint64_t(0u);", result);
     ctx.Add("{{ bool nx_global_matched = false;");
     for (size_t buffer_index = 0; buffer_index < ctx.storage_bindings.size(); ++buffer_index) {
         ctx.Add("if (!nx_global_matched) {{");
         ctx.GlobalMemoryAccess(buffer_index, address, 8);
-        Atomic64(ctx, inst, fmt::format("ssbo{}", buffer_index), "uint(" + std::string(address) + " - nx_global_base)", value);
+        Atomic64(ctx, inst, fmt::format("ssbo{}", buffer_index),
+                 "uint(" + std::string(address) + " - nx_global_base)", value);
         ctx.Add("nx_global_matched = true; }} }} }}");
     }
     ctx.Add("}}");
 }
-void EmitSharedAtomicExchange64(EmitContext& ctx, IR::Inst& inst, std::string_view offset, std::string_view value) {
+void EmitSharedAtomicExchange64(EmitContext& ctx, IR::Inst& inst, std::string_view offset,
+                                std::string_view value) {
     const auto result = ctx.var_alloc.Define(inst, inst.Type());
-    ctx.Add("{{ uint64_t old_value; InterlockedExchange(smem64[{} >> 3], {}, old_value); {} = {}; }}",
-            offset, value, result, "old_value");
+    ctx.Add(
+        "{{ uint64_t old_value; InterlockedExchange(smem64[{} >> 3], {}, old_value); {} = {}; }}",
+        offset, value, result, "old_value");
 }
-void EmitSharedAtomicExchange32x2(EmitContext& ctx, IR::Inst& inst, std::string_view offset, std::string_view value) {
+void EmitSharedAtomicExchange32x2(EmitContext& ctx, IR::Inst& inst, std::string_view offset,
+                                  std::string_view value) {
     const auto result = ctx.var_alloc.Define(inst, inst.Type());
-    ctx.Add("{{ uint64_t old_value; InterlockedExchange(smem64[{} >> 3], {}, old_value); {} = {}; }}",
-            offset, fmt::format("packUint2x32({})", value), result, "unpackUint2x32(old_value)");
+    ctx.Add(
+        "{{ uint64_t old_value; InterlockedExchange(smem64[{} >> 3], {}, old_value); {} = {}; }}",
+        offset, fmt::format("packUint2x32({})", value), result, "unpackUint2x32(old_value)");
 }
 } // namespace Shader::Backend::HLSL

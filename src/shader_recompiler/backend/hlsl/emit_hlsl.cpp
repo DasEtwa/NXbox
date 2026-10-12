@@ -165,20 +165,25 @@ std::string EmitHLSL(const Profile& profile, const RuntimeInfo& runtime_info, IR
                                   size[0], size[1], size[2]);
     } else if (program.stage == Stage::Geometry) {
         const auto topology = runtime_info.input_topology;
-        const auto input_type = topology == InputTopology::Points ? "point" :
-                                topology == InputTopology::Lines ? "line" :
-                                topology == InputTopology::LinesAdjacency ? "lineadj" :
-                                topology == InputTopology::Triangles ? "triangle" : "triangleadj";
-        const auto stream_type = program.output_topology == OutputTopology::PointList ? "PointStream" :
-                                 program.output_topology == OutputTopology::LineStrip ? "LineStream" : "TriangleStream";
-        if (!program.output_vertices || program.output_vertices > 1024u || program.invocations > 32u)
+        const auto input_type = topology == InputTopology::Points           ? "point"
+                                : topology == InputTopology::Lines          ? "line"
+                                : topology == InputTopology::LinesAdjacency ? "lineadj"
+                                : topology == InputTopology::Triangles      ? "triangle"
+                                                                            : "triangleadj";
+        const auto stream_type =
+            program.output_topology == OutputTopology::PointList   ? "PointStream"
+            : program.output_topology == OutputTopology::LineStrip ? "LineStream"
+                                                                   : "TriangleStream";
+        if (!program.output_vertices || program.output_vertices > 1024u ||
+            program.invocations > 32u)
             throw NotImplementedException("HLSL invalid geometry output/invocation count");
-        ctx.header += fmt::format("[maxvertexcount({})]\n[instance({})]\nvoid main({} Input inputs[{}], "
-                                  "uint nx_primitive_id : SV_PrimitiveID, uint nx_invocation_id : SV_GSInstanceID, "
-                                  "inout {}<Output> nx_stream) {{\nInput input = inputs[0];\n"
-                                  "Output output = (Output)0; output.position = float4(0, 0, 0, 1);\n",
-                                  program.output_vertices, std::max(program.invocations, 1u), input_type,
-                                  InputTopologyVertices::vertices(topology), stream_type);
+        ctx.header += fmt::format(
+            "[maxvertexcount({})]\n[instance({})]\nvoid main({} Input inputs[{}], "
+            "uint nx_primitive_id : SV_PrimitiveID, uint nx_invocation_id : SV_GSInstanceID, "
+            "inout {}<Output> nx_stream) {{\nInput input = inputs[0];\n"
+            "Output output = (Output)0; output.position = float4(0, 0, 0, 1);\n",
+            program.output_vertices, std::max(program.invocations, 1u), input_type,
+            InputTopologyVertices::vertices(topology), stream_type);
     } else {
         if (runtime_info.force_early_z && program.stage == Stage::Fragment)
             ctx.header += "[earlydepthstencil]\n";
@@ -199,8 +204,9 @@ std::string EmitHLSL(const Profile& profile, const RuntimeInfo& runtime_info, IR
         ctx.header += "uint carry;\n";
     ctx.header += "bool shfl_in_bounds = false;\n";
     if (ctx.uses_register_state)
-        ctx.header += "uint nx_regs[255] = (uint[255])0; bool nx_preds[7] = (bool[7])0; "
-                      "uint nx_branch = 0u; bool nx_z = false, nx_s = false, nx_c = false, nx_o = false;\n";
+        ctx.header +=
+            "uint nx_regs[255] = (uint[255])0; bool nx_preds[7] = (bool[7])0; "
+            "uint nx_branch = 0u; bool nx_z = false, nx_s = false, nx_c = false, nx_o = false;\n";
     for (const auto index : ctx.goto_variables)
         ctx.header += fmt::format("bool nx_goto_{} = false;\n", index);
     size_t loop_index = 0;

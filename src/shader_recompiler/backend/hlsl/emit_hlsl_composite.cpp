@@ -69,44 +69,53 @@ void EmitCompositeInsertU32x4(EmitContext& ctx, IR::Inst& inst, std::string_view
     CompositeInsert(ctx, ret, composite, object, index);
 }
 
-void EmitCompositeConstructF16x2(EmitContext& ctx, IR::Inst& inst, std::string_view e1, std::string_view e2) {
+void EmitCompositeConstructF16x2(EmitContext& ctx, IR::Inst& inst, std::string_view e1,
+                                 std::string_view e2) {
     const auto result = ctx.var_alloc.Define(inst, IR::Type::F16x2);
     ctx.Add("{} = float2({},{});", result, e1, e2);
 }
 
-void EmitCompositeConstructF16x3(EmitContext& ctx, IR::Inst& inst, std::string_view e1, std::string_view e2, std::string_view e3) {
+void EmitCompositeConstructF16x3(EmitContext& ctx, IR::Inst& inst, std::string_view e1,
+                                 std::string_view e2, std::string_view e3) {
     const auto result = ctx.var_alloc.Define(inst, IR::Type::F16x3);
     ctx.Add("{} = float3({},{},{});", result, e1, e2, e3);
 }
 
-void EmitCompositeConstructF16x4(EmitContext& ctx, IR::Inst& inst, std::string_view e1, std::string_view e2, std::string_view e3, std::string_view e4) {
+void EmitCompositeConstructF16x4(EmitContext& ctx, IR::Inst& inst, std::string_view e1,
+                                 std::string_view e2, std::string_view e3, std::string_view e4) {
     const auto result = ctx.var_alloc.Define(inst, IR::Type::F16x4);
     ctx.Add("{} = float4({},{},{},{});", result, e1, e2, e3, e4);
 }
 
-void EmitCompositeExtractF16x2(EmitContext& ctx, IR::Inst& inst, std::string_view composite, u32 index) {
+void EmitCompositeExtractF16x2(EmitContext& ctx, IR::Inst& inst, std::string_view composite,
+                               u32 index) {
     ctx.AddF32("{} = {}.{};", inst, composite, SWIZZLE[index]);
 }
 
-void EmitCompositeExtractF16x3(EmitContext& ctx, IR::Inst& inst, std::string_view composite, u32 index) {
+void EmitCompositeExtractF16x3(EmitContext& ctx, IR::Inst& inst, std::string_view composite,
+                               u32 index) {
     ctx.AddF32("{} = {}.{};", inst, composite, SWIZZLE[index]);
 }
 
-void EmitCompositeExtractF16x4(EmitContext& ctx, IR::Inst& inst, std::string_view composite, u32 index) {
+void EmitCompositeExtractF16x4(EmitContext& ctx, IR::Inst& inst, std::string_view composite,
+                               u32 index) {
     ctx.AddF32("{} = {}.{};", inst, composite, SWIZZLE[index]);
 }
 
-void EmitCompositeInsertF16x2(EmitContext& ctx, IR::Inst& inst, std::string_view composite, std::string_view object, u32 index) {
+void EmitCompositeInsertF16x2(EmitContext& ctx, IR::Inst& inst, std::string_view composite,
+                              std::string_view object, u32 index) {
     const auto result = ctx.var_alloc.Define(inst, IR::Type::F16x2);
     CompositeInsert(ctx, result, composite, object, index);
 }
 
-void EmitCompositeInsertF16x3(EmitContext& ctx, IR::Inst& inst, std::string_view composite, std::string_view object, u32 index) {
+void EmitCompositeInsertF16x3(EmitContext& ctx, IR::Inst& inst, std::string_view composite,
+                              std::string_view object, u32 index) {
     const auto result = ctx.var_alloc.Define(inst, IR::Type::F16x3);
     CompositeInsert(ctx, result, composite, object, index);
 }
 
-void EmitCompositeInsertF16x4(EmitContext& ctx, IR::Inst& inst, std::string_view composite, std::string_view object, u32 index) {
+void EmitCompositeInsertF16x4(EmitContext& ctx, IR::Inst& inst, std::string_view composite,
+                              std::string_view object, u32 index) {
     const auto result = ctx.var_alloc.Define(inst, IR::Type::F16x4);
     CompositeInsert(ctx, result, composite, object, index);
 }
@@ -159,44 +168,53 @@ void EmitCompositeInsertF32x4(EmitContext& ctx, IR::Inst& inst, std::string_view
     CompositeInsert(ctx, ret, composite, object, index);
 }
 
-void EmitCompositeConstructF64x2(EmitContext& ctx, IR::Inst& inst, std::string_view e1, std::string_view e2) {
+void EmitCompositeConstructF64x2(EmitContext& ctx, IR::Inst& inst, std::string_view e1,
+                                 std::string_view e2) {
     const auto result = ctx.var_alloc.Define(inst, IR::Type::F64x2);
     ctx.Add("{} = double2({},{});", result, e1, e2);
 }
 
-void EmitCompositeConstructF64x3(EmitContext& ctx, IR::Inst& inst, std::string_view e1, std::string_view e2, std::string_view e3) {
+void EmitCompositeConstructF64x3(EmitContext& ctx, IR::Inst& inst, std::string_view e1,
+                                 std::string_view e2, std::string_view e3) {
     const auto result = ctx.var_alloc.Define(inst, IR::Type::F64x3);
     ctx.Add("{} = double3({},{},{});", result, e1, e2, e3);
 }
 
-void EmitCompositeConstructF64x4(EmitContext& ctx, IR::Inst& inst, std::string_view e1, std::string_view e2, std::string_view e3, std::string_view e4) {
+void EmitCompositeConstructF64x4(EmitContext& ctx, IR::Inst& inst, std::string_view e1,
+                                 std::string_view e2, std::string_view e3, std::string_view e4) {
     const auto result = ctx.var_alloc.Define(inst, IR::Type::F64x4);
     ctx.Add("{} = double4({},{},{},{});", result, e1, e2, e3, e4);
 }
 
-void EmitCompositeExtractF64x2(EmitContext& ctx, IR::Inst& inst, std::string_view composite, u32 index) {
+void EmitCompositeExtractF64x2(EmitContext& ctx, IR::Inst& inst, std::string_view composite,
+                               u32 index) {
     ctx.AddF64("{} = {}.{};", inst, composite, SWIZZLE[index]);
 }
 
-void EmitCompositeExtractF64x3(EmitContext& ctx, IR::Inst& inst, std::string_view composite, u32 index) {
+void EmitCompositeExtractF64x3(EmitContext& ctx, IR::Inst& inst, std::string_view composite,
+                               u32 index) {
     ctx.AddF64("{} = {}.{};", inst, composite, SWIZZLE[index]);
 }
 
-void EmitCompositeExtractF64x4(EmitContext& ctx, IR::Inst& inst, std::string_view composite, u32 index) {
+void EmitCompositeExtractF64x4(EmitContext& ctx, IR::Inst& inst, std::string_view composite,
+                               u32 index) {
     ctx.AddF64("{} = {}.{};", inst, composite, SWIZZLE[index]);
 }
 
-void EmitCompositeInsertF64x2(EmitContext& ctx, IR::Inst& inst, std::string_view composite, std::string_view object, u32 index) {
+void EmitCompositeInsertF64x2(EmitContext& ctx, IR::Inst& inst, std::string_view composite,
+                              std::string_view object, u32 index) {
     const auto result = ctx.var_alloc.Define(inst, IR::Type::F64x2);
     CompositeInsert(ctx, result, composite, object, index);
 }
 
-void EmitCompositeInsertF64x3(EmitContext& ctx, IR::Inst& inst, std::string_view composite, std::string_view object, u32 index) {
+void EmitCompositeInsertF64x3(EmitContext& ctx, IR::Inst& inst, std::string_view composite,
+                              std::string_view object, u32 index) {
     const auto result = ctx.var_alloc.Define(inst, IR::Type::F64x3);
     CompositeInsert(ctx, result, composite, object, index);
 }
 
-void EmitCompositeInsertF64x4(EmitContext& ctx, IR::Inst& inst, std::string_view composite, std::string_view object, u32 index) {
+void EmitCompositeInsertF64x4(EmitContext& ctx, IR::Inst& inst, std::string_view composite,
+                              std::string_view object, u32 index) {
     const auto result = ctx.var_alloc.Define(inst, IR::Type::F64x4);
     CompositeInsert(ctx, result, composite, object, index);
 }

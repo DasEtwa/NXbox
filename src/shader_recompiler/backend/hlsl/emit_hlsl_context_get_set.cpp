@@ -4,7 +4,8 @@
 #include "shader_recompiler/frontend/ir/value.h"
 #include "shader_recompiler/runtime_info.h"
 namespace Shader::Backend::HLSL {
-void EmitGetAttribute(EmitContext& ctx, IR::Inst& inst, IR::Attribute attr, std::string_view vertex) {
+void EmitGetAttribute(EmitContext& ctx, IR::Inst& inst, IR::Attribute attr,
+                      std::string_view vertex) {
     if (IR::IsGeneric(attr) && ctx.stage == Stage::Fragment &&
         !ctx.runtime_info.previous_stage_stores.Generic(IR::GenericAttributeIndex(attr),
                                                         IR::GenericAttributeElement(attr))) {
@@ -31,7 +32,8 @@ void EmitGetAttribute(EmitContext& ctx, IR::Inst& inst, IR::Attribute attr, std:
         value = "(1.0f / input.position.w)";
     ctx.AddF32("{} = {};", inst, value);
 }
-void EmitGetAttributeU32(EmitContext& ctx, IR::Inst& inst, IR::Attribute attr, std::string_view vertex) {
+void EmitGetAttributeU32(EmitContext& ctx, IR::Inst& inst, IR::Attribute attr,
+                         std::string_view vertex) {
     auto value = ctx.Attribute(attr, false);
     if (ctx.stage == Stage::Geometry && value.starts_with("input."))
         value.replace(0, 6, fmt::format("inputs[{}].", vertex.empty() ? "0u" : vertex));
@@ -113,12 +115,15 @@ void EmitIsImageScaled(EmitContext& ctx, IR::Inst& inst, const IR::Value& index)
     ctx.AddU1("{} = (nx_image_scaling_mask & (1u << {})) != 0u;", inst,
               ctx.var_alloc.Consume(index));
 }
-void EmitSetAttributeIndexed(EmitContext& ctx, std::string_view offset, std::string_view value, std::string_view vertex) {
+void EmitSetAttributeIndexed(EmitContext& ctx, std::string_view offset, std::string_view value,
+                             std::string_view vertex) {
     ctx.Add("switch ({} >> 2) {{", offset);
     for (u32 i = 0; i < 128; ++i) {
-        const auto attr = static_cast<IR::Attribute>(static_cast<u32>(IR::Attribute::Generic0X) + i);
+        const auto attr =
+            static_cast<IR::Attribute>(static_cast<u32>(IR::Attribute::Generic0X) + i);
         if (ctx.info.stores[attr])
-            ctx.Add("case {}u: {} = {}; break;", static_cast<u32>(attr), ctx.Attribute(attr, true), value);
+            ctx.Add("case {}u: {} = {}; break;", static_cast<u32>(attr), ctx.Attribute(attr, true),
+                    value);
     }
     ctx.Add("}}");
     if (ctx.stage == Stage::TessellationControl && !vertex.empty())

@@ -4,7 +4,9 @@
 namespace Shader::Backend::HLSL {
 void EmitGetRegister(EmitContext& ctx, IR::Inst& inst, IR::Reg reg) {
     ctx.uses_register_state = true;
-    ctx.AddU32("{} = {};", inst, static_cast<u32>(reg) == 255u ? "0u" : fmt::format("nx_regs[{}]", static_cast<u32>(reg)));
+    ctx.AddU32("{} = {};", inst,
+               static_cast<u32>(reg) == 255u ? "0u"
+                                             : fmt::format("nx_regs[{}]", static_cast<u32>(reg)));
 }
 void EmitSetRegister(EmitContext& ctx, IR::Reg reg, std::string_view value) {
     ctx.uses_register_state = true;
@@ -13,7 +15,9 @@ void EmitSetRegister(EmitContext& ctx, IR::Reg reg, std::string_view value) {
 }
 void EmitGetPred(EmitContext& ctx, IR::Inst& inst, IR::Pred pred) {
     ctx.uses_register_state = true;
-    ctx.AddU1("{} = {};", inst, static_cast<u32>(pred) == 7u ? "true" : fmt::format("nx_preds[{}]", static_cast<u32>(pred)));
+    ctx.AddU1("{} = {};", inst,
+              static_cast<u32>(pred) == 7u ? "true"
+                                           : fmt::format("nx_preds[{}]", static_cast<u32>(pred)));
 }
 void EmitSetPred(EmitContext& ctx, IR::Pred pred, std::string_view value) {
     ctx.uses_register_state = true;
@@ -77,14 +81,16 @@ void EmitGetSignFromOp(EmitContext& ctx, IR::Inst& inst, std::string_view value)
 void EmitGetCarryFromOp(EmitContext& ctx, IR::Inst& inst, const IR::Value& value) {
     const auto* producer = value.InstRecursive();
     if (producer->GetOpcode() != IR::Opcode::IAdd32)
-        throw NotImplementedException("HLSL carry pseudo-result producer {}", producer->GetOpcode());
+        throw NotImplementedException("HLSL carry pseudo-result producer {}",
+                                      producer->GetOpcode());
     ctx.AddU1("{} = {} < {};", inst, ctx.var_alloc.Consume(value),
               ctx.var_alloc.Consume(producer->Arg(0)));
 }
 void EmitGetOverflowFromOp(EmitContext& ctx, IR::Inst& inst, const IR::Value& value) {
     const auto* producer = value.InstRecursive();
     if (producer->GetOpcode() != IR::Opcode::IAdd32)
-        throw NotImplementedException("HLSL overflow pseudo-result producer {}", producer->GetOpcode());
+        throw NotImplementedException("HLSL overflow pseudo-result producer {}",
+                                      producer->GetOpcode());
     ctx.AddU1("{} = ((~({} ^ {}) & ({} ^ {})) & 0x80000000u) != 0u;", inst,
               ctx.var_alloc.Consume(producer->Arg(0)), ctx.var_alloc.Consume(producer->Arg(1)),
               ctx.var_alloc.Consume(producer->Arg(0)), ctx.var_alloc.Consume(value));

@@ -58,7 +58,8 @@ EmitContext::EmitContext(IR::Program& program, Bindings& bindings, const Profile
                                       static_cast<u32>(stage));
     // Stream-output declarations and dual-source RTV linkage belong to the native PSO.
     if (program.is_geometry_passthrough)
-        throw NotImplementedException("HLSL geometry passthrough requires passthrough varying linkage");
+        throw NotImplementedException(
+            "HLSL geometry passthrough requires passthrough varying linkage");
     if (info.loads.Legacy() || info.stores.Legacy())
         throw NotImplementedException("HLSL legacy attributes must be lowered to generic varyings");
     for (const auto* block : program.blocks)
@@ -66,7 +67,8 @@ EmitContext::EmitContext(IR::Program& program, Bindings& bindings, const Profile
             uses_shared_wide |= inst.GetOpcode() == IR::Opcode::SharedAtomicExchange64 ||
                                 inst.GetOpcode() == IR::Opcode::SharedAtomicExchange32x2;
     if (uses_shared_wide && !profile.support_shared_int64_atomics)
-        throw NotImplementedException("HLSL shared wide exchange requires SM 6.6 shared int64 atomics");
+        throw NotImplementedException(
+            "HLSL shared wide exchange requires SM 6.6 shared int64 atomics");
     header = std::string(ROOT_CONSTANT_DECLARATION) + std::string(ARITHMETIC_HELPERS);
     if (info.uses_int64 || info.uses_fp64 || info.uses_global_memory || uses_shared_wide)
         header += WIDE_ARITHMETIC_HELPERS;
@@ -134,7 +136,8 @@ EmitContext::EmitContext(IR::Program& program, Bindings& bindings, const Profile
                         "{{ uint64_t base = packUint2x32(uint2(nx_cbuf_load({0}u, {1}u) & {2}u, "
                         "nx_cbuf_load({0}u, {3}u))); uint64_t size = "
                         "packUint2x32(uint2(nx_cbuf_load({0}u, {4}u), nx_cbuf_load({0}u, {5}u))); "
-                        "if (address >= base && address - base <= size && size - (address - base) >= {6}u) {{ ",
+                        "if (address >= base && address - base <= size && size - (address - base) "
+                        ">= {6}u) {{ ",
                         desc.cbuf_index, desc.cbuf_offset, ~(alignment - 1u), desc.cbuf_offset + 4,
                         desc.cbuf_offset + 8, desc.cbuf_offset + 12, bits / 8);
                     if (write)
@@ -163,7 +166,8 @@ EmitContext::EmitContext(IR::Program& program, Bindings& bindings, const Profile
                 "do {{ uint new_value = bitfieldInsert(old_value, value, int(shift), int(bits)); "
                 "ssbo{0}.InterlockedCompareExchange(aligned, old_value, new_value, previous); "
                 "if (previous == old_value) break; old_value = previous; }} while (true); "
-                "return; }} }}\n", i);
+                "return; }} }}\n",
+                i);
         }
         header += "}\n";
     }
@@ -208,10 +212,12 @@ EmitContext::EmitContext(IR::Program& program, Bindings& bindings, const Profile
             throw NotImplementedException(
                 "HLSL groupshared memory exceeds SM 6.0 limit or used outside compute");
         if (uses_shared_wide) {
-            header += fmt::format("groupshared uint64_t smem64[{}];\n", (program.shared_memory_size + 7) / 8);
+            header += fmt::format("groupshared uint64_t smem64[{}];\n",
+                                  (program.shared_memory_size + 7) / 8);
             header += SHARED_WIDE_HELPERS;
         } else {
-            header += fmt::format("groupshared uint smem[{}];\n", (program.shared_memory_size + 3) / 4);
+            header +=
+                fmt::format("groupshared uint smem[{}];\n", (program.shared_memory_size + 3) / 4);
         }
     }
     if (stage == Stage::Compute)
@@ -236,8 +242,10 @@ EmitContext::EmitContext(IR::Program& program, Bindings& bindings, const Profile
         for (u32 group = 0; group < 2; ++group) {
             bool used = false;
             for (u32 element = 0; element < 4; ++element)
-                used |= info.loads[static_cast<IR::Attribute>(static_cast<u32>(IR::Attribute::ClipDistance0) + group * 4 + element)];
-            if (used) header += fmt::format("float4 clip{} : SV_ClipDistance{};\n", group, group);
+                used |= info.loads[static_cast<IR::Attribute>(
+                    static_cast<u32>(IR::Attribute::ClipDistance0) + group * 4 + element)];
+            if (used)
+                header += fmt::format("float4 clip{} : SV_ClipDistance{};\n", group, group);
         }
     } else {
         header += "uint vertex_id : SV_VertexID; uint instance_id : SV_InstanceID;\n";
@@ -294,7 +302,8 @@ EmitContext::EmitContext(IR::Program& program, Bindings& bindings, const Profile
 std::string EmitContext::Attribute(IR::Attribute attribute, bool output) {
     const auto prefix = output ? "output." : "input.";
     if (!output &&
-        ((attribute == IR::Attribute::PrimitiveId && stage != Stage::Fragment && stage != Stage::Geometry) ||
+        ((attribute == IR::Attribute::PrimitiveId && stage != Stage::Fragment &&
+          stage != Stage::Geometry) ||
          (attribute >= IR::Attribute::PositionX && attribute <= IR::Attribute::PositionW &&
           stage != Stage::Fragment && stage != Stage::Geometry) ||
          (attribute >= IR::Attribute::ClipDistance0 && attribute <= IR::Attribute::ClipDistance7 &&
@@ -385,11 +394,12 @@ void EmitContext::FinishOutput(std::string_view output) {
         if (function == CompareFunction::Never) {
             Add("discard;");
         } else if (function != CompareFunction::Always) {
-            const auto op = function == CompareFunction::Less ? "<" :
-                            function == CompareFunction::Equal ? "==" :
-                            function == CompareFunction::LessThanEqual ? "<=" :
-                            function == CompareFunction::Greater ? ">" :
-                            function == CompareFunction::NotEqual ? "!=" : ">=";
+            const auto op = function == CompareFunction::Less            ? "<"
+                            : function == CompareFunction::Equal         ? "=="
+                            : function == CompareFunction::LessThanEqual ? "<="
+                            : function == CompareFunction::Greater       ? ">"
+                            : function == CompareFunction::NotEqual      ? "!="
+                                                                         : ">=";
             Add("if (!(nx_alpha {} asfloat(0x{:08x}u))) discard;", op,
                 std::bit_cast<u32>(runtime_info.alpha_test_reference));
         }
