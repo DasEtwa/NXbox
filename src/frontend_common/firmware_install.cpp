@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "frontend_common/firmware_install.h"
 
+#include "common/logging.h"
 #include "core/core.h"
 #include "core/file_sys/romfs.h"
 #include "core/hle/service/set/settings_types.h"
@@ -44,19 +45,26 @@ InstallResult InstallFirmware(Core::System& system, const std::vector<std::files
     bool has_mii_model = false;
     for (size_t i = 0; i < files.size(); ++i) {
         const auto file = vfs.OpenFile(files[i].generic_string(), FileSys::OpenMode::Read);
+        const auto name = files[i].filename().string();
         if (!file || !file->GetSize()) {
+            LOG_ERROR(Frontend, "Firmware NCA {} is missing or empty", name);
             return InstallResult::FailedCorrupted;
         }
         const FileSys::NCA nca(file);
         if (nca.GetStatus() != Loader::ResultStatus::Success) {
+            LOG_ERROR(Frontend, "Firmware NCA {} failed to parse: {}", name,
+                      Loader::GetResultStatusString(nca.GetStatus()));
             return InstallResult::FailedCorrupted;
         }
         if (nca.GetTitleId() == 0x0100000000000809ULL &&
             nca.GetType() == FileSys::NCAContentType::Data) {
             has_version = has_version || !ArchiveVersion(nca).empty();
         }
+        // Retail dumps ship the Mii model archive as PublicData, not Data.
         if (nca.GetTitleId() == 0x0100000000000802ULL &&
-            nca.GetType() == FileSys::NCAContentType::Data && nca.GetRomFS()) {
+            (nca.GetType() == FileSys::NCAContentType::Data ||
+             nca.GetType() == FileSys::NCAContentType::PublicData) &&
+            nca.GetRomFS()) {
             has_mii_model = true;
         }
         Loader::AppLoader_NCA loader(file);
@@ -66,10 +74,14 @@ InstallResult InstallFirmware(Core::System& system, const std::vector<std::files
             return !cancelled;
         });
         if (cancelled || status != Loader::ResultStatus::Success) {
+            LOG_ERROR(Frontend, "Firmware NCA {} failed integrity check: {}", name,
+                      Loader::GetResultStatusString(status));
             return InstallResult::FailedCorrupted;
         }
     }
     if (!has_version || !has_mii_model) {
+        LOG_ERROR(Frontend, "Firmware set incomplete: system_version={} mii_model={}",
+                  has_version, has_mii_model);
         return InstallResult::FailedCorrupted;
     }
     auto& controller = system.GetFileSystemController();
@@ -99,6 +111,9 @@ InstallResult InstallFirmware(Core::System& system, const std::vector<std::files
     };
     const auto failures =
         ContentManager::VerifyInstalledContents(system, provider, verify_callback, true);
+    for (const auto& failure : failures) {
+        LOG_ERROR(Frontend, "Installed firmware content failed verification: {}", failure);
+    }
     if (cancelled || !failures.empty() || InstalledVersion(system).empty()) {
         return InstallResult::FailedCorrupted;
     }
