@@ -151,6 +151,7 @@ DRIVER = r"""
 #include <cstdint>
 #include <limits>
 #include <vector>
+#include "shader_recompiler/backend/hlsl/hlsl_root_constants.h"
 #include "video_core/renderer_d3d12/d3d12_pso_tables.h"
 #include "video_core/renderer_d3d12/d3d12_index_converter.h"
 using namespace D3D12;
@@ -180,6 +181,7 @@ unsigned sdk_logic(unsigned op, unsigned s, unsigned d) {
     assert(false); return 0;
 }
 int main() {
+    static_assert(offsetof(Shader::Backend::HLSL::RootConstants, draw_id) == 10 * sizeof(std::uint32_t));
     static_assert(!Pso::IndependentStencil(false,1,1,2,255,0,255,0));
     static_assert(!Pso::IndependentStencil(true,2,1,2,255,0,255,0));
     static_assert(!Pso::IndependentStencil(true,3,1,2,255,0,255,0));
@@ -236,7 +238,8 @@ int main() {
     Pso::GraphicsPsoState state{};
     auto hash=Pso::HashBytes(&state,sizeof(state));
     for(auto field:{&state.logic_enable,&state.logic_op,&state.alpha_to_coverage,
-                    &state.conservative_raster,&state.smooth_lines,&state.depth_bounds}) {
+                    &state.conservative_raster,&state.smooth_lines,&state.depth_bounds,
+                    &state.stencil_back_read_mask,&state.stencil_back_write_mask}) {
         *field=1; assert(hash!=Pso::HashBytes(&state,sizeof(state))); *field=0;
     }
     state.attributes[0].divisor=UINT32_MAX;
@@ -303,6 +306,8 @@ class D3D12StateCoverageTests(unittest.TestCase):
             "state = saved_state",
             "command.StartInstanceLocation",
             "command.BaseVertexLocation",
+            "indirect_draw_id = static_cast<u32>(i)",
+            "indirect_draw_id = saved_draw_id",
             "Draw(true",
             "Draw(false",
         ):

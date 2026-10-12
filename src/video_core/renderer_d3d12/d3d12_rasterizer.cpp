@@ -61,6 +61,9 @@ RasterizerD3D12::~RasterizerD3D12() {
 
 namespace {
 using Maxwell = Tegra::Engines::Maxwell3D::Regs;
+// CPU expansion preserves the guest multi-draw ID independently of base IDs.
+// Scoped to the GPU thread and restored after each indirect batch.
+thread_local u32 indirect_draw_id{};
 
 struct DrawParams {
     u32 base_instance;
@@ -833,6 +836,7 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     auto words = pipeline->RootConstants({size.width, size.height, y_flip});
     words[8] = is_indexed ? draw_state.base_index : draw_state.vertex_buffer.first;
     words[9] = draw_state.base_instance;
+    words[10] = indirect_draw_id;
     const bool back_only = regs.stencil_two_side_enable && regs.gl_cull_test_enabled &&
                            static_cast<u32>(regs.gl_cull_face) == 0x404;
     const auto cull =
@@ -1034,6 +1038,7 @@ void RasterizerD3D12::DrawIndirect() try {
         state = saved_state;
     };
     for (u64 i = 0; i < count; ++i) {
+        indirect_draw_id = static_cast<u32>(i);
         const auto* data = arguments.data() + static_cast<size_t>(i) * stride;
         if (params.is_indexed) {
             D3D12_DRAW_INDEXED_ARGUMENTS command;
