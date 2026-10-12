@@ -4,8 +4,8 @@
 // SPDX-FileCopyrightText: Copyright 2019 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-#include "common/nxbox_stall.h"
 #include "common/assert.h"
+#include "common/nxbox_stall.h"
 #include "common/scope_exit.h"
 #include "common/settings.h"
 #include "common/thread.h"
@@ -33,13 +33,13 @@ std::uint32_t NxboxCurrentThreadId() {
 
 namespace VideoCommon::GPUThread {
 
-ThreadManager::ThreadManager(Core::System& system_)
-    : system{system_}
-{}
+ThreadManager::ThreadManager(Core::System& system_) : system{system_} {}
 
 ThreadManager::~ThreadManager() = default;
 
-void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Frontend::GraphicsContext& context, Tegra::Control::Scheduler& scheduler) {
+void ThreadManager::StartThread(VideoCore::RendererBase& renderer,
+                                Core::Frontend::GraphicsContext& context,
+                                Tegra::Control::Scheduler& scheduler) {
     rasterizer = renderer.ReadRasterizer();
     thread = std::jthread([&](std::stop_token stop_token) {
         Common::SetCurrentThreadName("GPU");
@@ -90,8 +90,8 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
 #endif
             state.signaled_fence.store(next.fence);
             if (next.block) {
-                // We have to lock the write_lock to ensure that the condition_variable wait not get a
-                // race between the check and the lock itself.
+                // We have to lock the write_lock to ensure that the condition_variable wait not get
+                // a race between the check and the lock itself.
                 std::scoped_lock lk{state.write_lock};
                 state.cv.notify_all();
             }
