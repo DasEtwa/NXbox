@@ -173,7 +173,7 @@ void FillGraphicsState(Tegra::Engines::Maxwell3D& maxwell3d, Pso::GraphicsPsoSta
         }
     }
 
-    s.sample_count = 1; // TODO: MSAA (regs.anti_alias_samples_mode)
+    s.sample_count = 1; // Overridden by the actual bound attachment sample count.
 
     // Vertex input.
     for (size_t i = 0; i < Pso::kNumVertexAttributes; ++i) {

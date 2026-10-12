@@ -237,6 +237,7 @@ inline constexpr std::size_t kNumVertexAttributes = 32;
 struct FramebufferFormats {
     std::array<std::uint32_t, kNumRenderTargets> colors{};
     std::uint32_t depth{};
+    std::uint8_t sample_count{1};
 };
 
 // All values already in D3D12 numbering; no padding (checked below), so it is hashed and
@@ -258,6 +259,7 @@ struct GraphicsPsoState {
 constexpr void ApplyFramebufferFormats(GraphicsPsoState& state, const FramebufferFormats& formats) {
     state.rtv_formats = formats.colors;
     state.dsv_format = formats.depth;
+    state.sample_count = formats.sample_count;
     state.num_render_targets = 0;
     for (std::size_t i = 0; i < formats.colors.size(); ++i)
         if (formats.colors[i])

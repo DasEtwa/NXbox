@@ -2,8 +2,14 @@
 #include "video_core/renderer_d3d12/d3d12_texture_cache.h"
 
 #include <algorithm>
+#include <bit>
 #include <cstring>
 #include <stdexcept>
+#include <set>
+#include <mutex>
+#include <tuple>
+#include <fmt/format.h>
+#include "common/logging.h"
 #include "common/settings.h"
 #include "video_core/framebuffer_config.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
@@ -27,65 +33,147 @@ FormatInfo MaxwellFormat(VideoCore::Surface::PixelFormat format) {
     }
 }
 namespace {
+void UnsupportedImage(const VideoCommon::ImageInfo& info, FormatInfo format,
+                      std::string_view condition) {
+    static std::mutex mutex;
+    static std::set<std::tuple<u32, u32, u32, u32>> logged;
+    std::scoped_lock lock{mutex};
+    if (!logged.emplace(static_cast<u32>(info.format), format.planes, info.num_samples,
+                        static_cast<u32>(info.type)).second)
+        return;
+    std::string_view name = "Unknown";
+    switch (info.format) {
+#define PIXEL_FORMAT_ELEM(name_, ...) \
+    case VideoCore::Surface::PixelFormat::name_: name = #name_; break;
+        PIXEL_FORMAT_LIST
+#undef PIXEL_FORMAT_ELEM
+    default: break;
+    }
+    LOG_WARNING(Render, "D3D12 image unsupported: format={} ({}) planes={} samples={} type={} "
+                        "condition={}; attachment/transfer skipped",
+                name, static_cast<u32>(info.format), format.planes, info.num_samples,
+                static_cast<u32>(info.type), condition);
+}
 ResourcePtr MakeTexture(Context& context, const VideoCommon::ImageInfo& info, FormatInfo format) {
-    if (!format.Supported() || format.planes != 1 || info.num_samples != 1 ||
-        info.type == VideoCommon::ImageType::Buffer)
-        throw std::runtime_error("D3D12 P2 unsupported texture format/planes/samples/type");
+    const auto skip = [&](std::string_view condition) -> ResourcePtr {
+        UnsupportedImage(info, format, condition);
+        return {};
+    };
+    if (!format.Supported())
+        return skip("!format.Supported()");
+    if (format.planes != 1 && !(format.depth && format.planes == 2))
+        return skip("planes != 1 and not a two-plane depth/stencil format");
+    if (format.depth && info.type == VideoCommon::ImageType::e3D)
+        return skip("depth/stencil resources cannot be 3D");
+    if (info.type == VideoCommon::ImageType::Buffer)
+        return skip("image type is Buffer");
     if (!info.size.width || !info.size.height || !info.size.depth || info.resources.levels <= 0 ||
         info.resources.levels > 16 || info.resources.layers <= 0 || info.resources.layers > 2048 ||
         info.size.depth > 2048)
-        throw std::invalid_argument("D3D12 invalid image dimensions");
+        return skip("invalid dimensions/levels/layers");
+    if (info.num_samples == 0 || (info.num_samples & (info.num_samples - 1)) || info.num_samples > 16)
+        return skip("sample count is not 1/2/4/8/16");
+    if (info.num_samples > 1 &&
+        (info.type != VideoCommon::ImageType::e2D || format.block_width != 1 ||
+         format.block_height != 1 || info.resources.levels != 1))
+        return skip("MSAA requires uncompressed 2D image with one mip level");
     D3D12_RESOURCE_DESC desc{};
     desc.Dimension = info.type == VideoCommon::ImageType::e1D ? D3D12_RESOURCE_DIMENSION_TEXTURE1D
                      : info.type == VideoCommon::ImageType::e3D
                          ? D3D12_RESOURCE_DIMENSION_TEXTURE3D
                          : D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    const auto [samples_x, samples_y] = VideoCommon::SamplesLog2(info.num_samples);
+    const u32 width = info.size.width >> samples_x;
+    const u32 height = info.size.height >> samples_y;
+    if (!width || !height || (width << samples_x) != info.size.width ||
+        (height << samples_y) != info.size.height)
+        return skip("image dimensions are not aligned to the MSAA sample grid");
     desc.Width =
-        (u64{info.size.width} + format.block_width - 1) / format.block_width * format.block_width;
+        (u64{width} + format.block_width - 1) / format.block_width * format.block_width;
     desc.Height = desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE1D
                       ? 1
-                      : (info.size.height + format.block_height - 1) / format.block_height *
+                      : (height + format.block_height - 1) / format.block_height *
                             format.block_height;
     desc.DepthOrArraySize = static_cast<UINT16>(desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D
                                                     ? info.size.depth
                                                     : info.resources.layers);
     desc.MipLevels = static_cast<UINT16>(info.resources.levels);
+    const u32 max_dimension = info.type == VideoCommon::ImageType::e3D ? 2048u : 16384u;
+    if (desc.Width > max_dimension || desc.Height > max_dimension)
+        return skip("dimensions exceed the D3D12 texture limit");
+    const u32 max_extent = std::max({static_cast<u32>(desc.Width), desc.Height,
+        info.type == VideoCommon::ImageType::e3D ? info.size.depth : 1u});
+    if (desc.MipLevels > std::bit_width(max_extent))
+        return skip("mip count exceeds the image dimension chain");
     desc.Format = static_cast<DXGI_FORMAT>(format.resource_format);
-    desc.SampleDesc.Count = 1;
+    desc.SampleDesc.Count = info.num_samples;
+    if (info.num_samples > 1) {
+        desc.MipLevels = 1;
+        D3D12_FEATURE_DATA_MULTISAMPLE_QUALITY_LEVELS quality{};
+        quality.Format = format.depth ? DsvFormat(static_cast<DXGI_FORMAT>(format.view_format))
+                                     : static_cast<DXGI_FORMAT>(format.view_format);
+        quality.SampleCount = info.num_samples;
+        quality.Flags = D3D12_MULTISAMPLE_QUALITY_LEVELS_FLAG_NONE;
+        const HRESULT result = context.Device()->CheckFeatureSupport(
+            D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS, &quality, sizeof(quality));
+        if (FAILED(result)) {
+            Check(context.Device()->GetDeviceRemovedReason(), "MSAA support device removed", context.Device());
+            return skip(fmt::format("CheckFeatureSupport(MULTISAMPLE_QUALITY_LEVELS) HRESULT={:#010x}",
+                                    static_cast<u32>(result)));
+        }
+        if (!quality.NumQualityLevels)
+            return skip("MULTISAMPLE_QUALITY_LEVELS.NumQualityLevels == 0");
+        // Quality zero is shared by every supported attachment format. Do not
+        // reduce samples: that would break guest Texture2DMS loads and PSO matching.
+        desc.SampleDesc.Quality = 0;
+    }
     desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
     D3D12_FEATURE_DATA_FORMAT_SUPPORT support{static_cast<DXGI_FORMAT>(format.view_format)};
-    Check(context.Device()->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &support,
-                                                sizeof(support)),
-          "texture format support", context.Device());
+    const auto query_format = [&](D3D12_FEATURE_DATA_FORMAT_SUPPORT& data,
+                                  std::string_view condition) {
+        const HRESULT result = context.Device()->CheckFeatureSupport(
+            D3D12_FEATURE_FORMAT_SUPPORT, &data, sizeof(data));
+        if (SUCCEEDED(result))
+            return true;
+        Check(context.Device()->GetDeviceRemovedReason(), "format support device removed", context.Device());
+        UnsupportedImage(info, format, fmt::format("{} HRESULT={:#010x}", condition,
+                                                  static_cast<u32>(result)));
+        return false;
+    };
+    if (!query_format(support, "texture FORMAT_SUPPORT query"))
+        return {};
     const auto required =
         desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE1D   ? D3D12_FORMAT_SUPPORT1_TEXTURE1D
         : desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D ? D3D12_FORMAT_SUPPORT1_TEXTURE3D
                                                                : D3D12_FORMAT_SUPPORT1_TEXTURE2D;
     if (!(support.Support1 & required))
-        throw std::runtime_error("D3D12 device does not support texture format");
+        return skip("FORMAT_SUPPORT lacks requested texture dimension");
     // P3: guest draws render into cached images.
     if (format.depth) {
         D3D12_FEATURE_DATA_FORMAT_SUPPORT depth_support{
             DsvFormat(static_cast<DXGI_FORMAT>(format.view_format))};
-        Check(context.Device()->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &depth_support,
-                                                    sizeof(depth_support)),
-              "depth format support", context.Device());
+        if (!query_format(depth_support, "depth FORMAT_SUPPORT query"))
+            return {};
         if (depth_support.Support1 & D3D12_FORMAT_SUPPORT1_DEPTH_STENCIL)
             desc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
     } else if ((support.Support1 & D3D12_FORMAT_SUPPORT1_RENDER_TARGET) &&
                desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE1D) {
         desc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
     }
-    if (!format.depth && format.block_width == 1 && format.block_height == 1) {
+    if (info.num_samples == 1 && !format.depth && format.block_width == 1 && format.block_height == 1) {
         D3D12_FEATURE_DATA_FORMAT_SUPPORT uav_support{
             format.converted_astc ? DXGI_FORMAT_R8G8B8A8_UNORM
                                   : static_cast<DXGI_FORMAT>(format.view_format)};
-        Check(context.Device()->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &uav_support,
-                                                    sizeof(uav_support)),
-              "texture UAV support", context.Device());
+        if (!query_format(uav_support, "UAV FORMAT_SUPPORT query"))
+            return {};
         if (uav_support.Support2 & D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE)
             desc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
     }
+    if (format.depth && !(desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL))
+        return skip("FORMAT_SUPPORT lacks DEPTH_STENCIL");
+    if (info.num_samples > 1 && !format.depth &&
+        !(desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET))
+        return skip("MSAA format lacks RENDER_TARGET support");
     return context.CreateResource(desc, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_COMMON);
 }
 UINT Subresource(const VideoCommon::ImageInfo& info, s32 level, s32 layer) {
@@ -120,7 +208,7 @@ Image::Image(TextureCacheRuntime& runtime, const VideoCommon::ImageInfo& info, G
         }
     }
     resource = MakeTexture(runtime.context, info, host_format);
-    if (!BisectEnabled("NXBOX_D3D12_NO_GPU_ASTC") &&
+    if (resource && !BisectEnabled("NXBOX_D3D12_NO_GPU_ASTC") &&
         VideoCore::Surface::IsPixelFormatASTC(info.format) &&
         info.type == VideoCommon::ImageType::e2D && info.num_samples == 1 &&
         host_format.block_width == 1 &&
@@ -134,8 +222,10 @@ void Image::UploadMemory(const StagingBufferRef& map,
 }
 void Image::DownloadMemory(const StagingBufferRef& map,
                            std::span<const VideoCommon::BufferImageCopy> copies) {
-    if (host_format.converted_astc || VideoCore::Surface::IsPixelFormatASTC(info.format))
-        throw std::runtime_error("D3D12 converted ASTC readback is not reversible");
+    if (host_format.converted_astc || VideoCore::Surface::IsPixelFormatASTC(info.format)) {
+        UnsupportedImage(info, host_format, "converted ASTC readback is not reversible");
+        return;
+    }
     Transfer(map, copies, true);
 }
 void Image::UploadMemory(ResourcePtr buffer, size_t offset,
@@ -155,14 +245,62 @@ void Image::DownloadMemory(std::span<const ResourcePtr> buffers, std::span<const
     if (buffers.size() != 2 || offsets.size() != 2 || !buffers[0] || !buffers[1] ||
         buffers[0]->heap != D3D12_HEAP_TYPE_DEFAULT || offsets[1] > buffers[1]->mapped.size())
         throw std::invalid_argument("D3D12 invalid DMA download destinations");
-    if (host_format.converted_astc || VideoCore::Surface::IsPixelFormatASTC(info.format))
-        throw std::runtime_error("D3D12 converted ASTC readback is not reversible");
+    if (host_format.converted_astc || VideoCore::Surface::IsPixelFormatASTC(info.format)) {
+        UnsupportedImage(info, host_format, "converted ASTC readback is not reversible");
+        return;
+    }
     Transfer({buffers[1], offsets[1], buffers[1]->mapped.subspan(offsets[1])}, copies, true,
              buffers[0], offsets[0]);
 }
 void Image::Transfer(const StagingBufferRef& input,
                      std::span<const VideoCommon::BufferImageCopy> copies, bool download,
                      const ResourcePtr& gpu_destination, size_t gpu_offset) {
+    if (!resource)
+        return;
+    if (host_format.planes != 1) {
+        UnsupportedImage(info, host_format, "packed depth/stencil staging transfer not implemented");
+        return;
+    }
+    if (resource->handle->GetDesc().SampleDesc.Count > 1) {
+        // Guest memory stores every sample as a texel in an expanded grid. Keep
+        // staging on a single-sample image and scatter/gather with shader loads.
+        auto single_info = info;
+        single_info.num_samples = 1;
+        Image single{*runtime, single_info, 0, 0};
+        if (!single.Handle())
+            return;
+        const auto [samples_x, samples_y] = VideoCommon::SamplesLog2(info.num_samples);
+        std::vector<VideoCommon::ImageCopy> image_copies;
+        image_copies.reserve(copies.size());
+        for (const auto& copy : copies) {
+            const auto& offset = copy.image_offset;
+            const auto& extent = copy.image_extent;
+            if (offset.x < 0 || offset.y < 0 ||
+                (static_cast<u32>(offset.x) & ((1u << samples_x) - 1)) ||
+                (static_cast<u32>(offset.y) & ((1u << samples_y) - 1)) ||
+                (extent.width & ((1u << samples_x) - 1)) ||
+                (extent.height & ((1u << samples_y) - 1))) {
+                UnsupportedImage(info, host_format, "MSAA staging region is not sample-grid aligned");
+                return;
+            }
+            VideoCommon::ImageCopy region{};
+            region.src_subresource = region.dst_subresource = copy.image_subresource;
+            region.src_offset = offset; // Helper MSAA source offsets use expanded-grid units.
+            region.dst_offset = download ? offset : VideoCommon::Offset3D{
+                offset.x >> samples_x, offset.y >> samples_y, offset.z};
+            region.extent = download ? extent : VideoCommon::Extent3D{
+                extent.width >> samples_x, extent.height >> samples_y, extent.depth};
+            image_copies.push_back(region);
+        }
+        if (download) {
+            runtime->CopyImageMSAA(single, *this, image_copies);
+            single.Transfer(input, copies, true, gpu_destination, gpu_offset);
+        } else {
+            single.Transfer(input, copies, false);
+            runtime->CopyImageMSAA(*this, single, image_copies);
+        }
+        return;
+    }
     auto map = input;
     if (!map.buffer || map.mapped_span.empty())
         throw std::invalid_argument("D3D12 missing mapped texture staging");
@@ -306,10 +444,16 @@ void Image::Transfer(const StagingBufferRef& input,
 ImageView::ImageView(TextureCacheRuntime&, const VideoCommon::ImageViewInfo& info,
                      VideoCommon::ImageId id, Image& image)
     : ImageViewBase{info, image.info, id, image.gpu_addr}, resource{image.Handle()} {
+    if (!resource)
+        return;
     const auto view_info = MaxwellFormat(info.format);
     if (!view_info.Supported() || (!VideoCore::Surface::IsPixelFormatASTC(info.format) &&
                                    view_info.resource_format != image.HostFormat().resource_format))
-        throw std::runtime_error("D3D12 incompatible texture view cast");
+    {
+        UnsupportedImage(image.info, image.HostFormat(), "incompatible texture view cast");
+        resource.reset();
+        return;
+    }
     description.Format = static_cast<DXGI_FORMAT>(VideoCore::Surface::IsPixelFormatASTC(info.format)
                                                       ? image.HostFormat().view_format
                                                       : view_info.view_format);
@@ -331,11 +475,30 @@ ImageView::ImageView(TextureCacheRuntime&, const VideoCommon::ImageViewInfo& inf
         range.extent.layers <= 0 ||
         (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE3D &&
          range.base.layer + range.extent.layers > desc.DepthOrArraySize))
-        throw std::out_of_range("D3D12 image view subresources");
+    {
+        UnsupportedImage(image.info, image.HostFormat(), "image view subresources outside resource");
+        resource.reset();
+        return;
+    }
     const UINT level = range.base.level;
     const UINT levels = range.extent.levels;
     const UINT first_layer = range.base.layer;
     const UINT layers = range.extent.layers;
+    if (desc.SampleDesc.Count > 1) {
+        if (type != VideoCommon::ImageViewType::e2D && type != VideoCommon::ImageViewType::e2DArray &&
+            type != VideoCommon::ImageViewType::Rect) {
+            UnsupportedImage(image.info, image.HostFormat(), "MSAA view must be 2D or 2D array");
+            resource.reset();
+            return;
+        }
+        if (desc.DepthOrArraySize == 1 && type != VideoCommon::ImageViewType::e2DArray) {
+            description.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DMS;
+        } else {
+            description.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DMSARRAY;
+            description.Texture2DMSArray = {first_layer, layers};
+        }
+        return;
+    }
     switch (type) {
     case VideoCommon::ImageViewType::e1D:
         description.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE1D;
@@ -370,7 +533,9 @@ ImageView::ImageView(TextureCacheRuntime&, const VideoCommon::ImageViewInfo& inf
         description.Texture3D = {level, levels, 0};
         break;
     default:
-        throw std::runtime_error("D3D12 buffer texture views require P3 descriptors");
+        UnsupportedImage(image.info, image.HostFormat(), "unsupported texture view type");
+        resource.reset();
+        return;
     }
 }
 ImageView::ImageView(TextureCacheRuntime&, const VideoCommon::NullImageViewParams& params)
@@ -385,6 +550,11 @@ ImageView::ImageView(TextureCacheRuntime&, const VideoCommon::ImageInfo& info,
     : ImageViewBase{info, view, addr}, buffer_size{VideoCommon::CalculateGuestSizeInBytes(info)} {}
 void TextureCacheRuntime::TransitionImageLayout(Image& image) {
     context.Transition(image.Handle(), D3D12_RESOURCE_STATE_COMMON);
+}
+bool TextureCacheRuntime::CanDownloadImage(const Image& image) const {
+    const auto format = image.HostFormat();
+    return image.Handle() && format.planes == 1 && !format.converted_astc &&
+           !VideoCore::Surface::IsPixelFormatASTC(image.info.format);
 }
 ComputePasses& TextureCacheRuntime::ComputeHelpers() {
     if (!compute_passes)
@@ -423,88 +593,109 @@ void TextureCacheRuntime::AccelerateImageUpload(
                     buffers, output);
     }
 }
-void TextureCacheRuntime::BlitImage(Framebuffer*, ImageView&, ImageView&,
-                                    const VideoCommon::Region2D&, const VideoCommon::Region2D&,
-                                    Tegra::Engines::Fermi2D::Filter,
-                                    Tegra::Engines::Fermi2D::Operation) {
-    throw std::runtime_error("D3D12 guest blits are stubbed until P3");
+void TextureCacheRuntime::BlitImage(Framebuffer*, ImageView& dst, ImageView& src,
+                                    const VideoCommon::Region2D& dst_region,
+                                    const VideoCommon::Region2D& src_region,
+                                    Tegra::Engines::Fermi2D::Filter filter,
+                                    Tegra::Engines::Fermi2D::Operation operation) {
+    if (!dst.ImageHandle() || !src.ImageHandle())
+        return;
+    const BlitSurface source{src.ImageHandle(), MaxwellFormat(src.format),
+                             static_cast<u32>(src.range.base.level),
+                             static_cast<u32>(src.range.base.layer)};
+    const BlitSurface target{dst.ImageHandle(), MaxwellFormat(dst.format),
+                             static_cast<u32>(dst.range.base.level),
+                             static_cast<u32>(dst.range.base.layer)};
+    VideoCommon::ImageInfo diagnostic;
+    diagnostic.format = src.format;
+    diagnostic.num_samples = source.resource->handle->GetDesc().SampleDesc.Count;
+    try {
+        const u32 layers = std::min(src.range.extent.layers, dst.range.extent.layers);
+        for (u32 layer = 0; layer < layers; ++layer) {
+            auto s = source, d = target;
+            s.layer += layer;
+            d.layer += layer;
+            if (source.resource->handle->GetDesc().SampleDesc.Count > 1 &&
+                target.resource->handle->GetDesc().SampleDesc.Count == 1 &&
+                operation == Tegra::Engines::Fermi2D::Operation::SrcCopy)
+                BlitHelpers().Resolve(d, s, dst_region, src_region);
+            else if (source.format.depth && target.format.depth &&
+                     operation == Tegra::Engines::Fermi2D::Operation::SrcCopy)
+                BlitHelpers().BlitDepthStencil(d, s, dst_region, src_region);
+            else
+                BlitHelpers().BlitColor(d, s, dst_region, src_region, filter, operation);
+        }
+    } catch (const std::logic_error& error) {
+        UnsupportedImage(diagnostic, source.format, error.what());
+    }
 }
-void TextureCacheRuntime::CopyImageMSAA(Image&, Image&, std::span<const VideoCommon::ImageCopy>) {
-    throw std::runtime_error("D3D12 MSAA copies are unavailable");
+BlitImageHelper& TextureCacheRuntime::BlitHelpers() {
+    if (!blit_helper)
+        blit_helper = std::make_unique<BlitImageHelper>(context);
+    return *blit_helper;
 }
-void TextureCacheRuntime::ConvertImage(Framebuffer*, ImageView&, ImageView&) {
-    throw std::runtime_error("D3D12 shader format conversion is unavailable");
+void TextureCacheRuntime::CopyImageMSAA(Image& dst, Image& src,
+                                       std::span<const VideoCommon::ImageCopy> copies) {
+    if (!dst.Handle() || !src.Handle())
+        return;
+    try {
+        BlitHelpers().CopyImageMSAA({dst.Handle(), dst.HostFormat()},
+                                  {src.Handle(), src.HostFormat()}, copies);
+    } catch (const std::logic_error& error) {
+        UnsupportedImage(src.info, src.HostFormat(), error.what());
+    }
+}
+void TextureCacheRuntime::ConvertImage(Framebuffer*, ImageView& dst, ImageView& src) {
+    if (!dst.ImageHandle() || !src.ImageHandle())
+        return;
+    VideoCommon::ImageCopy copy{};
+    copy.src_subresource = {src.range.base.level, src.range.base.layer, src.range.extent.layers};
+    copy.dst_subresource = {dst.range.base.level, dst.range.base.layer, dst.range.extent.layers};
+    const auto desc = dst.ImageHandle()->handle->GetDesc();
+    copy.extent = {static_cast<u32>(desc.Width >> dst.range.base.level),
+                   desc.Height >> dst.range.base.level, 1};
+    try {
+        BlitHelpers().CopyImage({dst.ImageHandle(), MaxwellFormat(dst.format)},
+                                {src.ImageHandle(), MaxwellFormat(src.format)}, std::span{&copy, 1});
+    } catch (const std::logic_error& error) {
+        VideoCommon::ImageInfo diagnostic;
+        diagnostic.format = src.format;
+        diagnostic.num_samples = src.ImageHandle()->handle->GetDesc().SampleDesc.Count;
+        UnsupportedImage(diagnostic, MaxwellFormat(src.format), error.what());
+    }
 }
 bool TextureCacheRuntime::ShouldReinterpret(Image& dst, Image& src) {
     return dst.HostFormat().resource_format != src.HostFormat().resource_format;
 }
 void TextureCacheRuntime::ReinterpretImage(Image& dst, Image& src,
                                            std::span<const VideoCommon::ImageCopy> copies) {
-    if (ShouldReinterpret(dst, src))
-        throw std::runtime_error("D3D12 incompatible image reinterpretation");
-    CopyImage(dst, src, copies);
+    if (!dst.Handle() || !src.Handle())
+        return;
+    if (!ShouldReinterpret(dst, src)) {
+        CopyImage(dst, src, copies);
+        return;
+    }
+    try {
+        BlitHelpers().CopyImage({dst.Handle(), dst.HostFormat()},
+                                {src.Handle(), src.HostFormat()}, copies);
+    } catch (const std::logic_error& error) {
+        UnsupportedImage(src.info, src.HostFormat(), error.what());
+    }
 }
 void TextureCacheRuntime::CopyImage(Image& dst, Image& src,
                                     std::span<const VideoCommon::ImageCopy> copies) {
-    if (dst.Handle() == src.Handle() || ShouldReinterpret(dst, src))
-        throw std::runtime_error("D3D12 image copy needs conversion/scratch");
-    context.Transition(src.Handle(), D3D12_RESOURCE_STATE_COPY_SOURCE);
-    context.Transition(dst.Handle(), D3D12_RESOURCE_STATE_COPY_DEST);
-    for (const auto& copy : copies) {
-        if (copy.src_subresource.num_layers <= 0 ||
-            copy.src_subresource.num_layers != copy.dst_subresource.num_layers ||
-            !copy.extent.width || !copy.extent.height || !copy.extent.depth)
-            throw std::invalid_argument("D3D12 image copy layer count/extent");
-        for (s32 layer = 0; layer < copy.src_subresource.num_layers; ++layer) {
-            D3D12_TEXTURE_COPY_LOCATION source{}, target{};
-            source.Type = target.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-            source.pResource = src.Handle()->handle.Get();
-            target.pResource = dst.Handle()->handle.Get();
-            source.SubresourceIndex = Subresource(src.info, copy.src_subresource.base_level,
-                                                  copy.src_subresource.base_layer + layer);
-            target.SubresourceIndex = Subresource(dst.info, copy.dst_subresource.base_level,
-                                                  copy.dst_subresource.base_layer + layer);
-            const auto validate_region = [&](const Image& image,
-                                             const VideoCommon::Offset3D& offset, s32 level) {
-                const u32 width = std::max(1u, image.info.size.width >> level);
-                const u32 height = std::max(1u, image.info.size.height >> level);
-                const u32 depth = image.info.type == VideoCommon::ImageType::e3D
-                                      ? std::max(1u, image.info.size.depth >> level)
-                                      : 1u;
-                if (offset.x < 0 || offset.y < 0 || offset.z < 0 ||
-                    u64{static_cast<u32>(offset.x)} + copy.extent.width > width ||
-                    u64{static_cast<u32>(offset.y)} + copy.extent.height > height ||
-                    u64{static_cast<u32>(offset.z)} + copy.extent.depth > depth)
-                    throw std::out_of_range("D3D12 image copy region");
-                return offset.x == 0 && offset.y == 0 && offset.z == 0 &&
-                       copy.extent.width == width && copy.extent.height == height &&
-                       copy.extent.depth == depth;
-            };
-            const bool full_source =
-                validate_region(src, copy.src_offset, copy.src_subresource.base_level);
-            const bool full_target =
-                validate_region(dst, copy.dst_offset, copy.dst_subresource.base_level);
-            const bool full_copy = full_source && full_target;
-            const auto format = src.HostFormat();
-            if (format.block_width > 1 && !full_copy &&
-                ((static_cast<u32>(copy.src_offset.x) % format.block_width) ||
-                 (static_cast<u32>(copy.src_offset.y) % format.block_height) ||
-                 (static_cast<u32>(copy.dst_offset.x) % format.block_width) ||
-                 (static_cast<u32>(copy.dst_offset.y) % format.block_height) ||
-                 (copy.extent.width % format.block_width) ||
-                 (copy.extent.height % format.block_height)))
-                throw std::invalid_argument("D3D12 partial BC image copy must be block aligned");
-            D3D12_BOX box{static_cast<UINT>(copy.src_offset.x),
-                          static_cast<UINT>(copy.src_offset.y),
-                          static_cast<UINT>(copy.src_offset.z),
-                          static_cast<UINT>(copy.src_offset.x) + copy.extent.width,
-                          static_cast<UINT>(copy.src_offset.y) + copy.extent.height,
-                          static_cast<UINT>(copy.src_offset.z) + copy.extent.depth};
-            context.MarkWork("upload/copy");
-            context.Commands()->CopyTextureRegion(&target, copy.dst_offset.x, copy.dst_offset.y,
-                                                  copy.dst_offset.z, &source,
-                                                  full_copy ? nullptr : &box);
-        }
+    if (!dst.Handle() || !src.Handle())
+        return;
+    if (dst.Handle()->handle->GetDesc().SampleDesc.Count !=
+        src.Handle()->handle->GetDesc().SampleDesc.Count) {
+        CopyImageMSAA(dst, src, copies);
+        return;
+    }
+    try {
+        BlitHelpers().CopyImage({dst.Handle(), dst.HostFormat()},
+                                {src.Handle(), src.HostFormat()}, copies);
+    } catch (const std::logic_error& error) {
+        UnsupportedImage(src.info, src.HostFormat(), error.what());
     }
 }
 void TextureCacheRuntime::TickFrame() {

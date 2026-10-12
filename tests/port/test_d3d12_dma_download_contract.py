@@ -14,6 +14,7 @@ DRIVER = r"""
 #include <memory>
 #include <span>
 #include <stdexcept>
+#include <string_view>
 using u8=std::uint8_t;
 constexpr int D3D12_HEAP_TYPE_DEFAULT=0;
 namespace VideoCommon { struct BufferImageCopy {}; }
@@ -25,6 +26,9 @@ struct Resource {
 };
 using ResourcePtr=std::shared_ptr<Resource>;
 struct StagingBufferRef { ResourcePtr buffer; size_t offset; std::span<u8> mapped_span; };
+bool unsupported_logged=false;
+template <typename Info,typename Format>
+void UnsupportedImage(const Info&,const Format&,std::string_view) { unsupported_logged=true; }
 struct Image {
     struct { bool converted_astc=false; } host_format;
     struct { int format{}; } info;
@@ -61,6 +65,11 @@ int main() {
     try { image.DownloadMemory(buffers,offsets,copies); }
     catch(const std::invalid_argument&) { rejected=true; }
     assert(rejected);
+    offsets[1]=16;
+    image.host_format.converted_astc=true;
+    image.captured_destination.reset();
+    image.DownloadMemory(buffers,offsets,copies);
+    assert(unsupported_logged && !image.captured_destination);
 }
 """
 

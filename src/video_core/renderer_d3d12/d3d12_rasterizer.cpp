@@ -188,7 +188,10 @@ std::optional<VideoCore::Surface::PixelFormat> PixelFormatFromImageFormat(
     }
 }
 
-D3D12_SRV_DIMENSION SrvDimension(Shader::TextureType type) {
+D3D12_SRV_DIMENSION SrvDimension(Shader::TextureType type, bool multisample = false) {
+    if (multisample)
+        return type == Shader::TextureType::ColorArray2D ? D3D12_SRV_DIMENSION_TEXTURE2DMSARRAY
+                                                        : D3D12_SRV_DIMENSION_TEXTURE2DMS;
     switch (type) {
     case Shader::TextureType::Color1D:
         return D3D12_SRV_DIMENSION_TEXTURE1D;
@@ -297,16 +300,39 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     Framebuffer framebuffer_snapshot = *cached_framebuffer;
     Framebuffer* const framebuffer = &framebuffer_snapshot;
     Pso::FramebufferFormats formats{};
+    u32 attachment_samples = 0;
+    const auto accept_attachment = [&](const ImageView& view, bool depth) {
+        const auto resource = view.ImageHandle();
+        if (!resource)
+            return false;
+        const auto desc = resource->handle->GetDesc();
+        const auto required = depth ? D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL
+                                    : D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+        if (!(desc.Flags & required) || desc.SampleDesc.Quality != 0 ||
+            (attachment_samples && attachment_samples != desc.SampleDesc.Count))
+            return false;
+        attachment_samples = desc.SampleDesc.Count;
+        formats.sample_count = static_cast<u8>(attachment_samples);
+        return true;
+    };
     std::array<ImageView*, VideoCommon::NUM_RT> color_views{};
     const u32 guest_rts = std::min<u32>(regs.rt_control.count, VideoCommon::NUM_RT);
     for (u32 slot = 0; slot < guest_rts; ++slot) {
         auto* view = framebuffer->Color(framebuffer->DrawBuffer(slot));
+        if (view && !accept_attachment(*view, false)) {
+            SkipDraw("unsupported attachment or mismatched sample counts");
+            return;
+        }
         if (view && view->ImageHandle()) {
             color_views[slot] = view;
             formats.colors[slot] = static_cast<u32>(view->Description().Format);
         }
     }
     ImageView* const depth_view = framebuffer->Depth();
+    if (depth_view && !accept_attachment(*depth_view, true)) {
+        SkipDraw("unsupported depth attachment or mismatched sample counts");
+        return;
+    }
     const bool has_depth = depth_view && depth_view->ImageHandle();
     if (has_depth)
         formats.depth = static_cast<u32>(DsvFormat(depth_view->Description().Format));
@@ -573,7 +599,7 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
                         }
                     }
                 }
-                if (descriptors.WriteImageSrv(srv_table, srv_i, view, SrvDimension(desc.type),
+                if (descriptors.WriteImageSrv(srv_table, srv_i, view, SrvDimension(desc.type, desc.is_multisample),
                                               sampled))
                     need(sampled, SrvState);
                 descriptors.WriteSampler(sampler_table, smp_i,
@@ -990,16 +1016,25 @@ void RasterizerD3D12::Clear(u32 layer_count) {
         const auto prepare = [&](ImageView* view, bool is_depth, ClearAttachment& attachment) {
             if (!view || !view->ImageHandle())
                 return false;
+            const auto flags = view->ImageHandle()->handle->GetDesc().Flags;
+            const auto required = is_depth ? D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL
+                                           : D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+            if (!(flags & required)) {
+                SkipDraw("unsupported clear attachment flags");
+                return false;
+            }
             const auto& srv = view->Description();
-            const u32 first = srv.ViewDimension == D3D12_SRV_DIMENSION_TEXTURE2DARRAY
-                                  ? srv.Texture2DArray.FirstArraySlice
-                                  : 0;
-            const u32 layers = srv.ViewDimension == D3D12_SRV_DIMENSION_TEXTURE2DARRAY
-                                   ? srv.Texture2DArray.ArraySize
-                                   : 1;
+            const bool msaa = view->ImageHandle()->handle->GetDesc().SampleDesc.Count > 1;
+            const bool msaa_array = srv.ViewDimension == D3D12_SRV_DIMENSION_TEXTURE2DMSARRAY;
+            const u32 first = msaa_array ? srv.Texture2DMSArray.FirstArraySlice
+                              : srv.ViewDimension == D3D12_SRV_DIMENSION_TEXTURE2DARRAY
+                                  ? srv.Texture2DArray.FirstArraySlice : 0;
+            const u32 layers = msaa_array ? srv.Texture2DMSArray.ArraySize
+                               : srv.ViewDimension == D3D12_SRV_DIMENSION_TEXTURE2DARRAY
+                                   ? srv.Texture2DArray.ArraySize : 1;
             if (layer >= layers)
                 return false;
-            const u32 mip = srv.ViewDimension == D3D12_SRV_DIMENSION_TEXTURE2DARRAY
+            const u32 mip = msaa ? 0 : srv.ViewDimension == D3D12_SRV_DIMENSION_TEXTURE2DARRAY
                                 ? srv.Texture2DArray.MostDetailedMip
                                 : srv.Texture2D.MostDetailedMip;
             attachment.resource = view->ImageHandle();
@@ -1015,8 +1050,13 @@ void RasterizerD3D12::Clear(u32 layer_count) {
                                          attachment.format == DXGI_FORMAT_D32_FLOAT_S8X24_UINT;
                 D3D12_DEPTH_STENCIL_VIEW_DESC desc{};
                 desc.Format = attachment.format;
-                desc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2DARRAY;
-                desc.Texture2DArray = {mip, first + layer, 1};
+                if (msaa) {
+                    desc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2DMSARRAY;
+                    desc.Texture2DMSArray = {first + layer, 1};
+                } else {
+                    desc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2DARRAY;
+                    desc.Texture2DArray = {mip, first + layer, 1};
+                }
                 context.Device()->CreateDepthStencilView(attachment.resource->handle.Get(), &desc,
                                                          attachment.descriptor);
             } else {
@@ -1024,8 +1064,13 @@ void RasterizerD3D12::Clear(u32 layer_count) {
                 attachment.format = srv.Format;
                 D3D12_RENDER_TARGET_VIEW_DESC desc{};
                 desc.Format = srv.Format;
-                desc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2DARRAY;
-                desc.Texture2DArray = {mip, first + layer, 1, 0};
+                if (msaa) {
+                    desc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2DMSARRAY;
+                    desc.Texture2DMSArray = {first + layer, 1};
+                } else {
+                    desc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2DARRAY;
+                    desc.Texture2DArray = {mip, first + layer, 1, 0};
+                }
                 context.Device()->CreateRenderTargetView(attachment.resource->handle.Get(), &desc,
                                                          attachment.descriptor);
             }
@@ -1138,7 +1183,7 @@ void RasterizerD3D12::DispatchCompute() {
     for (const auto& desc : info.texture_descriptors)
         for (u32 i = 0; i < desc.count; ++i) {
             auto& view = texture_cache.GetImageView(view_scratch[view_index++].id);
-            descriptors.WriteImageSrv(srv, srv_index++, view, SrvDimension(desc.type));
+            descriptors.WriteImageSrv(srv, srv_index++, view, SrvDimension(desc.type, desc.is_multisample));
             use(view.ImageHandle(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
             descriptors.WriteSampler(sampler, sampler_index,
                                      texture_cache.GetSampler(sampler_scratch[sampler_index]));
@@ -1172,8 +1217,11 @@ void RasterizerD3D12::DispatchCompute() {
             const auto format = PixelFormatFromImageFormat(desc.format);
             if (!format)
                 throw std::runtime_error("D3D12 unsupported compute storage image format");
-            descriptors.WriteImageUav(uav, uav_index++, view,
-                                      static_cast<DXGI_FORMAT>(MaxwellFormat(*format).view_format));
+            if (!descriptors.WriteImageUav(uav, uav_index++, view,
+                                          static_cast<DXGI_FORMAT>(MaxwellFormat(*format).view_format))) {
+                SkipDraw("unsupported compute storage image view");
+                return;
+            }
             use(view.ImageHandle(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         }
     uav_index = uav_end;

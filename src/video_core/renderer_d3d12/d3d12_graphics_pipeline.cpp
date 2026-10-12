@@ -113,6 +113,7 @@ GraphicsPipeline::GraphicsPipeline(ID3D12Device* device, ComPtr<ID3D12RootSignat
     }
     desc.DSVFormat = static_cast<DXGI_FORMAT>(state.dsv_format);
     desc.SampleDesc = {state.sample_count ? state.sample_count : 1u, 0};
+    desc.RasterizerState.MultisampleEnable = desc.SampleDesc.Count > 1;
 
     if (disk) {
         pso = disk->LoadOrCreateGraphics(key, desc, recipe);

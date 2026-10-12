@@ -618,6 +618,10 @@ void TextureCache<P>::WriteMemory(DAddr cpu_addr, size_t size) {
 
 template <class P>
 bool TextureCache<P>::IsDownloadable(const ImageBase& image) const noexcept {
+    if constexpr (requires { runtime.CanDownloadImage(static_cast<const Image&>(image)); }) {
+        if (!runtime.CanDownloadImage(static_cast<const Image&>(image)))
+            return false;
+    }
     if (!image.IsSafeGpuCopy()) {
         return false;
     }

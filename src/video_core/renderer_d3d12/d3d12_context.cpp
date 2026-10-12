@@ -330,7 +330,7 @@ void Context::LogInfoQueue() noexcept {
 void Context::ReportFailure(const std::exception& error) noexcept {
     try {
         Diagnostic(
-            fmt::format("D3D12 boundary what={} removed={:#010x}", error.what(),
+            fmt::format("D3D12 boundary event=renderer_exception what={} removed={:#010x}", error.what(),
                         static_cast<u32>(device ? device->GetDeviceRemovedReason() : E_POINTER)));
         LogInfoQueue();
         LogDeviceDred(device.Get());

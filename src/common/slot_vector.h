@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <bit>
 #include <numeric>
+#include <memory>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -120,9 +121,16 @@ public:
     }
 
     template <typename... Args>
-    [[nodiscard]] SlotId insert(Args&&... args) noexcept {
+    [[nodiscard]] SlotId insert(Args&&... args) {
         const u32 index = FreeValueIndex();
-        new (&values[index].object) T(std::forward<Args>(args)...);
+        try {
+            new (&values[index].object) T(std::forward<Args>(args)...);
+        } catch (...) {
+            // Construction may fail in renderer resources. Keep the slot reusable
+            // and propagate from a native C++ frame to the GPU failure boundary.
+            free_list.push_back(index);
+            throw;
+        }
         SetStorageBit(index);
 
         return SlotId{index};
@@ -183,7 +191,7 @@ private:
         DEBUG_ASSERT(((stored_bitset[id.Value() / 64] >> (id.Value() % 64)) & 1) != 0);
     }
 
-    [[nodiscard]] u32 FreeValueIndex() noexcept {
+    [[nodiscard]] u32 FreeValueIndex() {
         if (free_list.empty()) {
             Reserve(values_capacity ? (values_capacity << 1) : 1);
         }
@@ -192,20 +200,31 @@ private:
         return free_index;
     }
 
-    void Reserve(size_t new_capacity) noexcept {
-        Entry* const new_values = new Entry[new_capacity];
-        size_t index = 0;
-        for (u64 bits : stored_bitset) {
-            for (size_t bit = 0; bits; ++bit, bits >>= 1) {
-                const size_t i = index + bit;
-                if ((bits & 1) == 0) {
-                    continue;
+    void Reserve(size_t new_capacity) {
+        // Reserve metadata before relocating live objects, so allocation failure
+        // cannot leave the old storage containing destroyed entries.
+        stored_bitset.reserve((new_capacity + 63) / 64);
+        free_list.reserve(new_capacity);
+        auto new_storage = std::make_unique<Entry[]>(new_capacity);
+        Entry* const new_values = new_storage.get();
+        size_t constructed_end = 0;
+        try {
+            for (size_t i = 0; i < values_capacity; ++i) {
+                if (ReadStorageBit(static_cast<u32>(i))) {
+                    new (&new_values[i].object) T(std::move_if_noexcept(values[i].object));
                 }
-                T& old_value = values[i].object;
-                new (&new_values[i].object) T(std::move(old_value));
-                old_value.~T();
+                constructed_end = i + 1;
             }
-            index += 64;
+        } catch (...) {
+            for (size_t i = 0; i < constructed_end; ++i) {
+                if (ReadStorageBit(static_cast<u32>(i)))
+                    new_values[i].object.~T();
+            }
+            throw;
+        }
+        for (size_t i = 0; i < values_capacity; ++i) {
+            if (ReadStorageBit(static_cast<u32>(i)))
+                values[i].object.~T();
         }
 
         stored_bitset.resize((new_capacity + 63) / 64);
@@ -214,7 +233,7 @@ private:
         free_list.resize(old_free_size + (new_capacity - values_capacity));
         std::iota(free_list.begin() + old_free_size, free_list.end(), u32(values_capacity));
         delete[] values;
-        values = new_values;
+        values = new_storage.release();
         values_capacity = new_capacity;
     }
 

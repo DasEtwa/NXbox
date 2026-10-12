@@ -203,6 +203,11 @@ void D3D12DescriptorAllocator::WriteNullSrv(const DescriptorTable& table, u32 sl
     case D3D12_SRV_DIMENSION_TEXTURE2DARRAY:
         desc.Texture2DArray.MipLevels = desc.Texture2DArray.ArraySize = 1;
         break;
+    case D3D12_SRV_DIMENSION_TEXTURE2DMS:
+        break;
+    case D3D12_SRV_DIMENSION_TEXTURE2DMSARRAY:
+        desc.Texture2DMSArray.ArraySize = 1;
+        break;
     case D3D12_SRV_DIMENSION_TEXTURE3D:
         desc.Texture3D.MipLevels = 1;
         break;
@@ -356,6 +361,9 @@ void D3D12DescriptorAllocator::CreateRtv(D3D12_CPU_DESCRIPTOR_HANDLE handle,
     } else if (desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE1D) {
         rtv.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE1DARRAY;
         rtv.Texture1DArray = {level, layer, layers};
+    } else if (desc.SampleDesc.Count > 1) {
+        rtv.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2DMSARRAY;
+        rtv.Texture2DMSArray = {layer, layers};
     } else {
         rtv.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2DARRAY;
         rtv.Texture2DArray = {level, layer, layers, 0};
@@ -372,9 +380,15 @@ void D3D12DescriptorAllocator::CreateDsv(D3D12_CPU_DESCRIPTOR_HANDLE handle, con
     dsv.Format = DsvFormat(view.Description().Format);
     dsv.Flags = flags;
     dsv.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2DARRAY;
-    dsv.Texture2DArray = {static_cast<UINT>(view.range.base.level),
-                          static_cast<UINT>(view.range.base.layer),
-                          static_cast<UINT>(view.range.extent.layers)};
+    if (resource->handle->GetDesc().SampleDesc.Count > 1) {
+        dsv.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2DMSARRAY;
+        dsv.Texture2DMSArray = {static_cast<UINT>(view.range.base.layer),
+                              static_cast<UINT>(view.range.extent.layers)};
+    } else {
+        dsv.Texture2DArray = {static_cast<UINT>(view.range.base.level),
+                              static_cast<UINT>(view.range.base.layer),
+                              static_cast<UINT>(view.range.extent.layers)};
+    }
     context.Device()->CreateDepthStencilView(resource->handle.Get(), &dsv, handle);
 }
 bool D3D12DescriptorAllocator::WriteImageUav(const DescriptorTable& table, u32 slot,
@@ -383,8 +397,10 @@ bool D3D12DescriptorAllocator::WriteImageUav(const DescriptorTable& table, u32 s
         WriteNullUav(table, slot);
         return false;
     }
-    if (!(view.ImageHandle()->handle->GetDesc().Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS))
-        throw std::runtime_error("D3D12 image does not support UAV access");
+    if (!(view.ImageHandle()->handle->GetDesc().Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS)) {
+        WriteNullUav(table, slot);
+        return false;
+    }
     const auto& srv = view.Description();
     D3D12_UNORDERED_ACCESS_VIEW_DESC desc{};
     desc.Format = format;

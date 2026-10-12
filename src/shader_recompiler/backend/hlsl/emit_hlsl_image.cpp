@@ -183,11 +183,13 @@ void EmitImageFetch(EmitContext& ctx, IR::Inst& inst, const IR::Value& index,
         throw NotImplementedException("HLSL cube texel fetch requires a 2D-array SRV");
     const auto tex = Texture(ctx, info, index);
     std::string arguments = IntCoordinates(coords, info.type);
-    if (info.type != TextureType::Buffer && ms.empty())
+    const bool multisample = info.type != TextureType::Buffer &&
+        ctx.info.texture_descriptors.at(info.descriptor_index).is_multisample;
+    if (info.type != TextureType::Buffer && !multisample)
         arguments = fmt::format("int{}({}, int({}))", CoordinateCount(info.type) + 1, arguments,
                                 lod.empty() ? "0" : lod);
-    if (!ms.empty())
-        arguments += fmt::format(", int({})", ms);
+    if (multisample)
+        arguments += fmt::format(", int({})", ms.empty() ? "0" : ms);
     arguments += OffsetArgument(offset);
     auto expression = fmt::format("{}.Load({})", tex, arguments);
     if (info.is_integer)

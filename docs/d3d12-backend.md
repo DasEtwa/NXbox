@@ -127,8 +127,9 @@ indirect index conversion still need parity work.
 DMA/surface acceleration declines requests so engine CPU fallbacks run; inline
 writes and payload/timestamp queries retain CPU behavior. Applet captures and
 screenshots still return blank buffers. Unsupported packed/ETC formats, multi-plane
-depth/stencil transfers, MSAA, incompatible reinterpretation, guest shader blits and
-GPU unswizzle report unsupported operations rather than issuing invalid copies.
+depth/stencil staging transfers and GPU unswizzle remain unsupported. MSAA images,
+resolves, sample-grid copies and supported guest blits use the native helpers;
+unsupported image combinations are logged and skipped rather than issuing invalid copies.
 Converted ASTC has no reverse readback. Full parity for those paths is later work.
 
 ## Vulkan to D3D12 ownership map
@@ -370,3 +371,42 @@ completion failure waking a forced drain, staging pressure with live CPU leases,
 query publication/retirement at low accuracy, GPU DMA row layouts and destination
 contracts, and HLSL export/store masking. A new console run is still required to establish
 whether these fixes remove the run-7 abort and to measure the resulting frame rate.
+
+### MSAA depth-target termination fix
+
+Native cached 2D images now retain the guest sample count (1/2/4/8/16), subject to
+`D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS` for the typed color/DSV format. Quality
+zero keeps attachment formats compatible. MSAA resources have one mip and no UAV
+flag. Guest image dimensions include the expanded sample grid; the D3D12 resource
+uses logical pixel dimensions. SRV/RTV/DSV bindings, layered clears, null SRVs and
+graphics PSO keys all carry the actual resource sample count. Mixed attachments
+skip the draw. HLSL texel fetches select `Texture2DMS.Load`/`Texture2DMSArray.Load`
+from the resource descriptor, defaulting an omitted sample index to zero.
+
+Two-plane D24S8/D32FS8 resources are valid depth/stencil targets, including MSAA.
+Their packed guest staging upload/readback remains unimplemented: upload logs and
+skips, and download eligibility excludes them so untouched staging bytes cannot
+be written back to guest memory. Color and depth-only MSAA staging uses a
+single-sample grid intermediate and the existing scatter/gather shader helpers,
+preserving each sample. Color blit resolves average normalized/floating samples;
+integer and depth/stencil resolves select sample zero. Supported depth/color
+reinterpretations and copies also route through the existing helpers. Unsupported
+formats, dimensions, view casts, multisample support and helper operations log
+once per `(PixelFormat, planes, samples, type)`, with the format name and failing
+condition, and leave an invalid image/view or skip the operation. Device/resource
+failures still propagate to the renderer failure boundary.
+
+The reported `MakeTexture` exception could not reach the GPU catch because
+`Common::SlotVector::insert` was `noexcept` around placement construction.
+Allocation helpers were also `noexcept`. Construction now rolls the slot back and
+propagates; growth reserves metadata first and cleans up partially relocated
+storage. Maxwell clear calls have no `noexcept` boundary; macro JIT callbacks
+already capture exceptions with `DeferredException` before returning to generated
+code and rethrow in a compiled C++ frame. `RendererD3D12::ReportFailure` records
+`event=renderer_exception what=...` through `Diagnostic`, including
+`nxbox_crash.txt`, and the GPU thread continues consuming cancellation/fence work.
+
+Host regressions exercise throwing image construction, slot reuse, the macro
+callback transport, sample-sensitive and depth-only PSO keys, and HLSL MSAA fetches
+for 2D/array color/depth textures. Console rendering and packed depth/stencil
+staging parity still require hardware validation. OpenGL remains the default.

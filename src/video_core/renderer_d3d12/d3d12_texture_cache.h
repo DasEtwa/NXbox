@@ -5,6 +5,7 @@
 #include <array>
 #include <optional>
 #include "video_core/renderer_d3d12/d3d12_compute_pass.h"
+#include "video_core/renderer_d3d12/d3d12_blit_image.h"
 #include "video_core/renderer_d3d12/d3d12_context.h"
 #include "video_core/renderer_d3d12/d3d12_formats.h"
 #include "video_core/texture_cache/image_view_base.h"
@@ -53,11 +54,15 @@ public:
         expected = 320ULL << 20;
         critical = 448ULL << 20;
     }
-    bool CanDownloadMsaa(const VideoCommon::ImageInfo&) const {
-        return false;
+    bool CanDownloadImage(const Image& image) const;
+    bool CanDownloadMsaa(const VideoCommon::ImageInfo& info) const {
+        const auto format = MaxwellFormat(info.format);
+        return format.Supported() && format.planes == 1 &&
+               info.type == VideoCommon::ImageType::e2D && info.resources.levels == 1 &&
+               info.num_samples <= 16;
     }
     bool CanUploadMSAA() const {
-        return false;
+        return true;
     }
     bool CanAccelerateImageUpload(Image&) const {
         return false;
@@ -85,10 +90,12 @@ public:
     ResourcePtr UploadFramebuffer(Tegra::MaxwellDeviceMemoryManager&,
                                   const Tegra::FramebufferConfig&);
     ComputePasses& ComputeHelpers();
+    BlitImageHelper& BlitHelpers();
     Context& context;
 
 private:
     std::unique_ptr<ComputePasses> compute_passes;
+    std::unique_ptr<BlitImageHelper> blit_helper;
     StagingRing upload;
     StagingRing readback;
     struct FramebufferEntry {
@@ -219,7 +226,7 @@ struct TextureCacheParams {
     static constexpr bool HAS_EMULATED_COPIES = false;
     static constexpr bool HAS_DEVICE_MEMORY_INFO = true;
     static constexpr bool IMPLEMENTS_ASYNC_DOWNLOADS = true;
-    static constexpr bool HAS_MSAA_DOWNLOADS = false;
+    static constexpr bool HAS_MSAA_DOWNLOADS = true;
     using Runtime = TextureCacheRuntime;
     using Image = D3D12::Image;
     using ImageAlloc = D3D12::ImageAlloc;
