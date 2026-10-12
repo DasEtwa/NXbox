@@ -106,6 +106,7 @@ DRIVER = r"""
 #include "core/file_sys/system_archive/system_archive.h"
 #include "core/hle/service/ssl/ssl_types.h"
 #include "core/hle/service/mii/mii_manager.h"
+#include "core/hle/service/mii/mii_database_manager.h"
 #include "core/hle/service/mii/types/char_info.h"
 #include "core/hle/service/mii/types/store_data.h"
 using namespace FileSys;
@@ -169,6 +170,28 @@ int main(int argc, char** argv) {
         assert(info.Verify() == ValidationResult::NoErrors);
     }
     assert(ids.size() == 12);
+    NintendoFigurineDatabase counted;
+    counted.CleanDatabase();
+    counted.Add(stores[0]);
+    auto special = stores[1];
+    special.SetType(1);
+    special.SetChecksum();
+    counted.Add(special);
+    assert(counted.GetCount(metadata) == 1);
+    auto privileged = metadata;
+    privileged.magic = MiiMagic;
+    assert(counted.GetCount(privileged) == 2);
+    assert(counted.CheckIntegrity().IsSuccess());
+    DatabaseManager indexed;
+    bool broken{};
+    assert(indexed.MountSaveData().IsSuccess());
+    assert(indexed.Initialize(metadata, broken).IsSuccess() && !broken);
+    for (u32 index = 0; index < 6; ++index) {
+        u32 found = 99;
+        assert(indexed.FindIndex(metadata, found, stores[index].GetCreateId()).IsSuccess());
+        assert(found == index);
+    }
+
     std::array<CharInfoElement, 12> infos{};
     count = 0;
     assert(manager.Get(metadata, std::span{infos}, count, (SourceFlag::Database | SourceFlag::Default)).IsSuccess());
