@@ -305,6 +305,21 @@ void DiskPipelineCache::StartWarmup(BuildCallback build, ProgressCallback progre
 }
 
 #ifdef _WIN32
+namespace {
+bool CacheSucceeded(HRESULT result, const char* operation, ID3D12Device* device,
+                    std::uint64_t key = 0) {
+    if (SUCCEEDED(result))
+        return true;
+    try {
+        if (key)
+            Diagnostic("D3D12 optional cache pipeline=" + Hex(key));
+        Check(result, operation, device);
+    } catch (const std::exception&) {
+        // A cache miss or unsupported library is recoverable, but keep its HRESULT.
+    }
+    return false;
+}
+} // namespace
 std::optional<DiskCacheIdentity> DiskPipelineCache::QueryIdentity(ID3D12Device* device,
                                                                   DiskCacheIdentity versions) {
     if (!device)
@@ -314,10 +329,13 @@ std::optional<DiskCacheIdentity> DiskPipelineCache::QueryIdentity(ID3D12Device* 
     const auto luid = device->GetAdapterLuid();
     DXGI_ADAPTER_DESC1 desc{};
     LARGE_INTEGER driver{};
-    if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))) ||
-        FAILED(factory->EnumAdapterByLuid(luid, IID_PPV_ARGS(&adapter))) ||
-        FAILED(adapter->GetDesc1(&desc)) ||
-        FAILED(adapter->CheckInterfaceSupport(__uuidof(IDXGIDevice), &driver)))
+    if (!CacheSucceeded(CreateDXGIFactory1(IID_PPV_ARGS(&factory)), "cache CreateDXGIFactory1",
+                        device) ||
+        !CacheSucceeded(factory->EnumAdapterByLuid(luid, IID_PPV_ARGS(&adapter)),
+                        "cache EnumAdapterByLuid", device) ||
+        !CacheSucceeded(adapter->GetDesc1(&desc), "cache GetDesc1", device) ||
+        !CacheSucceeded(adapter->CheckInterfaceSupport(__uuidof(IDXGIDevice), &driver),
+                        "cache driver identity", device))
         return {};
     versions.vendor_id = desc.VendorId;
     versions.device_id = desc.DeviceId;
@@ -341,10 +359,12 @@ DiskPipelineCache::DiskPipelineCache(const std::filesystem::path& local_state,
     impl->identity = *actual;
     Microsoft::WRL::ComPtr<ID3D12Device1> device1;
     D3D12_FEATURE_DATA_SHADER_CACHE support{};
-    if (FAILED(
-            device->CheckFeatureSupport(D3D12_FEATURE_SHADER_CACHE, &support, sizeof(support))) ||
+    if (!CacheSucceeded(
+            device->CheckFeatureSupport(D3D12_FEATURE_SHADER_CACHE, &support, sizeof(support)),
+            "cache shader support", device) ||
         !(support.SupportFlags & D3D12_SHADER_CACHE_SUPPORT_LIBRARY) ||
-        FAILED(device->QueryInterface(IID_PPV_ARGS(&device1))))
+        !CacheSucceeded(device->QueryInterface(IID_PPV_ARGS(&device1)), "cache ID3D12Device1",
+                        device))
         return;
     if (!impl->directory.empty()) {
         auto record = impl->Read(impl->directory / "pso.library");
@@ -354,14 +374,15 @@ DiskPipelineCache::DiskPipelineCache(const std::filesystem::path& local_state,
     auto result = device1->CreatePipelineLibrary(
         impl->library_input.empty() ? nullptr : impl->library_input.data(),
         impl->library_input.size(), IID_PPV_ARGS(&impl->library));
-    if (FAILED(result)) {
+    if (!CacheSucceeded(result, "CreatePipelineLibrary from disk", device)) {
         impl->library.Reset();
         impl->library_input.clear();
         if (!impl->directory.empty()) {
             std::error_code error;
             std::filesystem::remove(impl->directory / "pso.library", error);
         }
-        device1->CreatePipelineLibrary(nullptr, 0, IID_PPV_ARGS(&impl->library));
+        CacheSucceeded(device1->CreatePipelineLibrary(nullptr, 0, IID_PPV_ARGS(&impl->library)),
+                       "CreatePipelineLibrary empty", device);
     }
 }
 Microsoft::WRL::ComPtr<ID3D12PipelineState> DiskPipelineCache::LoadOrCreateGraphics(
@@ -374,13 +395,15 @@ Microsoft::WRL::ComPtr<ID3D12PipelineState> DiskPipelineCache::LoadOrCreateGraph
     const auto hex = Hex(key);
     const auto name = L"g" + std::wstring(hex.begin(), hex.end());
     if (impl->library &&
-        SUCCEEDED(impl->library->LoadGraphicsPipeline(name.c_str(), &desc, IID_PPV_ARGS(&pso)))) {
+        CacheSucceeded(impl->library->LoadGraphicsPipeline(name.c_str(), &desc, IID_PPV_ARGS(&pso)),
+                       "LoadGraphicsPipeline (optional cache)", impl->device.Get(), key)) {
         impl->Write({DiskRecordKind::Graphics, key, DiskBytes(recipe.begin(), recipe.end())});
         return pso;
     }
     CheckPipeline(impl->device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&pso)),
                   "CreateGraphicsPipelineState", impl->device.Get(), key);
-    if (impl->library && SUCCEEDED(impl->library->StorePipeline(name.c_str(), pso.Get())))
+    if (impl->library && CacheSucceeded(impl->library->StorePipeline(name.c_str(), pso.Get()),
+                                        "StorePipeline", impl->device.Get(), key))
         impl->library_dirty = true;
     impl->Write({DiskRecordKind::Graphics, key, DiskBytes(recipe.begin(), recipe.end())});
     return pso;
@@ -395,13 +418,15 @@ Microsoft::WRL::ComPtr<ID3D12PipelineState> DiskPipelineCache::LoadOrCreateCompu
     const auto hex = Hex(key);
     const auto name = L"c" + std::wstring(hex.begin(), hex.end());
     if (impl->library &&
-        SUCCEEDED(impl->library->LoadComputePipeline(name.c_str(), &desc, IID_PPV_ARGS(&pso)))) {
+        CacheSucceeded(impl->library->LoadComputePipeline(name.c_str(), &desc, IID_PPV_ARGS(&pso)),
+                       "LoadComputePipeline (optional cache)", impl->device.Get(), key)) {
         impl->Write({DiskRecordKind::Compute, key, DiskBytes(recipe.begin(), recipe.end())});
         return pso;
     }
     CheckPipeline(impl->device->CreateComputePipelineState(&desc, IID_PPV_ARGS(&pso)),
                   "CreateComputePipelineState", impl->device.Get(), key);
-    if (impl->library && SUCCEEDED(impl->library->StorePipeline(name.c_str(), pso.Get())))
+    if (impl->library && CacheSucceeded(impl->library->StorePipeline(name.c_str(), pso.Get()),
+                                        "StorePipeline", impl->device.Get(), key))
         impl->library_dirty = true;
     impl->Write({DiskRecordKind::Compute, key, DiskBytes(recipe.begin(), recipe.end())});
     return pso;
@@ -415,7 +440,8 @@ bool DiskPipelineCache::Flush() {
         if (!size || size > PayloadLimit(DiskRecordKind::Library))
             return false;
         DiskBytes bytes(size);
-        if (FAILED(impl->library->Serialize(bytes.data(), bytes.size())) ||
+        if (!CacheSucceeded(impl->library->Serialize(bytes.data(), bytes.size()),
+                            "SerializePipelineLibrary", impl->device.Get()) ||
             !impl->Write({DiskRecordKind::Library, 0, std::move(bytes)}))
             return false;
         impl->library_dirty = false;
