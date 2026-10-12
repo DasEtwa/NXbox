@@ -15,8 +15,8 @@
 namespace D3D12::Pso {
 
 // ---- D3D12 SDK values (d3d12.h / dxgiformat.h) used by the tables --------------------------
-inline constexpr std::uint32_t kBlendZero = 1, kBlendOne = 2, kBlendAlphaFactor = 12,
-                               kBlendInvAlphaFactor = 13, kBlendFactor = 14, kBlendInvFactor = 15;
+inline constexpr std::uint32_t kBlendZero = 1, kBlendOne = 2, kBlendAlphaFactor = 20,
+                               kBlendInvAlphaFactor = 21, kBlendFactor = 14, kBlendInvFactor = 15;
 inline constexpr std::uint32_t kCullNone = 1, kCullFront = 2, kCullBack = 3;
 inline constexpr std::uint32_t kTopologyTypePoint = 1, kTopologyTypeLine = 2,
                                kTopologyTypeTriangle = 3, kTopologyTypePatch = 4;
@@ -69,6 +69,33 @@ constexpr std::uint32_t BlendFactor(std::uint32_t v) {
         return v - 0xC900 + 16;
     default:
         return kBlendOne;
+    }
+}
+
+// D3D12 alpha equations forbid *_COLOR factors; Maxwell evaluates their
+// alpha component. SRC_ALPHA_SAT has an alpha factor of one.
+constexpr std::uint32_t AlphaBlendFactor(std::uint32_t value) {
+    switch (const auto factor = BlendFactor(value)) {
+    case 3:
+        return 5;
+    case 4:
+        return 6;
+    case 9:
+        return 7;
+    case 10:
+        return 8;
+    case 11:
+        return kBlendOne;
+    case 16:
+        return 18;
+    case 17:
+        return 19;
+    case kBlendAlphaFactor:
+        return kBlendFactor;
+    case kBlendInvAlphaFactor:
+        return kBlendInvFactor;
+    default:
+        return factor;
     }
 }
 
@@ -385,7 +412,7 @@ struct GraphicsPsoState {
     std::uint8_t depth_func, stencil_enable, stencil_read_mask, stencil_write_mask;
     std::uint8_t independent_blend, num_render_targets, sample_count, patch_vertices;
     std::uint8_t logic_enable, logic_op, alpha_to_coverage, conservative_raster;
-    std::uint8_t smooth_lines, reserved0, reserved1, reserved2;
+    std::uint8_t smooth_lines, depth_bounds, reserved1, reserved2;
     std::int32_t depth_bias;
     std::uint32_t slope_scaled_bias_bits, bias_clamp_bits;
     std::uint32_t dsv_format;
@@ -404,7 +431,7 @@ constexpr void ApplyFramebufferFormats(GraphicsPsoState& state, const Framebuffe
         if (formats.colors[i])
             state.num_render_targets = static_cast<std::uint8_t>(i + 1);
     if (!formats.depth)
-        state.depth_enable = state.depth_write = state.stencil_enable = 0;
+        state.depth_enable = state.depth_write = state.stencil_enable = state.depth_bounds = 0;
 }
 
 // Only shader reads enter the layout. Missing attributes use a free slot with stride zero.

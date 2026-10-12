@@ -55,8 +55,10 @@ const char* UnsupportedState(const Maxwell& regs, u32 topology) {
     if (regs.transform_feedback_enabled)
         return "transform_feedback/stream_out_layout require HLSL linkage and stream-output root "
                "signature";
-    if (regs.depth_bounds_enable)
-        return "depth_bounds_enable/depth_bounds require depth-stencil PSO stream version 1";
+    if (regs.depth_bounds_enable &&
+        (!std::isfinite(regs.depth_bounds[0]) || !std::isfinite(regs.depth_bounds[1]) ||
+         regs.depth_bounds[0] > regs.depth_bounds[1]))
+        return "depth_bounds_enable/depth_bounds invalid range";
     if (regs.anti_alias_alpha_control.alpha_to_one)
         return "anti_alias_alpha_control.alpha_to_one requires fragment epilogue";
     if (regs.iterated_blend.enable || regs.iterated_blend.enable_alpha)
@@ -118,8 +120,8 @@ void SetBlend(Pso::BlendTargetState& out, const Blend& b) {
     out.src = static_cast<u8>(Pso::BlendFactor(static_cast<u32>(b.color_source)));
     out.dst = static_cast<u8>(Pso::BlendFactor(static_cast<u32>(b.color_dest)));
     out.op = static_cast<u8>(Pso::BlendOp(static_cast<u32>(b.color_op)));
-    out.src_alpha = static_cast<u8>(Pso::BlendFactor(static_cast<u32>(b.alpha_source)));
-    out.dst_alpha = static_cast<u8>(Pso::BlendFactor(static_cast<u32>(b.alpha_dest)));
+    out.src_alpha = static_cast<u8>(Pso::AlphaBlendFactor(static_cast<u32>(b.alpha_source)));
+    out.dst_alpha = static_cast<u8>(Pso::AlphaBlendFactor(static_cast<u32>(b.alpha_dest)));
     out.op_alpha = static_cast<u8>(Pso::BlendOp(static_cast<u32>(b.alpha_op)));
 }
 
@@ -240,6 +242,7 @@ void FillGraphicsState(Tegra::Engines::Maxwell3D& maxwell3d, Pso::GraphicsPsoSta
     s.alpha_to_coverage = regs.anti_alias_alpha_control.alpha_to_coverage != 0;
     s.conservative_raster = regs.conservative_raster_enable != 0;
     s.smooth_lines = regs.line_anti_alias_enable != 0;
+    s.depth_bounds = regs.zeta_enable && regs.depth_bounds_enable;
     for (size_t i = 0; i < Pso::kNumRenderTargets; ++i) {
         auto& out = s.blend[i];
         out = {0, 0xF, Pso::kBlendOne, Pso::kBlendZero, 1, Pso::kBlendOne, Pso::kBlendZero, 1};
@@ -456,6 +459,30 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(
     Pso::GraphicsPsoState state;
     FillGraphicsState(*maxwell3d, state);
     Pso::ApplyFramebufferFormats(state, formats);
+    if (state.depth_bounds) {
+        D3D12_FEATURE_DATA_D3D12_OPTIONS2 options{};
+        if (FAILED(context.Device()->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS2, &options,
+                                                         sizeof(options))) ||
+            !options.DepthBoundsTestSupported) {
+            ReportUnsupported("depth_bounds_enable/depth_bounds unsupported by host device");
+            return nullptr;
+        }
+    }
+    const bool constant_alpha_rgb = std::ranges::any_of(state.blend, [](const auto& blend) {
+        return blend.enable &&
+               (blend.src == Pso::kBlendAlphaFactor || blend.dst == Pso::kBlendAlphaFactor ||
+                blend.src == Pso::kBlendInvAlphaFactor || blend.dst == Pso::kBlendInvAlphaFactor);
+    });
+    if (constant_alpha_rgb) {
+        D3D12_FEATURE_DATA_D3D12_OPTIONS13 options{};
+        if (FAILED(context.Device()->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS13, &options,
+                                                         sizeof(options))) ||
+            !options.AlphaBlendFactorSupported) {
+            ReportUnsupported("blend constant-alpha RGB factor requires AlphaBlendFactorSupported "
+                              "or shader blend emulation");
+            return nullptr;
+        }
+    }
     if (state.logic_enable || state.conservative_raster) {
         D3D12_FEATURE_DATA_D3D12_OPTIONS options{};
         if (FAILED(context.Device()->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &options,

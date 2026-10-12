@@ -839,6 +839,13 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     const float blend[]{regs.blend_color.r, regs.blend_color.g, regs.blend_color.b,
                         regs.blend_color.a};
     commands->OMSetBlendFactor(blend);
+    if (regs.zeta_enable && regs.depth_bounds_enable) {
+        ComPtr<ID3D12GraphicsCommandList1> commands1;
+        Check(commands->QueryInterface(IID_PPV_ARGS(&commands1)),
+              "D3D12 depth-bounds command interface", context.Device());
+        commands1->OMSetDepthBounds(std::clamp(regs.depth_bounds[0], 0.0f, 1.0f),
+                                    std::clamp(regs.depth_bounds[1], 0.0f, 1.0f));
+    }
     commands->SetGraphicsRoot32BitConstants(0, static_cast<UINT>(words.size()), words.data(), 0);
 
     query_cache.CounterEnable(VideoCommon::QueryType::ZPassPixelCount64,
@@ -859,6 +866,7 @@ void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) try {
         return;
     }
     converted_indices.reset();
+    query_runtime.PauseHostConditionalRendering();
     const auto& state = maxwell3d->draw_manager.draw_state;
     const auto topology = static_cast<IndexConversion::Topology>(state.topology);
     const auto& regs = maxwell3d->regs;
@@ -969,6 +977,7 @@ void RasterizerD3D12::DrawIndirect() try {
         m_gpu.TickWork();
         return;
     }
+    query_runtime.PauseHostConditionalRendering();
     const auto params = maxwell3d->draw_manager.indirect_state;
     if (params.is_byte_count) {
         SkipDraw("draw_auto_stride byte-count draw requires guest transform feedback linkage");

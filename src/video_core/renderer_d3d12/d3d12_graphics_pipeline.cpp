@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include <algorithm>
 #include <array>
 #include <cstring>
 #include <vector>
@@ -9,6 +10,66 @@
 
 namespace D3D12 {
 namespace {
+// Each stream subobject has pointer alignment, as required by CreatePipelineState.
+// Use a stream only for state the legacy graphics descriptor cannot represent.
+template <typename T, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE Type>
+struct alignas(void*) StreamObject {
+    D3D12_PIPELINE_STATE_SUBOBJECT_TYPE type{Type};
+    T value{};
+};
+struct DepthBoundsStream {
+    StreamObject<ID3D12RootSignature*, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_ROOT_SIGNATURE> root;
+    StreamObject<D3D12_SHADER_BYTECODE, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_VS> vs;
+    StreamObject<D3D12_SHADER_BYTECODE, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PS> ps;
+    StreamObject<D3D12_SHADER_BYTECODE, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_HS> hs;
+    StreamObject<D3D12_SHADER_BYTECODE, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DS> ds;
+    StreamObject<D3D12_SHADER_BYTECODE, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_GS> gs;
+    StreamObject<D3D12_BLEND_DESC, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_BLEND> blend;
+    StreamObject<UINT, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_MASK> mask;
+    StreamObject<D3D12_RASTERIZER_DESC, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RASTERIZER> raster;
+    StreamObject<D3D12_DEPTH_STENCIL_DESC1, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL1>
+        depth;
+    StreamObject<D3D12_INPUT_LAYOUT_DESC, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_INPUT_LAYOUT> input;
+    StreamObject<D3D12_PRIMITIVE_TOPOLOGY_TYPE,
+                 D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PRIMITIVE_TOPOLOGY>
+        topology;
+    StreamObject<D3D12_RT_FORMAT_ARRAY, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RENDER_TARGET_FORMATS>
+        colors;
+    StreamObject<DXGI_FORMAT, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL_FORMAT>
+        depth_format;
+    StreamObject<DXGI_SAMPLE_DESC, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_DESC> samples;
+};
+void CreateDepthBoundsPipeline(ID3D12Device* device, const D3D12_GRAPHICS_PIPELINE_STATE_DESC& desc,
+                               ComPtr<ID3D12PipelineState>& pso, u64 key) {
+    ComPtr<ID3D12Device2> device2;
+    Check(device->QueryInterface(IID_PPV_ARGS(&device2)), "D3D12 depth-bounds device interface",
+          device);
+    DepthBoundsStream stream{};
+    stream.root.value = desc.pRootSignature;
+    stream.vs.value = desc.VS;
+    stream.ps.value = desc.PS;
+    stream.hs.value = desc.HS;
+    stream.ds.value = desc.DS;
+    stream.gs.value = desc.GS;
+    stream.blend.value = desc.BlendState;
+    stream.mask.value = desc.SampleMask;
+    stream.raster.value = desc.RasterizerState;
+    const auto& depth = desc.DepthStencilState;
+    stream.depth.value = {depth.DepthEnable,   depth.DepthWriteMask,  depth.DepthFunc,
+                          depth.StencilEnable, depth.StencilReadMask, depth.StencilWriteMask,
+                          depth.FrontFace,     depth.BackFace,        TRUE};
+    stream.input.value = desc.InputLayout;
+    stream.topology.value = desc.PrimitiveTopologyType;
+    std::copy(std::begin(desc.RTVFormats), std::end(desc.RTVFormats),
+              std::begin(stream.colors.value.RTFormats));
+    stream.colors.value.NumRenderTargets = desc.NumRenderTargets;
+    stream.depth_format.value = desc.DSVFormat;
+    stream.samples.value = desc.SampleDesc;
+    const D3D12_PIPELINE_STATE_STREAM_DESC description{sizeof(stream), &stream};
+    CheckPipeline(device2->CreatePipelineState(&description, IID_PPV_ARGS(&pso)),
+                  "CreatePipelineState(depth bounds)", device, key);
+}
+
 D3D12_DEPTH_STENCILOP_DESC StencilFace(const Pso::StencilFaceState& face) {
     return {
         static_cast<D3D12_STENCIL_OP>(face.fail), static_cast<D3D12_STENCIL_OP>(face.depth_fail),
@@ -121,6 +182,12 @@ GraphicsPipeline::GraphicsPipeline(ID3D12Device* device, ComPtr<ID3D12RootSignat
     desc.SampleDesc = {state.sample_count ? state.sample_count : 1u, 0};
     desc.RasterizerState.MultisampleEnable = desc.SampleDesc.Count > 1;
 
+    if (state.depth_bounds) {
+        // Legacy disk PSO descriptors cannot encode DepthBoundsTestEnable. These
+        // PSOs remain memory-cached; DXIL cache reuse is unchanged.
+        CreateDepthBoundsPipeline(device, desc, pso, key);
+        return;
+    }
     if (disk) {
         pso = disk->LoadOrCreateGraphics(key, desc, recipe);
         if (!pso)

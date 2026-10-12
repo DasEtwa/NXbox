@@ -105,9 +105,9 @@ register("resource", "d3d12_texture_cache.cpp", "sample_count", "anti_alias_samp
 register("shader", "d3d12_pipeline_cache.cpp", "state.patch_vertices", "patch_vertices")
 register("fallback", "d3d12_pipeline_cache.cpp", "rasterize_enable=0", "rasterize_enable")
 register(
-    "fallback",
+    "native",
     "d3d12_pipeline_cache.cpp",
-    "depth_bounds_enable/depth_bounds",
+    "DepthBoundsTestSupported",
     "depth_bounds depth_bounds_enable",
 )
 register("fallback", "d3d12_pipeline_cache.cpp", "iterated_blend requires", "iterated_blend")
@@ -180,6 +180,12 @@ unsigned sdk_logic(unsigned op, unsigned s, unsigned d) {
     assert(false); return 0;
 }
 int main() {
+    static_assert(Pso::kBlendAlphaFactor == 20 && Pso::kBlendInvAlphaFactor == 21);
+    static_assert(Pso::AlphaBlendFactor(3) == 5 && Pso::AlphaBlendFactor(4) == 6);
+    static_assert(Pso::AlphaBlendFactor(9) == 7 && Pso::AlphaBlendFactor(10) == 8);
+    static_assert(Pso::AlphaBlendFactor(11) == 2);
+    static_assert(Pso::AlphaBlendFactor(16) == 18 && Pso::AlphaBlendFactor(17) == 19);
+    static_assert(Pso::AlphaBlendFactor(0xc003) == 14);
     // Independent GL truth-table oracle: 16 operations * every pair of 8-bit values.
     for (unsigned s=0;s<256;++s) for (unsigned d=0;d<256;++d) {
         const std::array<unsigned,16> gl{0,s&d,s&~d,s,~s&d,d,s^d,s|d,
@@ -219,7 +225,7 @@ int main() {
     Pso::GraphicsPsoState state{};
     auto hash=Pso::HashBytes(&state,sizeof(state));
     for(auto field:{&state.logic_enable,&state.logic_op,&state.alpha_to_coverage,
-                    &state.conservative_raster,&state.smooth_lines}) {
+                    &state.conservative_raster,&state.smooth_lines,&state.depth_bounds}) {
         *field=1; assert(hash!=Pso::HashBytes(&state,sizeof(state))); *field=0;
     }
     state.attributes[0].divisor=UINT32_MAX;
