@@ -19,6 +19,7 @@
 #include "video_core/renderer_base.h"
 #ifdef HAS_D3D12
 #include "video_core/renderer_d3d12/renderer_d3d12.h"
+#include "eden_uwp/renderer_boundary.h"
 #endif
 
 #ifdef NXBOX_UWP
@@ -43,6 +44,11 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer,
                                 Tegra::Control::Scheduler& scheduler) {
     rasterizer = renderer.ReadRasterizer();
     thread = std::jthread([&](std::stop_token stop_token) {
+#ifdef HAS_D3D12
+        const auto report = [&](const std::exception& error) { return renderer.ReportFailure(error); };
+        const bool initialized = EdenXbox::RendererBoundary(
+            "GPU initialization: non-standard exception", [&] {
+#endif
         Common::SetCurrentThreadName("GPU");
 #ifdef NXBOX_UWP
         EdenXbox::InstallThreadCrashHandlers();
@@ -52,7 +58,19 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer,
         Common::SetCurrentThreadToPerformanceCores();
         system.RegisterHostThread();
 
+#ifdef HAS_D3D12
+        context.MakeCurrent();
+        }, report);
+        // GraphicsContext::Scoped has a noexcept destructor which calls DoneCurrent.
+        // Invoke release explicitly under the same boundary to prevent termination.
+        SCOPE_EXIT {
+            if (initialized)
+                EdenXbox::RendererBoundary("GPU context release: non-standard exception",
+                                          [&] { context.DoneCurrent(); }, report);
+        };
+#else
         auto current_context = context.Acquire();
+#endif
         CommandDataContainer next;
         while (!stop_token.stop_requested()) {
             state.queue.PopWait(next, stop_token);
@@ -62,8 +80,8 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer,
             // Keep consuming queued fences after a renderer failure so synchronous
             // callers and game shutdown cannot deadlock behind a stopped GPU thread.
 #ifdef HAS_D3D12
-            try {
-                if (renderer.HasFailed()) {
+            EdenXbox::RendererBoundary("GPU command: non-standard exception", [&] {
+                if (!initialized || renderer.HasFailed()) {
                     system.GPU().CancelSyncRequests();
                 } else {
 #endif
@@ -84,11 +102,12 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer,
                     }
 #ifdef HAS_D3D12
                 }
-            } catch (const std::exception& error) {
-                if (!renderer.ReportFailure(error))
-                    throw;
-                system.GPU().CancelSyncRequests();
-            }
+            }, [&](const std::exception& error) {
+                const bool handled = report(error);
+                if (handled)
+                    system.GPU().CancelSyncRequests();
+                return handled;
+            });
 #endif
             state.signaled_fence.store(next.fence);
             if (next.block) {
@@ -117,7 +136,15 @@ void ThreadManager::TickGPU(bool is_async) {
 }
 
 void ThreadManager::InvalidateRegion(DAddr addr, u64 size) {
+#ifdef HAS_D3D12
+    EdenXbox::RendererBoundary("GPU cache invalidation: non-standard exception",
+                              [&] { rasterizer->OnCacheInvalidation(addr, size); },
+                              [&](const std::exception& error) {
+                                  return system.GPU().Renderer().ReportFailure(error);
+                              });
+#else
     rasterizer->OnCacheInvalidation(addr, size);
+#endif
 }
 
 void ThreadManager::FlushAndInvalidateRegion(DAddr addr, u64 size, bool is_async) {
@@ -131,7 +158,15 @@ void ThreadManager::FlushAndInvalidateRegion(DAddr addr, u64 size, bool is_async
             gpu.WaitForSyncOperation(fence);
         }
     }
+#ifdef HAS_D3D12
+    EdenXbox::RendererBoundary("GPU cache invalidation: non-standard exception",
+                              [&] { rasterizer->OnCacheInvalidation(addr, size); },
+                              [&](const std::exception& error) {
+                                  return system.GPU().Renderer().ReportFailure(error);
+                              });
+#else
     rasterizer->OnCacheInvalidation(addr, size);
+#endif
 }
 
 u64 ThreadManager::PushCommand(CommandData&& command_data, bool block, bool is_async) {

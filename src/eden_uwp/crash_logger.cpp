@@ -7,6 +7,14 @@
 #include <cstdlib>
 #include <exception>
 #include <string>
+#include <mutex>
+#include <memory>
+#include <unordered_map>
+#include <vector>
+#include <algorithm>
+#include <fmt/format.h>
+#include "eden_uwp/diagnostic.h"
+#include "eden_uwp/thread_profile.h"
 #include <windows.h>
 
 #include <fileapifromapp.h>
@@ -235,9 +243,159 @@ void HeartbeatLine(const char* event, std::uint64_t gap_ms) noexcept {
         CrashEvent("memory_query_failed");
     }
 }
+struct ProfileHandle {
+    HANDLE value{};
+    explicit ProfileHandle(HANDLE value_) noexcept : value{value_} {}
+    ~ProfileHandle() { if (value && value != INVALID_HANDLE_VALUE) CloseHandle(value); }
+    ProfileHandle(const ProfileHandle&) = delete;
+    ProfileHandle& operator=(const ProfileHandle&) = delete;
+};
+std::mutex profile_mutex;
+std::vector<DWORD> registered_threads;
+
+std::uint64_t FileTicks(FILETIME time) noexcept {
+    return (std::uint64_t{time.dwHighDateTime} << 32) | time.dwLowDateTime;
+}
+
+// Toolhelp is optional on Xbox. Resolve it dynamically so profiling cannot add a
+// desktop-only loader dependency to the UWP executable. This is THREADENTRY32's ABI.
+struct ProfileThreadEntry {
+    DWORD size;
+    DWORD usage;
+    DWORD id;
+    DWORD process;
+    LONG base_priority;
+    LONG delta_priority;
+    DWORD flags;
+};
+static_assert(sizeof(ProfileThreadEntry) == 28);
+
+void SampleThreads() noexcept {
+    try {
+        static std::mutex sampling_mutex;
+        const std::unique_lock sampling_lock{sampling_mutex, std::try_to_lock};
+        if (!sampling_lock.owns_lock()) return;
+        static std::unordered_map<DWORD, ThreadProfile::CpuSample> samples;
+        static auto last = GetTickCount64();
+        const auto now = GetTickCount64();
+        const auto interval = now - last;
+        last = now;
+        std::vector<DWORD> ids;
+        {
+            const std::lock_guard lock{profile_mutex};
+            ids = registered_threads;
+        }
+        const auto kernel = GetModuleHandleW(L"kernel32.dll");
+        using Snapshot = HANDLE(WINAPI*)(DWORD, DWORD);
+        using ThreadEntry = BOOL(WINAPI*)(HANDLE, ProfileThreadEntry*);
+        const auto snapshot = reinterpret_cast<Snapshot>(GetProcAddress(kernel, "CreateToolhelp32Snapshot"));
+        const auto first = reinterpret_cast<ThreadEntry>(GetProcAddress(kernel, "Thread32First"));
+        const auto next = reinterpret_cast<ThreadEntry>(GetProcAddress(kernel, "Thread32Next"));
+        bool complete = false;
+        DWORD enumeration_error = ERROR_NOT_SUPPORTED;
+        if (snapshot && first && next) {
+            ProfileHandle handle{snapshot(4 /* TH32CS_SNAPTHREAD */, 0)};
+            if (handle.value != INVALID_HANDLE_VALUE) {
+                ProfileThreadEntry entry{};
+                entry.size = sizeof(entry);
+                if (first(handle.value, &entry)) {
+                    do {
+                        if (entry.process == GetCurrentProcessId())
+                            ids.push_back(entry.id);
+                        entry.size = sizeof(entry);
+                    } while (next(handle.value, &entry));
+                    enumeration_error = GetLastError();
+                    complete = enumeration_error == ERROR_NO_MORE_FILES;
+                } else {
+                    enumeration_error = GetLastError();
+                }
+            } else {
+                enumeration_error = GetLastError();
+            }
+        }
+        ids.push_back(main_thread_id);
+        ids.push_back(NxboxStall::gpu_thread_id.load());
+        for (const auto& id : NxboxStall::cpu_thread_ids)
+            ids.push_back(id.load());
+        std::sort(ids.begin(), ids.end());
+        ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+        std::vector<DWORD> live;
+        std::size_t inaccessible = 0;
+        for (const auto id : ids) {
+            if (!id) continue;
+            ProfileHandle thread{OpenThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE, id)};
+            if (!thread.value) { ++inaccessible; continue; }
+            FILETIME creation{}, exit{}, kernel_time{}, user_time{};
+            if (!GetThreadTimes(thread.value, &creation, &exit, &kernel_time, &user_time)) {
+                ++inaccessible;
+                continue;
+            }
+            if (FileTicks(exit)) continue;
+            live.push_back(id);
+            auto& sample = samples[id];
+            const bool baseline = !sample.valid || sample.creation != FileTicks(creation);
+            const double percent = sample.Update(FileTicks(creation), FileTicks(kernel_time) + FileTicks(user_time), now);
+            std::string name = ThreadRole(id);
+            PWSTR description{};
+            if (SUCCEEDED(GetThreadDescription(thread.value, &description))) {
+                // LocalFree even if conversion or formatting throws.
+                const auto cleanup = std::unique_ptr<wchar_t, decltype(&LocalFree)>(description, LocalFree);
+                if (description && *description) {
+                    const auto length = WideCharToMultiByte(CP_UTF8, 0, description, -1, nullptr, 0, nullptr, nullptr);
+                    if (length > 1) {
+                        std::string utf8(static_cast<std::size_t>(length), '\0');
+                        WideCharToMultiByte(CP_UTF8, 0, description, -1, utf8.data(), length, nullptr, nullptr);
+                        utf8.pop_back();
+                        name = std::move(utf8);
+                    }
+                }
+            }
+            Diagnostic(fmt::format("THREAD_PROFILE tid={} name={} cpu_percent={:.2f} baseline={} interval_ms={}",
+                                   id, name, percent, baseline ? 1 : 0, interval));
+        }
+        std::erase_if(samples, [&](const auto& item) {
+            return std::find(live.begin(), live.end(), item.first) == live.end();
+        });
+        {
+            const std::lock_guard lock{profile_mutex};
+            // Remove terminated threads; future registrations restore newly reused IDs.
+            std::erase_if(registered_threads, [&](DWORD id) {
+                return std::find(live.begin(), live.end(), id) == live.end();
+            });
+        }
+        Diagnostic(fmt::format("THREAD_PROFILE coverage=process complete={} enumeration_error={} inaccessible={} sampled={}",
+                               complete ? 1 : 0, complete ? 0 : enumeration_error, inaccessible, live.size()));
+        constexpr const char* names[]{"present", "fence"};
+        for (std::size_t index = 0; index < ThreadProfile::waits.size(); ++index) {
+            auto& counter = ThreadProfile::waits[index];
+            const auto us = counter.microseconds.exchange(0, std::memory_order_relaxed);
+            const auto calls = counter.calls.exchange(0, std::memory_order_relaxed);
+            Diagnostic(fmt::format("THREAD_PROFILE host_wait={} total_us={} calls={} interval_ms={}",
+                                   names[index], us, calls, interval));
+        }
+    } catch (const std::exception& error) {
+        CrashEvent(error.what());
+    } catch (...) {
+        CrashEvent("thread_profile_non_standard_exception");
+    }
+}
+
 } // namespace
 
+void RegisterProfileThread() noexcept {
+    if (!ThreadProfile::Enabled()) return;
+    try {
+        const std::lock_guard lock{profile_mutex};
+        const auto id = GetCurrentThreadId();
+        if (std::find(registered_threads.begin(), registered_threads.end(), id) == registered_threads.end())
+            registered_threads.push_back(id);
+    } catch (...) {
+        CrashEvent("thread_profile_registration_failed");
+    }
+}
+
 void InstallThreadCrashHandlers() noexcept {
+    RegisterProfileThread();
     // MSVC maintains terminate handlers per thread, including threads created later.
     std::set_terminate([] { FatalRuntime("terminate", 0); });
 }
@@ -281,6 +439,24 @@ void CrashEvent(std::string_view event, std::uint64_t usage, std::uint64_t limit
     Write(line);
 }
 
+void CrashRendererException(const char* stage, std::string_view reason) noexcept {
+    std::uint64_t part = 0;
+    do {
+        Crash::Line line;
+        Prefix(line, "renderer_exception");
+        line.Add(" stage=");
+        line.Add(stage);
+        line.Add(" part=");
+        line.Number(part++);
+        line.Add(" what=");
+        // Chunk long reasons instead of truncating them in the fixed crash buffer.
+        const auto count = (std::min)(reason.size(), std::size_t{192});
+        line.Add(reason.substr(0, count));
+        Write(line);
+        reason.remove_prefix(count);
+    } while (!reason.empty());
+}
+
 void CrashGpuError(const char* stage, std::int32_t result, std::int32_t removed) noexcept {
     Crash::Line line;
     Prefix(line, "gpu_error");
@@ -309,6 +485,13 @@ void ObserveCrashLifecycle() {
         MemoryEvent("AppMemoryUsageLimitChanging", args.NewLimit());
     });
     MemoryEvent("memory_initial");
+    if (ThreadProfile::Enabled()) {
+        RegisterProfileThread();
+        Diagnostic("THREAD_PROFILE enabled period_ms=5000 cpu_percent=one_host_core");
+        static const auto profiler =
+            winrt::Windows::System::Threading::ThreadPoolTimer::CreatePeriodicTimer(
+                [](const auto&) { SampleThreads(); }, std::chrono::seconds(5));
+    }
     // Samples every 100 ms while the UI/emulation threads stall; suspension pauses the timer. A
     // line is written once per second, plus a `stall` line the moment a gap over 300 ms ends.
     static std::atomic<std::uint64_t> last_sample_ms{0};

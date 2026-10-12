@@ -1037,9 +1037,13 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
                                     sizeof(command_failure)) == 1 &&
             command_failure[0] == '1';
         char device_lost[2]{};
-        if (commands_stopped || (GetEnvironmentVariableA("NXBOX_D3D12_DEVICE_LOST", device_lost,
+        char native_active[2]{};
+        const bool native_renderer =
+            GetEnvironmentVariableA("NXBOX_NATIVE_D3D12_ACTIVE", native_active,
+                                    sizeof(native_active)) == 1 && native_active[0] == '1';
+        if (!native_renderer && (commands_stopped || (GetEnvironmentVariableA("NXBOX_D3D12_DEVICE_LOST", device_lost,
                                                          sizeof(device_lost)) == 1 &&
-                                 device_lost[0] == '1')) {
+                                 device_lost[0] == '1'))) {
             for (const char* name :
                  {"NXBOX_D3D12_DRED", "NXBOX_D3D12_DRED2", "NXBOX_D3D12_PSO_FAIL_FIRST",
                   "NXBOX_D3D12_FIRST_FAILURE", "NXBOX_D3D12_BATCH", "NXBOX_D3D12_SYNC_ERROR"}) {

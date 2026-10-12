@@ -34,6 +34,8 @@ add_executable(eden-uwp WIN32
     diagnostic.h
     crash_logger.cpp
     crash_logger.h
+    thread_profile.h
+    renderer_boundary.h
     crash_format.h
     ui/anim.h
     ui/art.cpp

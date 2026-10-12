@@ -1,6 +1,10 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#ifdef NXBOX_UWP
+#include "eden_uwp/crash_logger.h"
+#endif
+
 #include <array>
 #include <atomic>
 #include <memory>
@@ -929,6 +933,9 @@ void System::RegisterCoreThread(std::size_t id) {
 
 void System::RegisterHostThread() {
     impl->kernel.RegisterHostThread();
+#ifdef NXBOX_UWP
+    EdenXbox::RegisterProfileThread();
+#endif
 }
 
 bool System::IsMulticore() const {
