@@ -301,35 +301,42 @@ Result LANDiscovery::CreateNetwork(const SecurityConfig& security_config,
 
 Result LANDiscovery::SetStationAcceptPolicy(AcceptPolicy policy) {
     std::scoped_lock lock{packet_mutex};
-    if (state != State::AccessPointOpened && state != State::AccessPointCreated) return ResultBadState;
-    if (policy > AcceptPolicy::WhiteList) return ResultBadInput;
+    if (state != State::AccessPointOpened && state != State::AccessPointCreated)
+        return ResultBadState;
+    if (policy > AcceptPolicy::WhiteList)
+        return ResultBadInput;
     accept_policy = policy;
     network_info.ldn.station_accept_policy = policy;
-    if (state == State::AccessPointCreated) UpdateNodes();
+    if (state == State::AccessPointCreated)
+        UpdateNodes();
     return ResultSuccess;
 }
 
 Result LANDiscovery::AddAcceptFilterEntry(MacAddress address) {
     std::scoped_lock lock{packet_mutex};
-    if (state != State::AccessPointOpened && state != State::AccessPointCreated) return ResultBadState;
+    if (state != State::AccessPointOpened && state != State::AccessPointCreated)
+        return ResultBadState;
     if (std::find(accept_filter.begin(), accept_filter.end(), address) != accept_filter.end()) {
         return ResultSuccess;
     }
-    if (accept_filter.size() >= NodeCountMax) return ResultBadInput;
+    if (accept_filter.size() >= NodeCountMax)
+        return ResultBadInput;
     accept_filter.push_back(address);
     return ResultSuccess;
 }
 
 Result LANDiscovery::ClearAcceptFilter() {
     std::scoped_lock lock{packet_mutex};
-    if (state != State::AccessPointOpened && state != State::AccessPointCreated) return ResultBadState;
+    if (state != State::AccessPointOpened && state != State::AccessPointCreated)
+        return ResultBadState;
     accept_filter.clear();
     return ResultSuccess;
 }
 
 Result LANDiscovery::Reject(Ipv4Address address) {
     std::scoped_lock lock{packet_mutex};
-    if (state != State::AccessPointCreated) return ResultBadState;
+    if (state != State::AccessPointCreated)
+        return ResultBadState;
     for (auto& station : stations) {
         if (station.status == NodeStatus::Connected && station.node_info->ipv4_address == address) {
             std::reverse(address.begin(), address.end());
@@ -354,7 +361,8 @@ Result LANDiscovery::ConnectPrivate(const ConnectNetworkPrivateData& data) {
     std::array<NetworkInfo, NodeCountMax> networks{};
     s16 count{};
     const auto result = Scan(networks, count, filter);
-    if (result.IsError()) return result;
+    if (result.IsError())
+        return result;
     for (s16 i = 0; i < count; ++i) {
         if (networks[i].ldn.security_parameter == data.security_parameter.data) {
             return Connect(networks[i], data.user_config,
@@ -664,10 +672,10 @@ void LANDiscovery::ReceivePacket(const Network::LDNPacket& packet) {
         auto source_ip = packet.local_ip;
         std::reverse(source_ip.begin(), source_ip.end());
         info.ipv4_address = source_ip;
-        info.mac_address.raw = {2, 0, packet.local_ip[0], packet.local_ip[1],
-                                packet.local_ip[2], packet.local_ip[3]};
-        const bool listed = std::find(accept_filter.begin(), accept_filter.end(), info.mac_address) !=
-                            accept_filter.end();
+        info.mac_address.raw = {
+            2, 0, packet.local_ip[0], packet.local_ip[1], packet.local_ip[2], packet.local_ip[3]};
+        const bool listed = std::find(accept_filter.begin(), accept_filter.end(),
+                                      info.mac_address) != accept_filter.end();
         if (accept_policy == AcceptPolicy::RejectAll ||
             (accept_policy == AcceptPolicy::BlackList && listed) ||
             (accept_policy == AcceptPolicy::WhiteList && !listed)) {

@@ -224,7 +224,8 @@ Result IUserLocalCommunicationService::CreateNetworkPrivate(
 
     R_UNLESS(address_list.size() <= NodeCountMax, ResultBadInput);
     R_TRY(lan_discovery.CreateNetwork(create_config.security_config, create_config.user_config,
-                                    create_config.network_config, &create_config.security_parameter));
+                                      create_config.network_config,
+                                      &create_config.security_parameter));
     R_TRY(lan_discovery.ClearAcceptFilter());
     for (const auto& entry : address_list) {
         R_TRY(lan_discovery.AddAcceptFilterEntry(entry.mac_address));
