@@ -26,6 +26,8 @@ class ServiceThread;
 
 namespace Service {
 
+class ServiceTrace;
+
 namespace FileSystem {
 class FileSystemController;
 }
@@ -97,6 +99,9 @@ private:
     void RegisterHandlersBase(const FunctionInfoBase* functions, std::size_t n);
     void RegisterHandlersBaseTipc(const FunctionInfoBase* functions, std::size_t n);
     void ReportUnimplementedFunction(HLERequestContext& ctx, const FunctionInfoBase* info);
+    void TraceRequest(HLERequestContext& ctx, u32 command);
+
+    std::shared_ptr<ServiceTrace> service_trace;
 
 protected:
     ::Common::unordered_map<u32, FunctionInfoBase> handlers;

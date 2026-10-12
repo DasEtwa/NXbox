@@ -11,6 +11,7 @@
 #include "core/hle/service/ipc_helpers.h"
 #include "core/hle/service/kernel_helpers.h"
 #include "core/hle/service/nifm/nifm.h"
+#include "core/hle/service/nifm/request_state.h"
 #include "core/hle/service/server_manager.h"
 #include "core/internal_network/emu_net_state.h"
 #include "core/internal_network/network.h"
@@ -69,15 +70,6 @@ static u128 MakeUuidFromName(std::string_view name) {
 
     return {h1, h2};
 }
-
-// This is nn::nifm::RequestState
-enum class RequestState : u32 {
-    NotSubmitted = 1,
-    Invalid = 1, ///< The duplicate 1 is intentional; it means both not submitted and error on HW.
-    OnHold = 2,
-    Accepted = 3,
-    Blocking = 4,
-};
 
 // This is nn::nifm::NetworkInterfaceType
 enum class NetworkInterfaceType : u32 {
@@ -221,9 +213,24 @@ struct PendingProfile {
     std::array<char, 0x41> passphrase{};
 };
 
+constexpr Result ResultRequestNotSubmitted{ErrorModule::NIFM, 311};
 constexpr Result ResultPendingConnection{ErrorModule::NIFM, 111};
 constexpr Result ResultInvalidInput{ErrorModule::NIFM, 112};
 constexpr Result ResultNetworkCommunicationDisabled{ErrorModule::NIFM, 1111};
+
+// Keep the service setting independent of RefreshFromHost(), which overwrites host flags.
+static std::atomic<bool> ethernet_enabled{true};
+static std::atomic<u64> next_client_id{1};
+
+static bool HasLocalConnection() {
+    const auto adapter = Network::GetSelectedNetworkInterface();
+    if (!adapter || Network::TranslateIPv4(adapter->ip_address) == Network::IPv4Address{}) {
+        return false;
+    }
+    return adapter->kind == Network::HostAdapterKind::Wifi
+               ? !Settings::values.airplane_mode.GetValue()
+               : ethernet_enabled.load();
+}
 
 static std::mutex g_scan_mtx;
 static std::vector<Network::ScanData> g_last_scan_results;
@@ -340,8 +347,9 @@ private:
 
 class IRequest final : public ServiceFramework<IRequest> {
 public:
-    explicit IRequest(Core::System& system_)
-        : ServiceFramework{system_, "IRequest"}, service_context{system_, "IRequest"} {
+    explicit IRequest(Core::System& system_, std::shared_ptr<std::atomic<u32>> accepted_requests_)
+        : ServiceFramework{system_, "IRequest"}, service_context{system_, "IRequest"},
+          accepted_requests{std::move(accepted_requests_)} {
         static const FunctionInfo functions[] = {
             {0, &IRequest::GetRequestState, "GetRequestState"},
             {1, &IRequest::GetResult, "GetResult"},
@@ -374,32 +382,37 @@ public:
 
         event1 = CreateKEvent(service_context, "IRequest:Event1");
         event2 = CreateKEvent(service_context, "IRequest:Event2");
-        state = RequestState::NotSubmitted;
     }
 
     ~IRequest() override {
+        if (state.IsAccepted()) {
+            accepted_requests->fetch_sub(1);
+        }
         service_context.CloseEvent(event1);
         service_context.CloseEvent(event2);
     }
 
 private:
+    // Wire layouts and state-event behavior: https://switchbrew.org/wiki/Network_Interface_services
     void Submit(HLERequestContext& ctx) {
-        LOG_DEBUG(Service_NIFM, "(STUBBED) called");
+        const bool was_accepted = state.IsAccepted();
+        state.Submit(HasLocalConnection());
+        NotifyState(was_accepted);
+        IPC::ResponseBuilder{ctx, 2}.Push(ResultSuccess);
+    }
 
-        if (state == RequestState::NotSubmitted) {
-            UpdateState(RequestState::OnHold);
+    void RefreshState() {
+        const bool was_accepted = state.IsAccepted();
+        if (state.Refresh(HasLocalConnection())) {
+            NotifyState(was_accepted);
         }
-
-        IPC::ResponseBuilder rb{ctx, 2};
-        rb.Push(ResultSuccess);
     }
 
     void GetRequestState(HLERequestContext& ctx) {
-        LOG_DEBUG(Service_NIFM, "(STUBBED) called");
-
+        RefreshState();
         IPC::ResponseBuilder rb{ctx, 3};
         rb.Push(ResultSuccess);
-        rb.PushEnum(state);
+        rb.PushEnum(state.GetState());
     }
 
     void SetRequirementPreset(HLERequestContext& ctx) {
@@ -427,44 +440,32 @@ private:
     }
 
     void GetResult(HLERequestContext& ctx) {
-        LOG_DEBUG(Service_NIFM, "(STUBBED) called");
-
-        const auto result = [this] {
-            const auto has_connection = Network::GetHostIPv4Address().has_value() &&
-                                        !Settings::values.airplane_mode.GetValue();
-            switch (state) {
-            case RequestState::NotSubmitted:
-                return has_connection ? ResultSuccess : ResultNetworkCommunicationDisabled;
-            case RequestState::OnHold:
-                if (has_connection) {
-                    UpdateState(RequestState::Accepted);
-                } else {
-                    UpdateState(RequestState::Invalid);
-                }
-                return ResultPendingConnection;
-            case RequestState::Accepted:
-            default:
-                return ResultSuccess;
-            }
-        }();
-
-        IPC::ResponseBuilder rb{ctx, 2};
-        rb.Push(result);
+        RefreshState();
+        Result result = ResultRequestNotSubmitted;
+        switch (state.GetOutcome()) {
+        case RequestStateMachine::Outcome::Success:
+            result = ResultSuccess;
+            break;
+        case RequestStateMachine::Outcome::CommunicationDisabled:
+            result = ResultNetworkCommunicationDisabled;
+            break;
+        case RequestStateMachine::Outcome::NotSubmitted:
+            break;
+        }
+        IPC::ResponseBuilder{ctx, 2}.Push(result);
     }
 
     void GetSystemEventReadableHandles(HLERequestContext& ctx) {
-        LOG_WARNING(Service_NIFM, "(STUBBED) called");
-
         IPC::ResponseBuilder rb{ctx, 2, 2};
         rb.Push(ResultSuccess);
         rb.PushCopyObjects(ctx, event1->GetReadableEvent(), event2->GetReadableEvent());
     }
 
     void Cancel(HLERequestContext& ctx) {
-        LOG_WARNING(Service_NIFM, "(STUBBED) called");
-
-        IPC::ResponseBuilder rb{ctx, 2};
-        rb.Push(ResultSuccess);
+        const bool was_accepted = state.IsAccepted();
+        state.Cancel();
+        NotifyState(was_accepted);
+        IPC::ResponseBuilder{ctx, 2}.Push(ResultSuccess);
     }
 
     void SetConnectionConfirmationOption(HLERequestContext& ctx) {
@@ -488,22 +489,23 @@ private:
         rb.Push<u32>(0);
     }
 
-    void UpdateState(RequestState new_state) {
-        LOG_DEBUG(Service_NIFM, "(STUBBED) called");
-        state = new_state;
+    void NotifyState(bool was_accepted) {
+        if (was_accepted != state.IsAccepted()) {
+            if (state.IsAccepted()) {
+                accepted_requests->fetch_add(1);
+            } else {
+                accepted_requests->fetch_sub(1);
+            }
+        }
         event1->Signal(system.Kernel());
     }
 
     KernelHelpers::ServiceContext service_context;
-
-    RequestState state;
-
+    std::shared_ptr<std::atomic<u32>> accepted_requests;
+    RequestStateMachine state;
     Kernel::KEvent* event1;
     Kernel::KEvent* event2;
 
-    std::thread connect_worker;
-    std::atomic<bool> connect_done{false};
-    std::atomic<Result> connect_result{ResultPendingConnection};
 };
 
 class INetworkProfile final : public ServiceFramework<INetworkProfile> {
@@ -518,13 +520,15 @@ public:
     }
 };
 
+// ClientId is an output pointer buffer, not an inline u64.
+// https://github.com/switchbrew/libnx/blob/master/nx/source/services/nifm.c
 void IGeneralService::GetClientId(HLERequestContext& ctx) {
-    static constexpr u32 client_id = 1;
-    LOG_WARNING(Service_NIFM, "(STUBBED) called");
-
-    IPC::ResponseBuilder rb{ctx, 4};
-    rb.Push(ResultSuccess);
-    rb.Push<u64>(client_id); // Client ID needs to be non zero otherwise it's considered invalid
+    if (ctx.GetWriteBufferSize() < sizeof(client_id)) {
+        IPC::ResponseBuilder{ctx, 2}.Push(ResultInvalidInput);
+        return;
+    }
+    ctx.WriteBuffer(client_id);
+    IPC::ResponseBuilder{ctx, 2}.Push(ResultSuccess);
 }
 
 void IGeneralService::CreateScanRequest(HLERequestContext& ctx) {
@@ -542,7 +546,7 @@ void IGeneralService::CreateRequest(HLERequestContext& ctx) {
     IPC::ResponseBuilder rb{ctx, 2, 0, 1};
 
     rb.Push(ResultSuccess);
-    rb.PushIpcInterface<IRequest>(ctx, system);
+    rb.PushIpcInterface<IRequest>(ctx, system, accepted_requests);
 }
 
 void IGeneralService::GetCurrentNetworkProfile(HLERequestContext& ctx) {
@@ -844,20 +848,18 @@ void IGeneralService::GetScanDataV3(HLERequestContext& ctx) {
 }
 
 void IGeneralService::GetCurrentIpAddress(HLERequestContext& ctx) {
-    LOG_WARNING(Service_NIFM, "(STUBBED) called");
-
+    if (!HasLocalConnection()) {
+        IPC::ResponseBuilder{ctx, 2}.Push(ResultNetworkCommunicationDisabled);
+        return;
+    }
     auto ipv4 = Network::GetHostIPv4Address();
     if (!ipv4) {
-        LOG_ERROR(Service_NIFM, "Couldn't get host IPv4 address, defaulting to 0.0.0.0");
-        ipv4.emplace(Network::IPv4Address{0, 0, 0, 0});
+        IPC::ResponseBuilder{ctx, 2}.Push(ResultNetworkCommunicationDisabled);
+        return;
     }
-
-    if (auto room_member = Network::GetRoomMember().lock()) {
-        if (room_member->IsConnected()) {
-            ipv4 = room_member->GetFakeIpAddress();
-        }
+    if (auto room_member = Network::GetRoomMember().lock(); room_member && room_member->IsConnected()) {
+        ipv4 = room_member->GetFakeIpAddress();
     }
-
     IPC::ResponseBuilder rb{ctx, 3};
     rb.Push(ResultSuccess);
     rb.PushRaw(*ipv4);
@@ -943,13 +945,13 @@ void IGeneralService::GetInternetConnectionStatus(HLERequestContext& ctx) {
     };
     Output out{};
 
-    if (!st.connected) {
+    if (!st.connected || !HasLocalConnection()) {
         out.type = 1;
         out.bars = 0;
         out.state = InternetConnectionStatus::ConnectingUnknown1;
     } else {
         out.type = st.via_wifi ? 1 : 2;
-        out.bars = st.bars;
+        out.bars = st.via_wifi ? st.bars : 0;
         out.state = InternetConnectionStatus::Connected;
     }
 
@@ -962,43 +964,56 @@ void IGeneralService::SetEthernetCommunicationEnabled(HLERequestContext& ctx) {
     IPC::RequestParser rp{ctx};
     const u8 enable = rp.Pop<u8>();
 
-    Network::EmuNetState::Get().ethernet_enabled.store(enable != 0);
+    ethernet_enabled.store(enable != 0);
 
     IPC::ResponseBuilder{ctx, 2}.Push(ResultSuccess);
 }
 
 void IGeneralService::IsEthernetCommunicationEnabled(HLERequestContext& ctx) {
-    LOG_WARNING(Service_NIFM, "(STUBBED) called");
-
     IPC::ResponseBuilder rb{ctx, 3};
     rb.Push(ResultSuccess);
-    if (Network::GetHostIPv4Address().has_value() && !Settings::values.airplane_mode.GetValue()) {
-        rb.Push<u8>(1);
-    } else {
-        rb.Push<u8>(0);
-    }
+    rb.Push<u8>(ethernet_enabled.load());
 }
 
 void IGeneralService::IsAnyInternetRequestAccepted(HLERequestContext& ctx) {
-    LOG_ERROR(Service_NIFM, "(STUBBED) called");
-
+    const auto buffer = ctx.ReadBuffer();
+    if (buffer.size() != sizeof(client_id)) {
+        IPC::ResponseBuilder{ctx, 2}.Push(ResultInvalidInput);
+        return;
+    }
+    u64 requested_client{};
+    std::memcpy(&requested_client, buffer.data(), sizeof(requested_client));
+    const bool accepted = requested_client == client_id && accepted_requests->load() != 0 && HasLocalConnection();
     IPC::ResponseBuilder rb{ctx, 3};
     rb.Push(ResultSuccess);
-    if (Network::GetHostIPv4Address().has_value() && !Settings::values.airplane_mode.GetValue()) {
-        rb.Push<u8>(1);
-    } else {
-        rb.Push<u8>(0);
-    }
+    rb.Push<u8>(accepted);
 }
 
 void IGeneralService::IsAnyForegroundRequestAccepted(HLERequestContext& ctx) {
-    const bool is_accepted{};
-
-    LOG_WARNING(Service_NIFM, "(STUBBED) called, is_accepted={}", is_accepted);
-
     IPC::ResponseBuilder rb{ctx, 3};
     rb.Push(ResultSuccess);
-    rb.Push<u8>(is_accepted);
+    rb.Push<u8>(accepted_requests->load() != 0 && HasLocalConnection());
+}
+
+void IGeneralService::IsWiredConnectionAvailable(HLERequestContext& ctx) {
+    const auto adapter = Network::GetSelectedNetworkInterface();
+    IPC::ResponseBuilder rb{ctx, 3};
+    rb.Push(ResultSuccess);
+    rb.Push<u8>(adapter && adapter->kind == Network::HostAdapterKind::Ethernet && HasLocalConnection());
+}
+
+void IGeneralService::IsNetworkEmulationFeatureEnabled(HLERequestContext& ctx) {
+    // Host-backed networking does not expose Horizon's debug profile emulation.
+    IPC::ResponseBuilder rb{ctx, 3};
+    rb.Push(ResultSuccess);
+    rb.Push(false);
+}
+
+void IGeneralService::IsRewriteFeatureEnabled(HLERequestContext& ctx) {
+    // No NIFM rewrite-rule engine is installed.
+    IPC::ResponseBuilder rb{ctx, 3};
+    rb.Push(ResultSuccess);
+    rb.Push(false);
 }
 
 void IGeneralService::GetSsidListVersion(HLERequestContext& ctx) {
@@ -1051,7 +1066,8 @@ void IGeneralService::GetCurrentAccessPoint(HLERequestContext& ctx) {
 }
 
 IGeneralService::IGeneralService(Core::System& system_)
-    : ServiceFramework{system_, "IGeneralService"} {
+    : ServiceFramework{system_, "IGeneralService"}, client_id{next_client_id.fetch_add(1)},
+      accepted_requests{std::make_shared<std::atomic<u32>>(0)} {
     // clang-format off
 
     static const FunctionInfo functions[] = {
@@ -1097,11 +1113,11 @@ IGeneralService::IGeneralService(Core::System& system_)
         {41, nullptr, "GetAcceptableNetworkTypeFlag"},
         {42, nullptr, "NotifyConnectionStateChanged"},
         {43, nullptr, "SetWowlDelayedWakeTime"},
-        {44, nullptr, "IsWiredConnectionAvailable"}, // 18.0.0+
-        {45, nullptr, "IsNetworkEmulationFeatureEnabled"}, // 18.0.0+
+        {44, &IGeneralService::IsWiredConnectionAvailable, "IsWiredConnectionAvailable"}, // 18.0.0+
+        {45, &IGeneralService::IsNetworkEmulationFeatureEnabled, "IsNetworkEmulationFeatureEnabled"}, // 18.0.0+
         {46, nullptr, "SelectActiveNetworkEmulationProfileIdForDebug"}, // 18.0.0+
         {47, &IGeneralService::GetScanDataV3, "GetScanData"}, // 19.0.0+
-        {50, nullptr, "IsRewriteFeatureEnabled"}, // 18.0.0+
+        {50, &IGeneralService::IsRewriteFeatureEnabled, "IsRewriteFeatureEnabled"}, // 18.0.0+
         {51, nullptr, "CreateRewriteRule"}, // 18.0.0+
         {52, nullptr, "DestroyRewriteRule"} // 18.0.0+
     };
