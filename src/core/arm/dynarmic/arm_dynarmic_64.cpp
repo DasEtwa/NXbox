@@ -11,10 +11,15 @@
 #include "core/arm/dynarmic/arm_dynarmic.h"
 #include "core/arm/dynarmic/arm_dynarmic_64.h"
 #include "core/arm/dynarmic/dynarmic_exclusive_monitor.h"
+#include "core/arm/dynarmic/nxbox_jit_policy.h"
 #include "core/arm/nxbox_fault.h"
 #include "core/core_timing.h"
 #include "core/hle/kernel/k_process.h"
 #include "dynarmic/interface/A64/config.h"
+
+#ifdef NXBOX_UWP
+#include "eden_uwp/diagnostic.h"
+#endif
 
 namespace Core {
 
@@ -50,10 +55,16 @@ Dynarmic::A64::Vector DynarmicCallbacks64::MemoryRead128(u64 vaddr) {
 }
 
 std::optional<u32> DynarmicCallbacks64::MemoryReadCode(u64 vaddr) {
+#ifdef NXBOX_UWP
+    m_profile.CodeRead(false);
+#endif
     if (!m_memory.IsValidVirtualAddressRange(vaddr, sizeof(u32)))
         return std::nullopt;
     auto const aligned_vaddr = vaddr & ~Core::Memory::YUZU_PAGEMASK;
     if (last_code_addr != aligned_vaddr) {
+#ifdef NXBOX_UWP
+        m_profile.PageFill();
+#endif
         m_memory.ReadBlock(aligned_vaddr, &cached_code_page, sizeof(cached_code_page));
         last_code_addr = aligned_vaddr;
     }
@@ -61,6 +72,9 @@ std::optional<u32> DynarmicCallbacks64::MemoryReadCode(u64 vaddr) {
 }
 
 std::optional<u32> DynarmicCallbacks64::MemoryReadCodeFresh(u64 vaddr) {
+#ifdef NXBOX_UWP
+    m_profile.CodeRead(true);
+#endif
     if (!m_memory.IsValidVirtualAddressRange(vaddr, sizeof(u32))) {
         return std::nullopt;
     }
@@ -209,6 +223,9 @@ u64 DynarmicCallbacks64::GetCNTPCT() {
 }
 
 bool DynarmicCallbacks64::CheckMemoryAccess(u64 addr, u64 size, Kernel::DebugWatchpointType type) {
+#ifdef NXBOX_UWP
+    m_profile.MemoryCallback();
+#endif
     if (!m_check_memory_access) {
         return true;
     }
@@ -400,7 +417,9 @@ void ArmDynarmic64::MakeJit(Common::PageTable* page_table, std::size_t address_s
         config.fastmem_exclusive_access = false;
     }
 #ifdef NXBOX_UWP
-    config.collect_memory_access_context = true;
+    // Removing the two PC stores per guest memory operation matches desktop emission.
+    // Keep precise crash context by default; console A/B tests can opt out explicitly.
+    NxboxJit::ApplyA64OptOuts(config, std::uint32_t(address_space_bits));
     LOG_INFO(Core_ARM,
              "NXBOX FAULT CONFIG core={} accuracy={} optimizations={:#x} unsafe={} "
              "page_table={} fastmem={} fastmem_exclusives={} wall_clock={} "
@@ -430,7 +449,23 @@ HaltReason ArmDynarmic64::RunThread(Kernel::KThread* thread) {
     };
 #endif
     m_jit->ClearExclusiveState();
-    return TranslateHaltReason(m_jit->Run());
+    const auto result = m_jit->Run();
+#ifdef NXBOX_UWP
+    if (m_cb->m_profile.enabled) {
+        m_cb->m_profile.Poll(
+            [&](auto reads, auto fills, auto fresh, auto callbacks, auto interval) {
+                EdenXbox::Diagnostic(fmt::format(
+                    "THREAD_PROFILE jit_core={} program_id={:016x} guest_bits=64 code_reads={} "
+                    "code_page_fills={} "
+                    "fresh_code_reads={} page_table_fallback_callbacks={} interval_ms={} "
+                    "compiles=unavailable cache_misses=unavailable fastmem_faults=unavailable",
+                    m_core_index, m_cb->m_process->GetProgramId(), reads, fills, fresh, callbacks,
+                    interval));
+            },
+            NxboxJit::Profile::Clock::now());
+    }
+#endif
+    return TranslateHaltReason(result);
 }
 
 HaltReason ArmDynarmic64::StepThread(Kernel::KThread* thread) {

@@ -285,6 +285,11 @@ public:
         // that is tolerated by all callers (fastmem disabled).
         backing_handle = nullptr;
         virtual_base = nullptr;
+        LOG_INFO(HW_Memory,
+                 "NXBOX MEMORY mode=page_table fastmem=unavailable "
+                 "reason=private_demand_committed_backing VirtualAlloc2FromApp={} "
+                 "MapViewOfFile3FromApp={} backing_mib={}",
+                 pfn_VirtualAlloc2 != nullptr, pfn_MapViewOfFile3 != nullptr, backing_size >> 20);
         return true;
 #else
         // Desktop: a file-mapping section aliased into both the linear backing and the fastmem arena.
