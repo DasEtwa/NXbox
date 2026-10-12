@@ -1099,7 +1099,9 @@ void RasterizerD3D12::FlushCommands() {
         return;
     }
     flushing = true;
-    SCOPE_EXIT { flushing = false; };
+    SCOPE_EXIT {
+        flushing = false;
+    };
     query_cache.NotifyWFI();
     query_cache.CommitAsyncFlushes();
     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
