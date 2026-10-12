@@ -13,7 +13,8 @@ SPDX-License-Identifier: GPL-3.0-or-later
 <p align="center">
   <b>A Nintendo Switch emulator that runs natively on an Xbox Series X.</b><br>
   A port of <a href="https://git.eden-emu.dev/eden-emu/eden">Eden</a> to the Xbox UWP sandbox: the Switch's ARM64 code runs
-  through a JIT, and its graphics go through OpenGL on Direct3D 12.
+  through a JIT, and its graphics go to Direct3D 12: today through OpenGL on Mesa, and, <b>new</b>, through a
+  native Direct3D 12 renderer.
 </p>
 
 <p align="center">
@@ -58,10 +59,17 @@ SPDX-License-Identifier: GPL-3.0-or-later
   </tr>
 </table>
 
-> **Experimental. No game is 100% playable without bugs yet.** Persona 5 Royal opens and reaches
-> gameplay on a console in Developer Mode, but booting is not the same as working well: it still
-> stutters on loads and has open bugs. There is no compatibility list, no setup screen yet, and no
-> public release: builds come from CI.
+> **Experimental. No game is 100% playable without bugs yet.** Super Mario 3D World, Breath of the
+> Wild and Persona 5 Royal reach gameplay on a console in Developer Mode, but running is not the same
+> as working well: each has open bugs (see the [compatibility table](#compatibility)). There is no
+> public release yet: builds come from CI.
+
+> **New: native Direct3D 12 renderer.** The default path translates the Switch GPU to OpenGL and
+> then, through Mesa, to Direct3D 12. The new renderer (`NXBOX_RENDERER=d3d12`) talks to Direct3D 12
+> directly: Switch shaders are translated to HLSL and compiled with Microsoft's DXC, with no OpenGL or
+> Mesa in between. It already draws Super Mario 3D World's game-select screen correctly at 1920×1080,
+> including text the OpenGL path drops. It is still opt-in: about 24 FPS, and the app is suspended
+> after about 90 s. Plan and progress: [docs/d3d12-backend.md](docs/d3d12-backend.md).
 
 ## Where it stands
 
@@ -70,15 +78,17 @@ Everything below was measured on a retail Xbox Series X in Developer Mode.
 | Area | State |
 | --- | --- |
 | CPU | Switch ARM64 code runs through the Dynarmic JIT inside the UWP sandbox, with a 128 MiB code cache |
-| Graphics | Default: OpenGL 4.6 on Direct3D 12 through a patched Mesa `d3d12` driver. New, opt-in (`NXBOX_RENDERER=d3d12`): a native Direct3D 12 renderer with guest shaders translated Maxwell → IR → HLSL → DXC → DXIL, no Mesa in the path. It already renders Super Mario 3D World's game-select screen at 1920×1080, including text the OpenGL path drops; it still runs at about 24 FPS and the app is suspended after about 90 s |
-| Frame pacing | 30 FPS in the stretches measured (worst frame gap 36–64 ms in the casino), but loads still freeze the picture for up to a few seconds |
+| Graphics (default) | OpenGL 4.6 on Direct3D 12 through a patched Mesa `d3d12` driver, built in CI |
+| Graphics (**new**, opt-in) | Native Direct3D 12 renderer (`NXBOX_RENDERER=d3d12`): Switch shaders go Maxwell → IR → HLSL → DXC → DXIL. Draws Super Mario 3D World's game-select screen correctly; about 24 FPS, suspended after about 90 s. Geometry/tessellation shaders, transform feedback and MSAA are not done yet |
+| Frame pacing | OpenGL path: 60 FPS in Super Mario 3D World's hub, 30 FPS in Persona 5 Royal, about 12 FPS in Breath of the Wild (CPU bound). Loads still freeze the picture for a few seconds |
 | Shaders | Per-title pipeline cache, precompiled at boot so scene changes do not compile shaders. A cache can be shared between consoles over the LAN |
-| Memory | Guest memory is committed on demand. Persona 5 Royal peaks around 4.0 GB of the 5 GiB app budget |
+| Memory | Guest memory is committed on demand. Persona 5 Royal peaks around 4.0 GB and Breath of the Wild around 4.5 GB of the 5 GiB app budget |
 | Audio | XAudio2 output |
 | Movies | Decoded on the CPU with FFmpeg |
 | Textures | ASTC decoded on the CPU on the OpenGL path; the native D3D12 renderer decodes ASTC on the GPU |
 | Input | Xbox controller, mapped to a Pro Controller |
-| Compatibility | No game is playable without bugs. Super Mario 3D World (OpenGL path) reaches the 3D World hub at 60 FPS with correct colours, but some views draw black polygons and some text is missing. Breath of the Wild (1.0 and 1.6 with DLC) loads a save and runs in the Shrine of Resurrection at about 12 FPS, with broken geometry on Link. Persona 5 Royal reaches gameplay with open bugs. Mario Kart 8 Deluxe boots; Mii selection needs the console's own firmware installed |
+| Accounts | A default offline profile with a Mii is created on first boot; firmware dumped from your own console can be installed from `LocalState\firmware` |
+| Compatibility | No game is playable without bugs yet: see the [compatibility table](#compatibility) |
 
 <details>
 <summary><b>The hard parts so far</b>, each found on the console</summary>
@@ -102,16 +112,13 @@ Written up in the [port notes](docs/nxbox-port.md).
 - **There is no release date.** Nothing is promised until it is stable; releases will appear on the
   [releases page](https://github.com/NspxMiguel/NXbox/releases) when there is something to try.
 - **No game is playable yet.** The table below is the honest state of each target.
-- **Current focus: The Legend of Zelda: Breath of the Wild**, at the request of a person who asked
-  for it. Super Mario 3D World, Mario Kart 8 Deluxe and Bayonetta wait until it is playable and
-  renders without graphical glitches.
-- **Where it stands:** Breath of the Wild now gets through the intro, the opening cutscene and
-  into the first area (the Shrine of Resurrection) and keeps running for minutes without losing the
-  GPU, at about 5 to 10 frames per second. It is not playable yet: it is far too slow and I have not
-  checked the picture beyond the first scene. What was fixed to get here: block-compressed copies
-  with unaligned boxes, views in formats the resource cannot be cast to, resources transitioned to a
-  state they do not support, a texture barrier that waited for the GPU hundreds of times a frame, and
-  the memory limit (shaders now go to Mesa as SPIR-V, which keeps the app under 5 GiB).
+- **Current focus: Super Mario 3D World, then The Legend of Zelda: Breath of the Wild**, and the new
+  native Direct3D 12 renderer that both will move to. Mario Kart 8 Deluxe and Bayonetta come after.
+- **Where it stands:** Super Mario 3D World reaches the 3D World hub at 60 FPS on the OpenGL path,
+  with some views still drawing black polygons; the native Direct3D 12 renderer already draws its
+  game-select screen correctly. Breath of the Wild loads a save (1.0, and 1.6 with both DLC) and runs
+  in the Shrine of Resurrection at about 12 FPS; the guest CPU is the bottleneck. Open bugs are
+  tracked in the [issues](https://github.com/NspxMiguel/NXbox/issues).
 - **How it is built:** by one person in their spare time, with AI coding tools doing much of the
   hard work on a small budget. Progress comes in bursts, and long waits are usually tool limits.
 - **What you need:** an Xbox in Developer Mode, and your own game dumps, firmware and keys.
@@ -139,9 +146,11 @@ Estimates are the maintainer's guess, not a promise; they move as bugs are found
 ```mermaid
 flowchart LR
     game["Switch game (.nsp)"] --> core["Eden core<br/>HLE services · Dynarmic JIT"]
-    core --> gl["OpenGL 4.6 renderer"]
+    core --> gl["OpenGL 4.6 renderer (default)"]
     gl --> mesa["Mesa d3d12 (patched)"]
     mesa --> d3d["Direct3D 12 on Xbox"]
+    core --> native["New: native D3D12 renderer<br/>Maxwell → HLSL → DXC"]
+    native --> d3d
     core --> audio["XAudio2"]
     pad["Xbox controller"] --> core
 ```
@@ -150,6 +159,10 @@ flowchart LR
   writes `eden_uwp_diag.txt` with frame pacing, memory and stall attribution.
 - `tools/nxbox/patch_mesa_uwp.py`: the Mesa patches, applied to a pinned
   [aerisarn/mesa-uwp](https://github.com/aerisarn/mesa-uwp) in CI.
+- `src/video_core/renderer_d3d12/` and `src/shader_recompiler/backend/hlsl/`: the new native
+  Direct3D 12 renderer and its HLSL shader backend.
+- `tools/nxbox-pack/`: **new**, a command-line tool for Windows, macOS and Linux that turns a game you
+  own into its own Xbox app (no emulator menu) and installs it through the Device Portal.
 - `tools/shader-share/`: a small server that keeps the largest valid shader cache per title.
 
 ## Trying it
@@ -165,7 +178,12 @@ You need an Xbox Series X|S in **Developer Mode** and your own dumps:
    converted on the console the first time the library sees them.
 4. Launch NXbox from the dashboard and pick the game in the library.
 
-Two newer ways to get games in are built but not yet tested on the console: **Add games** imports
+**New:** [NXbox Pack](tools/nxbox-pack/README.md) does steps 1–4 for one game at a time: drag the
+game, your keys and any updates/DLC into its window, and it installs that game as its own app that
+boots straight into the game. To try the native renderer, add `NXBOX_RENDERER=d3d12` to
+`LocalState\nxbox_env.txt`.
+
+Two other ways to get games in are built but not yet tested on the console: **Add games** imports
 games and keys from a USB drive (copy to the console, or move into `NXbox\games` to play from the
 drive), and **Settings → Sources** browses and downloads from Tinfoil-format sources you add
 yourself (none are included).
@@ -208,6 +226,8 @@ ctest --test-dir build-port-tests -C Release --output-on-failure
 - [juanresendiz813/eden-xbox](https://github.com/juanresendiz813/eden-xbox) provided the starting
   Xbox/UWP work, including the imported boot frontend.
 - [aerisarn/mesa-uwp](https://github.com/aerisarn/mesa-uwp) provides Mesa for UWP.
+- Microsoft's [DirectX Shader Compiler](https://github.com/microsoft/DirectXShaderCompiler) (DXC)
+  compiles the shaders of the native Direct3D 12 renderer.
 - The **yuzu** and **Sudachi** projects and their contributors built the foundations Eden derives
   from.
 - **Cheats** come from the community database
@@ -220,7 +240,8 @@ ctest --test-dir build-port-tests -C Release --output-on-failure
 - Third-party libraries keep their own licenses and copyright notices.
 
 Exact source revisions are recorded in the [provenance notes](docs/nxbox-port.md#source-provenance).
-NXbox is an independent project. It is not affiliated with or endorsed by its upstream projects,
+NXbox is an independent fork, developed with the help of AI coding tools, and its changes are not
+sent upstream. It is not affiliated with or endorsed by its upstream projects,
 Nintendo, Microsoft, Atlus or SEGA. The artwork was created for NXbox.
 
 ## License
