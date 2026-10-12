@@ -55,8 +55,8 @@ void FillGraphicsState(Tegra::Engines::Maxwell3D& maxwell3d, Pso::GraphicsPsoSta
 class PipelineCache final : public IPipelineCache {
 public:
     // `maxwell3d` is the rasterizer's current-channel pointer (it changes on channel switch).
-    PipelineCache(Context& context, Tegra::Engines::Maxwell3D*& maxwell3d)
-        : context{context}, maxwell3d{maxwell3d} {}
+    PipelineCache(Context& context_, Tegra::Engines::Maxwell3D*& maxwell3d_)
+        : context{context_}, maxwell3d{maxwell3d_} {}
 
     // IPipelineCache. Until guest shader translation is wired (see TODO in the .cpp) every draw
     // uses the stub VS/PS from stub_hlsl_emit.
