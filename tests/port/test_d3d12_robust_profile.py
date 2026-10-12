@@ -18,6 +18,11 @@ DRIVER = r"""
 #include "eden_uwp/renderer_boundary.h"
 #include "eden_uwp/thread_profile.h"
 int main() {
+    if (!EdenXbox::ThreadProfile::Enabled()) {
+        EdenXbox::ThreadProfile::Scope inactive{EdenXbox::ThreadProfile::Wait::Present};
+        assert(EdenXbox::ThreadProfile::waits[0].calls.load() == 0);
+        return 0;
+    }
     int reports = 0;
     const char* reason = nullptr;
     auto report = [&](const std::exception& error) noexcept {
@@ -103,6 +108,12 @@ class RobustProfileTests(unittest.TestCase):
             )
             subprocess.run(
                 [str(binary)],
+                env={**os.environ, "NXBOX_THREAD_PROFILE": "0"},
+                check=True,
+                timeout=15,
+            )
+            subprocess.run(
+                [str(binary)],
                 env={**os.environ, "NXBOX_THREAD_PROFILE": "1"},
                 check=True,
                 timeout=15,
@@ -151,3 +162,9 @@ class RobustProfileTests(unittest.TestCase):
         ]:
             with self.subTest(required=required):
                 self.assertIn(required, source)
+
+    def test_runtime_configuration_starts_profiler(self):
+        source = (ROOT / "src/eden_uwp/mesa_window.cpp").read_text()
+        self.assertIn("LoadRuntimeEnvironment();\n    StartThreadProfiler();", source)
+        header = (ROOT / "src/eden_uwp/thread_profile.h").read_text()
+        self.assertNotIn("static const bool enabled", header)

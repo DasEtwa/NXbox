@@ -414,6 +414,22 @@ void RegisterProfileThread() noexcept {
     }
 }
 
+void StartThreadProfiler() noexcept {
+    if (!ThreadProfile::Enabled()) return;
+    try {
+        RegisterProfileThread();
+        static const auto profiler = [] {
+            Diagnostic("THREAD_PROFILE enabled period_ms=5000 cpu_percent=one_host_core");
+            return winrt::Windows::System::Threading::ThreadPoolTimer::CreatePeriodicTimer(
+                [](const auto&) { SampleThreads(); }, std::chrono::seconds(5));
+        }();
+    } catch (const std::exception& error) {
+        CrashRendererException("thread_profile_start", error.what());
+    } catch (...) {
+        CrashEvent("thread_profile_start_non_standard_exception");
+    }
+}
+
 void InstallThreadCrashHandlers() noexcept {
     RegisterProfileThread();
     // MSVC maintains terminate handlers per thread, including threads created later.
@@ -505,13 +521,7 @@ void ObserveCrashLifecycle() {
         MemoryEvent("AppMemoryUsageLimitChanging", args.NewLimit());
     });
     MemoryEvent("memory_initial");
-    if (ThreadProfile::Enabled()) {
-        RegisterProfileThread();
-        Diagnostic("THREAD_PROFILE enabled period_ms=5000 cpu_percent=one_host_core");
-        static const auto profiler =
-            winrt::Windows::System::Threading::ThreadPoolTimer::CreatePeriodicTimer(
-                [](const auto&) { SampleThreads(); }, std::chrono::seconds(5));
-    }
+    StartThreadProfiler();
     // Samples every 100 ms while the UI/emulation threads stall; suspension pauses the timer. A
     // line is written once per second, plus a `stall` line the moment a gap over 300 ms ends.
     static std::atomic<std::uint64_t> last_sample_ms{0};

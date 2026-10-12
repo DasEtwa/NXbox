@@ -10,11 +10,9 @@
 
 namespace EdenXbox::ThreadProfile {
 inline bool Enabled() noexcept {
-    static const bool enabled = [] {
-        const auto* value = std::getenv("NXBOX_THREAD_PROFILE");
-        return value && std::strcmp(value, "1") == 0;
-    }();
-    return enabled;
+    // Runtime knobs are loaded from LocalState after crash handlers are installed.
+    const auto* value = std::getenv("NXBOX_THREAD_PROFILE");
+    return value && std::strcmp(value, "1") == 0;
 }
 
 // 100% means one fully occupied host core; use the measured wall interval, not timer cadence.
