@@ -35,7 +35,7 @@ inline std::optional<Module> ParseImage(std::span<const std::uint8_t> file, Addr
         module.build_id.assign(file.begin() + 0x40, file.begin() + 0x60);
         module.roots.push_back(module.ranges[0].address);
         // NSO dynsym extent is relative to rodata, with ELF64 symbol entries.
-        const auto offset = *field(0x88, 4), size = *field(0x8c, 4);
+        const auto offset = *field(0x98, 4), size = *field(0x9c, 4);
         const auto& ro = module.ranges[1];
         if (size % 24 || offset > ro.bytes.size() || size > ro.bytes.size() - offset) {
             return std::nullopt;

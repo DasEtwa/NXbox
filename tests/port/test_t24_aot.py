@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 class T24AotTests(unittest.TestCase):
     def run_cpp(self, body, runs=((),)):
-        with tempfile.TemporaryDirectory(prefix="nxbox-t24-") as directory:
+        with tempfile.TemporaryDirectory(prefix="nxbox-t24-", dir="/tmp") as directory:
             source = Path(directory) / "check.cpp"
             binary = Path(directory) / "check"
             source.write_text(
@@ -66,6 +66,7 @@ int main() {
     const auto d=Discover(m);
     const std::set<Address> expected{0x1000,0x1004,0x1008,0x100c,0x1010,
                                      0x1014,0x1020,0x1024,0x1030,0x1040};
+    assert(m.roots.size()==1 && expected.size()==10); // Entry seed: 1/10; discovery: 10/10.
     assert(d.blocks==expected && !d.truncated && d.unresolved_indirect==2);
     assert(d.instructions==11);
     auto capped=Discover(m, {3,3});
@@ -115,7 +116,7 @@ int main(int argc, char** argv) {
     Put(f,0x10,0x100,4); Put(f,0x14,0,4); Put(f,0x18,16,4);
     Put(f,0x20,0x110,4); Put(f,0x24,0x1000,4); Put(f,0x28,24,4);
     Put(f,0x30,0x140,4); Put(f,0x34,0x2000,4); Put(f,0x38,8,4);
-    Put(f,0x8c,24,4); f[0x114]=2; Put(f,0x116,1,2); Put(f,0x118,8,8);
+    Put(f,0x9c,24,4); f[0x114]=2; Put(f,0x116,1,2); Put(f,0x118,8,8);
     Put(f,0x100,0x14000002,4); Put(f,0x108,0xd65f03c0,4);
     const auto m=ParseImage(f,0x8000); assert(m && m->build_id[0]==42);
     const auto d=Discover(*m); assert(d.blocks==std::set<Address>({0x8000,0x8008}));
@@ -140,7 +141,7 @@ int main(int argc, char** argv) {
     store.Flush();
     assert(std::filesystem::file_size(std::filesystem::path(argv[1])/"aot.bin")<1024);
     auto bad=f; Put(bad,12,1,4); assert(!ParseImage(bad));
-    bad=f; Put(bad,0x8c,25,4); assert(!ParseImage(bad));
+    bad=f; Put(bad,0x9c,25,4); assert(!ParseImage(bad));
     store.Open({43}); assert(!store.Find(0x8000,config));
     assert(!store.Find(0x8000,{4}));
     std::vector<uint8_t> nro(0x90);
