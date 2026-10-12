@@ -574,7 +574,7 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     auto words = pipeline->RootConstants({size.width, size.height, y_flip});
     words[8] = is_indexed ? draw_state.base_index : draw_state.vertex_buffer.first;
     words[9] = draw_state.base_instance;
-    commands->OMSetStencilRef(regs.stencil_front_func_ref);
+    commands->OMSetStencilRef(regs.stencil_front_ref);
     const float blend[]{regs.blend_color.r, regs.blend_color.g, regs.blend_color.b,
                         regs.blend_color.a};
     commands->OMSetBlendFactor(blend);

@@ -87,6 +87,7 @@ void ComputeDispatch::Bind(const ComputeBindings& bindings) {
     context.AfterCompletion([pipeline = bindings.pipeline, root = bindings.root_signature,
                              resources = bindings.resource_heap, samplers = bindings.sampler_heap,
                              signature = indirect_signature] {});
+    commands->OMSetRenderTargets(0, nullptr, FALSE, nullptr);
     UavBarrier();
     for (const auto& use : bindings.resources)
         context.Transition(use.resource, use.state);

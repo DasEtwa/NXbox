@@ -300,6 +300,19 @@ Shader::RuntimeInfo GraphicsRuntime(const Maxwell& regs, const Shader::IR::Progr
             Pso::ComparisonFunc(static_cast<u32>(regs.alpha_test_func)) - 1);
         runtime.alpha_test_reference = regs.alpha_test_ref;
     }
+    if (program.stage == Shader::Stage::Fragment && regs.blend.enable[0]) {
+        const auto dual_source = [](const auto& blend) {
+            const auto is_dual = [](auto factor) {
+                const u32 native = Pso::BlendFactor(static_cast<u32>(factor));
+                return native >= 16 && native <= 19;
+            };
+            return is_dual(blend.color_source) || is_dual(blend.color_dest) ||
+                   is_dual(blend.alpha_source) || is_dual(blend.alpha_dest);
+        };
+        runtime.dual_source_blend = regs.blend_per_target_enabled
+                                        ? dual_source(regs.blend_per_target[0])
+                                        : dual_source(regs.blend);
+    }
     if (regs.transform_feedback_enabled)
         throw Shader::NotImplementedException("D3D12 guest transform feedback linkage");
     if (previous) {
@@ -320,6 +333,10 @@ Shader::RuntimeInfo GraphicsRuntime(const Maxwell& regs, const Shader::IR::Progr
                                  regs.depth_mode == Maxwell::DepthMode::MinusOneToOne;
     for (size_t i = 0; i < runtime.generic_input_types.size(); ++i) {
         const auto& attribute = regs.vertex_attrib_format[i];
+        if (attribute.constant) {
+            runtime.generic_input_types[i] = Shader::AttributeType::Disabled;
+            continue;
+        }
         using Type = Maxwell::VertexAttribute::Type;
         switch (attribute.type.Value()) {
         case Type::SInt:
@@ -513,6 +530,7 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
         disk->Flush();
     }
     std::scoped_lock lock{pipeline_mutex};
+    context.Finish(); // Retire PSOs referenced by the previous title before replacing the maps.
     guest_graphics.clear();
     guest_compute.clear();
     graphics.clear();
