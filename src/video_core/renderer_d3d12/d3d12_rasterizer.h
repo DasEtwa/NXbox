@@ -42,7 +42,7 @@ public:
     }
 };
 
-// P2 owns shared VideoCommon caches. Guest pipelines remain P3-P5 stubs.
+// Shared guest caches drive native graphics/compute pipelines and query reporting.
 class RasterizerD3D12 final : public VideoCore::RasterizerInterface,
                               protected VideoCommon::ChannelSetupCaches<VideoCommon::ChannelInfo> {
 public:

@@ -87,7 +87,7 @@ public:
 
     explicit D3D12DescriptorAllocator(Context& context);
 
-    // Binds the two shader-visible heaps on the current command list (once per list).
+    // Rebind for every draw: helpers can replace heaps within the same command list.
     void SetHeaps(ID3D12GraphicsCommandList* commands);
     DescriptorTable AllocateViews(u32 count);
     DescriptorTable AllocateSamplers(u32 count);
@@ -140,6 +140,5 @@ private:
     Ring samplers{SamplerHeapSize};
     Ring rtvs{RtvHeapSize};
     Ring dsvs{DsvHeapSize};
-    u64 heaps_bound_tick{};
 };
 } // namespace D3D12

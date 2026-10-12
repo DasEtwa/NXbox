@@ -106,11 +106,8 @@ void D3D12DescriptorAllocator::Init(Ring& ring, D3D12_DESCRIPTOR_HEAP_TYPE type,
 }
 
 void D3D12DescriptorAllocator::SetHeaps(ID3D12GraphicsCommandList* commands) {
-    if (heaps_bound_tick == context.CurrentTick())
-        return;
     ID3D12DescriptorHeap* heaps[] = {views.heap.Get(), samplers.heap.Get()};
     commands->SetDescriptorHeaps(2, heaps);
-    heaps_bound_tick = context.CurrentTick();
 }
 
 DescriptorTable D3D12DescriptorAllocator::Allocate(Ring& ring, u32 count) {
