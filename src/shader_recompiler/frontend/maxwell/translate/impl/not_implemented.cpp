@@ -4,6 +4,7 @@
 // SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "common/bit_field.h"
 #include "common/common_types.h"
 #include "shader_recompiler/exception.h"
 #include "shader_recompiler/frontend/maxwell/opcodes.h"
@@ -14,6 +15,137 @@ namespace Shader::Maxwell {
 [[noreturn]] static void ThrowNotImplemented(Opcode opcode) {
     throw NotImplementedException("Instruction {} is not implemented", opcode);
 }
+
+namespace {
+// Byte permutation selectors follow PTX prmt; mode encodings follow envydis gm107.
+// SASS orders the operands as source A, selector, source B (unlike PTX).
+void PRMT(TranslatorVisitor& v, u64 insn, const IR::U32& source_b, const IR::U32& selector) {
+    union {
+        u64 raw;
+        BitField<0, 8, IR::Reg> dest_reg;
+        BitField<48, 4, u64> mode;
+    } const prmt{insn};
+    if (prmt.mode > 6) {
+        throw NotImplementedException("Invalid PRMT mode {}", prmt.mode.Value());
+    }
+    auto& ir = v.ir;
+    const IR::U32 source_a{v.GetReg8(insn)};
+    const IR::U32 control{ir.BitwiseAnd(selector, ir.Imm32(3))};
+    IR::U32 result{ir.Imm32(0)};
+    for (u32 byte = 0; byte < 4; ++byte) {
+        IR::U32 index{ir.Imm32(0)};
+        switch (prmt.mode) {
+        case 0:
+            index = ir.BitFieldExtract(selector, ir.Imm32(byte * 4), ir.Imm32(4), false);
+            break;
+        case 1: // Forward extraction.
+            index = ir.IAdd(control, ir.Imm32(byte));
+            break;
+        case 2: // Backward extraction wraps around the eight source bytes.
+            index = ir.BitwiseAnd(ir.ISub(control, ir.Imm32(byte)), ir.Imm32(7));
+            break;
+        case 3: // Replicate one byte.
+            index = control;
+            break;
+        case 4: // Clamp to the left edge.
+            index = ir.UMax(control, ir.Imm32(byte));
+            break;
+        case 5: // Clamp to the right edge.
+            index = ir.UMin(control, ir.Imm32(byte));
+            break;
+        case 6: // Replicate one halfword; bit 1 of the control is ignored.
+            index = ir.IAdd(ir.ShiftLeftLogical(ir.BitwiseAnd(control, ir.Imm32(1)), ir.Imm32(1)),
+                            ir.Imm32(byte & 1));
+            break;
+        }
+        const IR::U32 source{ir.Select(ir.IEqual(ir.BitwiseAnd(index, ir.Imm32(4)), ir.Imm32(0)),
+                                       source_a, source_b)};
+        const IR::U32 shift{ir.ShiftLeftLogical(ir.BitwiseAnd(index, ir.Imm32(3)), ir.Imm32(3))};
+        IR::U32 value{ir.BitwiseAnd(ir.ShiftRightLogical(source, shift), ir.Imm32(255))};
+        if (prmt.mode == 0) {
+            const IR::U32 sign{
+                ir.Select(ir.IEqual(ir.BitwiseAnd(value, ir.Imm32(128)), ir.Imm32(0)), ir.Imm32(0),
+                          ir.Imm32(255))};
+            value = IR::U32{
+                ir.Select(ir.IEqual(ir.BitwiseAnd(index, ir.Imm32(8)), ir.Imm32(0)), value, sign)};
+        }
+        result = ir.BitwiseOr(result, ir.ShiftLeftLogical(value, ir.Imm32(byte * 8)));
+    }
+    v.X(prmt.dest_reg, result);
+}
+
+// Compute the high product using 16-bit limbs, without requiring native int64.
+IR::U32 MultiplyHigh(IR::IREmitter& ir, const IR::U32& a, const IR::U32& b, bool signed_a,
+                     bool signed_b) {
+    const IR::U32 a_low{ir.BitwiseAnd(a, ir.Imm32(0xffff))};
+    const IR::U32 b_low{ir.BitwiseAnd(b, ir.Imm32(0xffff))};
+    const IR::U32 a_high{ir.ShiftRightLogical(a, ir.Imm32(16))};
+    const IR::U32 b_high{ir.ShiftRightLogical(b, ir.Imm32(16))};
+    const IR::U32 low{ir.IMul(a_low, b_low)};
+    const IR::U32 middle{ir.IAdd(ir.IMul(a_high, b_low), ir.ShiftRightLogical(low, ir.Imm32(16)))};
+    const IR::U32 carry{ir.ShiftRightLogical(middle, ir.Imm32(16))};
+    const IR::U32 other{ir.IAdd(ir.IMul(a_low, b_high), ir.BitwiseAnd(middle, ir.Imm32(0xffff)))};
+    IR::U32 high{ir.IAdd(ir.IAdd(ir.IMul(a_high, b_high), carry),
+                         ir.ShiftRightLogical(other, ir.Imm32(16)))};
+    if (signed_a) {
+        high =
+            ir.ISub(high, IR::U32{ir.Select(ir.ILessThan(a, ir.Imm32(0), true), b, ir.Imm32(0))});
+    }
+    if (signed_b) {
+        high =
+            ir.ISub(high, IR::U32{ir.Select(ir.ILessThan(b, ir.Imm32(0), true), a, ir.Imm32(0))});
+    }
+    return high;
+}
+
+void IMUL(TranslatorVisitor& v, u64 insn, const IR::U32& b, bool high, bool signed_a, bool signed_b,
+          bool cc) {
+    if (cc) {
+        throw NotImplementedException("IMUL CC");
+    }
+    const IR::U32 a{v.GetReg8(insn)};
+    const IR::U32 result{high ? MultiplyHigh(v.ir, a, b, signed_a, signed_b) : v.ir.IMul(a, b)};
+    v.X(static_cast<IR::Reg>(insn & 255), result);
+}
+
+void IMUL(TranslatorVisitor& v, u64 insn, const IR::U32& b) {
+    union {
+        u64 raw;
+        BitField<39, 1, u64> high;
+        BitField<40, 1, u64> signed_a;
+        BitField<41, 1, u64> signed_b;
+        BitField<47, 1, u64> cc;
+    } const imul{insn};
+    IMUL(v, insn, b, imul.high != 0, imul.signed_a != 0, imul.signed_b != 0, imul.cc != 0);
+}
+
+void IMAD(TranslatorVisitor& v, u64 insn, const IR::U32& b, const IR::U32& c) {
+    union {
+        u64 raw;
+        BitField<0, 8, IR::Reg> dest_reg;
+        BitField<47, 1, u64> cc;
+        BitField<48, 1, u64> signed_a;
+        BitField<49, 1, u64> x;
+        BitField<50, 1, u64> sat;
+        BitField<53, 1, u64> signed_b;
+        BitField<54, 1, u64> high;
+    } const imad{insn};
+    if (imad.cc != 0) {
+        throw NotImplementedException("IMAD CC");
+    }
+    if (imad.x != 0) {
+        throw NotImplementedException("IMAD X");
+    }
+    if (imad.sat != 0) {
+        throw NotImplementedException("IMAD SAT");
+    }
+    const IR::U32 a{v.GetReg8(insn)};
+    const IR::U32 product{imad.high != 0
+                              ? MultiplyHigh(v.ir, a, b, imad.signed_a != 0, imad.signed_b != 0)
+                              : v.ir.IMul(a, b)};
+    v.X(imad.dest_reg, v.ir.IAdd(product, c));
+}
+} // Anonymous namespace
 
 void TranslatorVisitor::ATOM_cas(u64) {
     ThrowNotImplemented(Opcode::ATOM_cas);
@@ -95,24 +227,46 @@ void TranslatorVisitor::IDP_imm(u64) {
     ThrowNotImplemented(Opcode::IDP_imm);
 }
 
-void TranslatorVisitor::IMAD_reg(u64) {
-    ThrowNotImplemented(Opcode::IMAD_reg);
+void TranslatorVisitor::IMAD_reg(u64 insn) {
+    IMAD(*this, insn, GetReg20(insn), GetReg39(insn));
 }
 
-void TranslatorVisitor::IMAD_rc(u64) {
-    ThrowNotImplemented(Opcode::IMAD_rc);
+void TranslatorVisitor::IMAD_rc(u64 insn) {
+    IMAD(*this, insn, GetReg39(insn), GetCbuf(insn));
 }
 
-void TranslatorVisitor::IMAD_cr(u64) {
-    ThrowNotImplemented(Opcode::IMAD_cr);
+void TranslatorVisitor::IMAD_cr(u64 insn) {
+    IMAD(*this, insn, GetCbuf(insn), GetReg39(insn));
 }
 
-void TranslatorVisitor::IMAD_imm(u64) {
-    ThrowNotImplemented(Opcode::IMAD_imm);
+void TranslatorVisitor::IMAD_imm(u64 insn) {
+    IMAD(*this, insn, GetImm20(insn), GetReg39(insn));
 }
 
-void TranslatorVisitor::IMAD32I(u64) {
-    ThrowNotImplemented(Opcode::IMAD32I);
+void TranslatorVisitor::IMAD32I(u64 insn) {
+    union {
+        u64 raw;
+        BitField<0, 8, IR::Reg> dest_reg;
+        BitField<52, 1, u64> cc;
+        BitField<53, 1, u64> high;
+        BitField<54, 1, u64> signed_a;
+        BitField<55, 1, u64> neg_c;
+        BitField<56, 1, u64> neg_a;
+        BitField<57, 1, u64> signed_b;
+    } const imad{insn};
+    if (imad.cc != 0) {
+        throw NotImplementedException("IMAD32I CC");
+    }
+    if (imad.neg_a != 0 || imad.neg_c != 0) {
+        throw NotImplementedException("IMAD32I NEG/PO");
+    }
+    const IR::U32 a{GetReg8(insn)};
+    const IR::U32 b{GetImm32(insn)};
+    const IR::U32 c{X(imad.dest_reg)};
+    const IR::U32 product{imad.high != 0
+                              ? MultiplyHigh(ir, a, b, imad.signed_a != 0, imad.signed_b != 0)
+                              : ir.IMul(a, b)};
+    X(imad.dest_reg, ir.IAdd(product, c));
 }
 
 void TranslatorVisitor::IMADSP_reg(u64) {
@@ -131,20 +285,28 @@ void TranslatorVisitor::IMADSP_imm(u64) {
     ThrowNotImplemented(Opcode::IMADSP_imm);
 }
 
-void TranslatorVisitor::IMUL_reg(u64) {
-    ThrowNotImplemented(Opcode::IMUL_reg);
+void TranslatorVisitor::IMUL_reg(u64 insn) {
+    IMUL(*this, insn, GetReg20(insn));
 }
 
-void TranslatorVisitor::IMUL_cbuf(u64) {
-    ThrowNotImplemented(Opcode::IMUL_cbuf);
+void TranslatorVisitor::IMUL_cbuf(u64 insn) {
+    IMUL(*this, insn, GetCbuf(insn));
 }
 
-void TranslatorVisitor::IMUL_imm(u64) {
-    ThrowNotImplemented(Opcode::IMUL_imm);
+void TranslatorVisitor::IMUL_imm(u64 insn) {
+    IMUL(*this, insn, GetImm20(insn));
 }
 
-void TranslatorVisitor::IMUL32I(u64) {
-    ThrowNotImplemented(Opcode::IMUL32I);
+void TranslatorVisitor::IMUL32I(u64 insn) {
+    union {
+        u64 raw;
+        BitField<52, 1, u64> cc;
+        BitField<53, 1, u64> high;
+        BitField<54, 1, u64> signed_a;
+        BitField<55, 1, u64> signed_b;
+    } const imul{insn};
+    IMUL(*this, insn, GetImm32(insn), imul.high != 0, imul.signed_a != 0, imul.signed_b != 0,
+         imul.cc != 0);
 }
 
 void TranslatorVisitor::JCAL(u64) {
@@ -195,20 +357,20 @@ void TranslatorVisitor::PRET(u64) {
     ThrowNotImplemented(Opcode::PRET);
 }
 
-void TranslatorVisitor::PRMT_reg(u64) {
-    ThrowNotImplemented(Opcode::PRMT_reg);
+void TranslatorVisitor::PRMT_reg(u64 insn) {
+    PRMT(*this, insn, GetReg39(insn), GetReg20(insn));
 }
 
-void TranslatorVisitor::PRMT_rc(u64) {
-    ThrowNotImplemented(Opcode::PRMT_rc);
+void TranslatorVisitor::PRMT_rc(u64 insn) {
+    PRMT(*this, insn, GetCbuf(insn), GetReg39(insn));
 }
 
-void TranslatorVisitor::PRMT_cr(u64) {
-    ThrowNotImplemented(Opcode::PRMT_cr);
+void TranslatorVisitor::PRMT_cr(u64 insn) {
+    PRMT(*this, insn, GetReg39(insn), GetCbuf(insn));
 }
 
-void TranslatorVisitor::PRMT_imm(u64) {
-    ThrowNotImplemented(Opcode::PRMT_imm);
+void TranslatorVisitor::PRMT_imm(u64 insn) {
+    PRMT(*this, insn, GetReg39(insn), GetImm20(insn));
 }
 
 void TranslatorVisitor::R2B(u64) {
