@@ -51,9 +51,24 @@ struct ShaderCompiler::Impl {
     }
 };
 ShaderCompiler::ShaderCompiler() : impl{std::make_unique<Impl>()} {
+#ifdef NXBOX_UWP
     impl->library = LoadPackagedLibrary(L"dxcompiler.dll", 0);
     if (!impl->library)
         Check(HRESULT_FROM_WIN32(GetLastError()), "LoadPackagedLibrary dxcompiler.dll");
+#else
+    // Resolve beside the executable even when launched from another working directory.
+    std::wstring path(32768, L'\0');
+    const auto length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
+    if (!length || length >= path.size())
+        throw std::runtime_error("D3D12 cannot resolve executable directory");
+    path.resize(length);
+    path.resize(path.find_last_of(L"\\/") + 1);
+    path += L"dxcompiler.dll";
+    impl->library = LoadLibraryExW(
+        path.c_str(), nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+    if (!impl->library)
+        Check(HRESULT_FROM_WIN32(GetLastError()), "LoadLibraryExW dxcompiler.dll");
+#endif
     using CreateInstance = HRESULT(WINAPI*)(REFCLSID, REFIID, void**);
     const auto create =
         reinterpret_cast<CreateInstance>(GetProcAddress(impl->library, "DxcCreateInstance"));

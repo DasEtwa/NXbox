@@ -36,6 +36,7 @@ LaunchParams ParseLaunchParams(Core::System& system, int argc, char *argv[], wch
         {"user", required_argument, 0, 'u'},
         {"version", no_argument, 0, 'v'},
         {"input-profile", no_argument, 0, 'i'},
+        {"renderer", required_argument, 0, 'r'},
         {"null-render", no_argument, 0, 'n'},
         {"singlecore", no_argument, 0, 's'},
         {"filter", no_argument, 0, 'x'},
@@ -44,7 +45,8 @@ LaunchParams ParseLaunchParams(Core::System& system, int argc, char *argv[], wch
     };
 
     while (optind < argc) {
-        if (int arg = getopt_long(argc, argv, "dc:fhg:m:p:u:vinsx", long_options, &option_index); arg != -1) {
+        if (int arg = getopt_long(argc, argv, "dc:fhg:m:p:r:u:vinsx", long_options, &option_index);
+            arg != -1) {
             switch (char(arg)) {
             case 'd':
                 p.override_gdb_port = uint16_t(atoi(optarg));
@@ -116,6 +118,9 @@ LaunchParams ParseLaunchParams(Core::System& system, int argc, char *argv[], wch
             case 'v':
                 p.print_version = true;
                 break;
+            case 'r':
+                p.renderer_backend = optarg;
+                break;
             case 'n':
                 p.force_null_render = true;
                 break;
@@ -176,6 +181,20 @@ void ApplyLaunchParams(LaunchParams const& lp) noexcept {
     if (lp.force_single_core) {
         Settings::values.use_multi_core = false;
     }
+    if (lp.renderer_backend) {
+        const auto& backend = *lp.renderer_backend;
+        if (backend == "d3d12") {
+            Settings::values.renderer_backend = Settings::RendererBackend::D3D12;
+        } else if (backend == "vulkan") {
+            Settings::values.renderer_backend = Settings::RendererBackend::Vulkan;
+        } else if (backend == "opengl") {
+            Settings::values.renderer_backend = Settings::RendererBackend::OpenGL_GLSL;
+        } else if (backend == "null") {
+            Settings::values.renderer_backend = Settings::RendererBackend::Null;
+        } else {
+            LOG_ERROR(Frontend, "Unknown renderer '{}'", backend);
+        }
+    }
     if (lp.force_null_render) {
         Settings::values.renderer_backend = Settings::RendererBackend::Null;
     }
@@ -185,20 +204,20 @@ void ApplyLaunchParams(LaunchParams const& lp) noexcept {
     }
     if (lp.print_help) {
         LOG_INFO(Frontend,
-            "Usage: {}"
-            " [options] <filename>\n"
-            "-c, --config          Load the specified configuration file\n"
-            "-f, --fullscreen      Start in fullscreen mode\n"
-            "-g, --game            File path of the game to load\n"
-            "-h, --help            Display this help and exit\n"
-            "-m, --multiplayer=nick:password@address:port"
-            " Nickname, password, address and port for multiplayer\n"
-            "-p, --program         Pass following string as arguments to executable\n"
-            "-u, --user            Select a specific user profile from 0 to 7\n"
-            "-d, --debug           Run the GDB stub on a port from 1 to 65535\n"
-            "-v, --version         Output version information and exit\n",
-            lp.argv0
-        );
+                 "Usage: {}"
+                 " [options] <filename>\n"
+                 "-c, --config          Load the specified configuration file\n"
+                 "-f, --fullscreen      Start in fullscreen mode\n"
+                 "-g, --game            File path of the game to load\n"
+                 "-h, --help            Display this help and exit\n"
+                 "-m, --multiplayer=nick:password@address:port"
+                 " Nickname, password, address and port for multiplayer\n"
+                 "-p, --program         Pass following string as arguments to executable\n"
+                 "-r, --renderer        Select opengl, vulkan, d3d12 or null\n"
+                 "-u, --user            Select a specific user profile from 0 to 7\n"
+                 "-d, --debug           Run the GDB stub on a port from 1 to 65535\n"
+                 "-v, --version         Output version information and exit\n",
+                 lp.argv0);
     }
 }
 

@@ -315,11 +315,21 @@ public:
     ID3D12CommandQueue* Queue() const {
         return queue.Get();
     }
+    u64 DeviceLocalMemory() const {
+#ifdef NXBOX_UWP
+        return MemoryBudget::Limit;
+#else
+        return device_local_memory;
+#endif
+    }
     u64 MemoryUsage() const {
         return budget->used;
     }
 
 private:
+#ifndef NXBOX_UWP
+    u64 device_local_memory{};
+#endif
     FrameProfile profile;
     ComPtr<ID3D12Device> device;
     ComPtr<ID3D12CommandQueue> queue;

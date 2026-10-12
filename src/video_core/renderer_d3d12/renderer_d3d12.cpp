@@ -10,9 +10,7 @@
 #include <windows.h>
 #include "common/logging.h"
 #include "eden_uwp/renderer_boundary.h"
-#ifdef NXBOX_UWP
 #include "eden_uwp/thread_profile.h"
-#endif
 #include "core/frontend/emu_window.h"
 #include "core/frontend/graphics_context.h"
 #include "video_core/capture.h"
@@ -163,8 +161,13 @@ struct RendererD3D12::Impl {
     }
     void Initialize(Core::Frontend::EmuWindow& window) {
         const auto& info = window.GetWindowInfo();
-        if (info.type != Core::Frontend::WindowSystemType::Windows || !info.render_surface)
+        if (info.type != Core::Frontend::WindowSystemType::Windows || !info.render_surface) {
+#ifdef NXBOX_UWP
             throw std::runtime_error("D3D12 requires a UWP CoreWindow ABI surface");
+#else
+            throw std::runtime_error("D3D12 requires a Windows HWND surface");
+#endif
+        }
         ComPtr<IDXGIFactory2> factory;
         Check(CreateDXGIFactory2(0, IID_PPV_ARGS(&factory)), "CreateDXGIFactory2",
               context.Device());
@@ -181,10 +184,20 @@ struct RendererD3D12::Impl {
         desc.Scaling = DXGI_SCALING_STRETCH;
         desc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
         ComPtr<IDXGISwapChain1> chain;
+#ifdef NXBOX_UWP
         Check(factory->CreateSwapChainForCoreWindow(context.Queue(),
                                                     static_cast<IUnknown*>(info.render_surface),
                                                     &desc, nullptr, &chain),
               "CreateSwapChainForCoreWindow", context.Device());
+#else
+        Check(factory->CreateSwapChainForHwnd(context.Queue(),
+                                              static_cast<HWND>(info.render_surface), &desc,
+                                              nullptr, nullptr, &chain),
+              "CreateSwapChainForHwnd", context.Device());
+        Check(factory->MakeWindowAssociation(static_cast<HWND>(info.render_surface),
+                                             DXGI_MWA_NO_ALT_ENTER),
+              "MakeWindowAssociation", context.Device());
+#endif
         Check(chain.As(&swapchain), "Query IDXGISwapChain3", context.Device());
         D3D12_DESCRIPTOR_HEAP_DESC heap{};
         heap.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
@@ -302,10 +315,8 @@ struct RendererD3D12::Impl {
             Diagnostic("D3D12 Present begin");
         HRESULT status;
         {
-#ifdef NXBOX_UWP
             const EdenXbox::ThreadProfile::Scope present_scope{
                 EdenXbox::ThreadProfile::Wait::Present};
-#endif
             status = swapchain->Present(1, 0);
         }
         context.LogInfoQueue();

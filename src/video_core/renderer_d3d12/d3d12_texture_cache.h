@@ -42,7 +42,7 @@ public:
     void TickFrame();
     void FlushDeferredClear() {}
     u64 GetDeviceLocalMemory() const {
-        return MemoryBudget::Limit;
+        return context.DeviceLocalMemory();
     }
     u64 GetDeviceMemoryUsage() const {
         return context.MemoryUsage();
@@ -50,10 +50,12 @@ public:
     bool CanReportMemoryUsage() const {
         return true;
     }
+#ifdef NXBOX_UWP
     void ApplyMemoryBudgetOverride(u64& expected, u64& critical) {
         expected = 320ULL << 20;
         critical = 448ULL << 20;
     }
+#endif
     bool CanDownloadImage(const Image& image) const;
     bool CanDownloadMsaa(const VideoCommon::ImageInfo& info) const {
         const auto format = MaxwellFormat(info.format);

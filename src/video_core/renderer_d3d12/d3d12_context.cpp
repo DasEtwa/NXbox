@@ -15,7 +15,10 @@
 #include <winrt/Windows.System.h>
 #include "eden_uwp/crash_logger.h"
 #include "eden_uwp/diagnostic.h"
+#endif
 #include "eden_uwp/thread_profile.h"
+#ifndef NXBOX_UWP
+#include <dxgi1_4.h>
 #endif
 #include "common/logging.h"
 #include "video_core/renderer_d3d12/d3d12_completion.h"
@@ -385,6 +388,17 @@ Context::Context() {
     }
     Check(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)),
           "CreateDevice");
+#ifndef NXBOX_UWP
+    ComPtr<IDXGIFactory4> factory;
+    ComPtr<IDXGIAdapter3> adapter;
+    Check(CreateDXGIFactory2(0, IID_PPV_ARGS(&factory)), "Create memory budget factory");
+    Check(factory->EnumAdapterByLuid(device->GetAdapterLuid(), IID_PPV_ARGS(&adapter)),
+          "Find D3D12 adapter");
+    DXGI_ADAPTER_DESC2 adapter_desc{};
+    Check(adapter->GetDesc2(&adapter_desc), "Get adapter memory");
+    device_local_memory = adapter_desc.DedicatedVideoMemory ? adapter_desc.DedicatedVideoMemory
+                                                            : adapter_desc.SharedSystemMemory;
+#endif
     if (debug[0] == '1') {
         ComPtr<ID3D12InfoQueue> info;
         const auto status = device.As(&info);
@@ -521,9 +535,7 @@ void Context::WaitSubmitted(u64 tick) {
         DWORD wait;
         DWORD wait_error;
         {
-#ifdef NXBOX_UWP
             const EdenXbox::ThreadProfile::Scope wait_scope{EdenXbox::ThreadProfile::Wait::Fence};
-#endif
             wait = WaitForSingleObjectEx(wait_event, 10000, FALSE);
             wait_error = GetLastError();
         }

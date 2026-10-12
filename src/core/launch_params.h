@@ -19,6 +19,7 @@ struct LaunchParams {
     std::string address{};
     std::string input_profile{};
     std::string program_args{};
+    std::optional<std::string> renderer_backend{};
     std::optional<std::string> config_path{};
     std::optional<int> selected_user{};
     std::optional<u16> override_gdb_port{};

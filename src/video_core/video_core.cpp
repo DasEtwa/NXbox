@@ -57,11 +57,15 @@ std::unique_ptr<VideoCore::RendererBase> CreateRenderer(
             EdenXbox::CrashRendererException("D3D12 initialization fallback", error.what());
 #endif
             try {
+#ifdef NXBOX_UWP
                 LOG_CRITICAL(HW_GPU, "D3D12 initialization failed: {}; falling back to OpenGL",
                              error.what());
+#else
+                LOG_CRITICAL(HW_GPU, "D3D12 initialization failed: {}", error.what());
+#endif
             } catch (...) {
             }
-#ifndef HAS_OPENGL
+#if !defined(HAS_OPENGL) || !defined(NXBOX_UWP)
             throw;
 #endif
         } catch (...) {
@@ -71,16 +75,20 @@ std::unique_ptr<VideoCore::RendererBase> CreateRenderer(
                                              "non-standard exception");
 #endif
             try {
+#ifdef NXBOX_UWP
                 LOG_CRITICAL(
                     HW_GPU,
                     "D3D12 initialization failed: non-standard exception; falling back to OpenGL");
+#else
+                LOG_CRITICAL(HW_GPU, "D3D12 initialization failed: non-standard exception");
+#endif
             } catch (...) {
             }
-#ifndef HAS_OPENGL
+#if !defined(HAS_OPENGL) || !defined(NXBOX_UWP)
             throw;
 #endif
         }
-#ifdef HAS_OPENGL
+#if defined(HAS_OPENGL) && defined(NXBOX_UWP)
         // Construction may have consumed and destroyed the original context. Its scope
         // is canceled above before acquiring an independent OpenGL context.
         Settings::values.renderer_backend.SetValue(Settings::RendererBackend::OpenGL_GLSL);

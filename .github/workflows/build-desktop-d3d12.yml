@@ -1,0 +1,73 @@
+name: Build NXbox desktop D3D12
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "CMakeLists.txt"
+      - "cpmfile.json"
+      - "tools/nxbox/build-desktop-d3d12.cmd"
+      - "tools/nxbox/package_desktop_d3d12.cmake"
+      - "tools/nxbox/prepare_dxil.py"
+      - ".github/workflows/build-desktop-d3d12.yml"
+permissions:
+  contents: read
+concurrency:
+  group: nxbox-desktop-d3d12-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: windows-2025
+    timeout-minutes: 90
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache/restore@v4
+        id: cpm-cache
+        with:
+          path: .cache/cpm
+          key:
+            desktop-d3d12-cpm-${{ runner.os }}-${{ hashFiles('cpmfile.json', '**/cpmfile.json') }}
+      - uses: Mozilla-Actions/sccache-action@v0.0.11
+      - name: Prepare host shader compiler
+        run: python tools/nxbox/prepare_host_tools.py
+      - name: Configure and build desktop x64 with MSVC
+        shell: cmd
+        run: tools\nxbox\build-desktop-d3d12.cmd
+      - uses: actions/cache/save@v4
+        if: always() && steps.cpm-cache.outputs.cache-hit != 'true'
+        with:
+          path: .cache/cpm
+          key: ${{ steps.cpm-cache.outputs.cache-primary-key }}
+      - name: Stage runtime shader compiler and validator
+        env:
+          NXBOX_DXIL_SDK: "0"
+        run: python tools/nxbox/prepare_dxil.py --output build-desktop-d3d12/bin
+      - name: Package executable and runtime dependencies
+        shell: cmd
+        run: |
+          set "PATH=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer;%PATH%"
+          for /f "usebackq delims=" %%i in (`vswhere -latest -products * -property installationPath`) do call "%%i\VC\Auxiliary\Build\vcvarsall.bat" x64
+          if errorlevel 1 exit /b 1
+          cmake -DNXBOX_BUILD_DIR=build-desktop-d3d12 -P tools/nxbox/package_desktop_d3d12.cmake
+          if errorlevel 1 exit /b 1
+          powershell -NoProfile -Command "Compress-Archive -Path build-desktop-d3d12/package/* -DestinationPath build-desktop-d3d12/nxbox-desktop-d3d12.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nxbox-desktop-d3d12
+          path: build-desktop-d3d12/nxbox-desktop-d3d12.zip
+          if-no-files-found: error
+          retention-days: 14
+      - name: Collect build evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nxbox-desktop-d3d12-build-evidence
+          path: |
+            build-desktop-d3d12/CMakeCache.txt
+            build-desktop-d3d12/CMakeFiles/CMakeConfigureLog.yaml
+            build-desktop-d3d12/configure.log
+            build-desktop-d3d12/build.log
+          retention-days: 7

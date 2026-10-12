@@ -38,6 +38,14 @@ add_executable(yuzu-cmd
     ${OPENGL_SOURCES}
 )
 
+if (WIN32 AND ENABLE_D3D12)
+    target_sources(yuzu-cmd PRIVATE
+        emu_window/emu_window_sdl3_d3d12.cpp
+        emu_window/emu_window_sdl3_d3d12.h
+        desktop_thread_profile.h
+    )
+endif()
+
 target_link_libraries(yuzu-cmd PRIVATE common core input_common frontend_common video_core)
 if (ENABLE_OPENGL)
     target_link_libraries(yuzu-cmd PRIVATE glad)
