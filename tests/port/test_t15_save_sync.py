@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Run the production save policy with synthetic trees and upload responses."""
+
 import subprocess
 import tempfile
 import unittest
@@ -15,7 +16,7 @@ class SaveSyncTests(unittest.TestCase):
         cls.addClassCleanup(cls.build.cleanup)
         cls.binary = Path(cls.build.name) / "policy"
         source = Path(cls.build.name) / "policy.cpp"
-        source.write_text(r'''
+        source.write_text(r"""
 #include "eden_uwp/save_sync/policy.h"
 #include <cassert>
 #include <iostream>
@@ -81,8 +82,12 @@ int main(int argc, char** argv) {
         assert(threw);
     }
 }
-''')
-        subprocess.run(["clang++", "-std=c++20", "-I", str(ROOT / "src"), str(source), "-o", str(cls.binary)], check=True, capture_output=True)
+""")
+        subprocess.run(
+            ["clang++", "-std=c++20", "-I", str(ROOT / "src"), str(source), "-o", str(cls.binary)],
+            check=True,
+            capture_output=True,
+        )
 
     def run_policy(self, mode):
         with tempfile.TemporaryDirectory(prefix="nxbox-t15-tree-") as tree:

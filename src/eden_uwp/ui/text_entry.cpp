@@ -3,8 +3,8 @@
 
 #include <algorithm>
 #include <chrono>
-#include <cstddef>
 #include <cmath>
+#include <cstddef>
 #include <cwctype>
 #include <utility>
 
@@ -180,8 +180,8 @@ TextEntry::Result TextEntry::Update(const Input& input) {
 }
 
 void TextEntry::Draw(Renderer& renderer, Clock::time_point now) const {
-    DrawSheet(renderer, RectF(kSheetLeft, kSheetTop, kSheetLeft + kSheetWidth,
-                              kSheetTop + kSheetHeight));
+    DrawSheet(renderer,
+              RectF(kSheetLeft, kSheetTop, kSheetLeft + kSheetWidth, kSheetTop + kSheetHeight));
     const float left = kSheetLeft + kPadding;
     const float right = kSheetLeft + kSheetWidth - kPadding;
     renderer.DrawString(title_, Font::Heading,
@@ -194,20 +194,18 @@ void TextEntry::Draw(Renderer& renderer, Clock::time_point now) const {
     renderer.StrokeRounded(Inflate(field, -0.5f), 19.5f, 1.0f, Theme::kHairline);
     const float inner_left = field.left + 28.0f;
     const float inner_right = field.right - 28.0f;
-    const float before = caret_ == 0
-                             ? 0.0f
-                             : renderer.MeasureString(text_.substr(0, caret_), Font::MetaMono).width;
+    const float before =
+        caret_ == 0 ? 0.0f : renderer.MeasureString(text_.substr(0, caret_), Font::MetaMono).width;
     const float overflow = std::max(0.0f, before - (inner_right - inner_left) + 6.0f);
     renderer.PushClip(RectF(inner_left, field.top, inner_right, field.bottom));
-    renderer.DrawString(text_, Font::MetaMono,
-                        RectF(inner_left - overflow, field.top, inner_left - overflow + 4000.0f,
-                              field.bottom),
-                        Theme::kText, HAlign::Left, VAlign::Middle);
-    const bool caret_on = (std::chrono::duration_cast<std::chrono::milliseconds>(
-                               now.time_since_epoch()) /
-                           kBlink) %
-                              2 ==
-                          0;
+    renderer.DrawString(
+        text_, Font::MetaMono,
+        RectF(inner_left - overflow, field.top, inner_left - overflow + 4000.0f, field.bottom),
+        Theme::kText, HAlign::Left, VAlign::Middle);
+    const bool caret_on =
+        (std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) / kBlink) %
+            2 ==
+        0;
     if (caret_on) {
         const float x = inner_left - overflow + before;
         renderer.FillRounded(RectF(x, field.top + 20.0f, x + 3.0f, field.bottom - 20.0f), 1.5f,

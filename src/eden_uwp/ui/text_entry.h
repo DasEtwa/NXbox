@@ -29,7 +29,9 @@ public:
     Result Update(const Input& input);
     void Draw(Renderer& renderer, Clock::time_point now) const;
 
-    const std::wstring& Text() const { return text_; }
+    const std::wstring& Text() const {
+        return text_;
+    }
 
 private:
     enum class Action { Char, Shift, Backspace, Insert, Ok, Cancel };
@@ -37,7 +39,7 @@ private:
     struct Key {
         std::wstring label;
         Action action;
-        float width; // in key units; a plain key is 1
+        float width;         // in key units; a plain key is 1
         std::wstring insert; // the text a Char or Insert key types
     };
 
