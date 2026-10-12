@@ -774,3 +774,25 @@ TEST_CASE("A64: Complex floating point differential", "[a64][unicorn][conformanc
         }
     }
 }
+
+TEST_CASE("A64: Final-page stores differential", "[a64][unicorn][conformance]") {
+    A64TestEnv jit_env{};
+    A64TestEnv uni_env{};
+    auto conf = GetUserConfig(jit_env);
+    A64::Jit jit{conf};
+    A64Unicorn uni{uni_env};
+    std::mt19937 random{0x19ff};
+    const std::array<u32, 5> stores{0x39000001, 0x79000001, 0xb9000001, 0xf9000001, 0x3d800001};
+    for (const u32 instruction : stores) {
+        for (size_t iteration = 0; iteration < 128; ++iteration) {
+            A64Unicorn::RegisterArray regs{};
+            A64Unicorn::VectorArray vecs{};
+            regs[0] = 0xfffffffffffff000 | (random() % 4081);
+            regs[1] = (static_cast<u64>(random()) << 32) | random();
+            for (auto& part : vecs[1]) {
+                part = (static_cast<u64>(random()) << 32) | random();
+            }
+            RunTestInstance(jit, uni, jit_env, uni_env, conf, regs, vecs, 0, {instruction}, 0, 0);
+        }
+    }
+}

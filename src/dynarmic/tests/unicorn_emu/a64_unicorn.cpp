@@ -34,6 +34,8 @@ A64Unicorn::~A64Unicorn() {
 }
 
 void A64Unicorn::Run() {
+    // Unicorn 2 can drop a store when lazily mapping near the end of the address space.
+    UnmappedMemoryHook(uc, UC_MEM_READ_UNMAPPED, 0xfffffffffffff000, 1, 0, this);
     while (testenv.ticks_left > 0) {
         CHECKED(uc_emu_start(uc, GetPC(), END_ADDRESS, 0, 1));
         // The hook value is only 64 bits even for a 128-bit vector store. Read back
