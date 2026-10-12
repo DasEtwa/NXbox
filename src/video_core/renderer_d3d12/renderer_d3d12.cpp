@@ -254,6 +254,10 @@ struct RendererD3D12::Impl {
         UINT slot = index * MaxLayers;
         for (const auto& layer : layers) {
             const auto& texture = textures[slot - index * MaxLayers];
+            if (!texture.resource) {
+                ++slot;
+                continue;
+            }
             context.Transition(texture.resource, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
             auto cpu = srv_heap->GetCPUDescriptorHandleForHeapStart();
             auto gpu_handle = srv_heap->GetGPUDescriptorHandleForHeapStart();

@@ -7,6 +7,7 @@
 #include <cstring>
 #include <limits>
 #include <optional>
+#include <fmt/format.h>
 #include "common/alignment.h"
 #include "common/logging.h"
 #include "video_core/control/channel_state.h"
@@ -308,9 +309,18 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         const auto desc = resource->handle->GetDesc();
         const auto required = depth ? D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL
                                     : D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
-        if (!(desc.Flags & required) || desc.SampleDesc.Quality != 0 ||
-            (attachment_samples && attachment_samples != desc.SampleDesc.Count))
+        if (!(desc.Flags & required)) {
+            view.LogUnsupported(depth ? "depth attachment lacks ALLOW_DEPTH_STENCIL"
+                                      : "color attachment lacks ALLOW_RENDER_TARGET");
             return false;
+        }
+        if (desc.SampleDesc.Quality != 0 ||
+            (attachment_samples && attachment_samples != desc.SampleDesc.Count)) {
+            view.LogUnsupported(fmt::format("attachment sample mismatch: bound={} count={} quality={}",
+                                           attachment_samples, desc.SampleDesc.Count,
+                                           desc.SampleDesc.Quality));
+            return false;
+        }
         attachment_samples = desc.SampleDesc.Count;
         formats.sample_count = static_cast<u8>(attachment_samples);
         return true;
@@ -1021,6 +1031,8 @@ void RasterizerD3D12::Clear(u32 layer_count) {
             const auto required = is_depth ? D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL
                                            : D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
             if (!(flags & required)) {
+                view->LogUnsupported(is_depth ? "clear attachment lacks ALLOW_DEPTH_STENCIL"
+                                              : "clear attachment lacks ALLOW_RENDER_TARGET");
                 SkipDraw("unsupported clear attachment flags");
                 return false;
             }
@@ -1462,6 +1474,15 @@ RasterizerD3D12::DisplayTexture RasterizerD3D12::FramebufferTexture(
     if (view && view->ImageHandle()) {
         texture_cache.PrepareImage(view->image_id, false, false);
         auto description = view->Description();
+        if (view->ImageHandle()->handle->GetDesc().SampleDesc.Count > 1) {
+            auto resource = texture_runtime.ResolveFramebuffer(*view);
+            if (!resource)
+                return {};
+            description.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+            description.Texture2DArray = {0, 1, 0, 1, 0, 0};
+            log_source(resource, description.Format, true);
+            return {resource, description};
+        }
         if (description.ViewDimension == D3D12_SRV_DIMENSION_TEXTURE2D) {
             const auto mip = description.Texture2D.MostDetailedMip;
             description.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
@@ -1470,12 +1491,15 @@ RasterizerD3D12::DisplayTexture RasterizerD3D12::FramebufferTexture(
             description.Texture2DArray.ArraySize = 1;
             description.Texture2DArray.MipLevels = 1;
         } else {
-            throw std::runtime_error("D3D12 framebuffer must be a 2D texture view");
+            view->LogUnsupported("framebuffer must be a 2D texture view");
+            return {};
         }
         log_source(view->ImageHandle(), description.Format, true);
         return {view->ImageHandle(), description};
     }
     auto resource = texture_runtime.UploadFramebuffer(device_memory, config);
+    if (!resource)
+        return {};
     D3D12_SHADER_RESOURCE_VIEW_DESC description{};
     description.Format = static_cast<DXGI_FORMAT>(
         MaxwellFormat(VideoCore::Surface::PixelFormatFromGPUPixelFormat(config.pixel_format))

@@ -459,7 +459,8 @@ void Image::Transfer(const StagingBufferRef& input,
 }
 ImageView::ImageView(TextureCacheRuntime&, const VideoCommon::ImageViewInfo& info,
                      VideoCommon::ImageId id, Image& image)
-    : ImageViewBase{info, image.info, id, image.gpu_addr}, resource{image.Handle()} {
+    : ImageViewBase{info, image.info, id, image.gpu_addr}, sample_count{image.info.num_samples},
+      image_type{image.info.type}, resource{image.Handle()} {
     if (!resource)
         return;
     const auto view_info = MaxwellFormat(info.format);
@@ -564,9 +565,48 @@ ImageView::ImageView(TextureCacheRuntime&, const VideoCommon::NullImageViewParam
 }
 ImageView::ImageView(TextureCacheRuntime&, const VideoCommon::ImageInfo& info,
                      const VideoCommon::ImageViewInfo& view, GPUVAddr addr)
-    : ImageViewBase{info, view, addr}, buffer_size{VideoCommon::CalculateGuestSizeInBytes(info)} {}
+    : ImageViewBase{info, view, addr}, buffer_size{VideoCommon::CalculateGuestSizeInBytes(info)},
+      sample_count{info.num_samples}, image_type{info.type} {}
+void ImageView::LogUnsupported(std::string_view condition) const {
+    VideoCommon::ImageInfo info;
+    info.format = format;
+    info.num_samples = sample_count;
+    info.type = image_type;
+    UnsupportedImage(info, MaxwellFormat(format), condition);
+}
 void TextureCacheRuntime::TransitionImageLayout(Image& image) {
-    context.Transition(image.Handle(), D3D12_RESOURCE_STATE_COMMON);
+    if (image.Handle())
+        context.Transition(image.Handle(), D3D12_RESOURCE_STATE_COMMON);
+}
+ResourcePtr TextureCacheRuntime::ResolveFramebuffer(ImageView& view) {
+    const auto source = view.ImageHandle();
+    if (!source)
+        return {};
+    const auto format = MaxwellFormat(view.format);
+    if (format.depth) {
+        view.LogUnsupported("depth/stencil image cannot be presented as color");
+        return {};
+    }
+    const auto desc = source->handle->GetDesc();
+    VideoCommon::ImageInfo info;
+    info.type = VideoCommon::ImageType::e2D;
+    info.format = view.format;
+    info.size = {static_cast<u32>(desc.Width >> view.range.base.level),
+                 desc.Height >> view.range.base.level, 1};
+    auto target = MakeTexture(context, info, format);
+    if (!target)
+        return {};
+    const VideoCommon::Region2D region{{0, 0},
+        {static_cast<s32>(info.size.width), static_cast<s32>(info.size.height)}};
+    try {
+        BlitHelpers().Resolve({target, format},
+            {source, format, static_cast<u32>(view.range.base.level),
+             static_cast<u32>(view.range.base.layer)}, region, region);
+    } catch (const std::logic_error& error) {
+        view.LogUnsupported(error.what());
+        return {};
+    }
+    return target;
 }
 bool TextureCacheRuntime::CanDownloadImage(const Image& image) const {
     const auto format = image.HostFormat();
@@ -623,9 +663,6 @@ void TextureCacheRuntime::BlitImage(Framebuffer*, ImageView& dst, ImageView& src
     const BlitSurface target{dst.ImageHandle(), MaxwellFormat(dst.format),
                              static_cast<u32>(dst.range.base.level),
                              static_cast<u32>(dst.range.base.layer)};
-    VideoCommon::ImageInfo diagnostic;
-    diagnostic.format = src.format;
-    diagnostic.num_samples = source.resource->handle->GetDesc().SampleDesc.Count;
     try {
         const u32 layers = std::min(src.range.extent.layers, dst.range.extent.layers);
         for (u32 layer = 0; layer < layers; ++layer) {
@@ -643,7 +680,7 @@ void TextureCacheRuntime::BlitImage(Framebuffer*, ImageView& dst, ImageView& src
                 BlitHelpers().BlitColor(d, s, dst_region, src_region, filter, operation);
         }
     } catch (const std::logic_error& error) {
-        UnsupportedImage(diagnostic, source.format, error.what());
+        src.LogUnsupported(error.what());
     }
 }
 BlitImageHelper& TextureCacheRuntime::BlitHelpers() {
@@ -676,10 +713,7 @@ void TextureCacheRuntime::ConvertImage(Framebuffer*, ImageView& dst, ImageView& 
                                 {src.ImageHandle(), MaxwellFormat(src.format)},
                                 std::span{&copy, 1});
     } catch (const std::logic_error& error) {
-        VideoCommon::ImageInfo diagnostic;
-        diagnostic.format = src.format;
-        diagnostic.num_samples = src.ImageHandle()->handle->GetDesc().SampleDesc.Count;
-        UnsupportedImage(diagnostic, MaxwellFormat(src.format), error.what());
+        src.LogUnsupported(error.what());
     }
 }
 bool TextureCacheRuntime::ShouldReinterpret(Image& dst, Image& src) {
@@ -733,8 +767,10 @@ ResourcePtr TextureCacheRuntime::UploadFramebuffer(Tegra::MaxwellDeviceMemoryMan
     info.size = {config.width, config.height, 1};
     info.format = VideoCore::Surface::PixelFormatFromGPUPixelFormat(config.pixel_format);
     const auto format = MaxwellFormat(info.format);
-    if (!format.Supported() || format.block_width != 1 || format.depth)
-        throw std::runtime_error("D3D12 unsupported framebuffer format");
+    if (!format.Supported() || format.block_width != 1 || format.depth) {
+        UnsupportedImage(info, format, "framebuffer requires supported uncompressed color format");
+        return {};
+    }
     const auto address = CheckedAdd(config.address, config.offset);
     auto entry = std::ranges::find(framebuffers, address, &FramebufferEntry::address);
     if (entry == framebuffers.end()) {
@@ -749,6 +785,8 @@ ResourcePtr TextureCacheRuntime::UploadFramebuffer(Tegra::MaxwellDeviceMemoryMan
         framebuffer->handle->GetDesc().Height != config.height ||
         framebuffer->handle->GetDesc().Format != static_cast<DXGI_FORMAT>(format.resource_format))
         framebuffer = MakeTexture(context, info, format);
+    if (!framebuffer)
+        return {};
     // NVFlinger framebuffer block height matches the existing GL/Vulkan fallback.
     constexpr u32 block_height = 4;
     const auto tiled_size = Tegra::Texture::CalculateSize(

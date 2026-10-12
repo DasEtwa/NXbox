@@ -91,6 +91,7 @@ public:
                                   const Tegra::FramebufferConfig&);
     ComputePasses& ComputeHelpers();
     BlitImageHelper& BlitHelpers();
+    ResourcePtr ResolveFramebuffer(ImageView& view);
     Context& context;
 
 private:
@@ -158,6 +159,7 @@ public:
     ResourcePtr ImageHandle() const {
         return resource;
     }
+    void LogUnsupported(std::string_view condition) const;
     const D3D12_SHADER_RESOURCE_VIEW_DESC& Description() const {
         return description;
     }
@@ -171,6 +173,8 @@ public:
 
 private:
     u32 buffer_size{};
+    u32 sample_count{1};
+    VideoCommon::ImageType image_type{VideoCommon::ImageType::e2D};
     ResourcePtr resource;
     D3D12_SHADER_RESOURCE_VIEW_DESC description{};
 };

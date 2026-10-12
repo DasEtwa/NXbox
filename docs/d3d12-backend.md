@@ -379,7 +379,9 @@ Native cached 2D images now retain the guest sample count (1/2/4/8/16), subject 
 zero keeps attachment formats compatible. MSAA resources have one mip and no UAV
 flag. Guest image dimensions include the expanded sample grid; the D3D12 resource
 uses logical pixel dimensions. SRV/RTV/DSV bindings, layered clears, null SRVs and
-graphics PSO keys all carry the actual resource sample count. Mixed attachments
+graphics PSO keys all carry the actual resource sample count. MSAA framebuffer
+views resolve before the single-sample compositor; rejected presentation layers
+leave the cleared swapchain intact. Mixed attachments
 skip the draw. HLSL texel fetches select `Texture2DMS.Load`/`Texture2DMSArray.Load`
 from the resource descriptor, defaulting an omitted sample index to zero.
 
