@@ -13,8 +13,8 @@ SPDX-License-Identifier: GPL-3.0-or-later
 <p align="center">
   <b>A Nintendo Switch emulator that runs natively on an Xbox Series X.</b><br>
   A port of <a href="https://git.eden-emu.dev/eden-emu/eden">Eden</a> to the Xbox UWP sandbox: the Switch's ARM64 code runs
-  through a JIT, and its graphics go to Direct3D 12: today through OpenGL on Mesa, and, <b>*New*</b>, through a
-  native Direct3D 12 renderer.
+  through a JIT, and its graphics go to Direct3D 12: by default through OpenGL on Mesa, and, in testing, through a
+  native Direct3D 12 renderer (<code>NXBOX_RENDERER=d3d12</code>).
 </p>
 
 <p align="center">
@@ -153,7 +153,7 @@ flowchart LR
     core --> gl["OpenGL 4.6 renderer (default)"]
     gl --> mesa["Mesa d3d12 (patched)"]
     mesa --> d3d["Direct3D 12 on Xbox"]
-    core --> native["*New* native D3D12 renderer<br/>Maxwell → HLSL → DXC"]
+    core --> native["Native D3D12 renderer (in testing)<br/>Maxwell → HLSL → DXC"]
     native --> d3d
     core --> audio["XAudio2"]
     pad["Xbox controller"] --> core

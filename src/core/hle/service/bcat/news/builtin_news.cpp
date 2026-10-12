@@ -423,7 +423,7 @@ std::vector<u8> BuildMsgpack(std::string_view title, std::string_view body,
     w.WriteString("");
 
     w.WriteKey("allow_domains");
-    w.WriteString("^https?://git.eden-emu.dev(/|$)");
+    w.WriteString("^https?://github.com/NspxMiguel/NXbox(/|$)");
 
     // More link
     w.WriteKey("more");

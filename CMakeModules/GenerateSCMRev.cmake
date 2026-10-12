@@ -34,19 +34,19 @@ set(GIT_DESC ${BUILD_VERSION})
 
 # Generate cpp with Git revision from template
 
-# TODO(crueter): Stable releases feed.
-set(BUILD_AUTO_UPDATE_STABLE_REPO "eden-emu/eden")
-set(BUILD_AUTO_UPDATE_STABLE_API "git.eden-emu.dev")
-set(BUILD_AUTO_UPDATE_STABLE_API_PATH "/api/v1/repos/")
+# Release feed (in-game news): NXbox releases on GitHub, whose API mirrors Forgejo's.
+set(BUILD_AUTO_UPDATE_STABLE_REPO "NspxMiguel/NXbox")
+set(BUILD_AUTO_UPDATE_STABLE_API "api.github.com")
+set(BUILD_AUTO_UPDATE_STABLE_API_PATH "/repos/")
 
 set(BUILD_AUTO_UPDATE_API_PATH "/latest/release.json")
 if (NIGHTLY_BUILD)
-    set(BUILD_AUTO_UPDATE_WEBSITE "https://git.eden-emu.dev")
+    set(BUILD_AUTO_UPDATE_WEBSITE "https://github.com/NspxMiguel/NXbox")
     set(BUILD_AUTO_UPDATE_API "nightly.eden-emu.dev")
     set(BUILD_AUTO_UPDATE_REPO "eden-ci/nightly")
     set(REPO_NAME "Eden Nightly")
 else()
-    set(BUILD_AUTO_UPDATE_WEBSITE "https://git.eden-emu.dev")
+    set(BUILD_AUTO_UPDATE_WEBSITE "https://github.com/NspxMiguel/NXbox")
     set(BUILD_AUTO_UPDATE_API "stable.eden-emu.dev")
     set(BUILD_AUTO_UPDATE_REPO "eden-emu/eden")
     set(REPO_NAME "Eden")
