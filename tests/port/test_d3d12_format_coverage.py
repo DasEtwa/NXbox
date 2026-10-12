@@ -278,6 +278,74 @@ int main() {
 """
 
 
+ALIAS_SUPPORT = r"""
+void Image::UploadMemory(const StagingBufferRef& map,std::span<const VideoCommon::BufferImageCopy> copies) {
+    if(host_format.conversion!=FormatConversion::None) { assert(TransferConverted(map,copies,false)); return; }
+    const auto bytes=VideoCore::Surface::BytesPerBlock(info.format);
+    for(const auto& copy:copies) for(s32 layer=0;layer<copy.image_subresource.num_layers;++layer)
+        for(u32 y=0;y<copy.image_extent.height;++y) {
+            auto* destination=resource->planes.at(copy.image_subresource.base_layer+layer).data()+
+                ((copy.image_offset.y+y)*info.size.width+copy.image_offset.x)*bytes;
+            const auto* source=map.mapped_span.data()+copy.buffer_offset+
+                (u64{static_cast<u32>(layer)}*copy.buffer_image_height+y)*copy.buffer_row_length*bytes;
+            std::memcpy(destination,source,copy.image_extent.width*bytes);
+        }
+}
+void Image::DownloadMemory(const StagingBufferRef& map,std::span<const VideoCommon::BufferImageCopy> copies) {
+    if(host_format.conversion!=FormatConversion::None) { assert(TransferConverted(map,copies,true)); return; }
+    const auto bytes=VideoCore::Surface::BytesPerBlock(info.format);
+    for(const auto& copy:copies) for(s32 layer=0;layer<copy.image_subresource.num_layers;++layer)
+        for(u32 y=0;y<copy.image_extent.height;++y) {
+            const auto* source=resource->planes.at(copy.image_subresource.base_layer+layer).data()+
+                ((copy.image_offset.y+y)*info.size.width+copy.image_offset.x)*bytes;
+            auto* destination=map.mapped_span.data()+copy.buffer_offset+
+                (u64{static_cast<u32>(layer)}*copy.buffer_image_height+y)*copy.buffer_row_length*bytes;
+            std::memcpy(destination,source,copy.image_extent.width*bytes);
+        }
+}
+"""
+ALIAS_CHECK = r"""
+        if(format.conversion==FormatConversion::PackedColor) {
+            Image destination;
+            destination.info=image.info;
+            destination.info.format=bytes==1 ? "R8_UINT" : bytes==2 ? "R16_UINT" : "R32_UINT";
+            destination.host_format=LookupFormat(destination.info.format);
+            destination.runtime=&runtime;
+            destination.resource=std::make_shared<Resource>();
+            destination.resource->desc={5,3,destination.host_format.resource_format,2,1};
+            destination.resource->planes.resize(2,std::vector<u8>(5*3*bytes));
+            VideoCommon::ImageCopy region{{0,0,2},{0,0,2},{0,0,0},{0,0,0},{5,3,1}};
+            runtime.ReinterpretImage(destination,image,std::span{&region,1});
+            for(unsigned layer=0;layer<2;++layer) for(unsigned y=0;y<3;++y)
+                assert(std::memcmp(destination.resource->planes[layer].data()+y*5*bytes,
+                    original.data()+19+layer*pitch*rows+y*pitch,5*bytes)==0);
+        }
+"""
+
+
+NATIVE_ALIAS_CHECK = r"""
+    for(const auto pair : {std::pair{"R32_UINT","R16G16_UNORM"},
+                           std::pair{"R16G16B16A16_UINT","R32G32_FLOAT"}}) {
+        TextureCacheRuntime runtime;
+        Image source, destination;
+        source.info.format=pair.first; destination.info.format=pair.second;
+        source.info.size=destination.info.size={5,3,1};
+        source.host_format=LookupFormat(pair.first); destination.host_format=LookupFormat(pair.second);
+        source.runtime=destination.runtime=&runtime;
+        source.resource=std::make_shared<Resource>(); destination.resource=std::make_shared<Resource>();
+        source.resource->desc={5,3,source.host_format.resource_format,2,1};
+        destination.resource->desc={5,3,destination.host_format.resource_format,2,1};
+        source.resource->planes.resize(2,std::vector<u8>(5*3*source.host_format.bytes_per_block));
+        for(unsigned layer=0;layer<2;++layer) for(size_t i=0;i<source.resource->planes[layer].size();++i)
+            source.resource->planes[layer][i]=static_cast<u8>(i*37+layer*13);
+        destination.resource->planes.resize(2,std::vector<u8>(5*3*destination.host_format.bytes_per_block));
+        VideoCommon::ImageCopy region{{0,0,2},{0,0,2},{0,0,0},{0,0,0},{5,3,1}};
+        runtime.CopyImage(destination,source,std::span{&region,1});
+        assert(source.resource->planes==destination.resource->planes);
+    }
+"""
+
+
 class D3D12FormatCoverageTests(unittest.TestCase):
     def test_every_pixel_format_has_host_storage(self):
         surface = (ROOT / "src/video_core/surface.h").read_text()
@@ -336,6 +404,67 @@ class D3D12FormatCoverageTests(unittest.TestCase):
             cpp = Path(temp) / "runtime.cpp"
             binary = Path(temp) / "runtime"
             cpp.write_text(RUNTIME_DRIVER.replace("__CONVERTED__", source[start:end]))
+            subprocess.run(
+                [
+                    "clang++",
+                    "-std=c++20",
+                    "-Wall",
+                    "-Wextra",
+                    "-Werror",
+                    "-fsanitize=address,undefined",
+                    "-fno-sanitize-recover=all",
+                    "-I",
+                    str(ROOT / "src"),
+                    str(cpp),
+                    "-o",
+                    str(binary),
+                ],
+                check=True,
+            )
+            subprocess.run([str(binary)], check=True, timeout=60)
+
+    def test_emulated_reinterpretation_preserves_guest_bits(self):
+        source = (ROOT / "src/video_core/renderer_d3d12/d3d12_texture_cache.cpp").read_text()
+        start = source.index("bool Image::TransferConverted(")
+        end = source.index("ImageView::ImageView(", start)
+        alias_start = source.index("bool TextureCacheRuntime::ShouldReinterpret(")
+        alias_end = source.index("void TextureCacheRuntime::TickFrame(", alias_start)
+        driver = RUNTIME_DRIVER.replace(
+            "__CONVERTED__", source[start:end] + ALIAS_SUPPORT + source[alias_start:alias_end]
+        )
+        driver = driver.replace(
+            "#include <vector>",
+            '#include <vector>\n#include <stdexcept>\n#include "video_core/renderer_d3d12/d3d12_footprint.h"',
+        )
+        driver = driver.replace(
+            "struct BufferImageCopy {",
+            "using SubresourceLayers=Subresource;\nstruct ImageCopy { Subresource src_subresource,dst_subresource; Offset3D src_offset,dst_offset; Extent3D extent; };\nstruct BufferImageCopy {",
+        )
+        driver = driver.replace("struct ImageInfo {", "struct ImageInfo { u32 num_samples{1};")
+        driver = driver.replace(
+            "struct TextureCacheRuntime {",
+            "struct Image;\nstruct BlitSurface { ResourcePtr resource; FormatInfo format; };\nstruct FakeBlit { void CopyImage(const BlitSurface&,const BlitSurface&,std::span<const VideoCommon::ImageCopy>) { assert(false); } };\nstruct TextureCacheRuntime {\n    bool CanDownloadImage(const Image&) const { return true; }\n    bool ShouldReinterpret(Image&,Image&);\n    void ReinterpretImage(Image&,Image&,std::span<const VideoCommon::ImageCopy>);\n    void CopyImage(Image&,Image&,std::span<const VideoCommon::ImageCopy>);\n    void CopyImageMSAA(Image&,Image&,std::span<const VideoCommon::ImageCopy>) { assert(false); }\n    FakeBlit blit; FakeBlit& BlitHelpers() { return blit; }",
+        )
+        driver = driver.replace(
+            "struct Image {",
+            "struct Image {\n    ResourcePtr Handle() const { return resource; }\n    FormatInfo HostFormat() const { return host_format; }\n    void UploadMemory(const StagingBufferRef&,std::span<const VideoCommon::BufferImageCopy>);\n    void DownloadMemory(const StagingBufferRef&,std::span<const VideoCommon::BufferImageCopy>);",
+        )
+        driver = driver.replace(
+            "UINT16 DepthOrArraySize{},MipLevels{};",
+            "UINT16 DepthOrArraySize{},MipLevels{}; struct { UINT Count{1}; } SampleDesc{};",
+        )
+        driver = driver.replace("u64 buffer_offset{};", "u64 buffer_size{},buffer_offset{};")
+        # Preserve the aggregate initializer's buffer_offset position in the original fixture.
+        driver = driver.replace("copy{19,8,", "copy{0,19,8,")
+        driver = driver.replace(
+            "        const auto before=warnings;",
+            ALIAS_CHECK + "\n        const auto before=warnings;",
+        )
+        driver = driver.rsplit("\n}", 1)[0] + NATIVE_ALIAS_CHECK + "\n}\n"
+        with tempfile.TemporaryDirectory(prefix="nxbox-t1-alias-") as temp:
+            cpp = Path(temp) / "alias.cpp"
+            binary = Path(temp) / "alias"
+            cpp.write_text(driver)
             subprocess.run(
                 [
                     "clang++",

@@ -72,7 +72,9 @@ public:
     void InsertUploadMemoryBarrier() {}
     void TransitionImageLayout(Image&);
     bool HasBrokenTextureViewFormats() const {
-        return false;
+        // Maxwell view classes cross DXGI cast families. Let the shared cache
+        // create format-specific aliases and synchronize their guest bit patterns.
+        return true;
     }
     bool HasNativeBgr() const {
         return true;

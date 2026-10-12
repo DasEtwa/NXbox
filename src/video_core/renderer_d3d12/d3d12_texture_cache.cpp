@@ -1014,7 +1014,10 @@ void TextureCacheRuntime::ConvertImage(Framebuffer*, ImageView& dst, ImageView& 
     }
 }
 bool TextureCacheRuntime::ShouldReinterpret(Image& dst, Image& src) {
-    return dst.HostFormat().resource_format != src.HostFormat().resource_format;
+    return dst.HostFormat().resource_format != src.HostFormat().resource_format ||
+           (dst.info.format != src.info.format &&
+            (dst.HostFormat().conversion != FormatConversion::None ||
+             src.HostFormat().conversion != FormatConversion::None));
 }
 void TextureCacheRuntime::ReinterpretImage(Image& dst, Image& src,
                                            std::span<const VideoCommon::ImageCopy> copies) {
@@ -1022,6 +1025,89 @@ void TextureCacheRuntime::ReinterpretImage(Image& dst, Image& src,
         return;
     if (!ShouldReinterpret(dst, src)) {
         CopyImage(dst, src, copies);
+        return;
+    }
+    const bool native_raw_alias = src.info.num_samples == 1 && dst.info.num_samples == 1 &&
+                                  VideoCore::Surface::DefaultBlockWidth(src.info.format) == 1 &&
+                                  VideoCore::Surface::DefaultBlockWidth(dst.info.format) == 1 &&
+                                  VideoCore::Surface::BytesPerBlock(src.info.format) ==
+                                      VideoCore::Surface::BytesPerBlock(dst.info.format);
+    if (native_raw_alias || dst.HostFormat().conversion != FormatConversion::None ||
+        src.HostFormat().conversion != FormatConversion::None) {
+        // A canonical host pixel is not the guest bit pattern. Reinterpret via
+        // guest packing instead of copying RGBA bytes between emulated formats.
+        const auto reject = [&](std::string_view reason) {
+            UnsupportedImage(src.info, src.HostFormat(), reason);
+        };
+        const u32 bytes = VideoCore::Surface::BytesPerBlock(src.info.format);
+        if (!CanDownloadImage(src) || VideoCore::Surface::DefaultBlockWidth(src.info.format) != 1 ||
+            VideoCore::Surface::DefaultBlockWidth(dst.info.format) != 1 ||
+            bytes != VideoCore::Surface::BytesPerBlock(dst.info.format) ||
+            src.info.num_samples != 1 || dst.info.num_samples != 1) {
+            reject("converted reinterpretation requires reversible, equal-size uncompressed guest "
+                   "pixels and one sample");
+            return;
+        }
+        try {
+            std::vector<VideoCommon::BufferImageCopy> downloads, uploads;
+            downloads.reserve(copies.size());
+            uploads.reserve(copies.size());
+            u64 total{};
+            for (const auto& copy : copies) {
+                if (copy.src_subresource.num_layers <= 0 ||
+                    copy.src_subresource.num_layers != copy.dst_subresource.num_layers ||
+                    !copy.extent.width || !copy.extent.height || !copy.extent.depth) {
+                    reject("invalid converted reinterpretation layers/extent");
+                    return;
+                }
+                const auto full_depth = [&](const Image& image,
+                                            const VideoCommon::SubresourceLayers& subresource,
+                                            const VideoCommon::Offset3D& offset) {
+                    const auto level = subresource.base_level;
+                    return !image.HostFormat().depth ||
+                           (level >= 0 && level < image.info.resources.levels && offset.x == 0 &&
+                            offset.y == 0 && offset.z == 0 &&
+                            copy.extent.width == std::max(1u, image.info.size.width >> level) &&
+                            copy.extent.height == std::max(1u, image.info.size.height >> level) &&
+                            copy.extent.depth == 1);
+                };
+                if (!full_depth(src, copy.src_subresource, copy.src_offset) ||
+                    !full_depth(dst, copy.dst_subresource, copy.dst_offset)) {
+                    reject("partial converted depth reinterpretation requires shader conversion");
+                    return;
+                }
+                const u64 size = CheckedMultiply(
+                    CheckedMultiply(copy.extent.width, copy.extent.height),
+                    CheckedMultiply(
+                        CheckedMultiply(copy.extent.depth,
+                                        static_cast<u32>(copy.src_subresource.num_layers)),
+                        bytes));
+                VideoCommon::BufferImageCopy download{};
+                download.buffer_offset = total;
+                download.buffer_size = size;
+                download.buffer_row_length = copy.extent.width;
+                download.buffer_image_height = copy.extent.height;
+                download.image_subresource = copy.src_subresource;
+                download.image_offset = copy.src_offset;
+                download.image_extent = copy.extent;
+                auto upload = download;
+                upload.image_subresource = copy.dst_subresource;
+                upload.image_offset = copy.dst_offset;
+                downloads.push_back(download);
+                uploads.push_back(upload);
+                total = CheckedAdd(total, size);
+            }
+            if (!total)
+                return;
+            auto staging = DownloadStagingBuffer(total);
+            // Reserved guest X/padding bits have no host plane; initialize them.
+            std::fill(staging.mapped_span.begin(), staging.mapped_span.end(), 0);
+            src.DownloadMemory(staging, downloads);
+            context.Finish();
+            dst.UploadMemory(staging, uploads);
+        } catch (const std::exception& error) {
+            reject(error.what());
+        }
         return;
     }
     try {
@@ -1038,6 +1124,10 @@ void TextureCacheRuntime::CopyImage(Image& dst, Image& src,
     if (dst.Handle()->handle->GetDesc().SampleDesc.Count !=
         src.Handle()->handle->GetDesc().SampleDesc.Count) {
         CopyImageMSAA(dst, src, copies);
+        return;
+    }
+    if (ShouldReinterpret(dst, src)) {
+        ReinterpretImage(dst, src, copies);
         return;
     }
     try {
