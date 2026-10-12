@@ -303,7 +303,7 @@ static void RunTestInstance(Dynarmic::A32::Jit& jit,
                             const u32 cpsr,
                             const u32 fpscr,
                             const size_t ticks_left,
-                            const std::map<u32, u8>& initial_memory = {}) {
+                            const std::map<u32, u8>& initial_memory = {}, bool compare_pc = false) {
     const u32 initial_pc = regs[15];
     const u32 num_words = initial_pc / sizeof(typename TestEnv::InstructionType);
     const u32 code_mem_size = num_words + static_cast<u32>(instructions.size());
@@ -326,6 +326,8 @@ static void RunTestInstance(Dynarmic::A32::Jit& jit,
     jit.SetFpscr(fpscr);
     jit.SetCpsr(cpsr);
     jit.ClearCache();
+    // Select the register bank before seeding SP/LR. Unicorn resets in SVC mode.
+    uni.SetCpsr(cpsr);
     uni.SetRegisters(regs);
     uni.SetExtRegs(vecs);
     uni.SetFpscr(fpscr);
@@ -423,7 +425,11 @@ static void RunTestInstance(Dynarmic::A32::Jit& jit,
     }
 
     // TODO: Why the difference? QEMU what are you doing???
-    jit.Regs()[15] = uni.GetRegisters()[15];
+    if (compare_pc) {
+        REQUIRE(jit.Regs()[15] == uni.GetRegisters()[15]);
+    } else {
+        jit.Regs()[15] = uni.GetRegisters()[15];
+    }
 
     REQUIRE(uni.GetRegisters() == jit.Regs());
     REQUIRE(uni.GetExtRegs() == jit.ExtRegs());
@@ -721,7 +727,7 @@ TEST_CASE("A32: Unprivileged transfers differential", "[arm][unicorn][conformanc
             const u32 cpsr = (random() & 0xf0000000) | 0x10;  // User mode.
             INFO("form=" << form << " iteration=" << iteration << " instruction=" << instruction);
             RunTestInstance(jit, uni, jit_env, uni_env, regs, ext_regs,
-                            {instruction}, cpsr, 0, 1, initial_memory);
+                            {instruction}, cpsr, 0, 1, initial_memory, true);
         }
     }
 }

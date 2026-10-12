@@ -53,6 +53,12 @@ jobs:
       - name: Build CPU tests
         shell: bash
         run: cmake --build "$RUNNER_TEMP/cpu-build" --target dynarmic_tests --parallel 2
+      - name: Run targeted randomized regression
+        shell: bash
+        run: |
+          test_binary=$(find "$RUNNER_TEMP/cpu-build" -type f \( -name dynarmic_tests -o -name dynarmic_tests.exe \) | head -n 1)
+          test -n "$test_binary"
+          "$test_binary" '[conformance]' --rng-seed 19
       - name: Run full CPU suite
         shell: bash
         run: ctest --test-dir "$RUNNER_TEMP/cpu-build" -R '^dynarmic_tests$' --output-on-failure --timeout 3600
