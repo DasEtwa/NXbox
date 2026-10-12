@@ -44,21 +44,28 @@ function ecb(data: Buffer, key: Buffer) {
   c.setAutoPadding(false);
   return Buffer.concat([c.update(data), c.final()]);
 }
-async function sectionReader(r: Reader, h: Buffer, index: number, keys: Keys): Promise<Reader> {
+export async function sectionReader(
+  r: Reader,
+  h: Buffer,
+  index: number,
+  keys: Keys,
+): Promise<Reader> {
   const fs = h.subarray(0x400 + index * 512, 0x600 + index * 512);
   const start = h.readUInt32LE(0x240 + index * 16) * 512,
     end = h.readUInt32LE(0x244 + index * 16) * 512;
   bounded(r.size, start, end - start);
   let ctr: Buffer | undefined;
   if (fs[4] === 3) {
-    if (h.subarray(0x230, 0x240).some(Boolean)) throw new PackError("firmwareInvalid");
+    const rights = h.subarray(0x230, 0x240);
     const generation = Math.max(1, h[0x206]!, h[0x220]!) - 1;
     const family = ["application", "ocean", "system"][h[0x207]!];
     if (!family) throw new PackError("firmwareInvalid");
-    ctr = ecb(
-      h.subarray(0x320, 0x330),
-      key(keys, `key_area_key_${family}_${generation.toString(16).padStart(2, "0")}`, 16),
-    );
+    ctr = rights.some(Boolean)
+      ? key(keys, `title_${rights.toString("hex")}`, 16)
+      : ecb(
+          h.subarray(0x320, 0x330),
+          key(keys, `key_area_key_${family}_${generation.toString(16).padStart(2, "0")}`, 16),
+        );
   } else if (fs[4] !== 1) throw new PackError("firmwareInvalid");
   return {
     size: end - start,

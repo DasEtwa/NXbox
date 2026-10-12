@@ -148,3 +148,17 @@ test("registration HRESULT failures are not reported as success", async () => {
   );
   await expect(portal.register("folder", "game", 5000)).rejects.toThrow("deploy");
 });
+
+test("portal without authentication sends no Authorization header", async () => {
+  const { DevicePortal } = await import("../src/portal");
+  let seen: string | null = "unset";
+  const portal = new DevicePortal("https://xbox:11443", { user: "", password: "" }, true, (async (
+    _url: string,
+    init: RequestInit,
+  ) => {
+    seen = new Headers(init.headers).get("Authorization");
+    return new Response("[]", { status: 200 });
+  }) as unknown as typeof fetch);
+  await portal.packages().catch(() => {});
+  expect(seen).toBeNull();
+});

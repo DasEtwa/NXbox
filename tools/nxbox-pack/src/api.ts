@@ -3,6 +3,7 @@
 import { cp, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, extname, join } from "node:path";
+import { gameMetadata } from "./metadata";
 import compat from "./compat.json";
 import { PackError } from "./i18n";
 import { filenameName, parseTitleId, validateFile, validateName, validateTitleId } from "./files";
@@ -32,18 +33,45 @@ export type Job = {
   saves?: string;
   mods?: string[];
   // install = Device Portal; export = loose package folder for a manual install.
-  target: { kind: "install"; host: string; user?: string; password?: string; remember?: boolean; insecure?: boolean } | { kind: "export"; out: string };
+  target:
+    | {
+        kind: "install";
+        host: string;
+        user?: string;
+        password?: string;
+        remember?: boolean;
+        insecure?: boolean;
+      }
+    | { kind: "export"; out: string };
 };
 
 export function compatFor(titleId: string): { status: string; note?: string } {
-  return (compat as Record<string, { status: string; note?: string }>)[titleId] ?? { status: "unknown" };
+  return (
+    (compat as Record<string, { status: string; note?: string }>)[titleId] ?? { status: "unknown" }
+  );
 }
 
-export async function inspect(game: string) {
+export async function inspect(game: string, keys?: string, language = "en") {
   await validateFile(game);
-  // TODO(codex): read name/version/icon from the control NCA instead of the filename.
-  const titleId = parseTitleId(game);
-  return { name: filenameName(game), titleId, size: Bun.file(game).size, compat: titleId ? compatFor(titleId) : { status: "unknown" } };
+  let metadata = { name: filenameName(game), titleId: parseTitleId(game) } as {
+    name: string;
+    titleId: string | undefined;
+    version?: string;
+    publisher?: string;
+    iconBase64?: string;
+  };
+  if (keys && /\.(nsp|xci)$/i.test(game)) {
+    try {
+      metadata = await gameMetadata(game, keys, language);
+    } catch {
+      /* Preserve filename fallback without exposing key errors. */
+    }
+  }
+  return {
+    ...metadata,
+    size: Bun.file(game).size,
+    compat: metadata.titleId ? compatFor(metadata.titleId) : { status: "unknown" },
+  };
 }
 
 export async function runJob(job: Job, emit: Emit): Promise<void> {
@@ -53,12 +81,15 @@ export async function runJob(job: Job, emit: Emit): Promise<void> {
     if (!full && job.games.length !== 1) throw new PackError("file");
     for (const game of job.games) await validateFile(game);
     await validateFile(job.keys, true);
-    const titleId = full ? LIBRARY_ID : validateTitleId(parseTitleId(job.games[0]!) ?? "");
+    const gameInfo = full ? undefined : await inspect(job.games[0]!, job.keys);
+    const titleId = full ? LIBRARY_ID : validateTitleId(gameInfo?.titleId ?? "");
     const transfers: Transfer[] = [];
     if (job.firmware) {
       emit({ step: "firmware" });
       const fw = await prepareFirmware(job.firmware, job.keys, join(temporary, "firmware"));
-      transfers.push(...fw.files.map((f) => ({ path: f.path, destination: `LocalState/firmware/${f.name}` })));
+      transfers.push(
+        ...fw.files.map((f) => ({ path: f.path, destination: `LocalState/firmware/${f.name}` })),
+      );
     }
     if (full && job.officialUi) {
       if (!job.firmware) throw new PackError("inputInvalid");
@@ -67,15 +98,23 @@ export async function runJob(job: Job, emit: Emit): Promise<void> {
       transfers.push({ path: settings, destination: "LocalState/eden_settings.txt" });
     }
     // Saves and mods are per title, so only the single-game app takes them here.
-    if (!full && job.saves) transfers.push(...(await prepareSaves(job.saves, titleId, join(temporary, "saves"))).files);
+    if (!full && job.saves)
+      transfers.push(...(await prepareSaves(job.saves, titleId, join(temporary, "saves"))).files);
     if (!full)
       for (const [i, mod] of (job.mods ?? []).entries())
         transfers.push(...(await prepareMods(mod, titleId, join(temporary, `mods-${i}`))).files);
 
-    const name = full ? "NXbox" : validateName(job.name ?? filenameName(job.games[0]!));
+    const name = full
+      ? "NXbox"
+      : validateName(job.name ?? gameInfo?.name ?? filenameName(job.games[0]!));
     emit({ step: "runtime" });
     const runtimeDir = join(temporary, "runtime");
-    const runtimeFiles = await stageRuntime(await downloadRuntime(await latestRuntime()), runtimeDir, titleId, name);
+    const runtimeFiles = await stageRuntime(
+      await downloadRuntime(await latestRuntime()),
+      runtimeDir,
+      titleId,
+      name,
+    );
     const content: string[] = [];
     for (const [i, game] of job.games.entries()) {
       emit({ step: "prepare", file: game });
@@ -107,15 +146,23 @@ export async function runJob(job: Job, emit: Emit): Promise<void> {
 
     const base = portalUrl(job.target.host);
     const credentials =
-      job.target.user && job.target.password ? { user: job.target.user, password: job.target.password } : await loadCredentials(base);
-    if (!credentials) throw new PackError("portal");
+      job.target.user && job.target.password
+        ? { user: job.target.user, password: job.target.password }
+        : ((await loadCredentials(base)) ?? { user: "", password: "" });
     const portal = new DevicePortal(base, credentials, job.target.insecure ?? true);
     emit({ step: "connect" });
     await portal.packages();
-    if (job.target.remember) await saveCredentials(base, credentials);
+    if (job.target.remember && credentials.user) await saveCredentials(base, credentials);
     emit({ step: "upload" });
     const identity = await deployGame({
-      portal, titleId, runtimeDirectory: runtimeDir, runtimeFiles, content, keys: job.keys, temporary, transfers,
+      portal,
+      titleId,
+      runtimeDirectory: runtimeDir,
+      runtimeFiles,
+      content,
+      keys: job.keys,
+      temporary,
+      transfers,
       directBoot: !full,
       onProgress: (file, sent, total) => emit({ step: "upload", file, sent, total }),
     });
@@ -129,7 +176,8 @@ export async function serveApi(): Promise<void> {
   const emit: Emit = (event) => console.log(JSON.stringify(event));
   try {
     const request = JSON.parse(await Bun.stdin.text());
-    if (request.cmd === "inspect") emit(await inspect(request.game));
+    if (request.cmd === "inspect")
+      emit(await inspect(request.game, request.keys, request.language));
     else if (request.cmd === "discover") emit({ hosts: await discoverXbox() });
     else if (request.cmd === "run") await runJob(request.job, emit);
     else throw new PackError("args");

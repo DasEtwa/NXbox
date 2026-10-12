@@ -34,10 +34,12 @@ export class DevicePortal {
   ) {}
   private async raw(method: string, path: string, init: RequestInit = {}): Promise<Response> {
     const headers = new Headers(init.headers);
-    headers.set(
-      "Authorization",
-      `Basic ${Buffer.from(`${this.credentials.user}:${this.credentials.password}`).toString("base64")}`,
-    );
+    // Device Portal can run without authentication; then no header is sent.
+    if (this.credentials.user)
+      headers.set(
+        "Authorization",
+        `Basic ${Buffer.from(`${this.credentials.user}:${this.credentials.password}`).toString("base64")}`,
+      );
     if (this.csrf) {
       headers.set("Cookie", `CSRF-Token=${this.csrf}`);
       headers.set("X-CSRF-Token", this.csrf);
