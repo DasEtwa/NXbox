@@ -70,15 +70,15 @@ Everything below was measured on a retail Xbox Series X in Developer Mode.
 | Area | State |
 | --- | --- |
 | CPU | Switch ARM64 code runs through the Dynarmic JIT inside the UWP sandbox, with a 128 MiB code cache |
-| Graphics | OpenGL 4.6 on Direct3D 12 through a patched Mesa `d3d12` driver, built in CI |
+| Graphics | Default: OpenGL 4.6 on Direct3D 12 through a patched Mesa `d3d12` driver. New, opt-in (`NXBOX_RENDERER=d3d12`): a native Direct3D 12 renderer with guest shaders translated Maxwell → IR → HLSL → DXC → DXIL, no Mesa in the path. It already renders Super Mario 3D World's game-select screen at 1920×1080, including text the OpenGL path drops; it still runs at about 24 FPS and the app is suspended after about 90 s |
 | Frame pacing | 30 FPS in the stretches measured (worst frame gap 36–64 ms in the casino), but loads still freeze the picture for up to a few seconds |
 | Shaders | Per-title pipeline cache, precompiled at boot so scene changes do not compile shaders. A cache can be shared between consoles over the LAN |
 | Memory | Guest memory is committed on demand. Persona 5 Royal peaks around 4.0 GB of the 5 GiB app budget |
 | Audio | XAudio2 output |
 | Movies | Decoded on the CPU with FFmpeg |
-| Textures | ASTC decoded on the CPU. The GPU decoder is being fixed for D3D12 |
+| Textures | ASTC decoded on the CPU on the OpenGL path; the native D3D12 renderer decodes ASTC on the GPU |
 | Input | Xbox controller, mapped to a Pro Controller |
-| Compatibility | No game is playable. Persona 5 Royal is the closest: it boots and reaches gameplay, with serious bugs. Breath of the Wild runs its intro and renders the first area at about 5 to 10 FPS; Mario Kart 8 Deluxe boots and submits frames, but I have not confirmed that the picture is correct, and it loses the GPU after a few minutes. Super Mario 3D World boots, with menus and gameplay that do not render correctly |
+| Compatibility | No game is playable without bugs. Super Mario 3D World (OpenGL path) reaches the 3D World hub at 60 FPS with correct colours, but some views draw black polygons and some text is missing. Breath of the Wild (1.0 and 1.6 with DLC) loads a save and runs in the Shrine of Resurrection at about 12 FPS, with broken geometry on Link. Persona 5 Royal reaches gameplay with open bugs. Mario Kart 8 Deluxe boots; Mii selection needs the console's own firmware installed |
 
 <details>
 <summary><b>The hard parts so far</b>, each found on the console</summary>
