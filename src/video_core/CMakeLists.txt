@@ -508,6 +508,19 @@ if (CMAKE_SYSTEM_NAME STREQUAL "WindowsStore")
             renderer_d3d12/d3d12_texture_cache_base.cpp
             renderer_d3d12/d3d12_shader.cpp
             renderer_d3d12/d3d12_shader.h
+            renderer_d3d12/d3d12_pso_tables.h
+            renderer_d3d12/d3d12_dxc.cpp
+            renderer_d3d12/d3d12_dxc.h
+            renderer_d3d12/d3d12_root_signature.cpp
+            renderer_d3d12/d3d12_root_signature.h
+            renderer_d3d12/d3d12_graphics_pipeline.cpp
+            renderer_d3d12/d3d12_graphics_pipeline.h
+            renderer_d3d12/d3d12_compute_pipeline.cpp
+            renderer_d3d12/d3d12_compute_pipeline.h
+            renderer_d3d12/d3d12_pipeline_cache.cpp
+            renderer_d3d12/d3d12_pipeline_cache.h
+            renderer_d3d12/stub_hlsl_emit.cpp
+            renderer_d3d12/stub_hlsl_emit.h
         )
         target_compile_definitions(video_core PRIVATE HAS_D3D12=1)
         target_link_libraries(video_core PRIVATE d3d12 dxgi)
