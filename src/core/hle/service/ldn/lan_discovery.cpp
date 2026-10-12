@@ -116,6 +116,9 @@ DisconnectReason LANDiscovery::GetDisconnectReason() const {
 Result LANDiscovery::Scan(std::span<NetworkInfo> out_networks, s16& out_count,
                           const ScanFilter& filter) {
     out_count = 0;
+    if (out_networks.empty()) {
+        return ResultBadInput;
+    }
     {
         std::scoped_lock lock{packet_mutex};
         if (state != State::StationOpened) {
@@ -152,6 +155,10 @@ Result LANDiscovery::Scan(std::span<NetworkInfo> out_networks, s16& out_count,
             if (filter.network_type != static_cast<NetworkType>(info.common.network_type)) {
                 continue;
             }
+        }
+        if (IsFlagSet(filter.flag, ScanFilterFlag::Bssid) &&
+            filter.mac_address != info.common.bssid) {
+            continue;
         }
         if (IsFlagSet(filter.flag, ScanFilterFlag::Ssid)) {
             if (filter.ssid != info.common.ssid) {
@@ -245,7 +252,8 @@ Result LANDiscovery::CloseStation() {
 
 Result LANDiscovery::CreateNetwork(const SecurityConfig& security_config,
                                    const UserConfig& user_config,
-                                   const NetworkConfig& network_config) {
+                                   const NetworkConfig& network_config,
+                                   const SecurityParameter* security_parameter) {
     std::scoped_lock lock{packet_mutex};
 
     if (state != State::AccessPointOpened) {
@@ -270,6 +278,11 @@ Result LANDiscovery::CreateNetwork(const SecurityConfig& security_config,
     network_info.network_id.session_id.high = bits_engine();
     network_info.network_id.session_id.low = bits_engine();
     network_info.network_id.intent_id = network_config.intent_id;
+    network_info.ldn.station_accept_policy = accept_policy;
+    if (security_parameter) {
+        network_info.network_id.session_id = security_parameter->session_id;
+        network_info.ldn.security_parameter = security_parameter->data;
+    }
 
     NodeInfo& node0 = network_info.ldn.nodes[0];
     const Result rc2 = GetNodeInfo(node0, user_config, network_config.local_communication_version);
@@ -284,6 +297,71 @@ Result LANDiscovery::CreateNetwork(const SecurityConfig& security_config,
     UpdateNodes();
 
     return rc2;
+}
+
+Result LANDiscovery::SetStationAcceptPolicy(AcceptPolicy policy) {
+    std::scoped_lock lock{packet_mutex};
+    if (state != State::AccessPointOpened && state != State::AccessPointCreated) return ResultBadState;
+    if (policy > AcceptPolicy::WhiteList) return ResultBadInput;
+    accept_policy = policy;
+    network_info.ldn.station_accept_policy = policy;
+    if (state == State::AccessPointCreated) UpdateNodes();
+    return ResultSuccess;
+}
+
+Result LANDiscovery::AddAcceptFilterEntry(MacAddress address) {
+    std::scoped_lock lock{packet_mutex};
+    if (state != State::AccessPointOpened && state != State::AccessPointCreated) return ResultBadState;
+    if (std::find(accept_filter.begin(), accept_filter.end(), address) != accept_filter.end()) {
+        return ResultSuccess;
+    }
+    if (accept_filter.size() >= NodeCountMax) return ResultBadInput;
+    accept_filter.push_back(address);
+    return ResultSuccess;
+}
+
+Result LANDiscovery::ClearAcceptFilter() {
+    std::scoped_lock lock{packet_mutex};
+    if (state != State::AccessPointOpened && state != State::AccessPointCreated) return ResultBadState;
+    accept_filter.clear();
+    return ResultSuccess;
+}
+
+Result LANDiscovery::Reject(Ipv4Address address) {
+    std::scoped_lock lock{packet_mutex};
+    if (state != State::AccessPointCreated) return ResultBadState;
+    for (auto& station : stations) {
+        if (station.status == NodeStatus::Connected && station.node_info->ipv4_address == address) {
+            std::reverse(address.begin(), address.end());
+            SendPacket(Network::LDNPacketType::DestroyNetwork, address);
+            std::erase(connected_clients, address);
+            station.Reset();
+            UpdateNodes();
+            return ResultSuccess;
+        }
+    }
+    return ResultBadInput;
+}
+
+Result LANDiscovery::ConnectPrivate(const ConnectNetworkPrivateData& data) {
+    if (data.local_communication_version < 0 || data.local_communication_version > 0x7FFF) {
+        return ResultBadInput;
+    }
+    ScanFilter filter{};
+    filter.flag = ScanFilterFlag::NetworkId;
+    filter.network_id.intent_id = data.network_config.intent_id;
+    filter.network_id.session_id = data.security_parameter.session_id;
+    std::array<NetworkInfo, NodeCountMax> networks{};
+    s16 count{};
+    const auto result = Scan(networks, count, filter);
+    if (result.IsError()) return result;
+    for (s16 i = 0; i < count; ++i) {
+        if (networks[i].ldn.security_parameter == data.security_parameter.data) {
+            return Connect(networks[i], data.user_config,
+                           static_cast<u16>(data.local_communication_version));
+        }
+    }
+    return ResultConnectionFailed;
 }
 
 Result LANDiscovery::DestroyNetwork() {
@@ -376,6 +454,8 @@ Result LANDiscovery::Initialize(LanEventFunc lan_event_, bool listening) {
     }
 
     connected_clients.clear();
+    accept_filter.clear();
+    accept_policy = AcceptPolicy::AcceptAll;
     host_ip.reset();
     connecting = false;
     scanning = false;
@@ -584,6 +664,16 @@ void LANDiscovery::ReceivePacket(const Network::LDNPacket& packet) {
         auto source_ip = packet.local_ip;
         std::reverse(source_ip.begin(), source_ip.end());
         info.ipv4_address = source_ip;
+        info.mac_address.raw = {2, 0, packet.local_ip[0], packet.local_ip[1],
+                                packet.local_ip[2], packet.local_ip[3]};
+        const bool listed = std::find(accept_filter.begin(), accept_filter.end(), info.mac_address) !=
+                            accept_filter.end();
+        if (accept_policy == AcceptPolicy::RejectAll ||
+            (accept_policy == AcceptPolicy::BlackList && listed) ||
+            (accept_policy == AcceptPolicy::WhiteList && !listed)) {
+            SendPacket(Network::LDNPacketType::DestroyNetwork, packet.local_ip);
+            break;
+        }
         connected_clients.push_back(packet.local_ip);
 
         for (LanStation& station : stations) {

@@ -78,6 +78,9 @@ private:
                    InLargeData<NetworkInfo, BufferAttr_HipcPointer> network_info);
 
     Result Disconnect();
+    Result ConnectPrivate(const ConnectNetworkPrivateData& data);
+    Result Reject(Ipv4Address address);
+    Result ClearAcceptFilter();
 
     Result Initialize(ClientProcessId aruid);
 

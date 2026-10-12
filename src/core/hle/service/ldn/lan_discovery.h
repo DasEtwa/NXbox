@@ -70,8 +70,14 @@ public:
     Result CloseStation();
 
     Result CreateNetwork(const SecurityConfig& security_config, const UserConfig& user_config,
-                         const NetworkConfig& network_config);
+                         const NetworkConfig& network_config,
+                         const SecurityParameter* security_parameter = nullptr);
     Result DestroyNetwork();
+    Result SetStationAcceptPolicy(AcceptPolicy policy);
+    Result AddAcceptFilterEntry(MacAddress address);
+    Result ClearAcceptFilter();
+    Result Reject(Ipv4Address address);
+    Result ConnectPrivate(const ConnectNetworkPrivateData& data);
 
     Result Connect(const NetworkInfo& network_info_, const UserConfig& user_config,
                    u16 local_communication_version);
@@ -135,6 +141,8 @@ protected:
 
     // TODO (flTobi): Should this be an std::set?
     std::vector<Ipv4Address> connected_clients;
+    std::vector<MacAddress> accept_filter;
+    AcceptPolicy accept_policy{AcceptPolicy::AcceptAll};
     std::optional<Ipv4Address> host_ip;
 
     LanEventFunc lan_event;

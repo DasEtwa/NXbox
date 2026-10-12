@@ -42,6 +42,7 @@ enum class ScanFilterFlag : u32 {
     LocalCommunicationId = 1 << 0,
     SessionId = 1 << 1,
     NetworkType = 1 << 2,
+    Bssid = 1 << 3,
     Ssid = 1 << 4,
     SceneId = 1 << 5,
     IntentId = LocalCommunicationId | SceneId,
@@ -352,5 +353,18 @@ struct ConnectNetworkData {
     ConnectOption option;
 };
 static_assert(sizeof(ConnectNetworkData) == 0x7c, "ConnectNetworkData is an invalid size");
+
+#pragma pack(push, 4)
+struct ConnectNetworkPrivateData {
+    SecurityConfig security_config;
+    SecurityParameter security_parameter;
+    UserConfig user_config;
+    s32 local_communication_version;
+    ConnectOption option;
+    INSERT_PADDING_BYTES(0x4);
+    NetworkConfig network_config;
+};
+#pragma pack(pop)
+static_assert(sizeof(ConnectNetworkPrivateData) == 0xC0);
 
 } // namespace Service::LDN

@@ -44,15 +44,15 @@ IUserLocalCommunicationService::IUserLocalCommunicationService(Core::System& sys
             {202, D<&IUserLocalCommunicationService::CreateNetwork>, "CreateNetwork"},
             {203, D<&IUserLocalCommunicationService::CreateNetworkPrivate>, "CreateNetworkPrivate"},
             {204, D<&IUserLocalCommunicationService::DestroyNetwork>, "DestroyNetwork"},
-            {205, nullptr, "Reject"},
+            {205, D<&IUserLocalCommunicationService::Reject>, "Reject"},
             {206, D<&IUserLocalCommunicationService::SetAdvertiseData>, "SetAdvertiseData"},
             {207, D<&IUserLocalCommunicationService::SetStationAcceptPolicy>, "SetStationAcceptPolicy"},
             {208, D<&IUserLocalCommunicationService::AddAcceptFilterEntry>, "AddAcceptFilterEntry"},
-            {209, nullptr, "ClearAcceptFilter"},
+            {209, D<&IUserLocalCommunicationService::ClearAcceptFilter>, "ClearAcceptFilter"},
             {300, D<&IUserLocalCommunicationService::OpenStation>, "OpenStation"},
             {301, D<&IUserLocalCommunicationService::CloseStation>, "CloseStation"},
             {302, D<&IUserLocalCommunicationService::Connect>, "Connect"},
-            {303, nullptr, "ConnectPrivate"},
+            {303, D<&IUserLocalCommunicationService::ConnectPrivate>, "ConnectPrivate"},
             {304, D<&IUserLocalCommunicationService::Disconnect>, "Disconnect"},
             {400, D<&IUserLocalCommunicationService::Initialize>, "Initialize"},
             {401, D<&IUserLocalCommunicationService::Finalize>, "Finalize"},
@@ -175,7 +175,6 @@ Result IUserLocalCommunicationService::Scan(
     LOG_INFO(Service_LDN, "called, channel={}, filter_scan_flag={}, filter_network_type={}",
              channel, scan_filter.flag, scan_filter.network_type);
 
-    R_UNLESS(!out_network_info.empty(), ResultBadInput);
     R_RETURN(lan_discovery.Scan(out_network_info, *network_count, scan_filter));
 }
 
@@ -185,7 +184,6 @@ Result IUserLocalCommunicationService::ScanPrivate(
     LOG_INFO(Service_LDN, "called, channel={}, filter_scan_flag={}, filter_network_type={}",
              channel, scan_filter.flag, scan_filter.network_type);
 
-    R_UNLESS(out_network_info.empty(), ResultBadInput);
     R_RETURN(lan_discovery.Scan(out_network_info, *network_count, scan_filter));
 }
 
@@ -224,8 +222,14 @@ Result IUserLocalCommunicationService::CreateNetworkPrivate(
     InArray<AddressEntry, BufferAttr_HipcPointer> address_list) {
     LOG_INFO(Service_LDN, "called");
 
-    R_RETURN(lan_discovery.CreateNetwork(create_config.security_config, create_config.user_config,
-                                         create_config.network_config));
+    R_UNLESS(address_list.size() <= NodeCountMax, ResultBadInput);
+    R_TRY(lan_discovery.CreateNetwork(create_config.security_config, create_config.user_config,
+                                    create_config.network_config, &create_config.security_parameter));
+    R_TRY(lan_discovery.ClearAcceptFilter());
+    for (const auto& entry : address_list) {
+        R_TRY(lan_discovery.AddAcceptFilterEntry(entry.mac_address));
+    }
+    R_SUCCEED();
 }
 
 Result IUserLocalCommunicationService::DestroyNetwork() {
@@ -242,13 +246,11 @@ Result IUserLocalCommunicationService::SetAdvertiseData(
 }
 
 Result IUserLocalCommunicationService::SetStationAcceptPolicy(AcceptPolicy accept_policy) {
-    LOG_WARNING(Service_LDN, "(STUBBED) called");
-    R_SUCCEED();
+    R_RETURN(lan_discovery.SetStationAcceptPolicy(accept_policy));
 }
 
 Result IUserLocalCommunicationService::AddAcceptFilterEntry(MacAddress mac_address) {
-    LOG_WARNING(Service_LDN, "(STUBBED) called");
-    R_SUCCEED();
+    R_RETURN(lan_discovery.AddAcceptFilterEntry(mac_address));
 }
 
 Result IUserLocalCommunicationService::OpenStation() {
@@ -274,6 +276,18 @@ Result IUserLocalCommunicationService::Connect(
 
     R_RETURN(lan_discovery.Connect(*network_info, connect_data.user_config,
                                    static_cast<u16>(connect_data.local_communication_version)));
+}
+
+Result IUserLocalCommunicationService::ConnectPrivate(const ConnectNetworkPrivateData& data) {
+    R_RETURN(lan_discovery.ConnectPrivate(data));
+}
+
+Result IUserLocalCommunicationService::Reject(Ipv4Address address) {
+    R_RETURN(lan_discovery.Reject(address));
+}
+
+Result IUserLocalCommunicationService::ClearAcceptFilter() {
+    R_RETURN(lan_discovery.ClearAcceptFilter());
 }
 
 Result IUserLocalCommunicationService::Disconnect() {
