@@ -289,8 +289,9 @@ struct VertexFormat {
     bool swap_rb;       // BGRA order the DXGI format cannot express; shader swizzles
 };
 
-// Maxwell (size, type, bgra) -> DXGI_FORMAT. 3-component 8/16-bit formats widen to 4
-// components (D3D12 has none); the unused component reads as 0 and the stride is unchanged.
+// Maxwell (size, type, bgra) -> DXGI_FORMAT. Three-component 8/16-bit entries
+// identify widened storage formats, requiring repacking/vertex pulling before
+// IA use. Keeping the guest stride alone would read an incorrect fourth component.
 constexpr VertexFormat VertexFormatFor(std::uint32_t size, std::uint32_t type, bool bgra = false) {
     using namespace VSize;
     const bool scaled = type == VType::UScaled || type == VType::SScaled;

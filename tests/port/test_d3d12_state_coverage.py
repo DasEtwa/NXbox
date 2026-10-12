@@ -344,6 +344,9 @@ class D3D12StateCoverageTests(unittest.TestCase):
         self.assertNotIn("StubHlsl", source)
         self.assertIn("reported.emplace(reason).second", source)
         self.assertIn("action=skip_draw", source)
+        self.assertIn("requires vertex pulling/component conversion", source)
+        self.assertIn("vertex_reads & (u32{1} << index)", source)
+        self.assertIn("attribute.swap_rb || attribute.scaled", source)
         self.assertIn("catch (...) ", source)
 
     def test_indirect_reuses_draw_with_coherent_arguments_and_restores_state(self):

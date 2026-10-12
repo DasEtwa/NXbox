@@ -627,6 +627,22 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(
         for (std::size_t i = 0; i < Pso::kNumVertexAttributes; ++i)
             if (vertex_info.loads.Generic(i))
                 vertex_reads |= std::uint32_t{1} << i;
+        for (size_t index = 0; index < state.attributes.size(); ++index) {
+            if (!(vertex_reads & (u32{1} << index)) || regs.vertex_attrib_format[index].constant)
+                continue;
+            const auto& input = regs.vertex_attrib_format[index];
+            const auto& attribute = state.attributes[index];
+            const u32 size = static_cast<u32>(input.size.Value());
+            if (!attribute.dxgi || attribute.swap_rb || attribute.scaled ||
+                size == Pso::VSize::R16G16B16 || size == Pso::VSize::R8G8B8) {
+                ReportUnsupported(fmt::format("vertex_attrib_format[{}] size={:x} type={} bgra={} "
+                                              "requires vertex pulling/component conversion",
+                                              index, size, static_cast<u32>(input.type.Value()),
+                                              input.bgra != 0));
+                guest_graphics.emplace(request, nullptr);
+                return nullptr;
+            }
+        }
         Pso::ApplyVertexReads(state, vertex_reads);
         auto& pipeline = GetGraphics(state, topology.topology, stages);
         for (size_t index = 1; index < 6; ++index) {
