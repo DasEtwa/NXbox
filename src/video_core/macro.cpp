@@ -1018,7 +1018,7 @@ void MacroJITx64Impl::Compile_Send(Core::System& system, Xbyak::Reg32 value) {
     Common::X64::CallFarFunction(*this, &MacroJIT_SendThunk);
     Common::X64::ABI_PopRegistersAndAdjustStack(*this, PersistentCallerSavedRegs(), 0);
 
-    test(eax, eax);
+    test(al, al);
     jnz(end_of_code, T_NEAR);
 
     Xbyak::Label dont_process{};

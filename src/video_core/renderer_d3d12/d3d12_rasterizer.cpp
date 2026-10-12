@@ -390,10 +390,11 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         for (auto& [known, known_state] : state_scratch) {
             if (known != resource)
                 continue;
-            known_state = (known_state == D3D12_RESOURCE_STATE_UNORDERED_ACCESS ||
-                           state == D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
-                              ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS
-                              : (known_state | state);
+            if (known_state != state && (known_state == D3D12_RESOURCE_STATE_UNORDERED_ACCESS ||
+                                         state == D3D12_RESOURCE_STATE_UNORDERED_ACCESS))
+                throw std::runtime_error(
+                    "D3D12 draw aliases UAV storage with a read-only buffer/view");
+            known_state |= state;
             return;
         }
         state_scratch.emplace_back(resource, state);
@@ -545,6 +546,18 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     }
     if (has_depth)
         descriptors.CreateDsv(dsv_handle, *depth_view);
+    const auto validate_attachment = [this](const ResourcePtr& resource) {
+        for (const auto& [used, state] : state_scratch) {
+            if (used == resource)
+                throw std::runtime_error("D3D12 draw aliases an attachment with a shader resource");
+        }
+    };
+    for (u32 slot = 0; slot < num_rts; ++slot) {
+        if (color_views[slot])
+            validate_attachment(color_views[slot]->ImageHandle());
+    }
+    if (has_depth)
+        validate_attachment(depth_view->ImageHandle());
 
     // ---- 4. Record state (no more allocations from here on) ----
     auto* const commands = context.Commands();
