@@ -3,6 +3,40 @@
 
 #include <array>
 #include <vector>
+#include <unordered_map>
+#include <optional>
+#include <cstdint>
+#include <string>
+#include <string_view>
+
+namespace D3D12 {
+// A recording owns immutable slots only until its submission tick changes.
+// Full semantic keys are compared; hash collisions cannot alias different tables.
+template <class Value>
+class RecordingTableCache {
+public:
+    std::optional<Value> Find(std::uint64_t current, std::string_view key) {
+        Refresh(current);
+        const auto found = tables.find(std::string{key});
+        return found == tables.end() ? std::nullopt : std::optional<Value>{found->second};
+    }
+    void Remember(std::uint64_t current, std::string key, Value value) {
+        Refresh(current);
+        tables.insert_or_assign(std::move(key), std::move(value));
+    }
+private:
+    void Refresh(std::uint64_t current) {
+        if (tick != current) {
+            tables.clear();
+            tick = current;
+        }
+    }
+    std::uint64_t tick{};
+    std::unordered_map<std::string, Value> tables;
+};
+} // namespace D3D12
+
+#ifdef _WIN32
 #include <d3d12.h>
 
 #include "video_core/renderer_d3d12/d3d12_context.h"
@@ -113,6 +147,13 @@ public:
 
     bool WriteImageUav(const DescriptorTable& table, u32 slot, const ImageView& view,
                        DXGI_FORMAT format);
+    // Copy an immutable CPU descriptor into a fence-retired shader-visible slot.
+    void WriteUavDescriptor(const DescriptorTable& table, u32 slot, const ResourcePtr& resource,
+                            const D3D12_UNORDERED_ACCESS_VIEW_DESC& desc);
+    // Semantic keys must include resource identity, ranges, format and swizzle.
+    // Tables are reusable only within one recording tick, never across retirement.
+    std::optional<DescriptorTable> FindTable(std::string_view key, bool sampler = false);
+    void RememberTable(std::string key, DescriptorTable table, bool sampler = false);
     ID3D12DescriptorHeap* ResourceHeap() const {
         return views.heap.Get();
     }
@@ -139,6 +180,24 @@ private:
     void Init(Ring& ring, D3D12_DESCRIPTOR_HEAP_TYPE type, u32 capacity, bool visible);
     DescriptorTable Allocate(Ring& ring, u32 count);
 
+    struct CachedDescriptor {
+        D3D12_CPU_DESCRIPTOR_HANDLE handle;
+        ResourcePtr resource; // Prevent address reuse while the descriptor is cached.
+    };
+    struct DescriptorCache {
+        ComPtr<ID3D12DescriptorHeap> heap;
+        std::unordered_map<std::string, CachedDescriptor> entries;
+        u32 cursor{}, stride{}, capacity{};
+    };
+    void InitCache(DescriptorCache& cache, D3D12_DESCRIPTOR_HEAP_TYPE type, u32 capacity);
+    void RefreshCaches();
+    void WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE type, const ResourcePtr& resource,
+                     u32 kind, const void* desc, size_t size, D3D12_CPU_DESCRIPTOR_HANDLE destination,
+                     const std::function<void(D3D12_CPU_DESCRIPTOR_HANDLE)>& create);
+    u64 cache_tick{};
+    DescriptorCache view_cache, sampler_cache;
+    std::unordered_map<SIZE_T, std::string> slot_contents;
+    std::array<RecordingTableCache<DescriptorTable>, 2> table_cache;
     Context& context;
     Ring views{ViewHeapSize};
     Ring samplers{SamplerHeapSize};
@@ -146,3 +205,5 @@ private:
     Ring dsvs{DsvHeapSize};
 };
 } // namespace D3D12
+
+#endif // _WIN32

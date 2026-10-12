@@ -33,7 +33,7 @@ void RequireSize(const ComputeBufferView& view, std::uint64_t size) {
 }
 } // namespace
 ComputePasses::ComputePasses(Context& context)
-    : context{context}, dispatch{context},
+    : context{context}, dispatch{context}, descriptors{context},
       root_signature{CreateComputeRootSignature(context.Device(), {0, 0, 3, 0})} {
     const std::array sources{HostShaders::ASTC_DECODER_HLSL,
                              HostShaders::BLOCK_LINEAR_UNSWIZZLE_2D_HLSL,
@@ -42,6 +42,7 @@ ComputePasses::ComputePasses(Context& context)
                              HostShaders::QUERIES_PREFIX_HLSL,
                              HostShaders::UINT8_TO_UINT16_HLSL,
                              HostShaders::QUAD_INDEXED_HLSL};
+    const FrameProfile::Scope profile_pso{context.Profile(), FramePhase::Pso};
     ShaderCompiler compiler;
     for (std::size_t i = 0; i < sources.size(); ++i) {
         if (i == static_cast<size_t>(HelperComputePass::DecodeAstc) &&
@@ -51,6 +52,7 @@ ComputePasses::ComputePasses(Context& context)
         D3D12_COMPUTE_PIPELINE_STATE_DESC desc{};
         desc.pRootSignature = root_signature.Get();
         desc.CS = {dxil.data(), dxil.size()};
+        context.Profile().Count(FrameCount::PsoCompiles);
         CheckPipeline(
             context.Device()->CreateComputePipelineState(&desc, IID_PPV_ARGS(&pipelines[i])),
             "create helper compute pipeline", context.Device(),
@@ -59,6 +61,7 @@ ComputePasses::ComputePasses(Context& context)
 }
 ResourcePtr ComputePasses::UploadInput(const ResourcePtr& staging, std::uint64_t offset,
                                        std::uint64_t size) {
+    const FrameProfile::Scope profile_upload{context.Profile(), FramePhase::BufferUpload};
     if (!staging || staging->heap == D3D12_HEAP_TYPE_READBACK || !size || size % 4 || offset % 4)
         throw std::invalid_argument("D3D12 invalid helper upload");
     const auto source = staging->handle->GetDesc();
@@ -157,72 +160,67 @@ void ComputePasses::Run(HelperComputePass pass, ComputeConstants constants, Comp
             RequireSize(buffers[1], size);
         }
     }
-    // Per-dispatch heaps avoid overwriting descriptors in a pending command list.
-    ComPtr<ID3D12DescriptorHeap> resource_heap, sampler_heap;
-    D3D12_DESCRIPTOR_HEAP_DESC heap{};
-    heap.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    heap.NumDescriptors = 5; // null CBV, null SRV, three UAVs
-    heap.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-    Check(context.Device()->CreateDescriptorHeap(&heap, IID_PPV_ARGS(&resource_heap)),
-          "create helper resource heap", context.Device());
-    heap.Type = D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER;
-    heap.NumDescriptors = 1;
-    Check(context.Device()->CreateDescriptorHeap(&heap, IID_PPV_ARGS(&sampler_heap)),
-          "create helper sampler heap", context.Device());
-    const auto increment =
-        context.Device()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-    auto cpu = resource_heap->GetCPUDescriptorHandleForHeapStart();
-    auto gpu = resource_heap->GetGPUDescriptorHandleForHeapStart();
+    const FrameProfile::Scope profile_descriptors{context.Profile(), FramePhase::DescriptorWrites};
+    std::string view_key{"helper views"};
+    const auto append = [&](const auto& value) {
+        view_key.append(reinterpret_cast<const char*>(&value), sizeof(value));
+    };
+    for (const auto& view : buffers) {
+        const auto identity = reinterpret_cast<std::uintptr_t>(view.resource.get());
+        append(identity);
+        append(view.offset);
+        append(view.size);
+    }
+    const auto texture_identity = reinterpret_cast<std::uintptr_t>(texture.resource.get());
+    append(texture_identity);
+    append(texture.descriptor);
+    auto views = descriptors.FindTable(view_key);
+    auto samplers = descriptors.FindTable("helper null sampler", true);
+    if (!views || !samplers) {
+        // Reserve both: a submission invalidates a hit from the previous tick.
+        descriptors.Reserve(5, 1);
+        views = descriptors.FindTable(view_key);
+        samplers = descriptors.FindTable("helper null sampler", true);
+    }
+    if (!samplers) {
+        samplers = descriptors.AllocateSamplers(1);
+        descriptors.WriteNullSampler(*samplers, 0);
+        descriptors.RememberTable("helper null sampler", *samplers, true);
+    }
+    if (!views) {
+        views = descriptors.AllocateViews(5);
+        descriptors.WriteNullCbv(*views, 0);
+        descriptors.WriteNullSrv(*views, 1, D3D12_SRV_DIMENSION_BUFFER);
+        for (u32 i = 0; i < 3; ++i) {
+            if (image && i == 1) {
+                descriptors.WriteUavDescriptor(*views, i + 2, texture.resource, texture.descriptor);
+            } else if (i < buffers.size()) {
+                D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
+                uav.Format = DXGI_FORMAT_R32_TYPELESS;
+                uav.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+                uav.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
+                uav.Buffer.FirstElement = buffers[i].offset / 4;
+                uav.Buffer.NumElements = static_cast<UINT>(buffers[i].size / 4);
+                descriptors.WriteUavDescriptor(*views, i + 2, buffers[i].resource, uav);
+            } else {
+                descriptors.WriteNullUav(*views, i + 2);
+            }
+        }
+        descriptors.RememberTable(view_key, *views);
+    }
     ComputeBindings bindings;
     bindings.pipeline = pipelines[static_cast<std::size_t>(pass)];
     bindings.root_signature = root_signature;
-    bindings.resource_heap = resource_heap;
-    bindings.sampler_heap = sampler_heap;
+    bindings.resource_heap = descriptors.ResourceHeap();
+    bindings.sampler_heap = descriptors.SamplerHeap();
     bindings.constants = constants;
-    bindings.tables = {gpu,
-                       {gpu.ptr + increment},
-                       {gpu.ptr + 2 * increment},
-                       sampler_heap->GetGPUDescriptorHandleForHeapStart()};
-    context.Device()->CreateConstantBufferView(nullptr, cpu);
-    cpu.ptr += increment;
-    D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
-    srv.Format = DXGI_FORMAT_R32_TYPELESS;
-    srv.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-    srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    srv.Buffer.NumElements = 1;
-    srv.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
-    context.Device()->CreateShaderResourceView(nullptr, &srv, cpu);
+    bindings.tables = {views->gpu, views->Slice(1, 1).gpu, views->Slice(2, 3).gpu, samplers->gpu};
     std::vector<ComputeResourceUse> resources;
-    for (std::size_t i = 0; i < 3; ++i) {
-        cpu.ptr += increment;
-        if (image && i == 1) {
-            context.Device()->CreateUnorderedAccessView(texture.resource->handle.Get(), nullptr,
-                                                        &texture.descriptor, cpu);
-            resources.push_back({texture.resource, D3D12_RESOURCE_STATE_UNORDERED_ACCESS});
-            continue;
-        }
-        D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
-        uav.Format = DXGI_FORMAT_R32_TYPELESS;
-        uav.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
-        uav.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
-        uav.Buffer.NumElements = 1;
-        ID3D12Resource* resource{};
-        if (i < buffers.size()) {
-            const auto& view = buffers[i];
-            uav.Buffer.FirstElement = view.offset / 4;
-            uav.Buffer.NumElements = static_cast<UINT>(view.size / 4);
-            resource = view.resource->handle.Get();
-            resources.push_back({view.resource, D3D12_RESOURCE_STATE_UNORDERED_ACCESS});
-        }
-        context.Device()->CreateUnorderedAccessView(resource, nullptr, &uav, cpu);
-    }
-    D3D12_SAMPLER_DESC sampler{};
-    sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
-    sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-    sampler.ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
-    sampler.MaxAnisotropy = 1;
-    sampler.MaxLOD = std::numeric_limits<float>::max();
-    context.Device()->CreateSampler(&sampler, sampler_heap->GetCPUDescriptorHandleForHeapStart());
+    resources.reserve(buffers.size() + (image ? 1 : 0));
+    for (const auto& view : buffers)
+        resources.push_back({view.resource, D3D12_RESOURCE_STATE_UNORDERED_ACCESS});
+    if (image)
+        resources.push_back({texture.resource, D3D12_RESOURCE_STATE_UNORDERED_ACCESS});
     bindings.resources = resources;
     context.MarkWork(pass == HelperComputePass::DecodeAstc ? "ASTC compute" : "helper compute");
     dispatch.Direct(bindings, groups);

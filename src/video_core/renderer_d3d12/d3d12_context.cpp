@@ -27,6 +27,10 @@ bool BisectEnabled(const char* name) noexcept {
     char value[2]{};
     return GetEnvironmentVariableA(name, value, sizeof(value)) == 1 && value[0] == '1';
 }
+bool AsyncPsoEnabled() noexcept {
+    static const bool enabled = BisectEnabled("NXBOX_D3D12_ASYNC_PSO");
+    return enabled;
+}
 void Diagnostic(std::string_view message) noexcept {
     try {
         LOG_ERROR(Render, "{}", message);
@@ -54,11 +58,36 @@ void Diagnostic(std::string_view message) noexcept {
     }
 }
 namespace {
+// Debug-layer warnings repeat per draw. Logging each one synchronously flushes
+// the crash file and can dominate the GPU thread. Errors remain unsuppressed.
+bool FirstInfoWarning(D3D12_MESSAGE_SEVERITY severity, D3D12_MESSAGE_ID id) {
+    if (severity != D3D12_MESSAGE_SEVERITY_WARNING)
+        return true;
+    static std::array<std::atomic<bool>, 8192> seen{};
+    const auto index = static_cast<size_t>(id);
+    return index >= seen.size() || !seen[index].exchange(true, std::memory_order_relaxed);
+}
+u64 ProfileCpuTime() {
+    FILETIME creation{}, exit{}, kernel{}, user{};
+    if (!GetThreadTimes(GetCurrentThread(), &creation, &exit, &kernel, &user))
+        return 0;
+    const auto value = [](FILETIME time) {
+        return (static_cast<u64>(time.dwHighDateTime) << 32) | time.dwLowDateTime;
+    };
+    return value(kernel) + value(user); // 100 ns, kernel + user CPU time.
+}
+u64 ProfileWallTime() {
+    LARGE_INTEGER now{}, frequency{};
+    QueryPerformanceCounter(&now);
+    QueryPerformanceFrequency(&frequency);
+    return static_cast<u64>(static_cast<double>(now.QuadPart) * 10000000.0 /
+                            static_cast<double>(frequency.QuadPart));
+}
 void InfoMessage(D3D12_MESSAGE_CATEGORY category, D3D12_MESSAGE_SEVERITY severity,
                  D3D12_MESSAGE_ID id, LPCSTR description, void*) noexcept {
     // The callback can run on runtime threads; never call D3D APIs here.
     // Resource creation/destruction and runtime probes are informational traffic.
-    if (severity > D3D12_MESSAGE_SEVERITY_WARNING)
+    if (severity > D3D12_MESSAGE_SEVERITY_WARNING || !FirstInfoWarning(severity, id))
         return;
     try {
 #ifdef NXBOX_UWP
@@ -121,7 +150,8 @@ void LogDeviceInfoQueue(ID3D12Device* device) noexcept {
             std::vector<u8> storage(size);
             auto* message = reinterpret_cast<D3D12_MESSAGE*>(storage.data());
             if (SUCCEEDED(info->GetMessage(i, message, &size)) &&
-                message->Severity <= D3D12_MESSAGE_SEVERITY_WARNING)
+                message->Severity <= D3D12_MESSAGE_SEVERITY_WARNING &&
+                FirstInfoWarning(message->Severity, message->ID))
                 Diagnostic(fmt::format("D3D12 InfoQueue severity={} id={} {}",
                                        static_cast<u32>(message->Severity),
                                        static_cast<u32>(message->ID), message->pDescription));
@@ -229,6 +259,81 @@ Resource::~Resource() {
         handle->Unmap(0, nullptr);
     if (budget)
         budget->used -= allocation_size;
+}
+bool FrameProfile::OnOwner() {
+    return enabled && owner.load() == GetCurrentThreadId();
+}
+void FrameProfile::BindRecordingThread() {
+    if (enabled && !owner.load()) {
+        initial_cpu = ProfileCpuTime();
+        timing.Reset(initial_cpu);
+        start_wall = ProfileWallTime();
+        owner.store(GetCurrentThreadId());
+    }
+}
+void FrameProfile::Switch(FramePhase phase) {
+    const auto now = ProfileCpuTime();
+    timing.Switch(phase, now);
+}
+FrameProfile::Scope::Scope(FrameProfile& profile_, FramePhase phase) {
+    if (!profile_.OnOwner())
+        return;
+    profile = &profile_;
+    previous = profile->timing.active;
+    profile->Switch(phase);
+    wait = phase == FramePhase::FenceWait;
+    if (wait)
+        wall_start = ProfileWallTime();
+}
+FrameProfile::Scope::~Scope() {
+    if (!profile)
+        return;
+    if (wait)
+        profile->fence_wall += ProfileWallTime() - wall_start;
+    profile->Switch(previous);
+}
+void FrameProfile::Count(FrameCount counter, u64 amount) {
+    if (OnOwner())
+        counts[static_cast<size_t>(counter)] += amount;
+}
+void FrameProfile::EndFrame() {
+    if (!enabled)
+        return;
+    // Renderer initialization can run on the UI thread; runtime frame recording
+    // belongs to the GPU thread. Fencing-thread scopes never claim this ownership.
+    if (owner != GetCurrentThreadId()) {
+        owner = 0;
+        timing.cpu.fill(0);
+        counts.fill(0);
+        frames = fence_wall = 0;
+    }
+    BindRecordingThread();
+    Switch(timing.active);
+    ++frames;
+    const auto wall = ProfileWallTime();
+    if (wall - start_wall < 50000000)
+        return;
+    try {
+        constexpr std::array names{"draw_setup", "descriptor_writes", "barriers", "pso", "buffer_upload", "texture_upload", "submit", "fence_wait"};
+        constexpr std::array counters{"draws", "dispatches", "barriers", "descriptor_copies", "descriptor_writes", "pso_compiles", "ExecuteCommandLists"};
+        const double elapsed = static_cast<double>(wall - start_wall);
+        std::string line = fmt::format("D3D12_FRAME_PROFILE thread={} frames={} gpu_thread_cpu_pct={:.2f} fence_wait_wall_ms={:.3f}", owner.load(), frames,
+                                     100.0 * static_cast<double>(timing.last - initial_cpu) / elapsed,
+                                     static_cast<double>(fence_wall) / 10000.0);
+        for (size_t i = 0; i < timing.cpu.size(); ++i)
+            line += fmt::format(" {}_cpu_ms={:.3f}", names[i], static_cast<double>(timing.cpu[i]) / 10000.0);
+        for (size_t i = 0; i < counts.size(); ++i)
+            line += fmt::format(" {}={} {}_per_frame={:.2f}", counters[i], counts[i], counters[i], static_cast<double>(counts[i]) / static_cast<double>(frames));
+        Diagnostic(line);
+    } catch (...) {
+        Diagnostic("D3D12 frame profile formatting failed");
+    }
+    timing.cpu.fill(0);
+    counts.fill(0);
+    frames = fence_wall = 0;
+    initial_cpu = ProfileCpuTime();
+        timing.Reset(initial_cpu);
+    start_wall = ProfileWallTime();
 }
 Context::Context() {
     SetEnvironmentVariableA("NXBOX_D3D12_COMMAND_FAILURE", nullptr);
@@ -389,6 +494,7 @@ void Context::Wait(u64 tick) {
 }
 void Context::WaitSubmitted(u64 tick) {
     if (!IsFree(tick)) {
+        const FrameProfile::Scope frame_wait{profile, FramePhase::FenceWait};
         // Each waiter owns its event; GPU and fencing threads may wait concurrently.
         const HANDLE wait_event = CreateEventExW(nullptr, nullptr, 0, EVENT_ALL_ACCESS);
         if (!wait_event)
@@ -449,6 +555,7 @@ void Context::Collect() {
     CompleteThrough(completed);
 }
 ID3D12GraphicsCommandList* Context::Commands() {
+    profile.BindRecordingThread();
     if (!recording) {
         Collect();
         auto& slot = allocators[allocator_index];
@@ -465,6 +572,8 @@ ID3D12GraphicsCommandList* Context::Commands() {
 }
 void Context::MarkWork(std::string_view label) {
     Commands();
+    if (label == "guest draws")
+        profile.Count(FrameCount::Draws);
     if (std::find(work.begin(), work.end(), label) != work.end())
         return;
     work.emplace_back(label);
@@ -474,6 +583,7 @@ void Context::MarkWork(std::string_view label) {
                         static_cast<UINT>((marker.size() + 1) * sizeof(wchar_t)));
 }
 u64 Context::Submit() {
+    const FrameProfile::Scope profile_submit{profile, FramePhase::Submit};
     // QueueFence and FlushCommands can both request the same submission.
     // Empty requests reuse its value instead of emitting another queue signal.
     if (!recording)
@@ -497,6 +607,7 @@ u64 Context::Submit() {
                                    execute_sequence, CurrentTick(), contents));
         Check(device->GetDeviceRemovedReason(), "before ExecuteCommandLists", device.Get());
         queue->ExecuteCommandLists(1, lists);
+        profile.Count(FrameCount::Executes);
         recording = false;
         allocators[allocator_index].tick = CurrentTick();
         allocator_index = (allocator_index + 1) % allocators.size();
@@ -510,6 +621,7 @@ u64 Context::Submit() {
         batches.push_back({tick, std::move(completion), std::move(retained)});
         completion.clear();
         retained.clear();
+        retained_ids.clear();
     }
     Check(queue->Signal(fence.Get(), tick), "Signal", device.Get());
     submitted = tick;
@@ -521,11 +633,22 @@ void Context::Finish() {
 }
 void Context::Retain(const ResourcePtr& resource) {
     Commands();
-    // Consecutive bindings commonly retain the same image/buffer several times.
-    if (retained.empty() || retained.back() != resource)
-        retained.push_back(resource);
+    if (!resource || (!retained.empty() && retained.back() == resource))
+        return;
+    // The same attachment/texture can be referenced by thousands of draws.
+    // Hold each resource once per recording, not once per binding.
+    const auto [entry, inserted] = retained_ids.insert(resource.get());
+    if (inserted) {
+        try {
+            retained.push_back(resource);
+        } catch (...) {
+            retained_ids.erase(entry);
+            throw;
+        }
+    }
 }
 void Context::Transition(const ResourcePtr& resource, D3D12_RESOURCE_STATES state) {
+    const FrameProfile::Scope profile_barrier{profile, FramePhase::Barriers};
     if (!resource)
         throw std::invalid_argument("D3D12 null resource");
     Retain(resource);
@@ -538,7 +661,34 @@ void Context::Transition(const ResourcePtr& resource, D3D12_RESOURCE_STATES stat
     barrier.Transition.StateBefore = resource->state;
     barrier.Transition.StateAfter = state;
     commands->ResourceBarrier(1, &barrier);
+    profile.Count(FrameCount::Barriers);
     resource->state = state;
+}
+void Context::TransitionBatch(std::span<const std::pair<ResourcePtr, D3D12_RESOURCE_STATES>> uses) {
+    const FrameProfile::Scope profile_barrier{profile, FramePhase::Barriers};
+    // Start/retire recording before reading tracked states: completion callbacks
+    // can themselves record transitions. Keep all intermediate transitions ordered.
+    auto* list = Commands();
+    std::vector<D3D12_RESOURCE_BARRIER> barriers;
+    barriers.reserve(uses.size());
+    for (const auto& use : uses) {
+        if (!use.first)
+            throw std::invalid_argument("D3D12 null batch resource");
+        Retain(use.first);
+    }
+    for (const auto& [resource, state] : uses) {
+        if (resource->heap != D3D12_HEAP_TYPE_DEFAULT || resource->state == state)
+            continue;
+        D3D12_RESOURCE_BARRIER barrier{};
+        barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        barrier.Transition = {resource->handle.Get(), D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, resource->state, state};
+        barriers.push_back(barrier);
+        resource->state = state;
+    }
+    if (!barriers.empty()) {
+        list->ResourceBarrier(static_cast<UINT>(barriers.size()), barriers.data());
+        profile.Count(FrameCount::Barriers, barriers.size());
+    }
 }
 void Context::AfterCompletion(std::function<void()> callback) {
     Commands();

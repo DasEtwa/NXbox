@@ -12,6 +12,149 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <cstdint>
+#include <condition_variable>
+#include <thread>
+#include <unordered_map>
+#include <unordered_set>
+
+namespace D3D12 {
+enum class FramePhase : size_t {
+    DrawSetup, DescriptorWrites, Barriers, Pso, BufferUpload, TextureUpload, Submit, FenceWait, Count
+};
+enum class FrameCount : size_t { Draws, Dispatches, Barriers, DescriptorCopies, DescriptorWrites, PsoCompiles, Executes, Count };
+// Monotonic CPU samples, independent of the host clock API, for exclusive phases.
+struct FrameTiming {
+    std::array<std::uint64_t, static_cast<size_t>(FramePhase::Count)> cpu{};
+    FramePhase active{FramePhase::DrawSetup};
+    std::uint64_t last{};
+    void Switch(FramePhase phase, std::uint64_t now) {
+        if (now >= last)
+            cpu[static_cast<size_t>(active)] += now - last;
+        last = now;
+        active = phase;
+    }
+    void Reset(std::uint64_t now) {
+        cpu.fill(0);
+        last = now;
+    }
+};
+// The producer supplies immutable, owned inputs. The worker never reads Maxwell
+// registers, records commands or mutates the pipeline cache on the GPU thread.
+template <class Key, class Value, class Hash = std::hash<Key>>
+class AsyncPsoCache {
+public:
+    using Result = std::shared_ptr<Value>;
+    using Compile = std::function<Result()>;
+    using Report = std::function<void(std::string_view)>;
+    explicit AsyncPsoCache(bool enabled_, Report report_) : enabled{enabled_}, report{std::move(report_)} {}
+    ~AsyncPsoCache() { Stop(); }
+    AsyncPsoCache(const AsyncPsoCache&) = delete;
+    AsyncPsoCache& operator=(const AsyncPsoCache&) = delete;
+
+    // Null means skip this frame. A failed key is logged once and stays failed.
+    // Disabled mode preserves synchronous exception/fallback policy at the caller.
+    Result Request(const Key& key, Compile compile) {
+        if (!enabled)
+            return compile();
+        std::unique_lock lock{mutex};
+        if (stopping)
+            return {};
+        const auto found = entries.find(key);
+        if (found != entries.end()) {
+            auto& entry = *found->second;
+            if (!entry.failure.empty() && !entry.reported) {
+                entry.reported = true;
+                const auto failure = entry.failure;
+                lock.unlock();
+                report(failure);
+                return {};
+            }
+            return entry.result;
+        }
+        // Bounded outstanding jobs: never turn a shader burst into unbounded RAM.
+        if (pending >= MaxPending)
+            return {};
+        if (!worker.joinable())
+            worker = std::thread{[this] { Run(); }};
+        auto entry = std::make_shared<Entry>();
+        jobs.push_back({entry, std::move(compile)});
+        try {
+            entries.emplace(key, entry);
+        } catch (...) {
+            jobs.pop_back();
+            throw;
+        }
+        ++pending;
+        wake.notify_one();
+        return {};
+    }
+    // Call before destroying any captured compiler/device dependencies.
+    void Stop() {
+        {
+            const std::lock_guard lock{mutex};
+            stopping = true;
+            jobs.clear();
+        }
+        wake.notify_one();
+        if (worker.joinable())
+            worker.join();
+    }
+    static constexpr size_t MaxPending = 128;
+
+private:
+    struct Entry {
+        Result result;
+        std::string failure;
+        bool reported{};
+    };
+    struct Job {
+        std::shared_ptr<Entry> entry;
+        Compile compile;
+    };
+    void Run() {
+        for (;;) {
+            Job job;
+            {
+                std::unique_lock lock{mutex};
+                wake.wait(lock, [this] { return stopping || !jobs.empty(); });
+                if (stopping)
+                    return;
+                job = std::move(jobs.front());
+                jobs.pop_front();
+            }
+            Result result;
+            std::string failure;
+            try {
+                result = job.compile();
+                if (!result)
+                    failure = "D3D12 async PSO compiler returned no pipeline";
+            } catch (const std::exception& error) {
+                failure = error.what();
+            } catch (...) {
+                failure = "D3D12 async PSO compiler: non-standard exception";
+            }
+            {
+                const std::lock_guard lock{mutex};
+                job.entry->result = std::move(result);
+                job.entry->failure = std::move(failure);
+                --pending;
+            }
+        }
+    }
+    bool enabled{};
+    Report report;
+    std::mutex mutex;
+    std::condition_variable wake;
+    std::unordered_map<Key, std::shared_ptr<Entry>, Hash> entries;
+    std::deque<Job> jobs;
+    size_t pending{};
+    bool stopping{};
+    std::thread worker;
+};
+} // namespace D3D12
+
+#ifdef _WIN32
 #include <d3d12.h>
 #include <d3d12sdklayers.h>
 #include <wrl/client.h>
@@ -22,6 +165,7 @@ namespace D3D12 {
 using Microsoft::WRL::ComPtr;
 void Diagnostic(std::string_view message) noexcept;
 bool BisectEnabled(const char* name) noexcept;
+bool AsyncPsoEnabled() noexcept;
 void Check(HRESULT result, const char* operation, ID3D12Device* device = nullptr);
 void CheckPipeline(HRESULT result, const char* operation, ID3D12Device* device, u64 hash);
 struct MemoryBudget {
@@ -43,6 +187,36 @@ struct StagingBufferRef {
     size_t offset{};
     std::span<u8> mapped_span;
 };
+// CPU intervals are exclusive (nested scopes suspend the parent phase). Wait wall
+// time is separate: sleeping in a fence must not look like GPU-thread CPU work.
+class FrameProfile {
+public:
+    class Scope {
+    public:
+        Scope(FrameProfile& profile_, FramePhase phase);
+        ~Scope();
+        Scope(const Scope&) = delete;
+        Scope& operator=(const Scope&) = delete;
+    private:
+        FrameProfile* profile{};
+        FramePhase previous{};
+        u64 wall_start{};
+        bool wait{};
+    };
+    bool Enabled() const { return enabled; }
+    void Count(FrameCount counter, u64 amount = 1);
+    void EndFrame();
+    void BindRecordingThread();
+private:
+    bool OnOwner();
+    void Switch(FramePhase phase);
+    bool enabled{BisectEnabled("NXBOX_D3D12_FRAME_PROFILE")};
+    std::atomic<DWORD> owner{};
+    FrameTiming timing;
+    std::array<u64, static_cast<size_t>(FrameCount::Count)> counts{};
+    u64 initial_cpu{}, start_wall{}, fence_wall{}, frames{};
+};
+
 // One direct queue, bounded in-flight allocators. Every referenced resource is retained
 // until completion, including resources evicted from the shared caches.
 class Context {
@@ -66,6 +240,9 @@ public:
         return submitted + 1;
     }
     void Transition(const ResourcePtr& resource, D3D12_RESOURCE_STATES state);
+    // Explicit batch keeps raw Commands() users ordered; no hidden deferred barriers.
+    void TransitionBatch(std::span<const std::pair<ResourcePtr, D3D12_RESOURCE_STATES>> uses);
+    FrameProfile& Profile() { return profile; }
     void Retain(const ResourcePtr& resource);
     void AfterCompletion(std::function<void()> callback);
     ResourcePtr CreateResource(const D3D12_RESOURCE_DESC& desc, D3D12_HEAP_TYPE heap,
@@ -82,6 +259,7 @@ public:
     }
 
 private:
+    FrameProfile profile;
     ComPtr<ID3D12Device> device;
     ComPtr<ID3D12CommandQueue> queue;
     ComPtr<ID3D12Fence> fence;
@@ -116,6 +294,7 @@ private:
     std::deque<Batch> batches;
     void CompleteThrough(u64 tick);
     std::vector<ResourcePtr> retained;
+    std::unordered_set<Resource*> retained_ids;
     std::vector<std::function<void()>> completion;
 };
 class StagingRing {
@@ -135,3 +314,5 @@ private:
     std::vector<Page> pages;
 };
 } // namespace D3D12
+
+#endif // _WIN32

@@ -88,8 +88,72 @@ D3D12DescriptorAllocator::D3D12DescriptorAllocator(Context& context) : context{c
     Init(samplers, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, SamplerHeapSize, true);
     Init(rtvs, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, RtvHeapSize, false);
     Init(dsvs, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, DsvHeapSize, false);
+    InitCache(view_cache, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1024);
+    InitCache(sampler_cache, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, 256);
 }
 
+void D3D12DescriptorAllocator::InitCache(DescriptorCache& cache, D3D12_DESCRIPTOR_HEAP_TYPE type, u32 capacity) {
+    D3D12_DESCRIPTOR_HEAP_DESC desc{};
+    desc.Type = type;
+    desc.NumDescriptors = capacity;
+    Check(context.Device()->CreateDescriptorHeap(&desc, IID_PPV_ARGS(&cache.heap)), "create CPU descriptor cache", context.Device());
+    cache.stride = context.Device()->GetDescriptorHandleIncrementSize(type);
+    cache.capacity = capacity;
+}
+void D3D12DescriptorAllocator::RefreshCaches() {
+    if (cache_tick == context.CurrentTick())
+        return;
+    cache_tick = context.CurrentTick();
+    view_cache.entries.clear();
+    view_cache.cursor = 0;
+    slot_contents.clear();
+    // Sampler descriptions do not reference resources and stay valid across ticks.
+}
+void D3D12DescriptorAllocator::WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE type, const ResourcePtr& resource,
+                                         u32 kind, const void* desc, size_t size, D3D12_CPU_DESCRIPTOR_HANDLE destination,
+                                         const std::function<void(D3D12_CPU_DESCRIPTOR_HANDLE)>& create) {
+    const FrameProfile::Scope profile_write{context.Profile(), FramePhase::DescriptorWrites};
+    RefreshCaches();
+    const auto identity = reinterpret_cast<std::uintptr_t>(resource ? resource->handle.Get() : nullptr);
+    std::string key(reinterpret_cast<const char*>(&type), sizeof(type));
+    key.append(reinterpret_cast<const char*>(&identity), sizeof(identity));
+    key.append(reinterpret_cast<const char*>(&kind), sizeof(kind));
+    key.append(static_cast<const char*>(desc), size);
+    const auto old_contents = slot_contents.find(destination.ptr);
+    if (old_contents != slot_contents.end() && old_contents->second == key)
+        return; // The slot has not changed; never overwrite an in-flight table.
+    auto& cache = type == D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER ? sampler_cache : view_cache;
+    auto found = cache.entries.find(key);
+    if (found == cache.entries.end()) {
+        if (cache.cursor == cache.capacity) {
+            // CPU descriptors were copied immediately; no fence is needed to recycle them.
+            cache.entries.clear();
+            slot_contents.clear();
+            cache.cursor = 0;
+        }
+        auto handle = cache.heap->GetCPUDescriptorHandleForHeapStart();
+        handle.ptr += static_cast<SIZE_T>(cache.cursor++) * cache.stride;
+        create(handle);
+        context.Profile().Count(FrameCount::DescriptorWrites);
+        found = cache.entries.emplace(key, CachedDescriptor{handle, resource}).first;
+    }
+    context.Device()->CopyDescriptorsSimple(1, destination, found->second.handle, type);
+    context.Profile().Count(FrameCount::DescriptorCopies);
+    slot_contents[destination.ptr] = std::move(key);
+}
+std::optional<DescriptorTable> D3D12DescriptorAllocator::FindTable(std::string_view key, bool sampler) {
+    RefreshCaches();
+    return table_cache[sampler ? 1 : 0].Find(context.CurrentTick(), key);
+}
+void D3D12DescriptorAllocator::RememberTable(std::string key, DescriptorTable table, bool sampler) {
+    RefreshCaches();
+    table_cache[sampler ? 1 : 0].Remember(context.CurrentTick(), std::move(key), table);
+}
+void D3D12DescriptorAllocator::WriteUavDescriptor(const DescriptorTable& table, u32 slot, const ResourcePtr& resource,
+                                                const D3D12_UNORDERED_ACCESS_VIEW_DESC& desc) {
+    WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, resource, 2, &desc, sizeof(desc), table.Slot(slot),
+                [&](auto handle) { context.Device()->CreateUnorderedAccessView(resource ? resource->handle.Get() : nullptr, nullptr, &desc, handle); });
+}
 void D3D12DescriptorAllocator::Init(Ring& ring, D3D12_DESCRIPTOR_HEAP_TYPE type, u32 capacity,
                                     bool visible) {
     D3D12_DESCRIPTOR_HEAP_DESC desc{};
@@ -131,7 +195,14 @@ void D3D12DescriptorAllocator::Reserve(u32 view_count, u32 sampler_count, u32 rt
         }
         if (ready)
             return;
-        context.Finish();
+        // Submit the producer if needed, then retire only the oldest blocking
+        // allocation rather than draining every in-flight command allocator.
+        u64 oldest_blocked = context.CurrentTick();
+        for (size_t i = 0; i < rings.size(); ++i) {
+            if (counts[i] && !rings[i]->math.CanAllocate(counts[i]))
+                oldest_blocked = std::min(oldest_blocked, *rings[i]->math.OldestTick());
+        }
+        context.Wait(oldest_blocked);
     }
 }
 
@@ -182,7 +253,8 @@ D3D12_CPU_DESCRIPTOR_HANDLE D3D12DescriptorAllocator::AllocateDsv() {
 
 void D3D12DescriptorAllocator::WriteNullCbv(const DescriptorTable& table, u32 slot) {
     D3D12_CONSTANT_BUFFER_VIEW_DESC desc{};
-    context.Device()->CreateConstantBufferView(&desc, table.Slot(slot));
+    WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, {}, 0, &desc, sizeof(desc), table.Slot(slot),
+                [&](auto handle) { context.Device()->CreateConstantBufferView(&desc, handle); });
 }
 void D3D12DescriptorAllocator::WriteNullSrv(const DescriptorTable& table, u32 slot,
                                             D3D12_SRV_DIMENSION dimension) {
@@ -222,7 +294,8 @@ void D3D12DescriptorAllocator::WriteNullSrv(const DescriptorTable& table, u32 sl
         desc.Texture2D.MipLevels = 1;
         break;
     }
-    context.Device()->CreateShaderResourceView(nullptr, &desc, table.Slot(slot));
+    WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, {}, 1, &desc, sizeof(desc), table.Slot(slot),
+                [&](auto handle) { context.Device()->CreateShaderResourceView(nullptr, &desc, handle); });
 }
 void D3D12DescriptorAllocator::WriteNullUav(const DescriptorTable& table, u32 slot) {
     D3D12_UNORDERED_ACCESS_VIEW_DESC desc{};
@@ -230,7 +303,7 @@ void D3D12DescriptorAllocator::WriteNullUav(const DescriptorTable& table, u32 sl
     desc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
     desc.Buffer.NumElements = 1;
     desc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
-    context.Device()->CreateUnorderedAccessView(nullptr, nullptr, &desc, table.Slot(slot));
+    WriteUavDescriptor(table, slot, {}, desc);
 }
 void D3D12DescriptorAllocator::WriteNullSampler(const DescriptorTable& table, u32 slot) {
     D3D12_SAMPLER_DESC desc{};
@@ -238,7 +311,8 @@ void D3D12DescriptorAllocator::WriteNullSampler(const DescriptorTable& table, u3
     desc.AddressU = desc.AddressV = desc.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
     desc.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
     desc.MaxLOD = D3D12_FLOAT32_MAX;
-    context.Device()->CreateSampler(&desc, table.Slot(slot));
+    WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, {}, 3, &desc, sizeof(desc), table.Slot(slot),
+                [&](auto handle) { context.Device()->CreateSampler(&desc, handle); });
 }
 
 void D3D12DescriptorAllocator::WriteCbv(const DescriptorTable& table, u32 slot,
@@ -262,7 +336,8 @@ void D3D12DescriptorAllocator::WriteCbv(const DescriptorTable& table, u32 slot,
     D3D12_CONSTANT_BUFFER_VIEW_DESC desc{};
     desc.BufferLocation = buffer.resource->handle->GetGPUVirtualAddress() + buffer.offset;
     desc.SizeInBytes = static_cast<UINT>(size);
-    context.Device()->CreateConstantBufferView(&desc, table.Slot(slot));
+    WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, buffer.resource, 0, &desc, sizeof(desc), table.Slot(slot),
+                [&](auto handle) { context.Device()->CreateConstantBufferView(&desc, handle); });
 }
 
 void D3D12DescriptorAllocator::WriteStorageUav(const DescriptorTable& table, u32 slot,
@@ -278,8 +353,7 @@ void D3D12DescriptorAllocator::WriteStorageUav(const DescriptorTable& table, u32
     desc.Buffer.FirstElement = buffer.offset / 4;
     desc.Buffer.NumElements = size / 4;
     desc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
-    context.Device()->CreateUnorderedAccessView(buffer.resource->handle.Get(), nullptr, &desc,
-                                                table.Slot(slot));
+    WriteUavDescriptor(table, slot, buffer.resource, desc);
 }
 
 void D3D12DescriptorAllocator::WriteTexelSrv(const DescriptorTable& table, u32 slot,
@@ -296,8 +370,8 @@ void D3D12DescriptorAllocator::WriteTexelSrv(const DescriptorTable& table, u32 s
     desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     desc.Buffer.FirstElement = buffer.offset / format.bytes_per_block;
     desc.Buffer.NumElements = buffer.size / format.bytes_per_block;
-    context.Device()->CreateShaderResourceView(buffer.resource->handle.Get(), &desc,
-                                               table.Slot(slot));
+    WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, buffer.resource, 1, &desc, sizeof(desc), table.Slot(slot),
+                [&](auto handle) { context.Device()->CreateShaderResourceView(buffer.resource->handle.Get(), &desc, handle); });
 }
 
 void D3D12DescriptorAllocator::WriteTexelUav(const DescriptorTable& table, u32 slot,
@@ -313,8 +387,7 @@ void D3D12DescriptorAllocator::WriteTexelUav(const DescriptorTable& table, u32 s
     desc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
     desc.Buffer.FirstElement = buffer.offset / format.bytes_per_block;
     desc.Buffer.NumElements = buffer.size / format.bytes_per_block;
-    context.Device()->CreateUnorderedAccessView(buffer.resource->handle.Get(), nullptr, &desc,
-                                                table.Slot(slot));
+    WriteUavDescriptor(table, slot, buffer.resource, desc);
 }
 
 bool D3D12DescriptorAllocator::WriteImageSrv(const DescriptorTable& table, u32 slot,
@@ -326,19 +399,23 @@ bool D3D12DescriptorAllocator::WriteImageSrv(const DescriptorTable& table, u32 s
         WriteNullSrv(table, slot, fallback_dimension);
         return false;
     }
-    context.Device()->CreateShaderResourceView(resource->handle.Get(), &view.Description(),
-                                               table.Slot(slot));
+    const auto& desc = view.Description();
+    WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, resource, 1, &desc, sizeof(desc), table.Slot(slot),
+                [&](auto handle) { context.Device()->CreateShaderResourceView(resource->handle.Get(), &desc, handle); });
     return true;
 }
 
 void D3D12DescriptorAllocator::WriteSampler(const DescriptorTable& table, u32 slot,
                                             const Sampler& sampler) {
     const auto desc = MakeSamplerDesc(sampler.Entry());
-    context.Device()->CreateSampler(&desc, table.Slot(slot));
+    WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, {}, 3, &desc, sizeof(desc), table.Slot(slot),
+                [&](auto handle) { context.Device()->CreateSampler(&desc, handle); });
 }
 
 void D3D12DescriptorAllocator::CreateRtv(D3D12_CPU_DESCRIPTOR_HANDLE handle,
                                          const ImageView* view_ptr) {
+    const FrameProfile::Scope profile_write{context.Profile(), FramePhase::DescriptorWrites};
+    context.Profile().Count(FrameCount::DescriptorWrites);
     const auto resource = view_ptr ? view_ptr->ImageHandle() : nullptr;
     if (!resource) {
         // Null render target: a valid RTV that discards writes.
@@ -373,6 +450,8 @@ void D3D12DescriptorAllocator::CreateRtv(D3D12_CPU_DESCRIPTOR_HANDLE handle,
 
 void D3D12DescriptorAllocator::CreateDsv(D3D12_CPU_DESCRIPTOR_HANDLE handle, const ImageView& view,
                                          D3D12_DSV_FLAGS flags) {
+    const FrameProfile::Scope profile_write{context.Profile(), FramePhase::DescriptorWrites};
+    context.Profile().Count(FrameCount::DescriptorWrites);
     const auto resource = view.ImageHandle();
     if (!resource)
         throw std::runtime_error("D3D12 depth view without image");
@@ -433,8 +512,7 @@ bool D3D12DescriptorAllocator::WriteImageUav(const DescriptorTable& table, u32 s
     default:
         throw std::runtime_error("D3D12 unsupported storage image dimension");
     }
-    context.Device()->CreateUnorderedAccessView(view.ImageHandle()->handle.Get(), nullptr, &desc,
-                                                table.Slot(slot));
+    WriteUavDescriptor(table, slot, view.ImageHandle(), desc);
     return true;
 }
 } // namespace D3D12
