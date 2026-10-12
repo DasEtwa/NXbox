@@ -8,6 +8,7 @@
 #include "core/frontend/applets/net_connect.h"
 #include "core/hle/result.h"
 #include "core/hle/service/am/am.h"
+#include "core/hle/service/am/am_results.h"
 #include "core/hle/service/am/applet_data_broker.h"
 #include "core/hle/service/am/frontend/applet_net_connect.h"
 #include "core/hle/service/am/service/storage.h"
@@ -26,7 +27,7 @@ void NetConnect::Initialize() {
 }
 
 Result NetConnect::GetStatus() const {
-    return ResultSuccess;
+    return AM::ResultLibraryAppletTerminated;
 }
 
 void NetConnect::ExecuteInteractive() {
@@ -34,8 +35,18 @@ void NetConnect::ExecuteInteractive() {
 }
 
 void NetConnect::Execute() {
-    if (complete)
+    if (complete) {
         return;
+    }
+    // The default frontend cannot configure a network. Return cancellation instead of hanging
+    // the caller forever or reporting a connection that was never established.
+    {
+        auto owner = applet.lock();
+        std::scoped_lock lk{owner->lock};
+        owner->terminate_result = AM::ResultLibraryAppletTerminated;
+    }
+    complete = true;
+    Exit();
 }
 
 Result NetConnect::RequestExit() {

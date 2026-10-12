@@ -243,6 +243,9 @@ enum class Text {
     FirmwareInstalled,
     FirmwareMissing,
     FirmwareInstallFailed,
+    SystemMenuTitle,
+    SystemMenuBoot,
+    SystemMenuHint,
     Count,
 };
 

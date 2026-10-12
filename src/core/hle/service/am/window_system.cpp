@@ -11,8 +11,11 @@
 #include "core/hle/kernel/kernel.h"
 #include "core/hle/service/am/am_results.h"
 #include "core/hle/service/am/applet.h"
+#include "core/hle/service/am/applet_data_broker.h"
 #include "core/hle/service/am/applet_manager.h"
+#include "core/hle/service/am/applet_policy.h"
 #include "core/hle/service/am/event_observer.h"
+#include "core/hle/service/am/frontend/applets.h"
 #include "core/hle/service/am/process_creation.h"
 #include "core/hle/service/am/window_system.h"
 
@@ -285,7 +288,14 @@ void WindowSystem::PruneTerminatedAppletsLocked() {
     for (auto it = m_applets.begin(); it != m_applets.end(); /* ... */) {
         const auto& [aruid, applet] = *it;
 
-        std::scoped_lock lk{applet->lock};
+        std::unique_lock lk{applet->lock};
+
+        if (applet->frontend && !applet->is_completed && !applet->guest_returned &&
+            applet->terminate_result.IsSuccess() && !m_system.IsShuttingDown() &&
+            !applet->lifecycle_manager.GetExitRequested()) {
+            it = std::next(it);
+            continue;
+        }
 
         if (!applet->process->IsTerminated()) {
             // Not terminated.
@@ -332,6 +342,41 @@ void WindowSystem::PruneTerminatedAppletsLocked() {
             it = std::next(it);
             continue;
         }
+
+#ifdef NXBOX_UWP
+        if (PreferLocalFirmwareApplet(applet->applet_id) &&
+            ShouldRecoverGuestApplet(bool(applet->frontend), applet->is_completed,
+                                     applet->guest_returned, applet->guest_output_sent,
+                                     applet->lifecycle_manager.GetExitRequested(),
+                                     !applet->fallback_input.empty()) &&
+            !m_system.IsShuttingDown() && applet->terminate_result.IsSuccess()) {
+            LOG_WARNING(
+                Service_AM,
+                "LLE applet exited without a response; recovering through HLE: applet_id={}",
+                applet->applet_id);
+            auto& input = applet->caller_applet_broker->GetInData();
+            std::shared_ptr<IStorage> pending;
+            while (input.Pop(m_system.Kernel(), &pending).IsSuccess()) {
+            }
+            for (const auto& storage : applet->fallback_input) {
+                input.Push(m_system.Kernel(), storage);
+            }
+            applet->fallback_input.clear();
+            applet->frontend = m_system.GetFrontendAppletHolder().GetApplet(
+                applet, applet->applet_id, applet->library_applet_mode);
+            if (applet->frontend) {
+                // Frontend callbacks lock this applet; keep it tracked until they complete.
+                lk.unlock();
+                applet->frontend->Initialize();
+                applet->frontend->Execute();
+                lk.lock();
+                if (!applet->is_completed) {
+                    it = std::next(it);
+                    continue;
+                }
+            }
+        }
+#endif
 
         // Erase from caller applet's list of children.
         if (auto caller_applet = applet->caller_applet.lock(); caller_applet) {

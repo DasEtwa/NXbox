@@ -46,6 +46,7 @@ public:
                                                    const FrontendAppletParameters& params);
     void RequestExit();
     void OperationModeChanged();
+    void HomeButtonPressed();
 
 public:
     void SetWindowSystem(WindowSystem* window_system);

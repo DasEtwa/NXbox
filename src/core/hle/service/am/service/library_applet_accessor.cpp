@@ -131,6 +131,11 @@ Result ILibraryAppletAccessor::RequestExit() {
 
 Result ILibraryAppletAccessor::Terminate() {
     LOG_DEBUG(Service_AM, "called");
+    {
+        std::scoped_lock lk{m_applet->lock};
+        m_applet->guest_returned = true;
+        m_applet->fallback_input.clear();
+    }
     m_applet->process->Terminate();
     FrontendRequestExit();
     R_SUCCEED();
@@ -157,6 +162,14 @@ Result ILibraryAppletAccessor::PushInData(SharedPointer<IStorage> storage) {
         }
     }
 
+#ifdef NXBOX_UWP
+    {
+        std::scoped_lock lk{m_applet->lock};
+        if (!m_applet->frontend && !m_applet->guest_output_sent) {
+            m_applet->fallback_input.push_back(storage);
+        }
+    }
+#endif
     m_broker->GetInData().Push(system.Kernel(), storage);
     R_SUCCEED();
 }
@@ -186,6 +199,11 @@ Result ILibraryAppletAccessor::PopOutData(Out<SharedPointer<IStorage>> out_stora
 
 Result ILibraryAppletAccessor::PushInteractiveInData(SharedPointer<IStorage> storage) {
     LOG_DEBUG(Service_AM, "called");
+    {
+        std::scoped_lock lk{m_applet->lock};
+        m_applet->guest_output_sent = true;
+        m_applet->fallback_input.clear();
+    }
     m_broker->GetInteractiveInData().Push(system.Kernel(), storage);
     FrontendExecuteInteractive();
     R_SUCCEED();

@@ -49,6 +49,7 @@
 #include "core/hle/kernel/svc/svc_debug_string.h"
 #include "core/hle/service/acc/profile_manager.h"
 #include "core/hle/service/am/applet_manager.h"
+#include "eden_uwp/applet_boot.h"
 #include "core/hle/service/mii/mii_manager.h"
 #include "core/hle/service/filesystem/filesystem.h"
 #include "core/loader/loader.h"
@@ -674,8 +675,11 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
             break;
         }
     }
-    const std::string path =
-        protocol_path.empty() ? ResolveGamePath(bundled_path, chosen_in_library) : protocol_path;
+    const bool boot_home_menu = protocol_path == SwitchHomeBootTarget;
+    std::string path =
+        boot_home_menu ? std::string{}
+                       : (protocol_path.empty() ? ResolveGamePath(bundled_path, chosen_in_library)
+                                                : protocol_path);
     SCOPE_EXIT {
         if (splash)
             splash->Release();
@@ -806,6 +810,19 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
         }
     };
     system.GetFileSystemController().CreateFactories(*system.GetFilesystem());
+    if (boot_home_menu) {
+        const auto firmware = system.GetFileSystemController().GetSystemNANDContents();
+        const auto home =
+            firmware->GetEntryRaw(static_cast<u64>(Service::AM::AppletProgramId::QLaunch),
+                                  FileSys::ContentRecordType::Program);
+        if (!home) {
+            launch_status.phase.store(Ui::LaunchPhase::Failed);
+            Diagnostic("HOME_BOOT_FAILED qlaunch program is missing from system NAND");
+            return;
+        }
+        path = home->GetFullPath();
+        Diagnostic("HOME_BOOT firmware qlaunch selected");
+    }
     {
         // Read the actual boot package for library, game.txt and protocol launches. Release this
         // metadata loader before reserving guest memory and constructing the game renderer.
@@ -862,6 +879,11 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
         .applet_id = Service::AM::AppletId::Application,
         .applet_type = Service::AM::AppletType::Application,
     };
+    if (boot_home_menu) {
+        parameters.program_id = static_cast<u64>(Service::AM::AppletProgramId::QLaunch);
+        parameters.applet_id = Service::AM::AppletId::QLaunch;
+        parameters.applet_type = Service::AM::AppletType::SystemApplet;
+    }
     memory_stage("before_load");
     if (NxboxJitCache::session) {
         // A loader without an NSO ID must not inherit the previous game's metadata.
@@ -1070,6 +1092,7 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
             }
             lifecycle.CompleteDeferral();
         } else if (request == Lifecycle::Resume && paused) {
+            gamepad->ResetHomeButton();
             void(system.Run());
             paused = false;
             measured_at = std::chrono::steady_clock::now();
@@ -1081,6 +1104,9 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
             continue;
         }
         gamepad->Poll(*controller, system.HIDCore().GetSupportedStyleTag());
+        if (gamepad->HomePressed()) {
+            system.GetAppletManager().HomeButtonPressed();
+        }
         const auto now = std::chrono::steady_clock::now();
         // Stutter: the longest gap between two presented frames in each window.
         if (const auto count = window.FrameCount(); count != last_frame_count) {
@@ -1573,7 +1599,9 @@ void RunGameView(const winrt::Windows::UI::Core::CoreWindow& window, const std::
         if (chosen.empty()) {
             return; // Leaving the library must not boot the previously remembered game.
         }
-        if (!chosen.empty()) {
+        if (chosen == SwitchHomeBootTarget) {
+            protocol_path = chosen;
+        } else if (!chosen.empty()) {
             RememberChosenGame(local_state, chosen);
             chosen_in_library = true;
             if (Ui::SyncEnabled()) {

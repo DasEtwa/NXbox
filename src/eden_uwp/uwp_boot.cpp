@@ -73,7 +73,10 @@ int RunHeadlessBoot(const std::string& nro_path) {
     system.GetFileSystemController().CreateFactories(*system.GetFilesystem());
     system.GetUserChannel().clear();
 
-    Service::AM::FrontendAppletParameters load_parameters{};
+    Service::AM::FrontendAppletParameters load_parameters{
+        .applet_id = Service::AM::AppletId::Application,
+        .applet_type = Service::AM::AppletType::Application,
+    };
     const Core::SystemResultStatus load_result = system.Load(emu_window, nro_path, load_parameters);
     if (load_result != Core::SystemResultStatus::Success) {
         LOG_CRITICAL(Frontend, "Headless boot: failed to load NRO {} (status {})", nro_path,

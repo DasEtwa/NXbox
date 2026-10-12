@@ -273,3 +273,6 @@
     {Text::FirmwareMissing,
      L"Firmware: copy your dump to firmware or NXbox\\firmware on USB and restart."},
     {Text::FirmwareInstallFailed, L"Install failed: check keys, files and free space; restart."},
+    {Text::SystemMenuTitle, L"System menu"},
+    {Text::SystemMenuBoot, L"Boot to Switch HOME menu"},
+    {Text::SystemMenuHint, L"Use your installed firmware. View + Menu opens HOME."},

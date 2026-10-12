@@ -279,3 +279,6 @@
      L"Firmware: copie seu dump para firmware ou NXbox\\firmware no USB e reinicie."},
     {Text::FirmwareInstallFailed,
      L"Instalação falhou: confira chaves, arquivos e espaço; reinicie."},
+    {Text::SystemMenuTitle, L"Menu do sistema"},
+    {Text::SystemMenuBoot, L"Iniciar no menu HOME do Switch"},
+    {Text::SystemMenuHint, L"Use o firmware instalado. View + Menu abre o HOME."},

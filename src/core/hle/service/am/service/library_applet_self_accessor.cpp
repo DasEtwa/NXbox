@@ -98,6 +98,11 @@ Result ILibraryAppletSelfAccessor::PopInData(Out<SharedPointer<IStorage>> out_st
 
 Result ILibraryAppletSelfAccessor::PushOutData(SharedPointer<IStorage> storage) {
     LOG_INFO(Service_AM, "called");
+    {
+        std::scoped_lock lk{m_applet->lock};
+        m_applet->guest_output_sent = true;
+        m_applet->fallback_input.clear();
+    }
     m_broker->GetOutData().Push(system.Kernel(), storage);
     R_SUCCEED();
 }
@@ -109,6 +114,11 @@ Result ILibraryAppletSelfAccessor::PopInteractiveInData(Out<SharedPointer<IStora
 
 Result ILibraryAppletSelfAccessor::PushInteractiveOutData(SharedPointer<IStorage> storage) {
     LOG_INFO(Service_AM, "called");
+    {
+        std::scoped_lock lk{m_applet->lock};
+        m_applet->guest_output_sent = true;
+        m_applet->fallback_input.clear();
+    }
     m_broker->GetInteractiveOutData().Push(system.Kernel(), storage);
     R_SUCCEED();
 }
@@ -179,6 +189,11 @@ Result ILibraryAppletSelfAccessor::GetMainAppletStorageId(Out<FileSys::StorageId
 
 Result ILibraryAppletSelfAccessor::ExitProcessAndReturn() {
     LOG_INFO(Service_AM, "called");
+    {
+        std::scoped_lock lk{m_applet->lock};
+        m_applet->guest_returned = true;
+        m_applet->fallback_input.clear();
+    }
 
     if (const auto caller_applet = m_applet->caller_applet.lock(); caller_applet) {
         m_applet->process->Terminate();
