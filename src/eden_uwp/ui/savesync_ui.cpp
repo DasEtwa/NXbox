@@ -528,10 +528,10 @@ private:
                                  Theme::kText, HAlign::Left, VAlign::Middle);
         }
         if (!progress.item.empty()) {
-            renderer_.DrawString(Widen(progress.item), Font::MetaMono,
-                                 RectF(kMargin, track.bottom + 24.0f, kMargin + kBarWidth,
-                                       track.bottom + 56.0f),
-                                 Theme::kTextTertiary);
+            renderer_.DrawString(
+                Widen(progress.item), Font::MetaMono,
+                RectF(kMargin, track.bottom + 24.0f, kMargin + kBarWidth, track.bottom + 56.0f),
+                Theme::kTextTertiary);
         }
     }
 
@@ -540,8 +540,8 @@ private:
                   std::uint64_t bytes) {
         renderer_.DrawString(label, Font::Section, RectF(x, 580.0f, x + 480.0f, 614.0f),
                              Theme::kText);
-        renderer_.DrawString(FormatWhen(when), Font::MetaMono,
-                             RectF(x, 624.0f, x + 480.0f, 656.0f), Theme::kTextSecondary);
+        renderer_.DrawString(FormatWhen(when), Font::MetaMono, RectF(x, 624.0f, x + 480.0f, 656.0f),
+                             Theme::kTextSecondary);
         renderer_.DrawString(std::to_wstring(files) + L" " + Tr(Text::SyncFilesSuffix) + L"  ·  " +
                                  FormatBytes(bytes),
                              Font::MetaMono, RectF(x, 660.0f, x + 480.0f, 692.0f),
@@ -561,8 +561,9 @@ private:
             return false;
         }
         if (input_.Pressed(Button::A)) {
-            const SaveSync::ConflictChoice choice = focus_ == 0 ? SaveSync::ConflictChoice::KeepXbox
-                                                                : SaveSync::ConflictChoice::KeepCloud;
+            const SaveSync::ConflictChoice choice = focus_ == 0
+                                                        ? SaveSync::ConflictChoice::KeepXbox
+                                                        : SaveSync::ConflictChoice::KeepCloud;
             Diagnostic(std::string("UI savesync conflict answer ") +
                        (focus_ == 0 ? "keep-xbox" : "keep-cloud"));
             runner_.Start([title, name, choice](const SaveSync::ProgressCallback& progress) {
@@ -581,11 +582,12 @@ private:
                  conflict_.cloud_files, conflict_.cloud_bytes);
         const std::wstring keep_xbox = Tr(Text::SyncKeepXbox);
         const std::wstring keep_cloud = Tr(Text::SyncKeepCloud);
-        const float first = renderer_.MeasureString(keep_xbox, Font::Button).width +
-                            2.0f * kPillPadding;
-        const float second = renderer_.MeasureString(keep_cloud, Font::Button).width +
-                             2.0f * kPillPadding;
-        DrawChoicePill(renderer_, RectF(kMargin, kChoiceTop, kMargin + first, kChoiceTop + kPillHeight),
+        const float first =
+            renderer_.MeasureString(keep_xbox, Font::Button).width + 2.0f * kPillPadding;
+        const float second =
+            renderer_.MeasureString(keep_cloud, Font::Button).width + 2.0f * kPillPadding;
+        DrawChoicePill(renderer_,
+                       RectF(kMargin, kChoiceTop, kMargin + first, kChoiceTop + kPillHeight),
                        keep_xbox, true, focus_ == 0);
         const float left = kMargin + first + kPillGap;
         DrawChoicePill(renderer_, RectF(left, kChoiceTop, left + second, kChoiceTop + kPillHeight),
@@ -698,8 +700,8 @@ SignInOutcome RunSignIn(Renderer& renderer, const CoreWindow& window, Input& inp
         if (!finished && runner.Done()) {
             finished = true;
             shown_at = now;
-            Diagnostic(fmt::format("UI savesync sign-in outcome {}",
-                                   static_cast<int>(runner.Outcome())));
+            Diagnostic(
+                fmt::format("UI savesync sign-in outcome {}", static_cast<int>(runner.Outcome())));
             if (runner.Outcome() == SignInOutcome::Cancelled) {
                 return false;
             }
@@ -727,31 +729,33 @@ SignInOutcome RunSignIn(Renderer& renderer, const CoreWindow& window, Input& inp
                 code_since = now;
                 expires_in = login.expires_in_seconds;
             }
-            renderer.DrawString(Tr(Text::SyncCodeBody), Font::Body,
-                                RectF(kMargin, kBodyTop - 20.0f, kMargin + 1000.0f, kBodyTop + 28.0f),
-                                Theme::kTextSecondary);
-            renderer.DrawString(Widen(login.verification_url), Font::Heading,
-                                RectF(kMargin, kBodyTop + 40.0f, kMargin + kTextWidth,
-                                      kBodyTop + 100.0f),
-                                Theme::kText, HAlign::Left, VAlign::Middle);
-            renderer.DrawString(Widen(login.user_code), Font::Code,
-                                RectF(kMargin, kBodyTop + 110.0f, kMargin + kTextWidth,
-                                      kBodyTop + 250.0f),
-                                Theme::kText, HAlign::Left, VAlign::Middle);
+            renderer.DrawString(
+                Tr(Text::SyncCodeBody), Font::Body,
+                RectF(kMargin, kBodyTop - 20.0f, kMargin + 1000.0f, kBodyTop + 28.0f),
+                Theme::kTextSecondary);
+            renderer.DrawString(
+                Widen(login.verification_url), Font::Heading,
+                RectF(kMargin, kBodyTop + 40.0f, kMargin + kTextWidth, kBodyTop + 100.0f),
+                Theme::kText, HAlign::Left, VAlign::Middle);
+            renderer.DrawString(
+                Widen(login.user_code), Font::Code,
+                RectF(kMargin, kBodyTop + 110.0f, kMargin + kTextWidth, kBodyTop + 250.0f),
+                Theme::kText, HAlign::Left, VAlign::Middle);
             std::wstring waiting = Tr(Text::SyncWaiting);
             if (expires_in > 0) {
-                const int left =
-                    std::max(expires_in - static_cast<int>(std::chrono::duration_cast<
-                                              std::chrono::seconds>(now - code_since).count()),
-                             0);
+                const int left = std::max(
+                    expires_in - static_cast<int>(std::chrono::duration_cast<std::chrono::seconds>(
+                                                      now - code_since)
+                                                      .count()),
+                    0);
                 wchar_t clock[16];
                 swprintf_s(clock, std::size(clock), L"%d:%02d", left / 60, left % 60);
                 waiting += L"   " + std::wstring(Tr(Text::SyncExpiresIn)) + L" " + clock;
             }
-            renderer.DrawString(waiting, Font::Meta,
-                                RectF(kMargin, kBodyTop + 262.0f, kMargin + kTextWidth,
-                                      kBodyTop + 300.0f),
-                                Theme::kTextSecondary, HAlign::Left, VAlign::Middle);
+            renderer.DrawString(
+                waiting, Font::Meta,
+                RectF(kMargin, kBodyTop + 262.0f, kMargin + kTextWidth, kBodyTop + 300.0f),
+                Theme::kTextSecondary, HAlign::Left, VAlign::Middle);
         } else {
             renderer.DrawString(Tr(Text::SyncStageConnecting), Font::Body,
                                 RectF(kMargin, kBodyTop, kMargin + 1000.0f, kBodyTop + 40.0f),
@@ -791,9 +795,11 @@ bool RunFirstRunSetup(Renderer& renderer, const CoreWindow& window, Input& input
         DrawBody(renderer, Tr(Text::SyncSetupBody));
         const std::wstring yes = Tr(Text::SyncYes);
         const std::wstring no = Tr(Text::SyncNotNow);
-        const float yes_width = renderer.MeasureString(yes, Font::Button).width + 2.0f * kPillPadding;
+        const float yes_width =
+            renderer.MeasureString(yes, Font::Button).width + 2.0f * kPillPadding;
         const float no_width = renderer.MeasureString(no, Font::Button).width + 2.0f * kPillPadding;
-        DrawChoicePill(renderer, RectF(kMargin, kChoiceTop, kMargin + yes_width, kChoiceTop + kPillHeight),
+        DrawChoicePill(renderer,
+                       RectF(kMargin, kChoiceTop, kMargin + yes_width, kChoiceTop + kPillHeight),
                        yes, true, focus == 0);
         const float left = kMargin + yes_width + kPillGap;
         DrawChoicePill(renderer, RectF(left, kChoiceTop, left + no_width, kChoiceTop + kPillHeight),
@@ -828,11 +834,12 @@ bool RunBootSync(const CoreWindow& window, const fs::path& local_state, const Sy
         return false;
     }
     SyncFlow::Outcome outcome;
-    const bool closed = WithOwnRenderer(window, "savesync before-boot", [&](Renderer& renderer, Input& input) {
-        SyncFlow flow(renderer, window, input, game, FlowMode::BeforeBoot);
-        outcome = flow.Run();
-        return outcome.window_closed;
-    });
+    const bool closed =
+        WithOwnRenderer(window, "savesync before-boot", [&](Renderer& renderer, Input& input) {
+            SyncFlow flow(renderer, window, input, game, FlowMode::BeforeBoot);
+            outcome = flow.Run();
+            return outcome.window_closed;
+        });
     if (closed) {
         return true;
     }
@@ -853,13 +860,13 @@ bool RunPendingSync(const CoreWindow& window, const fs::path& local_state) {
     }
     Diagnostic("UI savesync pending " + game.title_id);
     SyncFlow::Outcome outcome;
-    const bool closed = WithOwnRenderer(window, "savesync pending", [&](Renderer& renderer, Input& input) {
-        SyncFlow flow(renderer, window, input, game, FlowMode::AfterExit);
-        outcome = flow.Run();
-        return outcome.window_closed;
-    });
-    if (!closed && !outcome.conflict_left &&
-        outcome.status != SaveSync::SyncStatus::Failed) {
+    const bool closed =
+        WithOwnRenderer(window, "savesync pending", [&](Renderer& renderer, Input& input) {
+            SyncFlow flow(renderer, window, input, game, FlowMode::AfterExit);
+            outcome = flow.Run();
+            return outcome.window_closed;
+        });
+    if (!closed && !outcome.conflict_left && outcome.status != SaveSync::SyncStatus::Failed) {
         ClearPending(local_state);
     }
     return closed;
