@@ -296,9 +296,10 @@ RendererD3D12::RendererD3D12(Core::Frontend::EmuWindow& window,
     }
 }
 RendererD3D12::~RendererD3D12() = default;
-void RendererD3D12::ReportFailure(const std::exception& error) noexcept {
+bool RendererD3D12::ReportFailure(const std::exception& error) noexcept {
     impl->failed = true;
     impl->context.ReportFailure(error);
+    return true;
 }
 bool RendererD3D12::HasFailed() const {
     return impl->failed;

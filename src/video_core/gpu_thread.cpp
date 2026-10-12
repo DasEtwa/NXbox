@@ -60,9 +60,8 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
             // Keep consuming queued fences after a renderer failure so synchronous
             // callers and game shutdown cannot deadlock behind a stopped GPU thread.
 #ifdef HAS_D3D12
-            auto* native_d3d12 = dynamic_cast<D3D12::RendererD3D12*>(&renderer);
             try {
-                if (native_d3d12 && native_d3d12->HasFailed()) {
+                if (renderer.HasFailed()) {
                     system.GPU().CancelSyncRequests();
                 } else {
 #endif
@@ -84,9 +83,8 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
 #ifdef HAS_D3D12
                 }
             } catch (const std::exception& error) {
-                if (!native_d3d12)
+                if (!renderer.ReportFailure(error))
                     throw;
-                native_d3d12->ReportFailure(error);
                 system.GPU().CancelSyncRequests();
             }
 #endif

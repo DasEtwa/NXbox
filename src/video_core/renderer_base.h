@@ -7,6 +7,7 @@
 #pragma once
 
 #include <atomic>
+#include <exception>
 #include <functional>
 #include <memory>
 
@@ -50,6 +51,18 @@ public:
     [[nodiscard]] virtual RasterizerInterface* ReadRasterizer() = 0;
 
     [[nodiscard]] virtual std::string GetDeviceVendor() const = 0;
+
+    /// True once a backend hit an unrecoverable device error; the GPU thread then only
+    /// retires fences so callers do not deadlock.
+    [[nodiscard]] virtual bool HasFailed() const {
+        return false;
+    }
+
+    /// Lets a backend absorb a device failure on the GPU thread. Returns false when the
+    /// backend does not handle it, so the caller rethrows.
+    virtual bool ReportFailure(const std::exception&) noexcept {
+        return false;
+    }
 
     // Getter/setter functions:
     // ------------------------
