@@ -43,6 +43,7 @@
   </Applications>
   <Capabilities>
     <Capability Name="internetClient" />
+    <Capability Name="internetClientServer" />
     <Capability Name="privateNetworkClientServer" />
     <rescap:Capability Name="codeGeneration" />
     <!-- Reads game/key files from a USB drive (KnownFolders.RemovableDevices), so a player can set

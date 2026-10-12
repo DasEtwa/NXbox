@@ -28,6 +28,7 @@
 #include "common/scope_exit.h"
 #include "common/settings.h"
 #include "core/core.h"
+#include "network/network.h"
 #include "core/cpu_manager.h"
 #include "core/file_sys/registered_cache.h"
 #include "core/file_sys/vfs/vfs_real.h"
@@ -300,6 +301,12 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     winrt::init_apartment();
     EdenXbox::OpenCrashLog();
     EdenXbox::ObserveCrashLifecycle();
+    if (!Network::Init()) {
+        EdenXbox::CrashEvent("network_init_failed");
+    }
+    SCOPE_EXIT {
+        Network::Shutdown();
+    };
     CoreApplication::Run(winrt::make<BootView>());
     EdenXbox::CrashEvent("process_exit");
     return 0;

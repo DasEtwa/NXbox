@@ -27,6 +27,8 @@
 #include "eden_uwp/diagnostic.h"
 #include "eden_uwp/firmware.h"
 #include "eden_uwp/home_ui_settings.h"
+#include "eden_uwp/multiplayer_screen.h"
+#include "eden_uwp/multiplayer_strings.h"
 #include "eden_uwp/nextendo_online.h"
 #include "eden_uwp/save_sync.h"
 #include "eden_uwp/title_settings.h"
@@ -128,10 +130,13 @@ constexpr int kSettingSources = 1;
 constexpr int kSettingUsb = 2;
 constexpr int kSettingCredits = 3;
 constexpr int kSettingNextendo = 4;
-constexpr int kSettingSystemMenu = 5;
-constexpr int kSettingOfficialInterface = 6;
-constexpr int kSettingBackToNXbox = 7;
-constexpr int kSettingsRowCount = 8;
+constexpr int kSettingMultiplayer = 5;
+constexpr int kSettingSystemMenu = 6;
+constexpr int kSettingOfficialInterface = 7;
+constexpr int kSettingBackToNXbox = 8;
+constexpr int kSettingsRowCount = 9;
+// Rows that fit on screen at once; the list scrolls to keep the focused row visible.
+constexpr int kSettingsVisibleRows = 7;
 
 constexpr std::size_t Idx(int index) {
     return static_cast<std::size_t>(index);
@@ -838,6 +843,13 @@ private:
             input_.ConsumeUntilRelease();
             return;
         }
+        if (settings_row_ == kSettingMultiplayer) {
+            const InputTransition transition(input_);
+            if (RunMultiplayerScreen(renderer_, window_, input_)) {
+                closed_ = true;
+            }
+            return;
+        }
         if (settings_row_ == kSettingNextendo) {
             const InputTransition transition(input_);
             closed_ = RunNextendoScreen(renderer_, window_, input_);
@@ -1430,7 +1442,8 @@ private:
             if (layer_ == Layer::Rail &&
                 (settings_row_ == kSettingSources || settings_row_ == kSettingUsb ||
                  settings_row_ == kSettingCredits || settings_row_ == kSettingSystemMenu ||
-                 settings_row_ == kSettingNextendo)) {
+                 settings_row_ == kSettingNextendo ||
+                 settings_row_ == kSettingMultiplayer)) {
                 hints.push_back({Theme::kButtonA, L"A", Tr(Text::HintSelect)});
             }
         } else if (HasGame()) {
@@ -1498,6 +1511,7 @@ private:
              usb_row,
              credits_row,
              nextendo_row,
+             {Multiplayer::Tr(Multiplayer::Text::Title), L"", Theme::kTextSecondary, L""},
              {Tr(Text::SystemMenuTitle), Tr(Text::SystemMenuBoot), Theme::kTextSecondary,
               Tr(Text::SystemMenuHint)},
              {Tr(Text::OfficialSwitchInterface),
@@ -1510,8 +1524,11 @@ private:
         constexpr float kRowPitch = 92.0f;
         constexpr float kRowRadius = 22.0f;
         const int row_count = return_home_ ? kSettingsRowCount : kSettingsRowCount - 1;
-        for (int i = 0; i < row_count; ++i) {
-            const float y = kRowTop + static_cast<float>(i) * kRowPitch;
+        const int first_row =
+            std::max(0, std::min(settings_row_ - 3, row_count - kSettingsVisibleRows));
+        const int last_row = std::min(row_count, first_row + kSettingsVisibleRows);
+        for (int i = first_row; i < last_row; ++i) {
+            const float y = kRowTop + static_cast<float>(i - first_row) * kRowPitch;
             const D2D1_RECT_F row = RectF(kMargin, y, kCanvasWidth - kMargin, y + kRowHeight);
             const bool disabled = (i == kSettingOfficialInterface || i == kSettingSystemMenu) &&
                                   !firmware_status_.home_available;
