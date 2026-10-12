@@ -15,6 +15,7 @@
 #include <thread>
 #include <winrt/Windows.Data.Json.h>
 #include <winrt/Windows.Foundation.Collections.h>
+#include <winrt/Windows.Web.Http.Headers.h>
 #include <winrt/Windows.Web.Http.h>
 #include "common/settings.h"
 #include "eden_uwp/await_bounded.h"
@@ -50,6 +51,7 @@ AnnounceMultiplayerRoom::RoomList FetchRooms() {
     while (base.ends_with('/'))
         base.pop_back();
     winrt::Windows::Web::Http::HttpClient client;
+    client.DefaultRequestHeaders().TryAppendWithoutValidation(L"api-version", L"1");
     auto reply = AwaitBounded(
         client.GetStringAsync(winrt::Windows::Foundation::Uri(winrt::to_hstring(base + "/lobby"))),
         15s);
