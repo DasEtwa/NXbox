@@ -8,7 +8,7 @@ on:
       - "tests/port/test_t19_*.py"
       - ".github/workflows/dynarmic-tests.yml"
 concurrency:
-  group: dynarmic-tests-${{ github.ref }}
+  group: dynarmic-tests-${{ github.ref }}-${{ github.sha }}
   cancel-in-progress: true
 permissions:
   contents: read
@@ -24,7 +24,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: "3.12"
       - uses: ilammy/msvc-dev-cmd@v1
         if: runner.os == 'Windows'
         with:
@@ -33,7 +33,11 @@ jobs:
         run: python -m pip install cmake==3.31.6 ninja
       - name: Install Linux prerequisites
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libboost-all-dev libssl-dev libasound2-dev libx11-dev libxext-dev libva-dev libvdpau-dev libdrm-dev libavcodec-dev libavfilter-dev libavutil-dev libswscale-dev libudev-dev libxcursor-dev libxrandr-dev libxfixes-dev libxi-dev libxss-dev libxtst-dev nasm glslang-tools
+        run:
+          sudo apt-get update && sudo apt-get install -y libboost-all-dev libssl-dev libasound2-dev
+          libx11-dev libxext-dev libva-dev libvdpau-dev libdrm-dev libavcodec-dev libavfilter-dev
+          libavutil-dev libswscale-dev libudev-dev libxcursor-dev libxrandr-dev libxfixes-dev
+          libxi-dev libxss-dev libxtst-dev nasm glslang-tools
       - name: Prepare Windows host tools
         if: runner.os == 'Windows'
         run: python tools/nxbox/prepare_host_tools.py
@@ -49,7 +53,7 @@ jobs:
         env:
           UNICORNDIR: ${{ runner.temp }}/unicorn-install
         run: |
-          cmake -S . -B "$RUNNER_TEMP/cpu-build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DENABLE_QT=OFF -DYUZU_CMD=OFF -DYUZU_ROOM=OFF -DENABLE_CUBEB=OFF -DENABLE_LIBUSB=OFF -DENABLE_WEB_SERVICE=OFF -DUSE_DISCORD_PRESENCE=OFF -DYUZU_TESTS=OFF -DDYNARMIC_TESTS=ON -DDYNARMIC_TESTS_USE_UNICORN=ON -DDYNARMIC_IGNORE_ASSERTS=OFF -DCPMUTIL_FORCE_BUNDLED=ON -DSDL_WAYLAND=OFF
+          cmake -S . -B "$RUNNER_TEMP/cpu-build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DENABLE_QT=OFF -DYUZU_CMD=OFF -DYUZU_ROOM=OFF -DENABLE_CUBEB=OFF -DENABLE_LIBUSB=OFF -DENABLE_WEB_SERVICE=OFF -DUSE_DISCORD_PRESENCE=OFF -DYUZU_TESTS=OFF -DDYNARMIC_TESTS=ON -DDYNARMIC_TESTS_USE_UNICORN=ON -DDYNARMIC_IGNORE_ASSERTS=OFF -DCMAKE_PROJECT_TOP_LEVEL_INCLUDES="$GITHUB_WORKSPACE/src/dynarmic/tests/cpu_test_profile.cmake" -DCPMUTIL_FORCE_BUNDLED=ON -DSDL_WAYLAND=OFF
       - name: Build CPU tests
         shell: bash
         run: cmake --build "$RUNNER_TEMP/cpu-build" --target dynarmic_tests --parallel 2
@@ -61,7 +65,9 @@ jobs:
           "$test_binary" '[conformance]' --rng-seed 19
       - name: Run full CPU suite
         shell: bash
-        run: ctest --test-dir "$RUNNER_TEMP/cpu-build" -R '^dynarmic_tests$' --output-on-failure --timeout 3600
+        run:
+          ctest --test-dir "$RUNNER_TEMP/cpu-build" -R '^dynarmic_tests$' --output-on-failure
+          --timeout 3600
       - name: Decoder coverage and port regressions
         run: python -m unittest discover -s tests/port -p "test_*.py"
       - name: Upload test evidence

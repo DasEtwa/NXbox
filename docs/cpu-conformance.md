@@ -31,6 +31,19 @@ No real-game instruction histogram was available in this worktree. Priority ther
 
 Rosetta can execute x86-64 on this Mac, but local heavy compilation was avoided after measuring swap at 16.7/17.4 GB and only 8.9 GB disk free. The dedicated workflow builds and executes the real dynarmic suite on Windows and Ubuntu x64, outside the graphics renderer work.
 
+## Patch for the common track
+
+Desktop MSVC rejects the integer-to-integer `reinterpret_cast` at `src/common/sparse_large_vector.cpp:43` (C2440). This prevents the embedding project's full `common` library from compiling for the desktop CPU test runner. T19 does not own that file. The proposed fix is:
+
+```diff
+-    u64 exception_addr = reinterpret_cast<u64>(info->ExceptionRecord->ExceptionInformation[1]);
++    u64 exception_addr = static_cast<u64>(info->ExceptionRecord->ExceptionInformation[1]);
+```
+
+The dedicated CPU test profile omits that unrelated object from the desktop MSVC test build only. It does not patch common sources or change the UWP production build; the CPU tests do not exercise SparseLargeVector. The profile must be removed after the common track fixes the desktop build.
+
+The Unicorn harness now selects CPSR before seeding SP/LR, because Unicorn 2.1.4 resets in SVC mode and changing to user mode afterwards selects a different register bank. The targeted test also requires PC equality; the legacy general fuzz harness normalizes PC and therefore has weaker PC coverage.
+
 ## Console follow-up
 
 Run legal owner-provided 32-bit software exercising the unprivileged transfer forms on Xbox UWP; verify callback memory accesses and W^X JIT execution, then collect an anonymized instruction histogram (opcode counts only, no game/firmware bytes or keys). Also compare FP/crypto/CRC outputs with real Switch hardware and validate exclusive-monitor ordering under contention. Windows desktop Unicorn comparisons do not establish Xbox AppContainer behavior.
