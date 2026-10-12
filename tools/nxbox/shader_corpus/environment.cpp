@@ -30,11 +30,11 @@ void ReadMap(std::ifstream &file, std::map<K, V> &map, u64 count) {
   }
 }
 template <typename K, typename V>
-V Lookup(const std::map<K, V> &map, K key, const char *kind) {
-  const auto it = map.find(key);
-  if (it == map.end()) {
-    throw std::runtime_error(std::string("environment lacks ") + kind +
-                             " key=" + std::to_string(key));
+V Lookup(std::map<K, V> &map, K key, const char *kind, V fallback,
+         std::set<std::string> &synthesized) {
+  const auto [it, inserted] = map.try_emplace(key, fallback);
+  if (inserted) {
+    synthesized.insert(std::string(kind) + " key=" + std::to_string(key));
   }
   return it->second;
 }
@@ -116,13 +116,16 @@ u64 Environment::ReadInstruction(u32 address) {
   return code[(address - base) / 8];
 }
 u32 Environment::ReadCbufValue(u32 bank, u32 offset) {
-  return Lookup(constants, CbufKey(bank, offset), "constant buffer");
+  return Lookup(constants, CbufKey(bank, offset), "constant buffer", u32{0},
+                synthesized);
 }
 Shader::TextureType Environment::ReadTextureType(u32 handle) {
-  return Lookup(textures, handle, "texture type");
+  return Lookup(textures, handle, "texture type", Shader::TextureType::Color2D,
+                synthesized);
 }
 Shader::TexturePixelFormat Environment::ReadTexturePixelFormat(u32 handle) {
-  return Lookup(formats, handle, "texture format");
+  return Lookup(formats, handle, "texture format",
+                Shader::TexturePixelFormat::A8B8G8R8_UNORM, synthesized);
 }
 bool Environment::IsTexturePixelFormatInteger(u32 handle) {
   // Same classification as VideoCore::Surface::IsPixelFormatInteger, without

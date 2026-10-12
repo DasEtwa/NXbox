@@ -3,6 +3,8 @@
 
 #include <filesystem>
 #include <map>
+#include <set>
+#include <string>
 #include <vector>
 
 #include "shader_recompiler/environment.h"
@@ -27,8 +29,10 @@ public:
   std::optional<Shader::ReplaceConstant>
   GetReplaceConstBuffer(u32 bank, u32 offset) override;
   void Dump(u64, u64) override {}
+  const std::set<std::string> &SynthesizedKeys() const { return synthesized; }
 
 private:
+  std::set<std::string> synthesized;
   std::vector<u64> code;
   std::map<u32, Shader::TextureType> textures;
   std::map<u32, Shader::TexturePixelFormat> formats;
