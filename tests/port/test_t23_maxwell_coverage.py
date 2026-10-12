@@ -488,9 +488,9 @@ def render(result, before):
         "",
         "References: [envytools GM107 decoder](https://github.com/envytools/envytools/blob/master/envydis/gm107.c), [Maxwell ISA notes](https://envytools.readthedocs.io/en/latest/hw/graph/maxwell/cuda/isa.html), [NVIDIA PTX byte permutation](https://docs.nvidia.com/cuda/archive/11.5.0/parallel-thread-execution/index.html#data-movement-and-conversion-instructions-prmt), [PTX integer multiplication](https://docs.nvidia.com/cuda/archive/11.5.0/parallel-thread-execution/index.html#integer-arithmetic-instructions-mul). PTX defines arithmetic behavior; GM107 supplies SASS encoding. Unsupported semantics are preserved as explicit failures rather than substituted results.",
         "",
-        "T23 implements PRMT generic/sign replication plus F4E/B4E/RC8/ECL/ECR/RC16 across reg/cr/rc/imm, and IMUL/IMAD/IMAD32I low/high products including independently signed operands. High multiplication uses 16-bit limbs and existing U32 IR. IMUL.CC, IMAD.CC/X/SAT and IMAD32I.CC/NEG/PO remain unsupported. SASS PRMT operands are source A, selector, source B; tests include a fixed immediate-selector packing case. No HLSL emitter changes are required. The native differential test evaluates actual emitted IR against byte-array and native 64-bit reference arithmetic, including all 65,536 generic selectors, random inputs, sign boundaries, and register aliasing.",
+        "T23 implements PRMT generic/sign replication plus F4E/B4E/RC8/ECL/ECR/RC16 across reg/cr/rc/imm, and IMUL/IMAD/IMAD32I low/high products including independently signed operands. High multiplication uses 16-bit limbs and existing U32 IR. IMUL.CC, IMAD.CC/X/SAT and IMAD32I.CC/NEG/PO remain unsupported. SASS PRMT operands are source A, selector, source B; tests include a fixed immediate-selector packing case. P2R reg/cbuf now share the immediate form's masked predicate/condition-code packing, including all four byte destinations. No HLSL emitter changes are required. The native differential test evaluates actual emitted IR against byte-array and native 64-bit reference arithmetic, including all 65,536 generic selectors, random inputs, sign boundaries, register aliasing, and every 7-bit predicate mask/state and CC byte selection (651,265 comparisons).",
         "",
-        "Remaining work includes every row marked not implemented, valid rejected modifiers in partial rows, silent legacy stubs, precise RRO reduction, system register defaults, and host/backend execution equivalence. Cache operations, barriers, texture/surface variants and CAS need representation and ordering work; flow extensions need CFG/structured lowering, not visitor no-ops. Console tests must verify PRMT SASS operand order/modes and signed IMUL/IMAD.HI behavior, then shader output comparisons for unaffected corpus stages. DXC success measures compilation, not pixels.",
+        "Remaining work includes every row marked not implemented, valid rejected modifiers in partial rows, silent legacy stubs, precise RRO reduction, system register defaults, and host/backend execution equivalence. Cache operations, barriers, texture/surface variants and CAS need representation and ordering work; flow extensions need CFG/structured lowering, not visitor no-ops. Console tests must verify PRMT SASS operand order/modes and signed IMUL/IMAD.HI behavior, masked P2R predicate/CC packing into each byte, then shader output comparisons for unaffected corpus stages. DXC success measures compilation, not pixels.",
         "",
         "| Instruction | High-bit encoding | Status | Operand/modifier fields | Rejections / limitations | Source |",
         "| --- | --- | --- | --- | --- | --- |",
@@ -525,6 +525,24 @@ class MaxwellCoverageTests(unittest.TestCase):
                 row["instruction"],
             )
         self.assertLessEqual(after["visitor_stubs"], before["visitor_stubs"] - 13)
+        self.assertLessEqual(after["counts"]["not implemented"], 39)
+        self.assertGreaterEqual(after["counts"]["full"], 32)
+        statuses = {row["instruction"]: row["status"] for row in after["rows"]}
+        for name in ("PRMT_reg", "PRMT_imm", "P2R_reg"):
+            self.assertEqual(statuses[name], "full", name)
+        for name in (
+            "IMUL_reg",
+            "IMUL_cbuf",
+            "IMUL_imm",
+            "IMUL32I",
+            "IMAD_reg",
+            "IMAD_cr",
+            "IMAD_rc",
+            "IMAD_imm",
+            "IMAD32I",
+            "P2R_cbuf",
+        ):
+            self.assertNotEqual(statuses[name], "not implemented", name)
         for row in after["rows"]:
             if row["instruction"].startswith("PRMT_"):
                 # Constant buffer bounds are separately audited by shared helpers.

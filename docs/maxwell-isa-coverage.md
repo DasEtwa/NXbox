@@ -10,17 +10,17 @@ Baseline revision: `46cb09bd6780af7051cb550c76aca6fb710764e9` (the worktree star
 
 | Measure | Before | After |
 | --- | ---: | ---: |
-| full | 29 | 31 |
-| partial | 197 | 208 |
-| not implemented | 54 | 41 |
+| full | 29 | 32 |
+| partial | 197 | 209 |
+| not implemented | 54 | 39 |
 | Visitor stubs | 60 | 47 |
-| Explicit rejection sites in translation files | 206 | 213 |
+| Explicit rejection sites in translation files | 206 | 211 |
 
 References: [envytools GM107 decoder](https://github.com/envytools/envytools/blob/master/envydis/gm107.c), [Maxwell ISA notes](https://envytools.readthedocs.io/en/latest/hw/graph/maxwell/cuda/isa.html), [NVIDIA PTX byte permutation](https://docs.nvidia.com/cuda/archive/11.5.0/parallel-thread-execution/index.html#data-movement-and-conversion-instructions-prmt), [PTX integer multiplication](https://docs.nvidia.com/cuda/archive/11.5.0/parallel-thread-execution/index.html#integer-arithmetic-instructions-mul). PTX defines arithmetic behavior; GM107 supplies SASS encoding. Unsupported semantics are preserved as explicit failures rather than substituted results.
 
-T23 implements PRMT generic/sign replication plus F4E/B4E/RC8/ECL/ECR/RC16 across reg/cr/rc/imm, and IMUL/IMAD/IMAD32I low/high products including independently signed operands. High multiplication uses 16-bit limbs and existing U32 IR. IMUL.CC, IMAD.CC/X/SAT and IMAD32I.CC/NEG/PO remain unsupported. SASS PRMT operands are source A, selector, source B; tests include a fixed immediate-selector packing case. No HLSL emitter changes are required. The native differential test evaluates actual emitted IR against byte-array and native 64-bit reference arithmetic, including all 65,536 generic selectors, random inputs, sign boundaries, and register aliasing.
+T23 implements PRMT generic/sign replication plus F4E/B4E/RC8/ECL/ECR/RC16 across reg/cr/rc/imm, and IMUL/IMAD/IMAD32I low/high products including independently signed operands. High multiplication uses 16-bit limbs and existing U32 IR. IMUL.CC, IMAD.CC/X/SAT and IMAD32I.CC/NEG/PO remain unsupported. SASS PRMT operands are source A, selector, source B; tests include a fixed immediate-selector packing case. P2R reg/cbuf now share the immediate form's masked predicate/condition-code packing, including all four byte destinations. No HLSL emitter changes are required. The native differential test evaluates actual emitted IR against byte-array and native 64-bit reference arithmetic, including all 65,536 generic selectors, random inputs, sign boundaries, register aliasing, and every 7-bit predicate mask/state and CC byte selection (651,265 comparisons).
 
-Remaining work includes every row marked not implemented, valid rejected modifiers in partial rows, silent legacy stubs, precise RRO reduction, system register defaults, and host/backend execution equivalence. Cache operations, barriers, texture/surface variants and CAS need representation and ordering work; flow extensions need CFG/structured lowering, not visitor no-ops. Console tests must verify PRMT SASS operand order/modes and signed IMUL/IMAD.HI behavior, then shader output comparisons for unaffected corpus stages. DXC success measures compilation, not pixels.
+Remaining work includes every row marked not implemented, valid rejected modifiers in partial rows, silent legacy stubs, precise RRO reduction, system register defaults, and host/backend execution equivalence. Cache operations, barriers, texture/surface variants and CAS need representation and ordering work; flow extensions need CFG/structured lowering, not visitor no-ops. Console tests must verify PRMT SASS operand order/modes and signed IMUL/IMAD.HI behavior, masked P2R predicate/CC packing into each byte, then shader output comparisons for unaffected corpus stages. DXC success measures compilation, not pixels.
 
 | Instruction | High-bit encoding | Status | Operand/modifier fields | Rejections / limitations | Source |
 | --- | --- | --- | --- | --- | --- |
@@ -97,9 +97,9 @@ Remaining work includes every row marked not implemented, valid rejected modifie
 | `NOP` | `0101 0000 1011 0---` | full | See source operands | No known translation rejection | [not_implemented.cpp](../src/shader_recompiler/frontend/maxwell/translate/impl/not_implemented.cpp) |
 | `OUT_cbuf` | `1110 1011 1110 0---` | partial | dest_reg[0:8], output_reg[8:8], offset[20:14], binding[34:5], emit[39:1], cut[40:1] | Out of bounds constant buffer binding {}; Out of bounds constant buffer offset {} | [output_geometry.cpp](../src/shader_recompiler/frontend/maxwell/translate/impl/output_geometry.cpp) |
 | `OUT_reg` | `1111 1011 1110 0---` | full | dest_reg[0:8], output_reg[8:8], index[20:8], emit[39:1], cut[40:1] | No known translation rejection | [output_geometry.cpp](../src/shader_recompiler/frontend/maxwell/translate/impl/output_geometry.cpp) |
-| `P2R_cbuf` | `0100 1100 1110 1---` | not implemented | See source operands | P2R (cbuf) | [move_predicate_to_register.cpp](../src/shader_recompiler/frontend/maxwell/translate/impl/move_predicate_to_register.cpp) |
+| `P2R_cbuf` | `0100 1100 1110 1---` | partial | dest_reg[0:8], src[8:8], offset[20:14], binding[34:5], mode[40:1], byte_selector[41:2] | Out of bounds constant buffer binding {}; Out of bounds constant buffer offset {} | [move_predicate_to_register.cpp](../src/shader_recompiler/frontend/maxwell/translate/impl/move_predicate_to_register.cpp) |
 | `P2R_imm` | `0011 1000 1110 1---` | full | dest_reg[0:8], src[8:8], value[20:19], mode[40:1], byte_selector[41:2], is_negative[56:1] | No known translation rejection | [move_predicate_to_register.cpp](../src/shader_recompiler/frontend/maxwell/translate/impl/move_predicate_to_register.cpp) |
-| `P2R_reg` | `0101 1100 1110 1---` | not implemented | See source operands | P2R (reg) | [move_predicate_to_register.cpp](../src/shader_recompiler/frontend/maxwell/translate/impl/move_predicate_to_register.cpp) |
+| `P2R_reg` | `0101 1100 1110 1---` | full | dest_reg[0:8], src[8:8], index[20:8], mode[40:1], byte_selector[41:2] | No known translation rejection | [move_predicate_to_register.cpp](../src/shader_recompiler/frontend/maxwell/translate/impl/move_predicate_to_register.cpp) |
 | `PIXLD` | `1110 1111 1110 1---` | partial | dest_reg[0:8], addr_reg[8:8], addr_offset[20:8], mode[31:3], dest_pred[45:3] | Destination predicate; Mode {}; Non-zero source register | [pixel_load.cpp](../src/shader_recompiler/frontend/maxwell/translate/impl/pixel_load.cpp) |
 | `POPC_cbuf` | `0100 1100 0000 1---` | partial | dest_reg[0:8], offset[20:14], binding[34:5], tilde[40:1] | Out of bounds constant buffer binding {}; Out of bounds constant buffer offset {} | [integer_popcount.cpp](../src/shader_recompiler/frontend/maxwell/translate/impl/integer_popcount.cpp) |
 | `POPC_reg` | `0101 1100 0000 1---` | full | dest_reg[0:8], index[20:8], tilde[40:1] | No known translation rejection | [integer_popcount.cpp](../src/shader_recompiler/frontend/maxwell/translate/impl/integer_popcount.cpp) |

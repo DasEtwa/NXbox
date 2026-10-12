@@ -45,6 +45,8 @@ struct Environment final : Shader::Environment {
 struct Evaluation {
   std::array<u32, 256> registers{};
   u32 cbuf{};
+  u32 predicate_bits{};
+  u32 flag_bits{};
   std::unordered_map<const IR::Inst *, u32> values;
   u32 Read(IR::Value value) {
     if (value.IsImmediate()) {
@@ -69,6 +71,31 @@ struct Evaluation {
         if (arg(0) != 1 || arg(1) != 16)
           throw std::runtime_error("Incorrect cbuf address");
         result = cbuf;
+        break;
+      case IR::Opcode::GetPred:
+        result =
+            (predicate_bits >> static_cast<unsigned>(inst.Arg(0).Pred())) & 1;
+        break;
+      case IR::Opcode::GetZFlag:
+        result = flag_bits & 1;
+        break;
+      case IR::Opcode::GetSFlag:
+        result = (flag_bits >> 1) & 1;
+        break;
+      case IR::Opcode::GetCFlag:
+        result = (flag_bits >> 2) & 1;
+        break;
+      case IR::Opcode::GetOFlag:
+        result = (flag_bits >> 3) & 1;
+        break;
+      case IR::Opcode::LogicalAnd:
+        result = arg(0) && arg(1);
+        break;
+      case IR::Opcode::INotEqual:
+        result = arg(0) != arg(1);
+        break;
+      case IR::Opcode::BitwiseNot32:
+        result = ~arg(0);
         break;
       case IR::Opcode::IAdd32:
         result = arg(0) + arg(1);
@@ -118,8 +145,8 @@ struct Evaluation {
 };
 using Method = void (Visitor::*)(u64);
 size_t cases{};
-void Check(Method method, u64 insn, u32 a, u32 b, u32 c, u32 cbuf,
-           u32 expected) {
+void Check(Method method, u64 insn, u32 a, u32 b, u32 c, u32 cbuf, u32 expected,
+           u32 predicate_bits = 0, u32 flag_bits = 0) {
   Shader::ObjectPool<IR::Inst> pool;
   IR::Block block{pool};
   Environment env;
@@ -131,6 +158,8 @@ void Check(Method method, u64 insn, u32 a, u32 b, u32 c, u32 cbuf,
   eval.registers[2] = b;
   eval.registers[3] = c;
   eval.cbuf = cbuf;
+  eval.predicate_bits = predicate_bits;
+  eval.flag_bits = flag_bits;
   eval.Run(block);
   if (eval.registers[0] != expected) {
     throw std::runtime_error("IR mismatch: " + std::to_string(insn) + ": " +
@@ -178,7 +207,8 @@ int main() {
   std::mt19937 random{0x23a11};
   constexpr u64 regs = (1ull << 8) | (2ull << 20) | (3ull << 39);
   constexpr u64 cbuf_address = (1ull << 34) | (4ull << 20);
-  // Known SASS PRMT immediate selector: pack two halfwords from distinct sources.
+  // Known SASS PRMT immediate selector: pack two halfwords from distinct
+  // sources.
   Check(&Visitor::PRMT_imm,
         0x36c0000000000000ull | (1ull << 8) | (3ull << 39) | (0x5410ull << 20),
         0x44332211, 0, 0x88776655, 0, 0x66552211);
@@ -276,6 +306,28 @@ int main() {
             Product(a, b, high, signed_a, signed_b));
     }
   }
+  for (unsigned mode = 0; mode < 2; ++mode) {
+    for (unsigned byte = 0; byte < 4; ++byte) {
+      for (u32 mask = 0; mask < 128; ++mask) {
+        for (u32 state = 0; state < 128; ++state) {
+          const u32 original = random();
+          const u32 flags = state & 15;
+          const u32 selected = mode ? flags : state;
+          const u32 expected = (original & ~(mask << (byte * 8))) |
+                               ((selected & mask) << (byte * 8));
+          const u64 bits = (static_cast<u64>(mode) << 40) |
+                           (static_cast<u64>(byte) << 41) | (1ull << 8);
+          Check(&Visitor::P2R_reg, 0x5ce8000000000000ull | bits | (2ull << 20),
+                original, mask, 0, 0, expected, state, flags);
+          Check(&Visitor::P2R_cbuf, 0x4ce8000000000000ull | bits | cbuf_address,
+                original, 0, 0, mask, expected, state, flags);
+          Check(&Visitor::P2R_imm,
+                0x38e8000000000000ull | bits | (static_cast<u64>(mask) << 20),
+                original, 0, 0, 0, expected, state, flags);
+        }
+      }
+    }
+  }
   for (unsigned mode = 7; mode < 16; ++mode) {
     try {
       Check(&Visitor::PRMT_reg,
@@ -329,6 +381,7 @@ class MaxwellSemanticsTests(unittest.TestCase):
             recompiler / "frontend/maxwell/opcodes.cpp",
             recompiler / "frontend/maxwell/translate/impl/impl.cpp",
             recompiler / "frontend/maxwell/translate/impl/not_implemented.cpp",
+            recompiler / "frontend/maxwell/translate/impl/move_predicate_to_register.cpp",
             ROOT / "tools/hlsl-harness/host_support.cpp",
         ]
         with tempfile.TemporaryDirectory(prefix="nxbox-t23-") as directory:
@@ -358,7 +411,7 @@ class MaxwellSemanticsTests(unittest.TestCase):
             self.assertEqual(built.returncode, 0, built.stdout + built.stderr)
             result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=120)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertIn("Differential cases: 258049", result.stdout)
+            self.assertIn("Differential cases: 651265", result.stdout)
             print(result.stdout.strip())
 
 
