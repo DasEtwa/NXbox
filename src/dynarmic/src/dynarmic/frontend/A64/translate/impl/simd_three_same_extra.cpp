@@ -137,7 +137,7 @@ bool TranslatorVisitor::FCADD_vec(bool Q, Imm<2> size, Vec Vm, Imm<1> rot, Vec V
 
     const IR::U128 operand1 = V(datasize, Vn);
     const IR::U128 operand2 = V(datasize, Vm);
-    IR::U128 rotated = ir.ZeroVector();
+    IR::U128 result = ir.ZeroVector();
 
     IR::U16U32U64 element1;
     IR::U16U32U64 element3;
@@ -153,11 +153,20 @@ bool TranslatorVisitor::FCADD_vec(bool Q, Imm<2> size, Vec Vm, Imm<1> rot, Vec V
             element3 = ir.FPNeg(ir.VectorGetElement(esize, operand2, first));
         }
 
-        rotated = ir.VectorSetElement(esize, rotated, first, element1);
-        rotated = ir.VectorSetElement(esize, rotated, second, element3);
+        const IR::U16U32U64 operand1_elem1 = ir.VectorGetElement(esize, operand1, first);
+        const IR::U16U32U64 operand1_elem2 = ir.VectorGetElement(esize, operand1, second);
+        if (esize == 16) {
+            // Multiplication by positive one is exact, preserving add semantics
+            // through the existing half-precision fused arithmetic operation.
+            result = ir.VectorSetElement(esize, result, first, ir.FPMulAdd(operand1_elem1, element1, ir.Imm16(0x3C00)));
+            result = ir.VectorSetElement(esize, result, second, ir.FPMulAdd(operand1_elem2, element3, ir.Imm16(0x3C00)));
+        } else {
+            result = ir.VectorSetElement(esize, result, first, ir.FPAdd(IR::U32U64{operand1_elem1}, IR::U32U64{element1}));
+            result = ir.VectorSetElement(esize, result, second, ir.FPAdd(IR::U32U64{operand1_elem2}, IR::U32U64{element3}));
+        }
     }
 
-    V(datasize, Vd, ir.FPVectorAdd(esize, operand1, rotated));
+    ir.SetQ(Vd, result);
     return true;
 }
 
