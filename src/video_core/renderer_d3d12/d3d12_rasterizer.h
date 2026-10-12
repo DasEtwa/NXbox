@@ -64,6 +64,8 @@ public:
         pipeline_cache = cache;
     }
     void DrawTexture() override;
+    bool AccelerateConditionalRendering() override;
+    void PreparePresentation();
     void Clear(u32 layer_count) override;
     void DispatchCompute() override;
     void ResetCounter(VideoCommon::QueryType type) override;

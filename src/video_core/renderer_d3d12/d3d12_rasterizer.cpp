@@ -502,6 +502,8 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     D3D12_INDEX_BUFFER_VIEW index_view{};
     if (converted_indices) {
         index_view = converted_indices->view;
+        if (converted_indices->resource)
+            need(converted_indices->resource, D3D12_RESOURCE_STATE_INDEX_BUFFER);
     } else if (needs_index) {
         if (!geometry.index || !geometry.index_size || geometry.index_unsupported) {
             if (geometry.index_unsupported && !quad_logged) {
@@ -583,6 +585,8 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     query_runtime.BeginDraw(pipeline->StageInfo(3) != nullptr);
     draw(commands);
     query_runtime.EndDraw();
+    if (totals.uav)
+        FragmentBarrier();
     for (auto& stage : bindings.stages)
         stage.Clear(); // drop upload-page references so the staging ring can recycle them
 }
@@ -591,7 +595,8 @@ void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) {
     converted_indices.reset();
     const auto& state = maxwell3d->draw_manager.draw_state;
     const auto topology = static_cast<IndexConversion::Topology>(state.topology);
-    if (is_indexed) {
+    if (is_indexed &&
+        static_cast<u32>(topology) <= static_cast<u32>(IndexConversion::Topology::Polygon)) {
         gpu_memory->FlushCaching();
         const auto format =
             static_cast<IndexConversion::Format>(maxwell3d->regs.index_buffer.format);
@@ -609,6 +614,11 @@ void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) {
                topology == IndexConversion::Topology::Polygon ||
                topology == IndexConversion::Topology::LineLoop) {
         converted_indices = index_converter.Generate(topology, state.vertex_buffer.count);
+    }
+    if (converted_indices && !converted_indices->count) {
+        converted_indices.reset();
+        m_gpu.TickWork();
+        return;
     }
     PrepareDraw(is_indexed, [&](ID3D12GraphicsCommandList* commands) {
         const auto& draw_state = maxwell3d->draw_manager.draw_state;
@@ -686,9 +696,17 @@ void RasterizerD3D12::DrawIndirect() {
     m_gpu.TickWork();
 }
 
+bool RasterizerD3D12::AccelerateConditionalRendering() {
+    gpu_memory->FlushCaching();
+    return query_cache.AccelerateHostConditionalRendering();
+}
+void RasterizerD3D12::PreparePresentation() {
+    query_runtime.PauseHostConditionalRendering();
+}
 void RasterizerD3D12::DrawTexture() {}
 void RasterizerD3D12::Clear(u32 layer_count) {
     gpu_memory->FlushCaching();
+    query_runtime.PauseHostConditionalRendering();
     std::scoped_lock lock{texture_cache.mutex};
     const auto& regs = maxwell3d->regs;
     u32 control{};
@@ -699,6 +717,8 @@ void RasterizerD3D12::Clear(u32 layer_count) {
     texture_cache.UpdateRenderTargets(true);
     auto* framebuffer = texture_cache.GetFramebuffer();
     if (!framebuffer)
+        return;
+    if (selection.target >= VideoCommon::NUM_RT)
         return;
     auto* color = framebuffer->Color(selection.target);
     auto* depth = framebuffer->Depth();
@@ -799,6 +819,7 @@ void RasterizerD3D12::Clear(u32 layer_count) {
 }
 void RasterizerD3D12::DispatchCompute() {
     gpu_memory->FlushCaching();
+    query_runtime.PauseHostConditionalRendering();
     auto* pipeline = default_pipeline_cache->CurrentComputePipeline();
     if (!pipeline)
         return;
@@ -976,7 +997,9 @@ void RasterizerD3D12::FlushRegion(DAddr addr, u64 size, VideoCommon::CacheType w
 }
 bool RasterizerD3D12::MustFlushRegion(DAddr addr, u64 size, VideoCommon::CacheType which) {
     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
-    return (True(which & VideoCommon::CacheType::BufferCache) &&
+    return (True(which & VideoCommon::CacheType::QueryCache) &&
+            query_cache.IsRegionGpuModified(addr, size)) ||
+           (True(which & VideoCommon::CacheType::BufferCache) &&
             buffer_cache.IsRegionGpuModified(addr, size)) ||
            (True(which & VideoCommon::CacheType::TextureCache) &&
             texture_cache.IsRegionGpuModified(addr, size));

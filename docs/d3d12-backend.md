@@ -81,7 +81,35 @@ Teardown drains submitted work, including partial construction.
   modes. Shader model 6.0 is checked separately from feature level. Each layer gets
   its own fence-retired SRV slot (up to 64). Empty frames retain the P1 test clear.
 
-Guest draws, clears, compute, guest descriptors/samplers and pipelines remain stubs.
+The integration branch translates guest graphics and compute through Maxwell IR,
+HLSL and packaged DXC into native PSOs. Vertex A/B programs merge before emission.
+Vertex/fragment/compute Shader::Info owns the descriptor schema; pipelines retain
+copies so translation pool retirement cannot invalidate descriptors. Device options
+select FP64/int64 lowering and require wave operations with at least 32 lanes.
+Graphics keys include guest hashes, HLSL specialization, fixed state and topology;
+compute specialization includes local dimensions and shared/local memory sizes.
+
+Draws populate CBV/SRV/UAV/sampler tables and cached RTV/DSV attachments. Indexed
+8/16/32-bit draws normalize restart markers, quads, strips and fans to native lists;
+nonindexed fans/quads/polygons/line loops generate indices. Clears resolve masked,
+scissored, per-layer color/depth/stencil operations through ClearRenderer. Guest
+compute dispatch binds the same resource schema and orders UAV writes. ASTC 2D/array
+uploads decode on the GPU when storing RGBA8; BC1/BC3 recompression retains CPU
+conversion. Query hooks collect host counters, resolve reports and synchronize
+before guest fences. Transform-feedback shader linkage remains unsupported.
+
+Disk PSO libraries are scoped to title and adapter/driver/compiler/schema identity.
+Versioned pointer-free recipes store fixed state, stages, descriptor counts and HLSL;
+warmup recompiles/validates HLSL through DXC before pipeline-library reuse. It does
+not trust cached unvalidated DXIL. Warmup and foreground PSO maps share a lock.
+Composite samples the same cached guest images that Draw/Clear write, falling back
+to guest-memory uploads only when no framebuffer view exists.
+
+Translation exceptions produce a logged, explicit StubHlsl fallback. Its degenerate
+vertex shader is diagnostic, not a substitute for a rendered guest scene. DXC/PSO
+failures skip the rejected pipeline with diagnostics. Geometry/tessellation, alpha
+testing, dual-source blending, transform feedback, unsupported HLSL opcodes and
+indirect index conversion still need parity work.
 DMA/surface acceleration declines requests so engine CPU fallbacks run; inline
 writes and payload/timestamp queries retain CPU behavior. Applet captures and
 screenshots still return blank buffers. Unsupported packed/ETC formats, multi-plane
@@ -103,7 +131,7 @@ Converted ASTC has no reverse readback. Full parity for those paths is later wor
 | Image layouts and access/stage barriers | Per-subresource D3D12 resource-state tracker. Emit transition, UAV and aliasing barriers as applicable. Vulkan stage masks cannot simply be copied; distinguish ordered access from state transitions. Texture feedback must use legal nonoverlapping views or explicit copies. |
 | Render-pass/framebuffer cache | RTV/DSV views plus `OMSetRenderTargets`; explicit load clears, store/discard policy and resolves. End incompatible attachment usage before sampling/copying. Render-pass APIs are optional later; no Vulkan render-pass dependency. |
 | `vk_swapchain.*`, WSI and present passes | `IDXGIFactory2::CreateSwapChainForCoreWindow` receives the direct queue and CoreWindow ABI `IUnknown`, never HWND. `IDXGISwapChain3` selects the actual backbuffer index. Single owner per CoreWindow, flip model, opaque alpha, PRESENT state before DXGI Present. |
-| Present layers/window adaptation | P2 uploads or looks up guest block-linear framebuffers and composes crop, transforms, scaling and layers with a built-in DXC shader. Guest graphics pipelines remain stubbed. |
+| Present layers/window adaptation | P2 uploads or looks up guest block-linear framebuffers and composes crop, transforms, scaling and layers with a built-in DXC shader. Guest graphics pipelines use the Maxwell/HLSL path on the integration branch. |
 | Queries, conditional rendering, transform feedback | Query heaps plus ResolveQueryData/readback, predication where equivalent, and stream-output buffers/counters. Guest observable results and fence ordering must remain correct, even with software fallback. |
 
 ## VideoCommon template contracts
@@ -197,7 +225,8 @@ row packing round trips under AddressSanitizer/UndefinedBehaviorSanitizer. Textu
 layout rules follow Microsoft's [upload/readback documentation](https://learn.microsoft.com/en-us/windows/win32/direct3d12/upload-and-readback-of-texture-data)
 and [`GetCopyableFootprints`](https://learn.microsoft.com/en-us/windows/win32/api/d3d12/nf-d3d12-id3d12device-getcopyablefootprints). Full Windows compilation
 requires the existing Visual Studio UWP toolchain (`tools/nxbox/build-uwp.cmd`).
-No guest HLSL shader artifacts are generated locally on macOS by this change.
+The host HLSL IR test generates vertex/fragment/compute artifacts and exercises
+mixed-resource stage chaining. Host tests do not execute D3D12 guest draw commands.
 Windows compilation, packaged DXC loading, GPU round trips and console framebuffer
 comparisons remain required acceptance evidence; passing host tests alone does not
 complete that evidence. For console evidence, keep startup logs, the test-color

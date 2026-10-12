@@ -299,6 +299,7 @@ void RendererD3D12::Composite(std::span<const Tegra::FramebufferConfig> layers) 
             std::vector<Tegra::FramebufferConfig> display_layers;
             const auto selected = Tegra::FilterLayerStack(
                 layers, Service::Nvnflinger::LayerStackId::Default, display_layers);
+            rasterizer.PreparePresentation();
             impl->Present(render_window.GetFramebufferLayout(), selected, rasterizer);
             ++m_current_frame;
             render_window.OnFrameDisplayed();

@@ -293,6 +293,15 @@ struct TranslationState {
 Shader::RuntimeInfo GraphicsRuntime(const Maxwell& regs, const Shader::IR::Program& program,
                                     const Shader::IR::Program* previous) {
     Shader::RuntimeInfo runtime;
+    runtime.force_early_z = regs.mandated_early_z != 0;
+    if (program.stage == Shader::Stage::Fragment && regs.alpha_test_enabled &&
+        Pso::ComparisonFunc(static_cast<u32>(regs.alpha_test_func)) != 8) {
+        runtime.alpha_test_func = static_cast<Shader::CompareFunction>(
+            Pso::ComparisonFunc(static_cast<u32>(regs.alpha_test_func)) - 1);
+        runtime.alpha_test_reference = regs.alpha_test_ref;
+    }
+    if (regs.transform_feedback_enabled)
+        throw Shader::NotImplementedException("D3D12 guest transform feedback linkage");
     if (previous) {
         runtime.previous_stage_stores = previous->info.stores;
         runtime.previous_stage_legacy_stores_mapping = previous->info.legacy_stores_mapping;
@@ -314,16 +323,16 @@ Shader::RuntimeInfo GraphicsRuntime(const Maxwell& regs, const Shader::IR::Progr
         using Type = Maxwell::VertexAttribute::Type;
         switch (attribute.type.Value()) {
         case Type::SInt:
-            runtime.generic_input_types[i] = Shader::AttributeType::SInt;
+            runtime.generic_input_types[i] = Shader::AttributeType::SignedInt;
             break;
         case Type::UInt:
-            runtime.generic_input_types[i] = Shader::AttributeType::UInt;
+            runtime.generic_input_types[i] = Shader::AttributeType::UnsignedInt;
             break;
         case Type::SScaled:
-            runtime.generic_input_types[i] = Shader::AttributeType::SScaled;
+            runtime.generic_input_types[i] = Shader::AttributeType::SignedScaled;
             break;
         case Type::UScaled:
-            runtime.generic_input_types[i] = Shader::AttributeType::UScaled;
+            runtime.generic_input_types[i] = Shader::AttributeType::UnsignedScaled;
             break;
         default:
             runtime.generic_input_types[i] = Shader::AttributeType::Float;
@@ -337,8 +346,8 @@ Shader::RuntimeInfo GraphicsRuntime(const Maxwell& regs, const Shader::IR::Progr
         const auto pixel = VideoCore::Surface::PixelFormatFromRenderTargetFormat(format);
         runtime.color_output_types[i] = VideoCore::Surface::IsPixelFormatInteger(pixel)
                                             ? (VideoCore::Surface::IsPixelFormatSignedInteger(pixel)
-                                                   ? Shader::AttributeType::SInt
-                                                   : Shader::AttributeType::UInt)
+                                                   ? Shader::AttributeType::SignedInt
+                                                   : Shader::AttributeType::UnsignedInt)
                                             : Shader::AttributeType::Float;
     }
     return runtime;
@@ -370,6 +379,16 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline() {
     specialization = Pso::HashBytes(regs.vertex_attrib_format.data(),
                                     sizeof(regs.vertex_attrib_format), specialization);
     specialization = Pso::HashBytes(&topology.topology, sizeof(topology.topology), specialization);
+    specialization =
+        Pso::HashBytes(&regs.mandated_early_z, sizeof(regs.mandated_early_z), specialization);
+    specialization =
+        Pso::HashBytes(&regs.alpha_test_enabled, sizeof(regs.alpha_test_enabled), specialization);
+    specialization =
+        Pso::HashBytes(&regs.alpha_test_func, sizeof(regs.alpha_test_func), specialization);
+    specialization =
+        Pso::HashBytes(&regs.alpha_test_ref, sizeof(regs.alpha_test_ref), specialization);
+    specialization = Pso::HashBytes(&regs.transform_feedback_enabled,
+                                    sizeof(regs.transform_feedback_enabled), specialization);
     request.stage_hashes[0] =
         Pso::HashBytes(&specialization, sizeof(specialization), request.stage_hashes[0]);
     if (const auto found = guest_graphics.find(request); found != guest_graphics.end())

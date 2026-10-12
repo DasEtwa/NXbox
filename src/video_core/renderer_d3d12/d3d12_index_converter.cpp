@@ -229,7 +229,8 @@ ConvertedIndexBuffer IndexConverter::Upload(const IndexConversion::Layout& layou
              static_cast<UINT>(layout.bytes),
              layout.format == Format::Uint16 ? DXGI_FORMAT_R16_UINT : DXGI_FORMAT_R32_UINT},
             topology,
-            layout.count};
+            layout.count,
+            allocation.buffer};
 }
 ConvertedIndexBuffer IndexConverter::Convert(IndexConversion::Topology topology,
                                              IndexConversion::Format format,

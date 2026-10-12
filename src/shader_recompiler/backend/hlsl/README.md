@@ -33,6 +33,10 @@ checks. HLSL sources are compiled into `shader_recompiler` independently of
   allocator must use that same per-stage append order when sharing counters
   across stages. `ssboN` uses the local IR descriptor index; its register includes
   the binding offset. Dynamic texture/image arrays use `NonUniformResourceIndex`.
+- Sampler registers use `bindings.hlsl_sampler`, independently of the SRV counter:
+  texel buffers consume SRVs but no sampler slots. Sampler variable names retain
+  the corresponding texture's SRV number. Each sampled descriptor advances the
+  sampler span, including MSAA descriptors with an unused sampler slot.
 - `hlsl_root_constants.h` defines the exact 64-byte CPU ABI at `b0, space1`:
   render area DWORDs 0..3, resolution down factor 4, Y direction 5, texture/image
   scaling masks 6/7, base vertex/instance 8/9, draw ID 10, reserved 11..15.

@@ -58,6 +58,7 @@ struct ConvertedIndexBuffer {
     D3D12_INDEX_BUFFER_VIEW view{};
     D3D_PRIMITIVE_TOPOLOGY topology{};
     std::uint32_t count{};
+    ResourcePtr resource; // Keep the upload page leased across cache submissions before the draw.
 };
 class IndexConverter {
 public:

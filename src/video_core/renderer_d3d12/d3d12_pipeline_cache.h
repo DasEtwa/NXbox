@@ -26,7 +26,7 @@ class Maxwell3D;
 
 namespace D3D12 {
 
-// One translated stage, as produced by TranslateToHlsl (stub_hlsl_emit.h) from the stage's
+// One translated stage, as produced by EmitHLSL from the stage's
 // IR::Program. `hash` is the guest shader's unique hash (same value Vulkan keys on).
 struct StageInput {
     Shader::Stage stage;
