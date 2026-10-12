@@ -16,10 +16,17 @@ HlslVarType RegType(IR::Type type) {
         return HlslVarType::U32;
     case IR::Type::U64:
         return HlslVarType::U64;
+    case IR::Type::F16:
     case IR::Type::F32:
         return HlslVarType::F32;
     case IR::Type::F64:
         return HlslVarType::F64;
+    case IR::Type::F64x2:
+        return HlslVarType::F64x2;
+    case IR::Type::F64x3:
+        return HlslVarType::F64x3;
+    case IR::Type::F64x4:
+        return HlslVarType::F64x4;
     case IR::Type::F16x2:
         return HlslVarType::F16x2;
     case IR::Type::U32x2:
@@ -30,8 +37,10 @@ HlslVarType RegType(IR::Type type) {
         return HlslVarType::U32x4;
     case IR::Type::F32x2:
         return HlslVarType::F32x2;
+    case IR::Type::F16x3:
     case IR::Type::F32x3:
         return HlslVarType::F32x3;
+    case IR::Type::F16x4:
     case IR::Type::F32x4:
         return HlslVarType::F32x4;
     default:
@@ -99,6 +108,12 @@ std::string VarAlloc::GetHlslType(HlslVarType type) const {
         return "double";
     case HlslVarType::PrecF64:
         return "precise double";
+    case HlslVarType::F64x2:
+        return "double2";
+    case HlslVarType::F64x3:
+        return "double3";
+    case HlslVarType::F64x4:
+        return "double4";
     case HlslVarType::F16x2:
     case HlslVarType::F32x2:
         return "float2";

@@ -4,7 +4,7 @@
 #include "shader_recompiler/frontend/ir/value.h"
 #include "shader_recompiler/runtime_info.h"
 namespace Shader::Backend::HLSL {
-void EmitGetAttribute(EmitContext& ctx, IR::Inst& inst, IR::Attribute attr, std::string_view) {
+void EmitGetAttribute(EmitContext& ctx, IR::Inst& inst, IR::Attribute attr, std::string_view vertex) {
     if (IR::IsGeneric(attr) && ctx.stage == Stage::Fragment &&
         !ctx.runtime_info.previous_stage_stores.Generic(IR::GenericAttributeIndex(attr),
                                                         IR::GenericAttributeElement(attr))) {
@@ -12,7 +12,9 @@ void EmitGetAttribute(EmitContext& ctx, IR::Inst& inst, IR::Attribute attr, std:
         return;
     }
     auto value = ctx.Attribute(attr, false);
-    if (IR::IsGeneric(attr) && ctx.stage != Stage::Fragment) {
+    if (ctx.stage == Stage::Geometry && value.starts_with("input."))
+        value.replace(0, 6, fmt::format("inputs[{}].", vertex.empty() ? "0u" : vertex));
+    if (IR::IsGeneric(attr) && (ctx.stage == Stage::VertexA || ctx.stage == Stage::VertexB)) {
         const auto type = ctx.runtime_info.generic_input_types[IR::GenericAttributeIndex(attr)];
         if (type == AttributeType::SignedInt || type == AttributeType::UnsignedInt)
             value = fmt::format("asfloat({})", value);
@@ -29,8 +31,11 @@ void EmitGetAttribute(EmitContext& ctx, IR::Inst& inst, IR::Attribute attr, std:
         value = "(1.0f / input.position.w)";
     ctx.AddF32("{} = {};", inst, value);
 }
-void EmitGetAttributeU32(EmitContext& ctx, IR::Inst& inst, IR::Attribute attr, std::string_view) {
-    ctx.AddU32("{} = {};", inst, ctx.Attribute(attr, false));
+void EmitGetAttributeU32(EmitContext& ctx, IR::Inst& inst, IR::Attribute attr, std::string_view vertex) {
+    auto value = ctx.Attribute(attr, false);
+    if (ctx.stage == Stage::Geometry && value.starts_with("input."))
+        value.replace(0, 6, fmt::format("inputs[{}].", vertex.empty() ? "0u" : vertex));
+    ctx.AddU32("{} = {};", inst, value);
 }
 void EmitSetAttribute(EmitContext& ctx, IR::Attribute attr, std::string_view value,
                       std::string_view) {
@@ -57,6 +62,8 @@ void EmitGetAttributeIndexed(EmitContext& ctx, IR::Inst& inst, std::string_view 
     ctx.Add("}}");
 }
 void EmitSetFragColor(EmitContext& ctx, u32 index, u32 component, std::string_view value) {
+    if (index == 0u && component == 3u && ctx.runtime_info.alpha_test_func)
+        ctx.Add("nx_alpha = {};", value);
     if (!ctx.info.stores_frag_color.at(index))
         return;
     const auto type = ctx.runtime_info.color_output_types.at(index);
@@ -105,5 +112,37 @@ void EmitIsTextureScaled(EmitContext& ctx, IR::Inst& inst, const IR::Value& inde
 void EmitIsImageScaled(EmitContext& ctx, IR::Inst& inst, const IR::Value& index) {
     ctx.AddU1("{} = (nx_image_scaling_mask & (1u << {})) != 0u;", inst,
               ctx.var_alloc.Consume(index));
+}
+void EmitSetAttributeIndexed(EmitContext& ctx, std::string_view offset, std::string_view value, std::string_view vertex) {
+    ctx.Add("switch ({} >> 2) {{", offset);
+    for (u32 i = 0; i < 128; ++i) {
+        const auto attr = static_cast<IR::Attribute>(static_cast<u32>(IR::Attribute::Generic0X) + i);
+        if (ctx.info.stores[attr])
+            ctx.Add("case {}u: {} = {}; break;", static_cast<u32>(attr), ctx.Attribute(attr, true), value);
+    }
+    ctx.Add("}}");
+    if (ctx.stage == Stage::TessellationControl && !vertex.empty())
+        throw NotImplementedException("HLSL hull indexed cross-control-point output");
+}
+void EmitEmitVertex(EmitContext& ctx, const IR::Value& stream) {
+    if (ctx.stage != Stage::Geometry)
+        throw NotImplementedException("HLSL EmitVertex outside geometry stage");
+    if (!stream.IsImmediate() || stream.U32() != 0u)
+        throw NotImplementedException("HLSL geometry output stream requires stream-zero linkage");
+    ctx.Add("{{ Output nx_vertex = output;");
+    ctx.FinishOutput("nx_vertex");
+    ctx.Add("nx_stream.Append(nx_vertex); }}");
+}
+void EmitEndPrimitive(EmitContext& ctx, const IR::Value& stream) {
+    if (ctx.stage != Stage::Geometry)
+        throw NotImplementedException("HLSL EndPrimitive outside geometry stage");
+    if (!stream.IsImmediate() || stream.U32() != 0u)
+        throw NotImplementedException("HLSL geometry restart requires stream-zero linkage");
+    ctx.Add("nx_stream.RestartStrip();");
+}
+void EmitInvocationId(EmitContext& ctx, IR::Inst& inst) {
+    if (ctx.stage != Stage::Geometry && ctx.stage != Stage::TessellationControl)
+        throw NotImplementedException("HLSL invocation ID requires geometry or hull stage");
+    ctx.AddU32("{} = nx_invocation_id;", inst);
 }
 } // namespace Shader::Backend::HLSL

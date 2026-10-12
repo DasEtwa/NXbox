@@ -13,6 +13,8 @@
 namespace Shader::IR {
 enum class Attribute : u64;
 enum class Patch : u64;
+enum class Reg : u64;
+enum class Pred : u64;
 class Inst;
 class Value;
 } // namespace Shader::IR
@@ -20,7 +22,6 @@ class Value;
 namespace Shader::Backend::HLSL {
 class EmitContext;
 
-#define NotImplemented() throw NotImplementedException("HLSL instruction {}", __func__)
 
 // Microinstruction emitters
 void EmitPhi(EmitContext& ctx, IR::Inst& inst);
@@ -38,14 +39,14 @@ void EmitPrologue(EmitContext& ctx);
 void EmitEpilogue(EmitContext& ctx);
 void EmitEmitVertex(EmitContext& ctx, const IR::Value& stream);
 void EmitEndPrimitive(EmitContext& ctx, const IR::Value& stream);
-void EmitGetRegister(EmitContext& ctx);
-void EmitSetRegister(EmitContext& ctx);
-void EmitGetPred(EmitContext& ctx);
-void EmitSetPred(EmitContext& ctx);
-void EmitSetGotoVariable(EmitContext& ctx);
-void EmitGetGotoVariable(EmitContext& ctx);
-void EmitSetIndirectBranchVariable(EmitContext& ctx);
-void EmitGetIndirectBranchVariable(EmitContext& ctx);
+void EmitGetRegister(EmitContext& ctx, IR::Inst& inst, IR::Reg reg);
+void EmitSetRegister(EmitContext& ctx, IR::Reg reg, std::string_view value);
+void EmitGetPred(EmitContext& ctx, IR::Inst& inst, IR::Pred pred);
+void EmitSetPred(EmitContext& ctx, IR::Pred pred, std::string_view value);
+void EmitSetGotoVariable(EmitContext& ctx, u32 index, std::string_view value);
+void EmitGetGotoVariable(EmitContext& ctx, IR::Inst& inst, u32 index);
+void EmitSetIndirectBranchVariable(EmitContext& ctx, std::string_view value);
+void EmitGetIndirectBranchVariable(EmitContext& ctx, IR::Inst& inst);
 void EmitGetCbufU8(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding,
                    const IR::Value& offset);
 void EmitGetCbufS8(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding,
@@ -68,21 +69,20 @@ void EmitSetAttribute(EmitContext& ctx, IR::Attribute attr, std::string_view val
                       std::string_view vertex);
 void EmitGetAttributeIndexed(EmitContext& ctx, IR::Inst& inst, std::string_view offset,
                              std::string_view vertex);
-void EmitSetAttributeIndexed(EmitContext& ctx, std::string_view offset, std::string_view value,
-                             std::string_view vertex);
+void EmitSetAttributeIndexed(EmitContext& ctx, std::string_view offset, std::string_view value, std::string_view vertex);
 void EmitGetPatch(EmitContext& ctx, IR::Inst& inst, IR::Patch patch);
 void EmitSetPatch(EmitContext& ctx, IR::Patch patch, std::string_view value);
 void EmitSetFragColor(EmitContext& ctx, u32 index, u32 component, std::string_view value);
 void EmitSetSampleMask(EmitContext& ctx, std::string_view value);
 void EmitSetFragDepth(EmitContext& ctx, std::string_view value);
-void EmitGetZFlag(EmitContext& ctx);
-void EmitGetSFlag(EmitContext& ctx);
-void EmitGetCFlag(EmitContext& ctx);
-void EmitGetOFlag(EmitContext& ctx);
-void EmitSetZFlag(EmitContext& ctx);
-void EmitSetSFlag(EmitContext& ctx);
-void EmitSetCFlag(EmitContext& ctx);
-void EmitSetOFlag(EmitContext& ctx);
+void EmitGetZFlag(EmitContext& ctx, IR::Inst& inst);
+void EmitGetSFlag(EmitContext& ctx, IR::Inst& inst);
+void EmitGetCFlag(EmitContext& ctx, IR::Inst& inst);
+void EmitGetOFlag(EmitContext& ctx, IR::Inst& inst);
+void EmitSetZFlag(EmitContext& ctx, std::string_view value);
+void EmitSetSFlag(EmitContext& ctx, std::string_view value);
+void EmitSetCFlag(EmitContext& ctx, std::string_view value);
+void EmitSetOFlag(EmitContext& ctx, std::string_view value);
 void EmitWorkgroupId(EmitContext& ctx, IR::Inst& inst);
 void EmitLocalInvocationId(EmitContext& ctx, IR::Inst& inst);
 void EmitInvocationId(EmitContext& ctx, IR::Inst& inst);
@@ -101,17 +101,17 @@ void EmitUndefU8(EmitContext& ctx, IR::Inst& inst);
 void EmitUndefU16(EmitContext& ctx, IR::Inst& inst);
 void EmitUndefU32(EmitContext& ctx, IR::Inst& inst);
 void EmitUndefU64(EmitContext& ctx, IR::Inst& inst);
-void EmitLoadGlobalU8(EmitContext& ctx);
-void EmitLoadGlobalS8(EmitContext& ctx);
-void EmitLoadGlobalU16(EmitContext& ctx);
-void EmitLoadGlobalS16(EmitContext& ctx);
+void EmitLoadGlobalU8(EmitContext& ctx, IR::Inst& inst, std::string_view address);
+void EmitLoadGlobalS8(EmitContext& ctx, IR::Inst& inst, std::string_view address);
+void EmitLoadGlobalU16(EmitContext& ctx, IR::Inst& inst, std::string_view address);
+void EmitLoadGlobalS16(EmitContext& ctx, IR::Inst& inst, std::string_view address);
 void EmitLoadGlobal32(EmitContext& ctx, IR::Inst& inst, std::string_view address);
 void EmitLoadGlobal64(EmitContext& ctx, IR::Inst& inst, std::string_view address);
 void EmitLoadGlobal128(EmitContext& ctx, IR::Inst& inst, std::string_view address);
-void EmitWriteGlobalU8(EmitContext& ctx);
-void EmitWriteGlobalS8(EmitContext& ctx);
-void EmitWriteGlobalU16(EmitContext& ctx);
-void EmitWriteGlobalS16(EmitContext& ctx);
+void EmitWriteGlobalU8(EmitContext& ctx, std::string_view address, std::string_view value);
+void EmitWriteGlobalS8(EmitContext& ctx, std::string_view address, std::string_view value);
+void EmitWriteGlobalU16(EmitContext& ctx, std::string_view address, std::string_view value);
+void EmitWriteGlobalS16(EmitContext& ctx, std::string_view address, std::string_view value);
 void EmitWriteGlobal32(EmitContext& ctx, std::string_view address, std::string_view value);
 void EmitWriteGlobal64(EmitContext& ctx, std::string_view address, std::string_view value);
 void EmitWriteGlobal128(EmitContext& ctx, std::string_view address, std::string_view value);
@@ -173,20 +173,15 @@ void EmitCompositeInsertU32x3(EmitContext& ctx, IR::Inst& inst, std::string_view
                               std::string_view object, u32 index);
 void EmitCompositeInsertU32x4(EmitContext& ctx, IR::Inst& inst, std::string_view composite,
                               std::string_view object, u32 index);
-void EmitCompositeConstructF16x2(EmitContext& ctx, std::string_view e1, std::string_view e2);
-void EmitCompositeConstructF16x3(EmitContext& ctx, std::string_view e1, std::string_view e2,
-                                 std::string_view e3);
-void EmitCompositeConstructF16x4(EmitContext& ctx, std::string_view e1, std::string_view e2,
-                                 std::string_view e3, std::string_view e4);
-void EmitCompositeExtractF16x2(EmitContext& ctx, std::string_view composite, u32 index);
-void EmitCompositeExtractF16x3(EmitContext& ctx, std::string_view composite, u32 index);
-void EmitCompositeExtractF16x4(EmitContext& ctx, std::string_view composite, u32 index);
-void EmitCompositeInsertF16x2(EmitContext& ctx, std::string_view composite, std::string_view object,
-                              u32 index);
-void EmitCompositeInsertF16x3(EmitContext& ctx, std::string_view composite, std::string_view object,
-                              u32 index);
-void EmitCompositeInsertF16x4(EmitContext& ctx, std::string_view composite, std::string_view object,
-                              u32 index);
+void EmitCompositeConstructF16x2(EmitContext& ctx, IR::Inst& inst, std::string_view e1, std::string_view e2);
+void EmitCompositeConstructF16x3(EmitContext& ctx, IR::Inst& inst, std::string_view e1, std::string_view e2, std::string_view e3);
+void EmitCompositeConstructF16x4(EmitContext& ctx, IR::Inst& inst, std::string_view e1, std::string_view e2, std::string_view e3, std::string_view e4);
+void EmitCompositeExtractF16x2(EmitContext& ctx, IR::Inst& inst, std::string_view composite, u32 index);
+void EmitCompositeExtractF16x3(EmitContext& ctx, IR::Inst& inst, std::string_view composite, u32 index);
+void EmitCompositeExtractF16x4(EmitContext& ctx, IR::Inst& inst, std::string_view composite, u32 index);
+void EmitCompositeInsertF16x2(EmitContext& ctx, IR::Inst& inst, std::string_view composite, std::string_view object, u32 index);
+void EmitCompositeInsertF16x3(EmitContext& ctx, IR::Inst& inst, std::string_view composite, std::string_view object, u32 index);
+void EmitCompositeInsertF16x4(EmitContext& ctx, IR::Inst& inst, std::string_view composite, std::string_view object, u32 index);
 void EmitCompositeConstructF32x2(EmitContext& ctx, IR::Inst& inst, std::string_view e1,
                                  std::string_view e2);
 void EmitCompositeConstructF32x3(EmitContext& ctx, IR::Inst& inst, std::string_view e1,
@@ -205,38 +200,32 @@ void EmitCompositeInsertF32x3(EmitContext& ctx, IR::Inst& inst, std::string_view
                               std::string_view object, u32 index);
 void EmitCompositeInsertF32x4(EmitContext& ctx, IR::Inst& inst, std::string_view composite,
                               std::string_view object, u32 index);
-void EmitCompositeConstructF64x2(EmitContext& ctx);
-void EmitCompositeConstructF64x3(EmitContext& ctx);
-void EmitCompositeConstructF64x4(EmitContext& ctx);
-void EmitCompositeExtractF64x2(EmitContext& ctx);
-void EmitCompositeExtractF64x3(EmitContext& ctx);
-void EmitCompositeExtractF64x4(EmitContext& ctx);
-void EmitCompositeInsertF64x2(EmitContext& ctx, std::string_view composite, std::string_view object,
-                              u32 index);
-void EmitCompositeInsertF64x3(EmitContext& ctx, std::string_view composite, std::string_view object,
-                              u32 index);
-void EmitCompositeInsertF64x4(EmitContext& ctx, std::string_view composite, std::string_view object,
-                              u32 index);
+void EmitCompositeConstructF64x2(EmitContext& ctx, IR::Inst& inst, std::string_view e1, std::string_view e2);
+void EmitCompositeConstructF64x3(EmitContext& ctx, IR::Inst& inst, std::string_view e1, std::string_view e2, std::string_view e3);
+void EmitCompositeConstructF64x4(EmitContext& ctx, IR::Inst& inst, std::string_view e1, std::string_view e2, std::string_view e3, std::string_view e4);
+void EmitCompositeExtractF64x2(EmitContext& ctx, IR::Inst& inst, std::string_view composite, u32 index);
+void EmitCompositeExtractF64x3(EmitContext& ctx, IR::Inst& inst, std::string_view composite, u32 index);
+void EmitCompositeExtractF64x4(EmitContext& ctx, IR::Inst& inst, std::string_view composite, u32 index);
+void EmitCompositeInsertF64x2(EmitContext& ctx, IR::Inst& inst, std::string_view composite, std::string_view object, u32 index);
+void EmitCompositeInsertF64x3(EmitContext& ctx, IR::Inst& inst, std::string_view composite, std::string_view object, u32 index);
+void EmitCompositeInsertF64x4(EmitContext& ctx, IR::Inst& inst, std::string_view composite, std::string_view object, u32 index);
 void EmitSelectU1(EmitContext& ctx, IR::Inst& inst, std::string_view cond,
                   std::string_view true_value, std::string_view false_value);
-void EmitSelectU8(EmitContext& ctx, std::string_view cond, std::string_view true_value,
-                  std::string_view false_value);
-void EmitSelectU16(EmitContext& ctx, std::string_view cond, std::string_view true_value,
-                   std::string_view false_value);
+void EmitSelectU8(EmitContext& ctx, IR::Inst& inst, std::string_view cond, std::string_view true_value, std::string_view false_value);
+void EmitSelectU16(EmitContext& ctx, IR::Inst& inst, std::string_view cond, std::string_view true_value, std::string_view false_value);
 void EmitSelectU32(EmitContext& ctx, IR::Inst& inst, std::string_view cond,
                    std::string_view true_value, std::string_view false_value);
 void EmitSelectU64(EmitContext& ctx, IR::Inst& inst, std::string_view cond,
                    std::string_view true_value, std::string_view false_value);
-void EmitSelectF16(EmitContext& ctx, std::string_view cond, std::string_view true_value,
-                   std::string_view false_value);
+void EmitSelectF16(EmitContext& ctx, IR::Inst& inst, std::string_view cond, std::string_view true_value, std::string_view false_value);
 void EmitSelectF32(EmitContext& ctx, IR::Inst& inst, std::string_view cond,
                    std::string_view true_value, std::string_view false_value);
 void EmitSelectF64(EmitContext& ctx, IR::Inst& inst, std::string_view cond,
                    std::string_view true_value, std::string_view false_value);
-void EmitBitCastU16F16(EmitContext& ctx, IR::Inst& inst);
+void EmitBitCastU16F16(EmitContext& ctx, IR::Inst& inst, std::string_view value);
 void EmitBitCastU32F32(EmitContext& ctx, IR::Inst& inst, std::string_view value);
 void EmitBitCastU64F64(EmitContext& ctx, IR::Inst& inst, std::string_view value);
-void EmitBitCastF16U16(EmitContext& ctx, IR::Inst& inst);
+void EmitBitCastF16U16(EmitContext& ctx, IR::Inst& inst, std::string_view value);
 void EmitBitCastF32U32(EmitContext& ctx, IR::Inst& inst, std::string_view value);
 void EmitBitCastF64U64(EmitContext& ctx, IR::Inst& inst, std::string_view value);
 void EmitPackUint2x32(EmitContext& ctx, IR::Inst& inst, std::string_view value);
@@ -247,12 +236,12 @@ void EmitPackHalf2x16(EmitContext& ctx, IR::Inst& inst, std::string_view value);
 void EmitUnpackHalf2x16(EmitContext& ctx, IR::Inst& inst, std::string_view value);
 void EmitPackDouble2x32(EmitContext& ctx, IR::Inst& inst, std::string_view value);
 void EmitUnpackDouble2x32(EmitContext& ctx, IR::Inst& inst, std::string_view value);
-void EmitGetZeroFromOp(EmitContext& ctx);
-void EmitGetSignFromOp(EmitContext& ctx);
-void EmitGetCarryFromOp(EmitContext& ctx);
-void EmitGetOverflowFromOp(EmitContext& ctx);
-void EmitGetSparseFromOp(EmitContext& ctx);
-void EmitGetInBoundsFromOp(EmitContext& ctx);
+void EmitGetZeroFromOp(EmitContext& ctx, IR::Inst& inst, std::string_view value);
+void EmitGetSignFromOp(EmitContext& ctx, IR::Inst& inst, std::string_view value);
+void EmitGetCarryFromOp(EmitContext& ctx, IR::Inst& inst, const IR::Value& value);
+void EmitGetOverflowFromOp(EmitContext& ctx, IR::Inst& inst, const IR::Value& value);
+void EmitGetSparseFromOp(EmitContext& ctx, IR::Inst& inst, const IR::Value&);
+void EmitGetInBoundsFromOp(EmitContext& ctx, IR::Inst& inst, const IR::Value&);
 void EmitFPAbs16(EmitContext& ctx, IR::Inst& inst, std::string_view value);
 void EmitFPAbs32(EmitContext& ctx, IR::Inst& inst, std::string_view value);
 void EmitFPAbs64(EmitContext& ctx, IR::Inst& inst, std::string_view value);
@@ -305,60 +294,72 @@ void EmitFPCeil64(EmitContext& ctx, IR::Inst& inst, std::string_view value);
 void EmitFPTrunc16(EmitContext& ctx, IR::Inst& inst, std::string_view value);
 void EmitFPTrunc32(EmitContext& ctx, IR::Inst& inst, std::string_view value);
 void EmitFPTrunc64(EmitContext& ctx, IR::Inst& inst, std::string_view value);
-void EmitFPOrdEqual16(EmitContext& ctx, std::string_view lhs, std::string_view rhs);
+void EmitFPOrdEqual16(EmitContext& ctx, IR::Inst& inst, std::string_view lhs,
+                      std::string_view rhs);
 void EmitFPOrdEqual32(EmitContext& ctx, IR::Inst& inst, std::string_view lhs, std::string_view rhs);
 void EmitFPOrdEqual64(EmitContext& ctx, IR::Inst& inst, std::string_view lhs, std::string_view rhs);
-void EmitFPUnordEqual16(EmitContext& ctx, std::string_view lhs, std::string_view rhs);
+void EmitFPUnordEqual16(EmitContext& ctx, IR::Inst& inst, std::string_view lhs,
+                        std::string_view rhs);
 void EmitFPUnordEqual32(EmitContext& ctx, IR::Inst& inst, std::string_view lhs,
                         std::string_view rhs);
 void EmitFPUnordEqual64(EmitContext& ctx, IR::Inst& inst, std::string_view lhs,
                         std::string_view rhs);
-void EmitFPOrdNotEqual16(EmitContext& ctx, std::string_view lhs, std::string_view rhs);
+void EmitFPOrdNotEqual16(EmitContext& ctx, IR::Inst& inst, std::string_view lhs,
+                         std::string_view rhs);
 void EmitFPOrdNotEqual32(EmitContext& ctx, IR::Inst& inst, std::string_view lhs,
                          std::string_view rhs);
 void EmitFPOrdNotEqual64(EmitContext& ctx, IR::Inst& inst, std::string_view lhs,
                          std::string_view rhs);
-void EmitFPUnordNotEqual16(EmitContext& ctx, std::string_view lhs, std::string_view rhs);
+void EmitFPUnordNotEqual16(EmitContext& ctx, IR::Inst& inst, std::string_view lhs,
+                           std::string_view rhs);
 void EmitFPUnordNotEqual32(EmitContext& ctx, IR::Inst& inst, std::string_view lhs,
                            std::string_view rhs);
 void EmitFPUnordNotEqual64(EmitContext& ctx, IR::Inst& inst, std::string_view lhs,
                            std::string_view rhs);
-void EmitFPOrdLessThan16(EmitContext& ctx, std::string_view lhs, std::string_view rhs);
+void EmitFPOrdLessThan16(EmitContext& ctx, IR::Inst& inst, std::string_view lhs,
+                         std::string_view rhs);
 void EmitFPOrdLessThan32(EmitContext& ctx, IR::Inst& inst, std::string_view lhs,
                          std::string_view rhs);
 void EmitFPOrdLessThan64(EmitContext& ctx, IR::Inst& inst, std::string_view lhs,
                          std::string_view rhs);
-void EmitFPUnordLessThan16(EmitContext& ctx, std::string_view lhs, std::string_view rhs);
+void EmitFPUnordLessThan16(EmitContext& ctx, IR::Inst& inst, std::string_view lhs,
+                           std::string_view rhs);
 void EmitFPUnordLessThan32(EmitContext& ctx, IR::Inst& inst, std::string_view lhs,
                            std::string_view rhs);
 void EmitFPUnordLessThan64(EmitContext& ctx, IR::Inst& inst, std::string_view lhs,
                            std::string_view rhs);
-void EmitFPOrdGreaterThan16(EmitContext& ctx, std::string_view lhs, std::string_view rhs);
+void EmitFPOrdGreaterThan16(EmitContext& ctx, IR::Inst& inst, std::string_view lhs,
+                            std::string_view rhs);
 void EmitFPOrdGreaterThan32(EmitContext& ctx, IR::Inst& inst, std::string_view lhs,
                             std::string_view rhs);
 void EmitFPOrdGreaterThan64(EmitContext& ctx, IR::Inst& inst, std::string_view lhs,
                             std::string_view rhs);
-void EmitFPUnordGreaterThan16(EmitContext& ctx, std::string_view lhs, std::string_view rhs);
+void EmitFPUnordGreaterThan16(EmitContext& ctx, IR::Inst& inst, std::string_view lhs,
+                              std::string_view rhs);
 void EmitFPUnordGreaterThan32(EmitContext& ctx, IR::Inst& inst, std::string_view lhs,
                               std::string_view rhs);
 void EmitFPUnordGreaterThan64(EmitContext& ctx, IR::Inst& inst, std::string_view lhs,
                               std::string_view rhs);
-void EmitFPOrdLessThanEqual16(EmitContext& ctx, std::string_view lhs, std::string_view rhs);
+void EmitFPOrdLessThanEqual16(EmitContext& ctx, IR::Inst& inst, std::string_view lhs,
+                              std::string_view rhs);
 void EmitFPOrdLessThanEqual32(EmitContext& ctx, IR::Inst& inst, std::string_view lhs,
                               std::string_view rhs);
 void EmitFPOrdLessThanEqual64(EmitContext& ctx, IR::Inst& inst, std::string_view lhs,
                               std::string_view rhs);
-void EmitFPUnordLessThanEqual16(EmitContext& ctx, std::string_view lhs, std::string_view rhs);
+void EmitFPUnordLessThanEqual16(EmitContext& ctx, IR::Inst& inst, std::string_view lhs,
+                                std::string_view rhs);
 void EmitFPUnordLessThanEqual32(EmitContext& ctx, IR::Inst& inst, std::string_view lhs,
                                 std::string_view rhs);
 void EmitFPUnordLessThanEqual64(EmitContext& ctx, IR::Inst& inst, std::string_view lhs,
                                 std::string_view rhs);
-void EmitFPOrdGreaterThanEqual16(EmitContext& ctx, std::string_view lhs, std::string_view rhs);
+void EmitFPOrdGreaterThanEqual16(EmitContext& ctx, IR::Inst& inst, std::string_view lhs,
+                                 std::string_view rhs);
 void EmitFPOrdGreaterThanEqual32(EmitContext& ctx, IR::Inst& inst, std::string_view lhs,
                                  std::string_view rhs);
 void EmitFPOrdGreaterThanEqual64(EmitContext& ctx, IR::Inst& inst, std::string_view lhs,
                                  std::string_view rhs);
-void EmitFPUnordGreaterThanEqual16(EmitContext& ctx, std::string_view lhs, std::string_view rhs);
+void EmitFPUnordGreaterThanEqual16(EmitContext& ctx, IR::Inst& inst, std::string_view lhs,
+                                   std::string_view rhs);
 void EmitFPUnordGreaterThanEqual32(EmitContext& ctx, IR::Inst& inst, std::string_view lhs,
                                    std::string_view rhs);
 void EmitFPUnordGreaterThanEqual64(EmitContext& ctx, IR::Inst& inst, std::string_view lhs,
@@ -447,10 +448,8 @@ void EmitSharedAtomicXor32(EmitContext& ctx, IR::Inst& inst, std::string_view po
                            std::string_view value);
 void EmitSharedAtomicExchange32(EmitContext& ctx, IR::Inst& inst, std::string_view pointer_offset,
                                 std::string_view value);
-void EmitSharedAtomicExchange64(EmitContext& ctx, IR::Inst& inst, std::string_view pointer_offset,
-                                std::string_view value);
-void EmitSharedAtomicExchange32x2(EmitContext& ctx, IR::Inst& inst, std::string_view pointer_offset,
-                                  std::string_view value);
+void EmitSharedAtomicExchange64(EmitContext& ctx, IR::Inst& inst, std::string_view offset, std::string_view value);
+void EmitSharedAtomicExchange32x2(EmitContext& ctx, IR::Inst& inst, std::string_view offset, std::string_view value);
 void EmitStorageAtomicIAdd32(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding,
                              const IR::Value& offset, std::string_view value);
 void EmitStorageAtomicSMin32(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding,
@@ -473,24 +472,15 @@ void EmitStorageAtomicXor32(EmitContext& ctx, IR::Inst& inst, const IR::Value& b
                             const IR::Value& offset, std::string_view value);
 void EmitStorageAtomicExchange32(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding,
                                  const IR::Value& offset, std::string_view value);
-void EmitStorageAtomicIAdd64(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding,
-                             const IR::Value& offset, std::string_view value);
-void EmitStorageAtomicSMin64(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding,
-                             const IR::Value& offset, std::string_view value);
-void EmitStorageAtomicUMin64(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding,
-                             const IR::Value& offset, std::string_view value);
-void EmitStorageAtomicSMax64(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding,
-                             const IR::Value& offset, std::string_view value);
-void EmitStorageAtomicUMax64(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding,
-                             const IR::Value& offset, std::string_view value);
-void EmitStorageAtomicAnd64(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding,
-                            const IR::Value& offset, std::string_view value);
-void EmitStorageAtomicOr64(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding,
-                           const IR::Value& offset, std::string_view value);
-void EmitStorageAtomicXor64(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding,
-                            const IR::Value& offset, std::string_view value);
-void EmitStorageAtomicExchange64(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding,
-                                 const IR::Value& offset, std::string_view value);
+void EmitStorageAtomicIAdd64(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding, const IR::Value& offset, std::string_view value);
+void EmitStorageAtomicSMin64(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding, const IR::Value& offset, std::string_view value);
+void EmitStorageAtomicUMin64(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding, const IR::Value& offset, std::string_view value);
+void EmitStorageAtomicSMax64(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding, const IR::Value& offset, std::string_view value);
+void EmitStorageAtomicUMax64(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding, const IR::Value& offset, std::string_view value);
+void EmitStorageAtomicAnd64(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding, const IR::Value& offset, std::string_view value);
+void EmitStorageAtomicOr64(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding, const IR::Value& offset, std::string_view value);
+void EmitStorageAtomicXor64(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding, const IR::Value& offset, std::string_view value);
+void EmitStorageAtomicExchange64(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding, const IR::Value& offset, std::string_view value);
 void EmitStorageAtomicIAdd32x2(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding,
                                const IR::Value& offset, std::string_view value);
 void EmitStorageAtomicSMin32x2(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding,
@@ -523,46 +513,46 @@ void EmitStorageAtomicMaxF16x2(EmitContext& ctx, IR::Inst& inst, const IR::Value
                                const IR::Value& offset, std::string_view value);
 void EmitStorageAtomicMaxF32x2(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding,
                                const IR::Value& offset, std::string_view value);
-void EmitGlobalAtomicIAdd32(EmitContext& ctx);
-void EmitGlobalAtomicSMin32(EmitContext& ctx);
-void EmitGlobalAtomicUMin32(EmitContext& ctx);
-void EmitGlobalAtomicSMax32(EmitContext& ctx);
-void EmitGlobalAtomicUMax32(EmitContext& ctx);
-void EmitGlobalAtomicInc32(EmitContext& ctx);
-void EmitGlobalAtomicDec32(EmitContext& ctx);
-void EmitGlobalAtomicAnd32(EmitContext& ctx);
-void EmitGlobalAtomicOr32(EmitContext& ctx);
-void EmitGlobalAtomicXor32(EmitContext& ctx);
-void EmitGlobalAtomicExchange32(EmitContext& ctx);
-void EmitGlobalAtomicIAdd64(EmitContext& ctx);
-void EmitGlobalAtomicSMin64(EmitContext& ctx);
-void EmitGlobalAtomicUMin64(EmitContext& ctx);
-void EmitGlobalAtomicSMax64(EmitContext& ctx);
-void EmitGlobalAtomicUMax64(EmitContext& ctx);
-void EmitGlobalAtomicInc64(EmitContext& ctx);
-void EmitGlobalAtomicDec64(EmitContext& ctx);
-void EmitGlobalAtomicAnd64(EmitContext& ctx);
-void EmitGlobalAtomicOr64(EmitContext& ctx);
-void EmitGlobalAtomicXor64(EmitContext& ctx);
-void EmitGlobalAtomicExchange64(EmitContext& ctx);
-void EmitGlobalAtomicIAdd32x2(EmitContext& ctx);
-void EmitGlobalAtomicSMin32x2(EmitContext& ctx);
-void EmitGlobalAtomicUMin32x2(EmitContext& ctx);
-void EmitGlobalAtomicSMax32x2(EmitContext& ctx);
-void EmitGlobalAtomicUMax32x2(EmitContext& ctx);
+void EmitGlobalAtomicIAdd32(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value);
+void EmitGlobalAtomicSMin32(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value);
+void EmitGlobalAtomicUMin32(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value);
+void EmitGlobalAtomicSMax32(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value);
+void EmitGlobalAtomicUMax32(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value);
+void EmitGlobalAtomicInc32(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value);
+void EmitGlobalAtomicDec32(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value);
+void EmitGlobalAtomicAnd32(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value);
+void EmitGlobalAtomicOr32(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value);
+void EmitGlobalAtomicXor32(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value);
+void EmitGlobalAtomicExchange32(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value);
+void EmitGlobalAtomicIAdd64(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value);
+void EmitGlobalAtomicSMin64(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value);
+void EmitGlobalAtomicUMin64(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value);
+void EmitGlobalAtomicSMax64(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value);
+void EmitGlobalAtomicUMax64(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value);
+void EmitGlobalAtomicInc64(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value);
+void EmitGlobalAtomicDec64(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value);
+void EmitGlobalAtomicAnd64(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value);
+void EmitGlobalAtomicOr64(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value);
+void EmitGlobalAtomicXor64(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value);
+void EmitGlobalAtomicExchange64(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value);
+void EmitGlobalAtomicIAdd32x2(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value);
+void EmitGlobalAtomicSMin32x2(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value);
+void EmitGlobalAtomicUMin32x2(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value);
+void EmitGlobalAtomicSMax32x2(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value);
+void EmitGlobalAtomicUMax32x2(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value);
 void EmitGlobalAtomicInc32x2(EmitContext& ctx);
 void EmitGlobalAtomicDec32x2(EmitContext& ctx);
-void EmitGlobalAtomicAnd32x2(EmitContext& ctx);
-void EmitGlobalAtomicOr32x2(EmitContext& ctx);
-void EmitGlobalAtomicXor32x2(EmitContext& ctx);
-void EmitGlobalAtomicExchange32x2(EmitContext& ctx);
-void EmitGlobalAtomicAddF32(EmitContext& ctx);
-void EmitGlobalAtomicAddF16x2(EmitContext& ctx);
-void EmitGlobalAtomicAddF32x2(EmitContext& ctx);
-void EmitGlobalAtomicMinF16x2(EmitContext& ctx);
-void EmitGlobalAtomicMinF32x2(EmitContext& ctx);
-void EmitGlobalAtomicMaxF16x2(EmitContext& ctx);
-void EmitGlobalAtomicMaxF32x2(EmitContext& ctx);
+void EmitGlobalAtomicAnd32x2(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value);
+void EmitGlobalAtomicOr32x2(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value);
+void EmitGlobalAtomicXor32x2(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value);
+void EmitGlobalAtomicExchange32x2(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value);
+void EmitGlobalAtomicAddF32(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value);
+void EmitGlobalAtomicAddF16x2(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value);
+void EmitGlobalAtomicAddF32x2(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value);
+void EmitGlobalAtomicMinF16x2(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value);
+void EmitGlobalAtomicMinF32x2(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value);
+void EmitGlobalAtomicMaxF16x2(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value);
+void EmitGlobalAtomicMaxF32x2(EmitContext& ctx, IR::Inst& inst, std::string_view address, std::string_view value);
 void EmitLogicalOr(EmitContext& ctx, IR::Inst& inst, std::string_view a, std::string_view b);
 void EmitLogicalAnd(EmitContext& ctx, IR::Inst& inst, std::string_view a, std::string_view b);
 void EmitLogicalXor(EmitContext& ctx, IR::Inst& inst, std::string_view a, std::string_view b);

@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include <array>
 #include <fstream>
+#include <vector>
 #include <iostream>
 #include <stdexcept>
 #include <string_view>
@@ -32,8 +34,8 @@ struct Fixture {
         auto it = block.PrependNewInst(block.end(), opcode, args, flags);
         return IR::Value{&*it};
     }
-    std::string Emit(Bindings& bindings) {
-        return Backend::HLSL::EmitHLSL({}, {}, program, bindings);
+    std::string Emit(Bindings& bindings, const Profile& profile = {}, const RuntimeInfo& runtime = {}) {
+        return Backend::HLSL::EmitHLSL(profile, runtime, program, bindings);
     }
 };
 void Vertex() {
@@ -315,24 +317,224 @@ void ChainedResourceBindings() {
                 bindings.storage_buffer + bindings.image == 4,
             "Stage append order must match native descriptor tables");
 }
-void UnsupportedRollback() {
+IR::Value Argument(Fixture& f, IR::Type type) {
+    switch (type) {
+    case IR::Type::U1: return IR::Value{true};
+    case IR::Type::U8: return IR::Value{u8{1}};
+    case IR::Type::U16: return IR::Value{u16{1}};
+    case IR::Type::U32: return IR::Value{1u};
+    case IR::Type::U64: return IR::Value{u64{1}};
+    case IR::Type::F16: return f.Add(IR::Opcode::BitCastF16U16, {IR::Value{u16{0x3c00}}});
+    case IR::Type::F32: return IR::Value{1.0f};
+    case IR::Type::F64: return IR::Value{1.0};
+    default: break;
+    }
+    const auto construct = type == IR::Type::U32x2 ? IR::Opcode::CompositeConstructU32x2 :
+                           type == IR::Type::U32x3 ? IR::Opcode::CompositeConstructU32x3 :
+                           type == IR::Type::U32x4 ? IR::Opcode::CompositeConstructU32x4 :
+                           type == IR::Type::F16x2 ? IR::Opcode::CompositeConstructF16x2 :
+                           type == IR::Type::F16x3 ? IR::Opcode::CompositeConstructF16x3 :
+                           type == IR::Type::F16x4 ? IR::Opcode::CompositeConstructF16x4 :
+                           type == IR::Type::F32x2 ? IR::Opcode::CompositeConstructF32x2 :
+                           type == IR::Type::F32x3 ? IR::Opcode::CompositeConstructF32x3 :
+                           type == IR::Type::F32x4 ? IR::Opcode::CompositeConstructF32x4 :
+                           type == IR::Type::F64x2 ? IR::Opcode::CompositeConstructF64x2 :
+                           type == IR::Type::F64x3 ? IR::Opcode::CompositeConstructF64x3 :
+                           IR::Opcode::CompositeConstructF64x4;
+    const auto value = Argument(f, IR::ArgTypeOf(construct, 0));
+    const auto count = IR::NumArgsOf(construct);
+    return count == 2 ? f.Add(construct, {value, value}) :
+           count == 3 ? f.Add(construct, {value, value, value}) :
+                        f.Add(construct, {value, value, value, value});
+}
+void NumericCoverage() {
     Fixture f{Stage::Compute};
+    f.program.info.uses_int64 = true;
+    f.program.info.uses_fp64 = true;
+    size_t count = 0;
+#define OPCODE(name, ...) IR::Opcode::name,
+    constexpr std::array opcodes{
+#include "shader_recompiler/frontend/ir/opcodes.inc"
+    };
+#undef OPCODE
+    for (const auto op : opcodes) {
+        const auto name = IR::NameOf(op);
+        if (!name.starts_with("FP") && !name.starts_with("Convert") &&
+            !name.starts_with("Composite") && !name.starts_with("Select") &&
+            !name.starts_with("BitCast")) continue;
+        std::vector<IR::Value> args;
+        for (size_t i = 0; i < IR::NumArgsOf(op); ++i)
+            args.push_back(Argument(f, IR::ArgTypeOf(op, i)));
+        switch (args.size()) {
+        case 0: f.Add(op); break;
+        case 1: f.Add(op, {args[0]}); break;
+        case 2: f.Add(op, {args[0], args[1]}); break;
+        case 3: f.Add(op, {args[0], args[1], args[2]}); break;
+        case 4: f.Add(op, {args[0], args[1], args[2], args[3]}); break;
+        default: throw std::runtime_error("Unsupported numeric fixture arity");
+        }
+        ++count;
+    }
+    Bindings bindings;
+    const auto text = f.Emit(bindings);
+    Contains(text, "nx_half(");
+    Contains(text, "double4");
+    Contains(text, "nx_rsqrt64(");
+    Require(count == 189, "Numeric coverage unexpectedly decreased");
+    std::cout << "Numeric opcodes emitted: " << count << '\n';
+    std::ofstream("hlsl_numeric.hlsl") << text;
+}
+void GlobalAndRegisterState() {
+    Fixture f{Stage::Compute};
+    f.program.info.uses_global_memory = true;
+    f.program.info.uses_int64 = true;
     f.program.info.constant_buffer_descriptors.push_back({.index = 0, .count = 1});
+    f.program.info.storage_buffers_descriptors.push_back({.count = 1, .is_written = true});
+    const auto address = IR::Value{u64{0x1000}};
+    const auto value = f.Add(IR::Opcode::LoadGlobalS8, {address});
+    f.Add(IR::Opcode::WriteGlobalU16, {address, value});
+    f.Add(IR::Opcode::GlobalAtomicIAdd32, {address, value});
+    f.Add(IR::Opcode::GlobalAtomicSMin32, {address, value});
+    f.Add(IR::Opcode::GlobalAtomicAddF32, {address, IR::Value{1.0f}});
+    f.Add(IR::Opcode::SetRegister, {IR::Value{IR::Reg::R0}, value});
+    const auto reg = f.Add(IR::Opcode::GetRegister, {IR::Value{IR::Reg::R0}});
+    f.Add(IR::Opcode::WriteStorage32, {IR::Value{0u}, IR::Value{0u}, reg});
+    f.Add(IR::Opcode::SetPred, {IR::Value{IR::Pred::P0}, IR::Value{true}});
+    f.Add(IR::Opcode::GetPred, {IR::Value{IR::Pred::P0}});
+    f.Add(IR::Opcode::GetPred, {IR::Value{IR::Pred::PT}});
+    f.Add(IR::Opcode::SetGotoVariable, {IR::Value{17u}, IR::Value{true}});
+    f.Add(IR::Opcode::GetGotoVariable, {IR::Value{17u}});
+    Bindings bindings;
+    for (size_t i = 0; i < std::size(IR::Detail::META_TABLE); ++i) {
+        const auto op = static_cast<IR::Opcode>(i);
+        if (!IR::NameOf(op).starts_with("GlobalAtomic")) continue;
+        const auto operand = Argument(f, IR::ArgTypeOf(op, 1));
+        f.Add(op, {address, operand});
+    }
+    Profile profile{};
+    profile.support_int64_atomics = true;
+    const auto text = f.Emit(bindings, profile);
+    Contains(text, "nx_global_write_subword(");
+    Contains(text, "nx_global_matched");
+    Contains(text, "nx_regs[0]");
+    Contains(text, "nx_goto_17");
+    std::ofstream("hlsl_global.hlsl") << text;
+}
+void SparseResidency() {
+    Fixture f{Stage::Fragment};
+    f.program.info.texture_descriptors.push_back({.type = TextureType::Color2D, .count = 1});
+    const auto coords = Argument(f, IR::Type::F32x2);
+    IR::TextureInstInfo flags{};
+    flags.type.Assign(TextureType::Color2D);
+    const auto sample = f.Add(IR::Opcode::ImageSampleImplicitLod,
+                              {IR::Value{0u}, coords, {}, {}}, flags.raw);
+    f.Add(IR::Opcode::GetSparseFromOp, {sample});
+    Bindings bindings;
+    Contains(f.Emit(bindings), "= true;");
+}
+void Geometry() {
+    Fixture f{Stage::Geometry};
+    f.program.output_topology = OutputTopology::TriangleStrip;
+    f.program.output_vertices = 3;
+    f.program.invocations = 1;
+    f.program.info.loads.Set(IR::Attribute::PositionX);
+    f.program.info.stores.Set(IR::Attribute::PositionX);
+    const auto x = f.Add(IR::Opcode::GetAttribute, {IR::Value{IR::Attribute::PositionX}, IR::Value{2u}});
+    f.Add(IR::Opcode::SetAttribute, {IR::Value{IR::Attribute::PositionX}, x, IR::Value{0u}});
+    f.Add(IR::Opcode::InvocationId);
+    f.Add(IR::Opcode::EmitVertex, {IR::Value{0u}});
+    f.Add(IR::Opcode::EndPrimitive, {IR::Value{0u}});
+    RuntimeInfo runtime{};
+    runtime.input_topology = InputTopology::Triangles;
+    Bindings bindings;
+    const auto text = f.Emit(bindings, {}, runtime);
+    Contains(text, "inputs[2u].position.x");
+    Contains(text, "[maxvertexcount(3)]");
+    Contains(text, "inout TriangleStream<Output>");
+    Contains(text, "nx_stream.Append(nx_vertex)");
+    Contains(text, "nx_stream.RestartStrip()");
+    std::ofstream("hlsl_geometry.hlsl") << text;
+}
+void NativeWideAtomics() {
+    Fixture f{Stage::Compute};
+    f.program.info.uses_int64 = true;
+    f.program.info.storage_buffers_descriptors.push_back({.count = 1, .is_written = true});
+    f.Add(IR::Opcode::StorageAtomicIAdd64, {IR::Value{0u}, IR::Value{0u}, IR::Value{u64{1}}});
+    f.Add(IR::Opcode::StorageAtomicSMin64, {IR::Value{0u}, IR::Value{8u}, IR::Value{u64{1}}});
+    Profile profile{};
+    profile.support_int64_atomics = true;
+    Bindings bindings;
+    const auto text = f.Emit(bindings, profile);
+    Contains(text, "Load<uint64_t>");
+    Contains(text, "InterlockedCompareExchange");
+    std::ofstream("hlsl_atomic64.hlsl") << text;
+    Bindings failed{.storage_buffer = 7};
+    try {
+        f.Emit(failed);
+        throw std::runtime_error("Native wide atomics accepted without device capability");
+    } catch (const NotImplementedException& error) {
+        Contains(error.what(), "SM 6.6");
+    }
+    Require(failed.storage_buffer == 7, "Failure advanced bindings");
+}
+void MixedSharedMemory() {
+    Fixture f{Stage::Compute};
+    f.program.shared_memory_size = 128;
+    f.program.info.uses_int64 = true;
+    const auto pair = Argument(f, IR::Type::U32x2);
+    f.Add(IR::Opcode::SharedAtomicExchange64, {IR::Value{0u}, IR::Value{u64{1}}});
+    f.Add(IR::Opcode::SharedAtomicExchange32x2, {IR::Value{8u}, pair});
+    for (size_t i = 0; i < std::size(IR::Detail::META_TABLE); ++i) {
+        const auto op = static_cast<IR::Opcode>(i);
+        const auto name = IR::NameOf(op);
+        if (!name.starts_with("LoadShared") && !name.starts_with("WriteShared") &&
+            !(name.starts_with("SharedAtomic") && name.ends_with("32"))) continue;
+        if (IR::NumArgsOf(op) == 1) {
+            f.Add(op, {IR::Value{0u}});
+        } else {
+            const auto value = Argument(f, IR::ArgTypeOf(op, 1));
+            f.Add(op, {IR::Value{0u}, value});
+        }
+    }
+    Profile profile{};
+    profile.support_shared_int64_atomics = true;
+    Bindings bindings;
+    const auto text = f.Emit(bindings, profile);
+    Contains(text, "groupshared uint64_t smem64[16]");
+    Contains(text, "nx_shared_write_subword(");
+    Contains(text, "nx_shared_atomic32(");
+    Require(text.find("smem[") == text.npos, "Mixed-width shared accesses use different backing arrays");
+    Require(Backend::HLSL::RequiredShaderModel(f.program) == 66u, "Shared wide atomics need SM 6.6");
+    std::ofstream("hlsl_shared64.hlsl") << text;
+}
+void PixelHelperAndAlphaTest() {
+    Fixture f{Stage::Fragment};
+    f.program.info.stores_frag_color[0] = true;
     f.Add(IR::Opcode::IsHelperInvocation);
+    f.Add(IR::Opcode::SetFragColor, {IR::Value{0u}, IR::Value{3u}, IR::Value{0.75f}});
+    RuntimeInfo runtime{};
+    runtime.alpha_test_func = CompareFunction::Greater;
+    runtime.alpha_test_reference = 0.5f;
+    runtime.xfb_count = 1;
+    runtime.dual_source_blend = true;
+    Bindings bindings;
+    const auto text = f.Emit(bindings, {}, runtime);
+    Contains(text, "IsHelperLane()");
+    Contains(text, "if (!(nx_alpha > asfloat(");
+    Require(Backend::HLSL::RequiredShaderModel(f.program) == 66u, "Helper queries need SM 6.6");
+    std::ofstream("hlsl_helper.hlsl") << text;
+}
+void UnsupportedRollback() {
+    Fixture f{Stage::TessellationControl};
+    f.program.info.constant_buffer_descriptors.push_back({.index = 0, .count = 1});
     Bindings bindings{.uniform_buffer = 7};
     try {
         f.Emit(bindings);
-        throw std::runtime_error("Unsupported opcode silently accepted");
-    } catch (const NotImplementedException& e) {
-        Contains(e.what(), "EmitIsHelperInvocation");
+        throw std::runtime_error("Unlinked hull stage silently accepted");
+    } catch (const NotImplementedException& error) {
+        Contains(error.what(), "stage linkage");
     }
     Require(bindings.uniform_buffer == 7, "Failure advanced bindings");
-    f.program.stage = Stage::Geometry;
-    try {
-        f.Emit(bindings);
-        throw std::runtime_error("Geometry silently accepted");
-    } catch (const NotImplementedException&) {
-    }
 }
 } // namespace
 int main() {
@@ -345,6 +547,13 @@ int main() {
         ResourceOrderAndCompare();
         ArithmeticAndPseudoResults();
         ChainedResourceBindings();
+        NumericCoverage();
+        GlobalAndRegisterState();
+        SparseResidency();
+        Geometry();
+        NativeWideAtomics();
+        MixedSharedMemory();
+        PixelHelperAndAlphaTest();
         UnsupportedRollback();
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

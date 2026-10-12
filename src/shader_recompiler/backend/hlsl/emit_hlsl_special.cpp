@@ -14,7 +14,7 @@ void EmitPhiMove(EmitContext& ctx, const IR::Value& phi, const IR::Value& value)
 void EmitPrologue(EmitContext&) {}
 void EmitEpilogue(EmitContext&) {}
 void EmitJoin(EmitContext&) {
-    NotImplemented();
+    throw NotImplementedException("HLSL Join must be removed by structured control-flow lowering");
 }
 void EmitDemoteToHelperInvocation(EmitContext& ctx) {
     if (ctx.stage != Stage::Fragment)

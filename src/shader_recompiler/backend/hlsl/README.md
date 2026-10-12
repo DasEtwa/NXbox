@@ -1,7 +1,7 @@
 # HLSL text backend
 
 `Shader::Backend::HLSL::EmitHLSL(profile, runtime_info, program, bindings)` emits a
-`main` entry point for DXC Shader Model 6.0. It consumes the optimized Maxwell IR
+`main` entry point for DXC Shader Model 6.0 or 6.6. It consumes the optimized Maxwell IR
 and collected `Shader::Info`, including the structured syntax list. It does not
 call GLSL, SPIR-V, Mesa, or DXC. The renderer owns DXC compilation and capability
 checks. HLSL sources are compiled into `shader_recompiler` independently of
@@ -9,7 +9,8 @@ checks. HLSL sources are compiled into `shader_recompiler` independently of
 
 ## Integration
 
-- Vertex A/B use `vs_6_0`, fragment uses `ps_6_0`, compute uses `cs_6_0`.
+- Vertex A/B use `vs_6_x`, fragment uses `ps_6_x`, compute uses `cs_6_x`,
+  and geometry uses `gs_6_x`, selecting x from `RequiredShaderModel(program)`.
   Merge dual vertex programs and run the usual IR lowering/info collection first.
 - `TEXCOORD0..31` identify guest generic attributes, with vertex signed/unsigned
   input types taken from `RuntimeInfo::generic_input_types`. Integer vertex input
@@ -62,32 +63,69 @@ checks. HLSL sources are compiled into `shader_recompiler` independently of
 | Waves | Lane ID, 32-lane partitioned ballots/votes/masks, segmented index/up/down/xor shuffle and in-bounds result, quad lane reads, swizzle add, fine/coarse derivatives |
 | Synchronization | Group barrier with synchronization, group/device memory barriers, fragment discard |
 
-Every IR opcode has a dispatch target. Existing GLSL stubs for unlowered
-register/predicate/global-atomic/bound/bindless operations and scalar FP16
-operations remain explicit failures. Use the existing lowering passes rather
-than passing frontend IR directly to this emitter.
+Every IR opcode has a dispatch target. Dispatch coverage does not imply semantic
+coverage: the base commit had 324/534 emitters with non-rejection bodies; this
+sprint increases that to 483/534. There are 47 frontend-only operations (`Join`
+and bound/bindless textures) that require the same lowering as Vulkan/GLSL,
+and four remaining rejected backend opcodes: `GetPatch`, `SetPatch`,
+`SR_WScaleFactorXY`, and `SR_WScaleFactorZ`. Those four are gaps, not emulations.
+
+Scalar FP16 arithmetic uses FP32 carriers and explicit half rounding at each
+result. Scalar/vector FP16 and FP64 composites, selects, bitcasts, and every
+conversion combination are emitted. Signed narrowing sign-extends from the
+requested bit width. The numeric fixture enumerates all 189 numeric opcodes
+from the real IR table and emits every one. FP16 FMA still inherits HLSL `mad`
+fusion behavior and FP32 intermediate rounding; it is not a bit-exact software
+half FMA. FP64 remains native double, not software FP64 emulation.
+
+Global subword stores use CAS to preserve adjacent bytes. Global atomics use
+range-checked guest-address lookup, select only the first matching storage
+range, and reuse storage operation semantics. Invalid ranges return zero or
+ignore stores. Native 64-bit storage/global atomics use
+`InterlockedCompareExchange64`, require `Profile::support_int64_atomics`, and
+require SM 6.6. Mixed-width shared memory uses one uint64 backing array with
+native CAS for narrow operations, preserving byte aliasing and wide exchange
+atomicity; it requires `Profile::support_shared_int64_atomics` and SM 6.6.
+There is no unsafe two-independent-word substitute for a wide exchange.
+
+`RequiredShaderModel(program)` returns 60 or 66. The renderer must select the
+corresponding DXC target and expose the matching D3D12 capabilities in Profile.
+`IsHelperInvocation` uses SM 6.6 `IsHelperLane`. A shader requiring 6.6 must
+fall back if the device/compiler target cannot provide it.
+
+Geometry emission supports input primitive arrays, per-vertex attribute reads,
+geometry invocation IDs, a single output stream, Append/RestartStrip, and
+position conversion at append without repeatedly modifying the guest output.
+Passthrough and multiple streams still reject with linkage-specific reasons.
+Fragment alpha testing captures guest target-zero alpha even if the color
+attachment is masked. Dual-source and transform-feedback varyings retain their
+normal HLSL output semantics; native PSO stream-output and blend linkage must
+be supplied by the pipeline track.
 
 ## Explicit gaps and limits
 
-- Geometry and hull/domain stages reject at entry, including passthrough,
-  primitive streams, patches, tessellation coordinates and invocation IDs.
-  No fake geometry/tessellation shader is returned.
-- True 64-bit atomics and shared 64-bit/pair exchange reject. GLSL's non-atomic
-  wide-operation fallbacks are not reproduced. Native 64-bit interlocked support
-  requires a newer shader model; see Microsoft's
-  [SM 6.6 atomic specification](https://microsoft.github.io/DirectX-Specs/d3d/HLSL_SM_6_6_Int64_and_Float_Atomics.html).
+- Hull/domain stages and geometry passthrough reject at entry. A correct hull
+  implementation needs coordinated control-point/patch linkage and guest
+  inter-invocation barriers; duplicating the guest program in a patch-constant
+  function would duplicate storage side effects. `GetPatch` and `SetPatch`
+  therefore remain explicit gaps. No empty tessellation shader is substituted.
+- Native 64-bit atomics and helper queries require the shader model selected by
+  `RequiredShaderModel`; SM 6.0 is insufficient. D3D12 descriptor-heap buffer
+  atomic support and shared atomic support must be checked separately. See
+  Microsoft's [SM 6.6 atomic specification](https://microsoft.github.io/DirectX-Specs/d3d/HLSL_SM_6_6_Int64_and_Float_Atomics.html).
 - Explicit comparison-sampling LOD is supported only when the IR LOD is literal
   zero, using `SampleCmpLevelZero`. Arbitrary comparison LOD requires a later
   shader model; see the [SM 6.7 announcement](https://devblogs.microsoft.com/directx/shader-model-6-7/).
-  Depth bias, LOD clamps, sparse residency, dynamic sampled offsets and cube texel
-  fetch reject. Integer filtered sampling rejects and requires texel fetch.
+  Depth bias, LOD clamps, dynamic sampled offsets and cube texel
+  fetch reject. Sparse residency returns always-resident for committed resources. Integer filtered sampling rejects and requires texel fetch.
 - Typeless/signed storage images, cube UAVs, constant/storage descriptor arrays,
-  indexed output attributes, point size/point sprite coordinates, viewport masks,
-  legacy varyings, transform feedback, alpha testing and dual-source blending
+  point size/point sprite coordinates, viewport masks,
+  legacy varyings and multiple geometry streams
   reject. Vertex layer/viewport outputs require the device capability in Profile.
-- Helper-invocation queries and W-scale-factor system registers reject. SM 6.0
-  lacks `IsHelperLane`; see Microsoft's [SM 6.6 announcement](https://devblogs.microsoft.com/directx/hlsl-shader-model-6-6/).
-  Demote uses terminating discard, matching GLSL's approximation.
+- W-scale-factor system registers `SR_WScaleFactorXY` and `SR_WScaleFactorZ`
+  reject: neither reference backend supplies a defined register mapping.
+  Helper queries use SM 6.6. Demote retains HLSL discard, matching GLSL's
+  approximation; helper continuation is not a proven complete demote emulation.
 - Wave ballots/shuffles assume host waves have at least 32 lanes. Check D3D12
   OPTIONS1 before selecting this backend. Cross-lane reads of inactive/helper
   lanes have native HLSL undefined behavior. Profile's gather subpixel workaround
@@ -118,3 +156,42 @@ IR tests leave `hlsl_vertex.hlsl`, `hlsl_fragment.hlsl`, `hlsl_compute.hlsl`,
 If DXC is available, CTest also validates these files as DXIL. Host C++/text
 checks alone are not proof of DXIL validity or rendered guest-shader correctness;
 Windows/Xbox DXC and GPU integration validation remain necessary.
+
+## Coverage and integration contract
+
+The coverage audit enumerates `opcodes.inc`, checks that every opcode has exactly
+one dispatch emitter, prohibits blanket NotImplemented stubs, and reports
+implementation, frontend-lowering, and rejected-gap counts separately. Adding an
+undocumented rejection fails the test. Full implementation remains incomplete:
+
+```sh
+python3 tests/port/test_hlsl_opcode_coverage.py --report
+# Exits nonzero while any backend opcode gap remains:
+python3 tests/port/test_hlsl_opcode_coverage.py --strict
+# Run the real IR fixture and optionally all sixteen DXC samples with -WX:
+NXBOX_HLSL_IR_TEST_BINARY=/path/to/hlsl-ir-tests DXC=/path/to/dxc \
+  python3 tests/port/test_hlsl_opcode_coverage.py
+```
+
+DXC skips cleanly when unavailable. A prebuilt IR fixture is selected explicitly
+so the Python suite does not silently launch a large compiler build. Local
+validation used official DXC 1.9.2609.5 for Windows through an isolated CrossOver
+bottle; both shader models compiled with warnings treated as errors. This is
+compiler validation, not guest-rendering or GPU race validation.
+
+Notes for pipeline/robustness integration:
+
+- Pipeline compilation must call `RequiredShaderModel`, enable actual buffer,
+  heap-buffer, and shared int64 atomic feature flags, and route gs_6_0 programs
+  into the GS slot with matching primitive topology. The backend cannot alter
+  renderer-owned files in this track.
+- Stream-output declarations must map output semantics to xfb buffer/stream/
+  stride/offset metadata; dual-source blending requires the native RTV/PSO
+  configuration. Unsupported point rasterization and viewport masks need
+  pipeline-side emulation before their shader attributes can be implemented.
+- Renderer exception containment and log-once fallback belong to T4. Emission
+  remains transactional for descriptor counters; exceptions carry the specific
+  opcode, resource, capability, or stage-linkage reason.
+- Full software FP64, exact FP16 FMA/rounding modes, hull/domain stages, and
+  remaining texture variants are not provided by this change. The default
+  renderer remains unchanged.

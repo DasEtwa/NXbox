@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <algorithm>
+#include <bit>
 #include "shader_recompiler/backend/bindings.h"
 #include "shader_recompiler/backend/hlsl/hlsl_emit_context.h"
 #include "shader_recompiler/backend/hlsl/hlsl_helpers.h"
@@ -52,16 +53,22 @@ EmitContext::EmitContext(IR::Program& program, Bindings& bindings, const Profile
                          const RuntimeInfo& runtime_info_)
     : info{program.info}, profile{profile_}, runtime_info{runtime_info_}, stage{program.stage} {
     if (stage != Stage::VertexA && stage != Stage::VertexB && stage != Stage::Fragment &&
-        stage != Stage::Compute)
-        throw NotImplementedException("HLSL geometry/tessellation stage {} requires stage linkage",
+        stage != Stage::Compute && stage != Stage::Geometry)
+        throw NotImplementedException("HLSL tessellation stage {} requires stage linkage",
                                       static_cast<u32>(stage));
-    if (runtime_info.xfb_count || runtime_info.dual_source_blend || runtime_info.alpha_test_func)
-        throw NotImplementedException(
-            "HLSL transform feedback, dual-source blending or alpha test");
+    // Stream-output declarations and dual-source RTV linkage belong to the native PSO.
+    if (program.is_geometry_passthrough)
+        throw NotImplementedException("HLSL geometry passthrough requires passthrough varying linkage");
     if (info.loads.Legacy() || info.stores.Legacy())
         throw NotImplementedException("HLSL legacy attributes must be lowered to generic varyings");
+    for (const auto* block : program.blocks)
+        for (const auto& inst : block->Instructions())
+            uses_shared_wide |= inst.GetOpcode() == IR::Opcode::SharedAtomicExchange64 ||
+                                inst.GetOpcode() == IR::Opcode::SharedAtomicExchange32x2;
+    if (uses_shared_wide && !profile.support_shared_int64_atomics)
+        throw NotImplementedException("HLSL shared wide exchange requires SM 6.6 shared int64 atomics");
     header = std::string(ROOT_CONSTANT_DECLARATION) + std::string(ARITHMETIC_HELPERS);
-    if (info.uses_int64 || info.uses_fp64 || info.uses_global_memory)
+    if (info.uses_int64 || info.uses_fp64 || info.uses_global_memory || uses_shared_wide)
         header += WIDE_ARITHMETIC_HELPERS;
     if (info.uses_subgroup_vote || info.uses_subgroup_shuffles ||
         info.uses_subgroup_invocation_id || info.uses_subgroup_mask || info.uses_quad_shuffles ||
@@ -127,9 +134,9 @@ EmitContext::EmitContext(IR::Program& program, Bindings& bindings, const Profile
                         "{{ uint64_t base = packUint2x32(uint2(nx_cbuf_load({0}u, {1}u) & {2}u, "
                         "nx_cbuf_load({0}u, {3}u))); uint64_t size = "
                         "packUint2x32(uint2(nx_cbuf_load({0}u, {4}u), nx_cbuf_load({0}u, {5}u))); "
-                        "if (address >= base && address - base < size) {{ ",
+                        "if (address >= base && address - base <= size && size - (address - base) >= {6}u) {{ ",
                         desc.cbuf_index, desc.cbuf_offset, ~(alignment - 1u), desc.cbuf_offset + 4,
-                        desc.cbuf_offset + 8, desc.cbuf_offset + 12);
+                        desc.cbuf_offset + 8, desc.cbuf_offset + 12, bits / 8);
                     if (write)
                         header += fmt::format(
                             "ssbo{}.Store{}(uint(address - base), value); return; }} }}\n", i,
@@ -141,6 +148,24 @@ EmitContext::EmitContext(IR::Program& program, Bindings& bindings, const Profile
                 header += write ? "}\n" : fmt::format("return ({})0; }}\n", type);
             }
         }
+    }
+    if (info.uses_global_memory) {
+        header += "void nx_global_write_subword(uint64_t address, uint value, uint bits) {\n";
+        for (size_t i = 0; i < info.storage_buffers_descriptors.size(); ++i) {
+            const auto code_start = code.size();
+            GlobalMemoryAccess(i, "address", 1);
+            header += code.substr(code_start);
+            code.resize(code_start);
+            header += fmt::format(
+                "uint offset = uint(address - nx_global_base); uint aligned = offset & ~3u; "
+                "uint shift = (offset & (bits == 8u ? 3u : 2u)) * 8u; "
+                "uint old_value = ssbo{0}.Load(aligned); uint previous; "
+                "do {{ uint new_value = bitfieldInsert(old_value, value, int(shift), int(bits)); "
+                "ssbo{0}.InterlockedCompareExchange(aligned, old_value, new_value, previous); "
+                "if (previous == old_value) break; old_value = previous; }} while (true); "
+                "return; }} }}\n", i);
+        }
+        header += "}\n";
     }
     // Image register numbers share the UAV namespace with storage buffers.
     u32 image_binding = bindings.storage_buffer + bindings.image;
@@ -182,7 +207,12 @@ EmitContext::EmitContext(IR::Program& program, Bindings& bindings, const Profile
         if (stage != Stage::Compute || program.shared_memory_size > 32768)
             throw NotImplementedException(
                 "HLSL groupshared memory exceeds SM 6.0 limit or used outside compute");
-        header += fmt::format("groupshared uint smem[{}];\n", (program.shared_memory_size + 3) / 4);
+        if (uses_shared_wide) {
+            header += fmt::format("groupshared uint64_t smem64[{}];\n", (program.shared_memory_size + 7) / 8);
+            header += SHARED_WIDE_HELPERS;
+        } else {
+            header += fmt::format("groupshared uint smem[{}];\n", (program.shared_memory_size + 3) / 4);
+        }
     }
     if (stage == Stage::Compute)
         return;
@@ -197,6 +227,18 @@ EmitContext::EmitContext(IR::Program& program, Bindings& bindings, const Profile
             header += "uint primitive_id : SV_PrimitiveID;\n";
         if (info.loads[IR::Attribute::Layer])
             header += "uint layer : SV_RenderTargetArrayIndex;\n";
+    } else if (stage == Stage::Geometry) {
+        header += "float4 position : SV_Position;\n";
+        if (info.loads[IR::Attribute::Layer])
+            header += "uint layer : SV_RenderTargetArrayIndex;\n";
+        if (info.loads[IR::Attribute::ViewportIndex])
+            header += "uint viewport : SV_ViewportArrayIndex;\n";
+        for (u32 group = 0; group < 2; ++group) {
+            bool used = false;
+            for (u32 element = 0; element < 4; ++element)
+                used |= info.loads[static_cast<IR::Attribute>(static_cast<u32>(IR::Attribute::ClipDistance0) + group * 4 + element)];
+            if (used) header += fmt::format("float4 clip{} : SV_ClipDistance{};\n", group, group);
+        }
     } else {
         header += "uint vertex_id : SV_VertexID; uint instance_id : SV_InstanceID;\n";
     }
@@ -252,15 +294,16 @@ EmitContext::EmitContext(IR::Program& program, Bindings& bindings, const Profile
 std::string EmitContext::Attribute(IR::Attribute attribute, bool output) {
     const auto prefix = output ? "output." : "input.";
     if (!output &&
-        ((attribute == IR::Attribute::PrimitiveId && stage != Stage::Fragment) ||
+        ((attribute == IR::Attribute::PrimitiveId && stage != Stage::Fragment && stage != Stage::Geometry) ||
          (attribute >= IR::Attribute::PositionX && attribute <= IR::Attribute::PositionW &&
-          stage != Stage::Fragment) ||
-         (attribute >= IR::Attribute::ClipDistance0 && attribute <= IR::Attribute::ClipDistance7)))
+          stage != Stage::Fragment && stage != Stage::Geometry) ||
+         (attribute >= IR::Attribute::ClipDistance0 && attribute <= IR::Attribute::ClipDistance7 &&
+          stage != Stage::Geometry)))
         throw NotImplementedException("HLSL input attribute {} in stage {}", attribute,
                                       static_cast<u32>(stage));
     if (output &&
         (attribute == IR::Attribute::Layer || attribute == IR::Attribute::ViewportIndex) &&
-        !profile.support_viewport_index_layer_non_geometry)
+        stage != Stage::Geometry && !profile.support_viewport_index_layer_non_geometry)
         throw NotImplementedException(
             "HLSL vertex layer/viewport output needs device feature support");
     if (IR::IsGeneric(attribute)) {
@@ -281,13 +324,13 @@ std::string EmitContext::Attribute(IR::Attribute attribute, bool output) {
     case IR::Attribute::InstanceId:
         return "input.instance_id";
     case IR::Attribute::PrimitiveId:
-        return "input.primitive_id";
+        return stage == Stage::Geometry ? "nx_primitive_id" : "input.primitive_id";
     case IR::Attribute::FrontFace:
         return "(input.front_face ? 0xffffffffu : 0u)";
     case IR::Attribute::Layer:
         return std::string(prefix) + "layer";
     case IR::Attribute::ViewportIndex:
-        if (!output)
+        if (!output && stage != Stage::Geometry)
             throw NotImplementedException("HLSL viewport index input");
         return std::string(prefix) + "viewport";
     case IR::Attribute::BaseVertex:
@@ -309,6 +352,17 @@ std::string EmitContext::Resource(const IR::Value& index, u32 descriptor, bool i
                            ? fmt::format("[NonUniformResourceIndex({})]", var_alloc.Consume(index))
                            : "");
 }
+void EmitContext::GlobalMemoryAccess(size_t index, std::string_view address, u32 bytes) {
+    const auto& desc = info.storage_buffers_descriptors.at(index);
+    const auto alignment = std::max(static_cast<u32>(profile.min_ssbo_alignment), 1u);
+    Add("{{ uint64_t nx_global_base = packUint2x32(uint2(nx_cbuf_load({0}u, {1}u) & {2}u, "
+        "nx_cbuf_load({0}u, {3}u))); uint64_t nx_global_size = "
+        "packUint2x32(uint2(nx_cbuf_load({0}u, {4}u), nx_cbuf_load({0}u, {5}u))); "
+        "if ({6} >= nx_global_base && {6} - nx_global_base <= nx_global_size && "
+        "nx_global_size - ({6} - nx_global_base) >= {7}u) {{",
+        desc.cbuf_index, desc.cbuf_offset, ~(alignment - 1u), desc.cbuf_offset + 4,
+        desc.cbuf_offset + 8, desc.cbuf_offset + 12, address, bytes);
+}
 std::string EmitContext::Sampler(const IR::Value& index, u32 descriptor) {
     const auto def = textures.at(descriptor);
     return fmt::format("samp{}{}", def.binding,
@@ -317,7 +371,7 @@ std::string EmitContext::Sampler(const IR::Value& index, u32 descriptor) {
                            : "");
 }
 std::string EmitContext::ReturnStatement() const {
-    if (stage == Stage::Compute)
+    if (stage == Stage::Compute || stage == Stage::Geometry)
         return "return;";
     if (stage == Stage::Fragment && !info.stores_frag_depth && !info.stores_sample_mask &&
         std::none_of(info.stores_frag_color.begin(), info.stores_frag_color.end(),
@@ -325,12 +379,27 @@ std::string EmitContext::ReturnStatement() const {
         return "return;";
     return "return output;";
 }
-void EmitContext::FinishOutput() {
-    if (stage != Stage::VertexA && stage != Stage::VertexB)
+void EmitContext::FinishOutput(std::string_view output) {
+    if (stage == Stage::Fragment && runtime_info.alpha_test_func) {
+        const auto function = *runtime_info.alpha_test_func;
+        if (function == CompareFunction::Never) {
+            Add("discard;");
+        } else if (function != CompareFunction::Always) {
+            const auto op = function == CompareFunction::Less ? "<" :
+                            function == CompareFunction::Equal ? "==" :
+                            function == CompareFunction::LessThanEqual ? "<=" :
+                            function == CompareFunction::Greater ? ">" :
+                            function == CompareFunction::NotEqual ? "!=" : ">=";
+            Add("if (!(nx_alpha {} asfloat(0x{:08x}u))) discard;", op,
+                std::bit_cast<u32>(runtime_info.alpha_test_reference));
+        }
+        return;
+    }
+    if (stage != Stage::VertexA && stage != Stage::VertexB && stage != Stage::Geometry)
         return;
     if (runtime_info.y_negate)
-        Add("output.position.y = -output.position.y;");
+        Add("{0}.position.y = -{0}.position.y;", output);
     if (runtime_info.convert_depth_mode)
-        Add("output.position.z = (output.position.z + output.position.w) * 0.5f;");
+        Add("{0}.position.z = ({0}.position.z + {0}.position.w) * 0.5f;", output);
 }
 } // namespace Shader::Backend::HLSL

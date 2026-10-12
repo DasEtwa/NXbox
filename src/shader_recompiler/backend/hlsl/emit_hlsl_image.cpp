@@ -6,9 +6,6 @@
 namespace Shader::Backend::HLSL {
 namespace {
 IR::TextureInstInfo TextureInfo(EmitContext& ctx, IR::Inst& inst) {
-    if (inst.GetAssociatedPseudoOperation(IR::Opcode::GetSparseFromOp))
-        throw NotImplementedException(
-            "HLSL sparse texture residency requires tiled-resource support");
     auto info = inst.Flags<IR::TextureInstInfo>();
     if (info.has_lod_clamp)
         throw NotImplementedException("HLSL texture LOD clamp");
@@ -255,8 +252,6 @@ void EmitImageGradient(EmitContext& ctx, IR::Inst& inst, const IR::Value& index,
 void EmitImageRead(EmitContext& ctx, IR::Inst& inst, const IR::Value& index,
                    std::string_view coords) {
     const auto info = inst.Flags<IR::TextureInstInfo>();
-    if (inst.GetAssociatedPseudoOperation(IR::Opcode::GetSparseFromOp))
-        throw NotImplementedException("HLSL sparse image read");
     const auto image = Texture(ctx, info, index, true);
     const auto components = ImageComponents(ctx, info);
     const auto padding = components == 1 ? ", 0u, 0u, 1u" : components == 2 ? ", 0u, 1u" : "";
