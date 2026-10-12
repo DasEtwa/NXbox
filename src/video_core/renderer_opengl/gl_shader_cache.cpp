@@ -428,7 +428,8 @@ void ShaderCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading,
         GraphicsPipelineKey key;
         file.read(reinterpret_cast<char*>(&key), sizeof(key));
         queue_work([this, key, envs_ = std::move(envs), &state, &callback](Context* ctx) mutable {
-            boost::container::static_vector<Shader::Environment*, 5> env_ptrs;
+            boost::container::static_vector<Shader::Environment*, Maxwell::MaxShaderProgram>
+                env_ptrs;
             for (auto& env : envs_) {
                 env_ptrs.push_back(&env);
             }
@@ -464,6 +465,20 @@ void ShaderCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading,
 }
 
 GraphicsPipeline* ShaderCache::CurrentGraphicsPipeline() {
+#ifdef NXBOX_UWP
+    const char* dump_value = std::getenv("NXBOX_DUMP_SHADERS");
+    const std::string_view dump_selection = dump_value ? dump_value : "";
+    if (dump_selection != last_dump_selection) {
+        last_dump_selection = dump_selection;
+        // Service every retained entry, including pipelines no longer used by this scene.
+        for (const auto& [key, pipeline] : graphics_cache) {
+            if (pipeline && pipeline->dump_artifacts) {
+                NxboxShaderProbe::DumpPipeline(*pipeline->dump_artifacts, key.Hash(),
+                                               key.unique_hashes);
+            }
+        }
+    }
+#endif
     if (!RefreshStages(graphics_key.unique_hashes)) {
         current_pipeline = nullptr;
         return nullptr;
@@ -502,6 +517,12 @@ GraphicsPipeline* ShaderCache::CurrentGraphicsPipelineSlowPath() {
 }
 
 GraphicsPipeline* ShaderCache::BuiltPipeline(GraphicsPipeline* pipeline) const noexcept {
+#ifdef NXBOX_UWP
+    if (pipeline->dump_artifacts) {
+        NxboxShaderProbe::DumpPipeline(*pipeline->dump_artifacts, pipeline->Key().Hash(),
+                                       pipeline->Key().unique_hashes);
+    }
+#endif
     if (pipeline->IsBuilt()) {
         return pipeline;
     }
@@ -568,7 +589,7 @@ std::unique_ptr<GraphicsPipeline> ShaderCache::CreateGraphicsPipeline(
     auto hash = key.Hash();
     LOG_INFO(Render_OpenGL, "{:#016x}", hash);
 #ifdef NXBOX_UWP
-    const bool dump_pipeline = NxboxShaderProbe::Settings().Dump(hash, key.unique_hashes);
+    const bool dump_pipeline = NxboxShaderProbe::DumpSelected(hash, key.unique_hashes);
 #endif
     size_t env_index{};
     u32 total_storage_buffers{};
@@ -660,50 +681,77 @@ std::unique_ptr<GraphicsPipeline> ShaderCache::CreateGraphicsPipeline(
         previous_program = &program;
     }
 #ifdef NXBOX_UWP
+    auto artifacts = std::make_unique<NxboxShaderProbe::DumpArtifacts>();
+    const auto prefix = NxboxShaderProbe::Hex(hash);
+    artifacts->Add("pipeline.key.bin", &key, key.Size());
+    std::string manifest = "pipeline=" + prefix + "\nstages=va,vb,tcs,tes,gs,fs\n";
+    std::size_t environment_index = 0;
+    for (std::size_t i = 0; i < key.unique_hashes.size(); ++i) {
+        if (key.unique_hashes[i] == 0) {
+            continue;
+        }
+        const auto& env = *envs[environment_index++];
+        std::vector<u64> code;
+        u32 code_address{};
+        if (const auto* live = dynamic_cast<const GenericEnvironment*>(&env)) {
+            code = live->GuestCode();
+            code_address = live->GuestCodeAddress();
+        } else if (const auto* cached = dynamic_cast<const FileEnvironment*>(&env)) {
+            code = cached->GuestCode();
+            code_address = cached->GuestCodeAddress();
+        }
+        const auto name = std::string(NxboxShaderProbe::GuestStages[i]);
+        artifacts->Add(name + ".maxwell.bin", code.data(), code.size() * sizeof(u64));
+        manifest += name + " hash=" + NxboxShaderProbe::Hex(key.unique_hashes[i]) +
+                    " address=" + std::to_string(code_address) +
+                    " start=" + std::to_string(env.StartAddress()) +
+                    " bytes=" + std::to_string(code.size() * sizeof(u64)) + "\n";
+    }
+    const auto replacement_folder = NxboxShaderProbe::ReplacementFolder();
+    for (std::size_t i = 0; i < sources.size(); ++i) {
+        if (sources[i].empty() && sources_spirv[i].empty()) {
+            continue;
+        }
+        // GLASM uses a different binding model; console experiments use GLSL/SPIR-V.
+        if (!use_glasm) {
+            try {
+                if (auto replacement =
+                        NxboxShaderProbe::ReadReplacement(replacement_folder, hash, i)) {
+                    sources[i] = std::move(*replacement);
+                    sources_spirv[i].clear();
+                    EdenXbox::Diagnostic("SHADER_REPLACE hash=" + prefix +
+                                         " stage=" + std::string(NxboxShaderProbe::HostStages[i]));
+                }
+            } catch (const std::exception& error) {
+                EdenXbox::Diagnostic("SHADER_REPLACE hash=" + prefix +
+                                     " stage=" + std::string(NxboxShaderProbe::HostStages[i]) +
+                                     " failed: " + error.what());
+            }
+        }
+        ++artifacts->stages;
+        const auto name = std::string(NxboxShaderProbe::HostStages[i]);
+        if (!sources[i].empty()) {
+            artifacts->Add(name + (use_glasm ? ".glasm" : ".glsl"), sources[i].data(),
+                           sources[i].size());
+        }
+        if (!sources_spirv[i].empty()) {
+            artifacts->Add(name + ".spv", sources_spirv[i].data(),
+                           sources_spirv[i].size() * sizeof(u32));
+        }
+    }
+    artifacts->Add("pipeline.txt", manifest.data(), manifest.size());
     if (dump_pipeline) {
-        const auto prefix = NxboxShaderProbe::Hex(hash);
-        NxboxShaderProbe::WriteDump(prefix + ".key.bin", &key, key.Size());
-        std::string manifest = "pipeline=" + prefix + "\nstages=va,vb,tcs,tes,gs,fs\n";
-        std::size_t environment_index = 0;
-        for (std::size_t i = 0; i < key.unique_hashes.size(); ++i) {
-            if (key.unique_hashes[i] == 0) {
-                continue;
-            }
-            const auto& env = *envs[environment_index++];
-            std::vector<u64> code;
-            u32 code_address{};
-            if (const auto* live = dynamic_cast<const GenericEnvironment*>(&env)) {
-                code = live->GuestCode();
-                code_address = live->GuestCodeAddress();
-            } else if (const auto* cached = dynamic_cast<const FileEnvironment*>(&env)) {
-                code = cached->GuestCode();
-                code_address = cached->GuestCodeAddress();
-            }
-            const auto name = prefix + "_s" + std::to_string(i) + "_" +
-                              NxboxShaderProbe::Hex(key.unique_hashes[i]);
-            NxboxShaderProbe::WriteDump(name + ".maxwell.bin", code.data(),
-                                        code.size() * sizeof(u64));
-            manifest += name + " address=" + std::to_string(code_address) +
-                        " start=" + std::to_string(env.StartAddress()) +
-                        " bytes=" + std::to_string(code.size() * sizeof(u64)) + "\n";
-        }
-        for (std::size_t i = 0; i < sources.size(); ++i) {
-            const auto name = prefix + "_host_s" + std::to_string(i + 1);
-            if (!sources[i].empty()) {
-                NxboxShaderProbe::WriteText(name + (use_glasm ? ".glasm" : ".glsl"), sources[i]);
-            }
-            if (!sources_spirv[i].empty()) {
-                NxboxShaderProbe::WriteDump(name + ".spv", sources_spirv[i].data(),
-                                            sources_spirv[i].size() * sizeof(u32));
-            }
-        }
-        NxboxShaderProbe::WriteText(prefix + ".txt", manifest);
+        NxboxShaderProbe::DumpPipeline(*artifacts, hash, key.unique_hashes);
     }
 #endif
     auto* const thread_worker{use_shader_workers ? workers.get() : nullptr};
-    return std::make_unique<GraphicsPipeline>(device, texture_cache, buffer_cache, program_manager,
-                                              state_tracker, thread_worker, &shader_notify, sources,
-                                              sources_spirv, infos, key, force_context_flush);
+    auto pipeline = std::make_unique<GraphicsPipeline>(
+        device, texture_cache, buffer_cache, program_manager, state_tracker, thread_worker,
+        &shader_notify, sources, sources_spirv, infos, key, force_context_flush);
+#ifdef NXBOX_UWP
+    pipeline->dump_artifacts = std::move(artifacts);
+#endif
+    return pipeline;
 
 } catch (Shader::Exception& exception) {
     LOG_ERROR(Render_OpenGL, "{}", exception.what());

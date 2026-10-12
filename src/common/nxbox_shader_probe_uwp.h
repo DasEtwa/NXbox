@@ -7,7 +7,8 @@
 #include <fstream>
 #include <mutex>
 
-#include "common/nxbox_shader_probe.h"
+#include <winrt/Windows.Storage.h>
+#include "common/nxbox_shader_dump.h"
 #include "eden_uwp/diagnostic.h"
 
 namespace NxboxShaderProbe {
@@ -88,24 +89,53 @@ inline std::filesystem::path DumpFolder() {
            "shader_dump";
 }
 
-inline void WriteDump(const std::string& name, const void* data, std::size_t size) noexcept {
-    // Disk-cache reconstruction may generate different pipelines concurrently.
-    static std::mutex mutex;
-    const std::lock_guard lock(mutex);
-    try {
-        const auto folder = DumpFolder();
-        std::filesystem::create_directories(folder);
-        std::ofstream file(folder / name, std::ios::binary | std::ios::trunc);
-        file.write(static_cast<const char*>(data), static_cast<std::streamsize>(size));
-        file.close();
-        EdenXbox::Diagnostic("SHADER_DUMP " + name + (file ? " ok" : " failed"));
-    } catch (...) {
-        EdenXbox::Diagnostic("SHADER_DUMP " + name + " failed");
+// Dump selection is deliberately independent of the lifetime-cached draw controls.
+// A cache hit can service a selection installed after pipeline creation.
+inline bool DumpSelected(Hash hash, const std::array<Hash, 6>& stages) {
+    thread_local std::string previous;
+    thread_local Config config;
+    const char* value = std::getenv("NXBOX_DUMP_SHADERS");
+    const std::string_view text = value ? value : "";
+    if (text != previous) {
+        previous = text;
+        config.dump.ranges.clear();
+        if (!config.dump.Parse(text, false)) {
+            EdenXbox::Diagnostic("SHADER_PROBE invalid NXBOX_DUMP_SHADERS; ignored");
+        }
     }
+    return config.Dump(hash, stages);
 }
 
-inline void WriteText(const std::string& name, const std::string& text) {
-    WriteDump(name, text.data(), text.size());
+inline std::filesystem::path ReplacementFolder() {
+    const char* value = std::getenv("NXBOX_SHADER_REPLACE_DIR");
+    if (!value || !*value || std::string_view(value) == "0") {
+        return {};
+    }
+    const auto local = DumpFolder().parent_path();
+    if (std::string_view(value) == "1") {
+        return local / "shader_replace";
+    }
+    const std::filesystem::path path{value};
+    return path.is_absolute() ? path : local / path;
+}
+
+inline void DumpPipeline(DumpArtifacts& artifacts, Hash hash,
+                         const std::array<Hash, 6>& stages) noexcept {
+    try {
+        if (!DumpSelected(hash, stages)) {
+            return;
+        }
+        const std::lock_guard lock(artifacts.mutex);
+        if (artifacts.written) {
+            return;
+        }
+        const auto bytes = artifacts.Write(DumpFolder(), hash);
+        artifacts.written = true;
+        EdenXbox::Diagnostic("SHADER_DUMP hash=" + Hex(hash) + " stages=" +
+                             std::to_string(artifacts.stages) + " bytes=" + std::to_string(bytes));
+    } catch (...) {
+        EdenXbox::Diagnostic("SHADER_DUMP hash=" + Hex(hash) + " stages=0 bytes=0 failed");
+    }
 }
 } // namespace NxboxShaderProbe
 #endif

@@ -949,30 +949,45 @@ Console procedure:
    per-stage unique shader hash(es), restart and revisit the scene. Stage selection dumps
    every generated graphics pipeline containing that shader, including its other stages.
 
-Pull `LocalState\shader_dump\` through Device Portal along with the diagnostic log.
-Dumps run during pipeline generation, including disk-cache reconstruction, before host
-compilation takes ownership of the sources. They contain the actual active backend's
-GLSL (`.glsl`), SPIR-V binary (`.spv`, little-endian 32-bit words), or GL assembly
-(`.glasm`), rather than emitting an unused alternative backend. Files are named with
-pipeline hash and stage index; `_host_s1` is vertex, `_host_s2` TCS, `_host_s3` TES,
-`_host_s4` geometry, `_host_s5` fragment. Dual VA/VB is merged into host vertex GLSL;
-both guest binaries remain separate. Generated geometry passthrough can have a host
-source without a guest hash.
+Pull `LocalState\shader_dump\<pipeline-hash>\` through Device Portal along with the
+diagnostic log. Each directory contains `pipeline.key.bin` (the exact hash input),
+`pipeline.txt` (guest hashes, addresses and sizes), guest `va/vb/tcs/tes/gs/fs.maxwell.bin`
+and host `vertex/tcs/tes/gs/fs.glsl`, `.spv`, or `.glasm`. SPIR-V is binary little-endian
+32-bit words. Dual VA/VB has two guest binaries and one merged host vertex program;
+generated geometry passthrough has a host source without a guest program.
 
-Each `_s<0..5>_<shader-hash>.maxwell.bin` is the raw little-endian guest code snapshot,
-including its program header where present, without disassembler padding. The pipeline
-`.txt` manifest records its base guest address, shader start address and byte length;
-`.key.bin` retains the exact key bytes used for hashing, including XFB state when enabled.
-No filename is taken from user input. File success/failure is reported as `SHADER_DUMP`.
-Files overwrite matching names; other captures remain until manually removed. Only
-selected pipelines are dumped, but a widely shared stage can select many pipelines.
+UWP pipeline entries retain immutable guest snapshots and the exact host inputs sent
+to the driver, including disk-cache reconstruction and asynchronous builds. This adds
+CPU memory proportional to cached shader code. Dump selection is read independently
+of the lifetime-cached draw controls: a later `NXBOX_DUMP_SHADERS` value is honored
+on the next graphics pipeline query, scanning all retained entries even if the current
+scene no longer uses them. Pending worker compilation does not delay the dump.
+All artifacts are prepared before any files are written. A successful complete dump
+logs `SHADER_DUMP hash=<hash> stages=<host-stage-count> bytes=<total-file-bytes>`;
+write failures are logged and retried on subsequent queries. Successful entries dump
+once per cache lifetime. Files overwrite matching names and remove obsolete host formats
+for that hash; other captures remain until
+manually removed. A widely shared selected guest stage can select many pipelines.
 
-With controls off there is no per-draw environment lookup, hashing, allocation, counting,
-locking or I/O; only a cached UWP enable branch remains. Non-UWP builds have no probe
-hooks. Unsampled frames do no ID accounting, and dump-only mode does not instrument
-draws. Enabled ID logging intentionally persists sampled lines through `Diagnostic`;
-use a larger interval to reduce console I/O. Settings are cached for the process lifetime.
-Host selection/accounting regressions are in `tests/port/test_shader_probe.py`; run
+Set `NXBOX_SHADER_REPLACE_DIR=1` (or `shader_replace`) in `nxbox_env.txt` to enable
+`LocalState\shader_replace\<pipeline-hash>\<stage>.glsl`. An absolute directory
+can also be supplied. Host stage names are `vertex`, `tcs`, `tes`, `gs`, and `fs`.
+Copy the replacement files through Device Portal, restart and revisit the scene.
+Replacement happens before worker submission and applies to disk-cached pipelines too.
+The GLSL/SPIR-V backends can mix replaced GLSL stages with generated SPIR-V stages;
+the dump records the replacement actually sent to the driver. Keep the generated
+resource bindings and interface compatible. GLASM replacements are unsupported.
+Missing, empty or unreadable files use generated code; the latter two log
+`SHADER_REPLACE ... failed`. Remove the
+variable (or set it to `0`) to disable replacements. Files are read at pipeline creation;
+editing them does not mutate already compiled programs.
+
+Draw ID and skip controls remain cached for the process lifetime. Unsampled frames do
+no ID accounting. Dump-only mode does not instrument rasterizer draws. Non-UWP builds
+have no snapshot or dump hooks. Enabled ID logging intentionally persists sampled
+lines through `Diagnostic`; use a larger interval to reduce console I/O.
+Host selection, accounting and std-only dump path regressions are in
+`tests/port/test_shader_probe.py` and `tests/port/test_shader_dump.py`; run
 `cd tests/port && python3 -m unittest discover -s . -p 'test_*.py'`. Xbox screenshot
 comparison and a Windows UWP build are still required for end-to-end validation.
 

@@ -249,8 +249,11 @@ GraphicsPipeline::GraphicsPipeline(const Device& device, TextureCache& texture_c
                     assembly_programs[stage] = CompileProgram(sources_[stage], AssemblyStage(stage));
                 break;
             case Settings::RendererBackend::OpenGL_SPIRV:
-                if (!sources_spirv_[stage].empty())
+                if (!sources_[stage].empty()) {
+                    source_programs[stage] = CreateProgram(sources_[stage], Stage(stage));
+                } else if (!sources_spirv_[stage].empty()) {
                     source_programs[stage] = CreateProgram(sources_spirv_[stage], Stage(stage));
+                }
                 break;
             default:
                 break;

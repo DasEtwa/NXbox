@@ -8,8 +8,13 @@
 
 #include <array>
 #include <cstring>
+#include <memory>
 #include <type_traits>
 #include <utility>
+
+#ifdef NXBOX_UWP
+#include "common/nxbox_shader_dump.h"
+#endif
 
 #include "common/bit_field.h"
 #include "common/cityhash.h"
@@ -120,6 +125,11 @@ public:
     }
 
 private:
+#ifdef NXBOX_UWP
+    friend class ShaderCache;
+    std::unique_ptr<NxboxShaderProbe::DumpArtifacts> dump_artifacts;
+#endif
+
     template <typename Spec>
     bool ConfigureImpl(bool is_indexed);
 
