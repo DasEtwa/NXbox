@@ -302,7 +302,8 @@ static void RunTestInstance(Dynarmic::A32::Jit& jit,
                             const std::vector<typename TestEnv::InstructionType>& instructions,
                             const u32 cpsr,
                             const u32 fpscr,
-                            const size_t ticks_left) {
+                            const size_t ticks_left,
+                            const std::map<u32, u8>& initial_memory = {}) {
     const u32 initial_pc = regs[15];
     const u32 num_words = initial_pc / sizeof(typename TestEnv::InstructionType);
     const u32 code_mem_size = num_words + static_cast<u32>(instructions.size());
@@ -317,8 +318,8 @@ static void RunTestInstance(Dynarmic::A32::Jit& jit,
     std::copy(instructions.begin(), instructions.end(), uni_env.code_mem.begin() + num_words);
     jit_env.PadCodeMem();
     uni_env.PadCodeMem();
-    jit_env.modified_memory.clear();
-    uni_env.modified_memory.clear();
+    jit_env.modified_memory = initial_memory;
+    uni_env.modified_memory = initial_memory;
 
     jit.Regs() = regs;
     jit.ExtRegs() = vecs;
@@ -711,12 +712,16 @@ TEST_CASE("A32: Unprivileged transfers differential", "[arm][unicorn][conformanc
                 const u32 offset = random() & 0xff;
                 instruction |= form < 8 ? offset : ((offset & 0xf0) << 4) | (offset & 0xf);
             } else if (form < 8) {
-                instruction |= (static_cast<u32>(iteration % 4) << 5) | (static_cast<u32>(iteration % 32) << 7);
+                instruction |= (static_cast<u32>((iteration / 32) % 4) << 5) | (static_cast<u32>(iteration % 32) << 7);
+            }
+            std::map<u32, u8> initial_memory;
+            for (u32 byte = 0; byte < 4; ++byte) {
+                initial_memory[regs[1] + byte] = static_cast<u8>(random());
             }
             const u32 cpsr = (random() & 0xf0000000) | 0x10;  // User mode.
             INFO("form=" << form << " iteration=" << iteration << " instruction=" << instruction);
             RunTestInstance(jit, uni, jit_env, uni_env, regs, ext_regs,
-                            {instruction}, cpsr, 0, 1);
+                            {instruction}, cpsr, 0, 1, initial_memory);
         }
     }
 }
