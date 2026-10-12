@@ -9,6 +9,7 @@
 #pragma once
 
 #include <array>
+#include "common/nxbox_jit_cache.h"
 #include <map>
 #include <optional>
 #include <tuple>
@@ -48,7 +49,11 @@ public:
 
     /// Emit host machine code for a basic block with intermediate representation `block`.
     /// @note block is modified.
-    BlockDescriptor Emit(IR::Block& block) noexcept;
+    BlockDescriptor Emit(IR::Block& block, NxboxJitCache::Record* capture = nullptr) noexcept;
+    static bool DiskCacheEligible(const IR::Block& block);
+    std::optional<BlockDescriptor> Restore(const NxboxJitCache::Record& record,
+                                           bool (*guard)(void*, const NxboxJitCache::Record*),
+                                           void* guard_context) noexcept;
 
     void ClearCache() override;
 

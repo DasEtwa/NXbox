@@ -118,6 +118,10 @@ public:
         }
     }
 
+    std::uint64_t ConstantReferences() const {
+        return constant_references;
+    }
+
     Xbyak::Address Const(const Xbyak::AddressFrame& frame, u64 lower, u64 upper = 0);
 
     template<size_t esize>
@@ -192,6 +196,7 @@ private:
     std::vector<WriteRange> write_ranges;
     void RecordWriteRange(size_t begin, size_t end);
 #endif
+    std::uint64_t constant_references = 0;
     ConstantPool constant_pool;
     JitStateInfo jsi;
     std::array<const void*, 4> return_from_run_code;

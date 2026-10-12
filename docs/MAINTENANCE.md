@@ -266,6 +266,8 @@ Eden. Each entry below describes one file; generated caches are identified separ
   inspection.
 - `tests/port/test_image_slot_patch.py` — Checks shader-image format-emulation indexing at nonzero
   start slots.
+- `tests/port/test_jit_disk_cache.py` — Executes std-only JIT cache serialization, symbolic terminal
+  relocation, fresh guest-byte guards, admission, corruption recovery and bounded storage.
 - `tests/port/test_jit_hot_paths.py` — Checks JIT assertion/hot-path source invariants.
 - `tests/port/test_mesa_api_ring.py` — Checks process-wide API-ring generation and reporting with
   host mocks.
@@ -325,6 +327,8 @@ and YUZU_UWP_APPCONTAINER are compile definitions, not environment switches.
 - `src/common/host_memory.cpp` — Implements AppContainer memory/protection handling, demand
   commitment and decommit attribution.
 - `src/common/host_memory.h` — Exposes committed guest-backing byte diagnostics.
+- `src/common/nxbox_jit_cache.h` — Owns the opt-in per-title host-code cache codec, bounded store
+  and portable relocation/guest checks; see [the cache design](jit-disk-cache.md).
 - `src/common/nxbox_stall.h` — Owns shared stall/JIT counters and sampler thread IDs.
 - `src/common/nxbox_geometry_diag.h` — Owns opt-in geometry/UBO counters; copied into Mesa as
   nxbox_geometry_diag.h by patch_geometry_diag.
@@ -497,6 +501,7 @@ identifies the generator function and names the generated Mesa reader where usef
 
 | Switch                         | Default                                               | Effect / accepted value                                                                                                                                  | Diagnostic? | Where read                                                                                                  |
 | ------------------------------ | ----------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- | ----------------------------------------------------------------------------------------------------------- |
+| `NXBOX_JIT_CACHE` | Off | Exact `1` enables the experimental A64/x64 disk cache for audited integer blocks, with fresh byte guards; 16 MiB/title, 128 MiB directory. See [design and limits](jit-disk-cache.md). | Yes | src/eden_uwp/game_session.cpp:RunGame |
 | `NXBOX_ALLOC_TRACK`            | Off                                                   | Leading `1` enables allocation call-site tracking; periodic ALLOCS output also needs VMMAP.                                                              | Yes         | src/eden_uwp/game_session.cpp:RunGame                                                                       |
 | `NXBOX_API_RING`               | Off in NXbox                                          | `1` requests per-call history; helper disables on exact `0` or SYNC_BATCH=0 (otherwise standalone helper defaults on).                                   | Yes         | tools/nxbox/mesa_api_ring.h:nxbox_api_enabled; frontend default in mesa_window.cpp                          |
 | `NXBOX_ASTC_CHECK`             | Off                                                   | Presence, including `0`, requests bounded GPU-versus-CPU ASTC comparisons.                                                                               | Yes         | src/video_core/renderer_opengl/gl_texture_cache.cpp:NxboxAstcCheckWanted                                    |

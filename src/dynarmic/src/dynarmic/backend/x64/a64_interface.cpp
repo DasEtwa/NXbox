@@ -9,6 +9,10 @@
 #include <cstring>
 #include <memory>
 #include <mutex>
+#include <map>
+#include <string_view>
+
+#include "common/nxbox_jit_cache.h"
 
 #include <boost/icl/interval_set.hpp>
 #include "common/assert.h"
@@ -24,6 +28,7 @@
 #include "dynarmic/backend/x64/block_of_code.h"
 #include "dynarmic/backend/x64/devirtualize.h"
 #include "dynarmic/backend/x64/jitstate_info.h"
+#include "dynarmic/backend/x64/stack_layout.h"
 #include "dynarmic/common/atomic.h"
 #include "dynarmic/frontend/A64/translate/a64_translate.h"
 #include "dynarmic/interface/A64/a64.h"
@@ -74,10 +79,95 @@ public:
         , emitter(block_of_code, conf, jit)
         , polyfill_options(GenPolyfillOptions(block_of_code))
     {
+        if (conf.disk_cache && !conf.very_verbose_debugging_output) {
+            try {
+                disk_config = DiskConfig();
+                if (!conf.disk_cache->RegisterConfig(disk_config)) {
+                    disk_config.clear();
+                }
+            } catch (...) {
+                disk_config.clear();
+            }
+        }
         ASSERT(conf.page_table_address_space_bits >= 12 && conf.page_table_address_space_bits <= 64);
     }
 
     ~Impl() = default;
+
+    NxboxJitCache::Bytes DiskConfig() const {
+        NxboxJitCache::Bytes key;
+#ifdef NXBOX_JIT_EMITTER_ID
+        constexpr std::string_view emitter_id{NXBOX_JIT_EMITTER_ID};
+        key.insert(key.end(), emitter_id.begin(), emitter_id.end());
+#else
+        // Unversioned builds must never load executable cache entries.
+        return key;
+#endif
+        const auto put = [&](auto value) { NxboxJitCache::Put(key, static_cast<u64>(value)); };
+        put(NxboxJitCache::FormatVersion);
+        put(sizeof(A64JitState));
+        put(sizeof(StackLayout));
+        put(ABI_SHADOW_SPACE);
+        for (u32 bit = 1; bit <= static_cast<u32>(HostFeature::FastBMI2); bit <<= 1) {
+            put(block_of_code.HasHostFeature(static_cast<HostFeature>(bit)));
+        }
+        put(conf.optimizations);
+        put(conf.fastmem_pointer.has_value());
+        put(conf.page_table != nullptr);
+        put(conf.global_monitor != nullptr);
+        put(conf.tpidr_el0 != nullptr);
+        put(conf.tpidrro_el0 != nullptr);
+        put(conf.page_table_address_space_bits);
+        put(conf.page_table_pointer_mask);
+        put(conf.page_table_log2_stride);
+        put(conf.page_table_marked_bit ? *conf.page_table_marked_bit : 256);
+        put(conf.page_table_sign_extension ? *conf.page_table_sign_extension : 256);
+        put(conf.cntfrq_el0);
+        put(conf.ctr_el0);
+        put(conf.dczid_el0);
+        put(conf.fastmem_address_space_bits);
+        put(conf.code_cache_size);
+        put(conf.detect_misaligned_access_via_page_table);
+        put(conf.processor_id);
+        put(conf.unsafe_optimizations);
+        put(conf.hook_data_cache_operations);
+        put(conf.hook_isb);
+        put(conf.hook_hint_instructions);
+        put(conf.silently_mirror_page_table);
+        put(conf.absolute_offset_page_table);
+        put(conf.only_detect_misalignment_via_page_table_on_page_boundary);
+        put(conf.recompile_on_fastmem_failure);
+        put(conf.silently_mirror_fastmem);
+        put(conf.fastmem_exclusive_access);
+        put(conf.recompile_on_exclusive_fastmem_failure);
+        put(conf.define_unpredictable_behaviour);
+        put(conf.wall_clock_cntpct);
+        put(conf.check_halt_on_memory_access);
+        put(conf.collect_memory_access_context);
+        put(conf.enable_cycle_counting);
+        put(conf.very_verbose_debugging_output);
+        return key;
+    }
+
+    bool MatchesGuest(const NxboxJitCache::Record& record) {
+        return NxboxJitCache::MatchesGuest(
+            record, [this](u64 pc) { return conf.callbacks->MemoryReadCodeFresh(pc); });
+    }
+
+    static bool CheckDiskBlockThunk(void* context, const NxboxJitCache::Record* record) noexcept {
+        auto& self = *static_cast<Impl*>(context);
+        try {
+            if (self.MatchesGuest(*record)) {
+                return true;
+            }
+        } catch (...) {
+        }
+        // Exit before executing even one instruction from the stale cached body.
+        self.jit_state.pc = record->pc;
+        self.InvalidateCacheRange(record->pc, record->guest.size());
+        self.conf.disk_cache->Result(false);
+        return false;
+    }
 
     HaltReason Run() {
         ASSERT(!is_executing);
@@ -274,8 +364,51 @@ private:
         }
         block_of_code.EnsureMemoryCommitted(MINIMUM_REMAINING_CODESIZE);
 
-        // JIT Compile
-        const auto get_code = [this](u64 vaddr) { return conf.callbacks->MemoryReadCode(vaddr); };
+        if (conf.disk_cache && !disk_config.empty() &&
+            !A64::LocationDescriptor{descriptor}.SingleStepping()) {
+            if (auto saved = conf.disk_cache->Find(descriptor.Value(), disk_config)) {
+                try {
+                    if (MatchesGuest(*saved)) {
+                        const auto it =
+                            restored_records.insert_or_assign(descriptor.Value(), std::move(*saved))
+                                .first;
+                        if (auto restored =
+                                emitter.Restore(it->second, CheckDiskBlockThunk, this)) {
+                            // Guards need only the guest footprint; free duplicate host/config
+                            // bytes.
+                            NxboxJitCache::Bytes{}.swap(it->second.host);
+                            NxboxJitCache::Bytes{}.swap(it->second.config);
+                            conf.disk_cache->Result(true, restored->size);
+                            return restored->entrypoint;
+                        }
+                    }
+                    conf.disk_cache->Result(false);
+                } catch (...) {
+                    conf.disk_cache->Result(false);
+                }
+            }
+        }
+        // Remember the exact instruction reads used by the translator, not a later snapshot.
+        std::map<u64, u32> instruction_reads;
+        bool record_reads = conf.disk_cache && !disk_config.empty();
+        const auto get_code = [this, &instruction_reads, &record_reads](u64 vaddr) {
+            const auto word = conf.disk_cache ? conf.callbacks->MemoryReadCodeFresh(vaddr)
+                                              : conf.callbacks->MemoryReadCode(vaddr);
+            if (record_reads && word) {
+                try {
+                    const auto [it, inserted] = instruction_reads.emplace(vaddr, *word);
+                    if (!inserted && it->second != *word) {
+                        // Translation observed changing code; never persist an ambiguous body.
+                        record_reads = false;
+                        instruction_reads.clear();
+                    }
+                } catch (...) {
+                    record_reads = false;
+                    instruction_reads.clear();
+                }
+            }
+            return word;
+        };
         // LocationDescriptor ctor() does important ops (like tflags) do not skip
         auto const arch_descriptor = A64::LocationDescriptor{descriptor};
         ir_block.Reset(arch_descriptor);
@@ -285,18 +418,52 @@ private:
 #endif
             A64::Translate(ir_block, arch_descriptor, get_code, {conf.define_unpredictable_behaviour, conf.wall_clock_cntpct});
         }
+        bool disk_eligible = record_reads && emitter.DiskCacheEligible(ir_block);
         {
 #if NXBOX_STALL_PROFILE
             const NxboxStall::Scope scope{NxboxStall::Kind::JitOptimize};
 #endif
             Optimization::Optimize(ir_block, conf, polyfill_options);
         }
+        NxboxJitCache::Record capture;
+        if (disk_eligible) {
+            capture.descriptor = descriptor.Value();
+            capture.pc = arch_descriptor.PC();
+            try {
+                capture.config = disk_config;
+            } catch (...) {
+                disk_eligible = false;
+            }
+        }
         const auto block = [&] {
 #if NXBOX_STALL_PROFILE
             const NxboxStall::Scope scope{NxboxStall::Kind::JitEmit};
 #endif
-            return emitter.Emit(ir_block);
+            return emitter.Emit(ir_block, disk_eligible ? &capture : nullptr);
         }();
+        if (disk_eligible && !capture.host.empty()) {
+            try {
+                const u64 end = A64::LocationDescriptor{ir_block.EndLocation()}.PC();
+                const u64 size = end - capture.pc;
+                bool complete = end > capture.pc && size <= NxboxJitCache::GuestLimit &&
+                                size % 4 == 0 && instruction_reads.size() == size / 4;
+                for (u64 offset = 0; complete && offset < size; offset += 4) {
+                    const auto it = instruction_reads.find(capture.pc + offset);
+                    if (it == instruction_reads.end()) {
+                        complete = false;
+                        break;
+                    }
+                    for (unsigned i = 0; i < 4; ++i) {
+                        capture.guest.push_back(static_cast<u8>(it->second >> (i * 8)));
+                    }
+                }
+                if (complete && MatchesGuest(capture)) {
+                    conf.disk_cache->Insert(std::move(capture));
+                }
+            } catch (...) {
+                // Recording failure cannot prevent normal translation/execution.
+            }
+        }
 #if NXBOX_STALL_PROFILE
         // Per-JIT history survives invalidation. A key repeated here really was compiled again;
         // migration to another CPU and FPCR/single-step variants are not conflated with that.
@@ -328,6 +495,7 @@ private:
 #endif
                 block_of_code.ClearCache();
                 emitter.ClearCache();
+                restored_records.clear();
             } else {
                 emitter.InvalidateCacheRanges(invalid_cache_ranges);
             }
@@ -384,6 +552,8 @@ private:
     BlockOfCode block_of_code;
     A64EmitX64 emitter;
     Optimization::PolyfillOptions polyfill_options;
+    NxboxJitCache::Bytes disk_config;
+    std::map<u64, NxboxJitCache::Record> restored_records;
     bool is_executing = false;
     bool invalidate_entire_cache = false;
     boost::icl::interval_set<u64> invalid_cache_ranges;
