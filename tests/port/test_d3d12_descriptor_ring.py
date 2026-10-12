@@ -12,6 +12,19 @@ DRIVER = r"""
 #include "video_core/renderer_d3d12/d3d12_ring_allocator.h"
 using D3D12::RingAllocator;
 int main() {
+    // Preflight all heaps before reserving any tables. A full sampler heap must
+    // force retirement before resource descriptors are tagged for the next draw.
+    RingAllocator views{8}, samplers{1};
+    assert(samplers.Allocate(1, 1) == 0u);
+    assert(views.CanAllocate(4) && !samplers.CanAllocate(1));
+    assert(views.Used() == 0 && !views.OldestTick());
+    samplers.Retire(1);
+    assert(views.CanAllocate(4) && samplers.CanAllocate(1));
+    assert(views.Allocate(4, 2) == 0u);
+    assert(samplers.Allocate(1, 2) == 0u);
+    views.Retire(1); samplers.Retire(1);
+    assert(views.Used() == 4 && samplers.Used() == 1);
+    assert(!views.CanAllocate(0) && !views.CanAllocate(9));
     RingAllocator ring{10};
     // Contiguous allocations fill the heap in order.
     assert(ring.Allocate(4, 1) == 0u);
@@ -66,9 +79,21 @@ class DescriptorRingTests(unittest.TestCase):
             binary = Path(temp) / "ring"
             source.write_text(DRIVER)
             subprocess.run(
-                ["clang++", "-std=c++17", "-Wall", "-Wextra", "-Werror",
-                 "-I", str(ROOT / "src"), str(source), "-o", str(binary)],
-                check=True, capture_output=True, text=True,
+                [
+                    "clang++",
+                    "-std=c++17",
+                    "-Wall",
+                    "-Wextra",
+                    "-Werror",
+                    "-I",
+                    str(ROOT / "src"),
+                    str(source),
+                    "-o",
+                    str(binary),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
             )
             subprocess.run([str(binary)], check=True, timeout=10)
 

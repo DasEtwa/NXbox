@@ -372,14 +372,16 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     const u32 cbv_size = TableSize(totals.cbv);
     const u32 srv_size = TableSize(totals.srv);
     const u32 uav_size = TableSize(totals.uav);
+    ImageView* const depth_view = framebuffer->Depth();
+    const bool has_depth = depth_view && depth_view->ImageHandle();
+    descriptors.Reserve(cbv_size + srv_size + uav_size, TableSize(totals.sampler),
+                        std::max(num_rts, 1u), has_depth ? 1u : 0u);
     const auto view_block = descriptors.AllocateViews(cbv_size + srv_size + uav_size);
     const auto cbv_table = view_block.Slice(0, cbv_size);
     const auto srv_table = view_block.Slice(cbv_size, srv_size);
     const auto uav_table = view_block.Slice(cbv_size + srv_size, uav_size);
     const auto sampler_table = descriptors.AllocateSamplers(TableSize(totals.sampler));
     const auto rtv_base = descriptors.AllocateRtv(std::max(num_rts, 1u));
-    ImageView* const depth_view = framebuffer->Depth();
-    const bool has_depth = depth_view && depth_view->ImageHandle();
     const auto dsv_handle = has_depth ? descriptors.AllocateDsv() : D3D12_CPU_DESCRIPTOR_HANDLE{};
 
     // ---- 3. Fill the tables and collect resource states ----
@@ -794,6 +796,8 @@ void RasterizerD3D12::Clear(u32 layer_count) {
     }
     for (u32 layer = selection.layer; layer < selection.layer + layer_count; ++layer) {
         ClearAttachment color_attachment, depth_attachment;
+        descriptors.Reserve(0, 0, selection.color_mask ? 1u : 0u,
+                            (selection.depth || selection.stencil) ? 1u : 0u);
         const auto prepare = [&](ImageView* view, bool is_depth, ClearAttachment& attachment) {
             if (!view || !view->ImageHandle())
                 return false;
@@ -919,6 +923,7 @@ void RasterizerD3D12::DispatchCompute() {
     const auto counts = CountStageTables(info);
     const u32 cbv_size = TableSize(counts.cbv), srv_size = TableSize(counts.srv),
               uav_size = TableSize(counts.uav);
+    descriptors.Reserve(cbv_size + srv_size + uav_size, TableSize(counts.sampler));
     const auto allocation = descriptors.AllocateViews(cbv_size + srv_size + uav_size);
     const auto cbv = allocation.Slice(0, cbv_size), srv = allocation.Slice(cbv_size, srv_size),
                uav = allocation.Slice(cbv_size + srv_size, uav_size);

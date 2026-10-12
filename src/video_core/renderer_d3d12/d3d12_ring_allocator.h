@@ -14,25 +14,22 @@ class RingAllocator {
 public:
     explicit RingAllocator(std::uint32_t capacity) : capacity{capacity} {}
 
+    bool CanAllocate(std::uint32_t count) const {
+        if (count == 0 || count > capacity || used == capacity)
+            return false;
+        if (head >= tail)
+            return count <= capacity - head || count <= tail;
+        return count <= tail - head;
+    }
+
     std::optional<std::uint32_t> Allocate(std::uint32_t count, std::uint64_t tick) {
-        if (count == 0 || count > capacity)
+        if (!CanAllocate(count))
             return std::nullopt;
-        std::uint32_t offset{};
+        std::uint32_t offset = head;
         std::uint32_t padding{};
-        if (head >= tail && used != capacity) {
-            // Free space: [head, capacity) and [0, tail).
-            if (count <= capacity - head) {
-                offset = head;
-            } else if (count <= tail) {
-                padding = capacity - head;
-                offset = 0;
-            } else {
-                return std::nullopt;
-            }
-        } else if (head < tail && count <= tail - head) {
-            offset = head;
-        } else {
-            return std::nullopt;
+        if (head >= tail && count > capacity - head) {
+            padding = capacity - head;
+            offset = 0;
         }
         records.push_back({tick, padding ? head : offset, padding + count});
         used += padding + count;

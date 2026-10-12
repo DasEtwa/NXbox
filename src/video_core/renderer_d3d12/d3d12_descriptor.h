@@ -88,6 +88,9 @@ public:
     explicit D3D12DescriptorAllocator(Context& context);
 
     // Rebind for every draw: helpers can replace heaps within the same command list.
+    // Reserve the whole draw/dispatch before allocating from any ring. Reclaiming
+    // another heap must never submit tables already reserved for this operation.
+    void Reserve(u32 view_count, u32 sampler_count, u32 rtv_count = 0, u32 dsv_count = 0);
     void SetHeaps(ID3D12GraphicsCommandList* commands);
     DescriptorTable AllocateViews(u32 count);
     DescriptorTable AllocateSamplers(u32 count);

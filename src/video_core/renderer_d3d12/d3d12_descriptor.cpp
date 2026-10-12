@@ -105,6 +105,34 @@ void D3D12DescriptorAllocator::Init(Ring& ring, D3D12_DESCRIPTOR_HEAP_TYPE type,
         ring.gpu = ring.heap->GetGPUDescriptorHandleForHeapStart();
 }
 
+void D3D12DescriptorAllocator::Reserve(u32 view_count, u32 sampler_count, u32 rtv_count,
+                                       u32 dsv_count) {
+    const std::array rings{&views, &samplers, &rtvs, &dsvs};
+    const std::array counts{view_count, sampler_count, rtv_count, dsv_count};
+    for (size_t i = 0; i < rings.size(); ++i) {
+        if (counts[i] > rings[i]->math.Capacity())
+            throw std::runtime_error("D3D12 descriptor batch larger than its heap");
+    }
+    for (;;) {
+        // Retire callbacks before the preflight, then keep this recording open.
+        // Every subsequent allocation in this batch must use the same fence tick.
+        context.Commands();
+        bool ready = true;
+        for (size_t i = 0; i < rings.size(); ++i) {
+            auto& ring = *rings[i];
+            while (const auto oldest = ring.math.OldestTick()) {
+                if (!context.IsFree(*oldest))
+                    break;
+                ring.math.Retire(*oldest);
+            }
+            ready &= counts[i] == 0 || ring.math.CanAllocate(counts[i]);
+        }
+        if (ready)
+            return;
+        context.Finish();
+    }
+}
+
 void D3D12DescriptorAllocator::SetHeaps(ID3D12GraphicsCommandList* commands) {
     ID3D12DescriptorHeap* heaps[] = {views.heap.Get(), samplers.heap.Get()};
     commands->SetDescriptorHeaps(2, heaps);
