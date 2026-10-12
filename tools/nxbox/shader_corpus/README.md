@@ -24,14 +24,25 @@ On Windows use the `Release/nxbox-shader-corpus.exe` executable after building w
 `--config Release`. `--corpus` accepts a directory or one cache/manifest file;
 `NXBOX_SHADER_CORPUS` defaults to `~/.local/share/nxbox/corpus`. Inputs are read only.
 `--dxc /path/to/dxc` or `DXC` enables DXIL validation with the appropriate SM 6.0
-stage profile. DXC is optional; an explicitly requested missing compiler is an error.
+stage profile. Add `--sm66` to also compile SM 6.6, including when SM 6.0
+fails. Each profile has its own diagnostics and pass/fail totals in JSON. DXIL
+validation is enabled by default (no `-Vd`); `--dxc-no-validation` explicitly
+passes `-Vd` for installations without a validator. A compiler success on a host
+without a validator is not proof of validated DXIL; inspect its diagnostics.
+DXC is optional; an explicitly requested missing compiler is an error.
 `--timeout` limits each compiler invocation (default 60 seconds). `--output` retains
 HLSL locally; otherwise all generated shader artifacts are temporary.
 
 The table reports total compilation jobs, emitted programs, failed jobs, and DXC
-passes/failures. A DXC failure counts as both emitted and failed. JSON includes every
+passes/failures, and the subset emitted with synthesized environment defaults.
+`emitted` includes `emitted_with_defaults`; each such row has that status and a
+sorted, deduplicated `synthesized_keys` list (stage, lookup kind, exact numeric key).
+VertexA keys are tagged separately from VertexB keys in merged programs. Successful
+emission status remains recorded even if subsequent DXC validation fails.
+A DXC failure counts as both emitted and failed. JSON includes every
 job, stage, compiler diagnostics, exact failure reasons, and opcode counts when the
-backend names its failing emitter. Unknown opcodes are never guessed from unrelated
+backend names its failing emitter. With `--sm66`, a job passes DXC only if both
+profiles pass; `dxc_profiles` counts individual attempts rather than jobs. Unknown opcodes are never guessed from unrelated
 IR instructions. Exit codes: **0** all jobs passed, **1** failures, **77** absent/empty
 corpus. VertexA+VertexB pairs are translated separately then merged into one vertex
 program and counted as one compilation job, matching the renderer.
@@ -76,8 +87,11 @@ pipeline keys. Geometry/tessellation backend limitations remain reported failure
 **Current raw dumps do not capture texture maps, constant buffers, bindless slot,
 viewport state, or geometry passthrough masks.** The adapter derives local memory
 from SPH and uses the conventional proprietary-driver bindless slot 2 and viewport
-transform enabled. It keeps uncaptured maps empty: a shader that needs them fails
-with the exact missing lookup key instead of fabricated values. Geometry passthrough
+transform enabled. For missing texture-type/format and constant-buffer entries, the adapter supplies
+`Color2D`, `A8B8G8R8_UNORM` (float RGBA8), and zero respectively, caches the answer,
+and reports every synthesized key. Captured entries are preserved, including integer
+formats. These neutral answers enable compilation coverage; they do not reconstruct
+the game's texture or constant-buffer semantics. Geometry passthrough
 and compute dumps with missing execution metadata fail explicitly. Use the full
 on-disk guest caches for faithful environment replay. Even caches can omit values
 that were never queried by their original backend; a new HLSL translation can expose
@@ -96,7 +110,9 @@ Parser, corruption, pairing, report accounting, and simulated compiler-failure t
 always run, including CI without a corpus. Tests generate a tiny synthetic Maxwell
 EXIT corpus at runtime, with both cache layouts and raw dumps; no game data is used.
 Setting `NXBOX_SHADER_CORPUS_EMITTER` also enables real frontend/HLSL integration,
-native ABI checks, and optional DXC validation. CTest sets this automatically.
+native ABI checks, repeated default lookup checks that preserve captured values,
+a synthetic TEX shader with all three missing lookup kinds, and optional DXC
+validation of its SM 6.0 and SM 6.6 output. CTest sets this automatically.
 The optional user-corpus test skips if absent and checks accounting/continuation,
 not that the evolving HLSL backend can already emit every captured program. Use the
 CLI's nonzero exit status and JSON failure rows to gate backend coverage work.

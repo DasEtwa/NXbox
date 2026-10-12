@@ -30,6 +30,18 @@ elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   target_compile_options(nxbox-shader-corpus PRIVATE -fbracket-depth=1024)
 endif()
 
+add_executable(nxbox-corpus-environment-test environment_test.cpp environment.cpp)
+target_compile_features(nxbox-corpus-environment-test PRIVATE cxx_std_20)
+target_include_directories(nxbox-corpus-environment-test PRIVATE
+  "${NXBOX_ROOT}/tools/hlsl-harness/host" "${NXBOX_ROOT}/src")
+target_include_directories(nxbox-corpus-environment-test SYSTEM PRIVATE ${Boost_INCLUDE_DIRS})
+if(MSVC)
+  target_compile_definitions(nxbox-corpus-environment-test PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+  target_compile_options(nxbox-corpus-environment-test PRIVATE /W4 /WX /permissive-
+    /Zc:preprocessor /utf-8 /wd4100 /wd4201 /wd4324)
+endif()
+add_dependencies(nxbox-shader-corpus nxbox-corpus-environment-test)
+
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 enable_testing()
 add_test(NAME shader-corpus-synthetic

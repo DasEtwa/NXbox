@@ -140,7 +140,7 @@ def dump_environment(binary, stage, address, start, size):
     if local > 0xFFFFFFFF:
         raise ValueError("dump local memory size overflows")
     # TextureBoundBuffer=2 follows GraphicsEnvironment's proprietary-driver default.
-    # Uncaptured lookups remain absent and throw an exact missing-key diagnostic.
+    # Uncaptured lookups are synthesized by the worker and reported as defaults.
     header = HEADER.pack(size, 0, 0, 0, 0, local, 2, start, address, address + size - 8, 1, stage)
     mask = bytes(32) if stage == 3 else b""
     if stage == 3 and (word0 >> 24) & 1:
@@ -236,9 +236,14 @@ def failure_reason(output, returncode):
     return output.strip() or f"worker exited {returncode} without diagnostic"
 
 
-def evaluate(directory, emitter, dxc=None, timeout=60, output=None):
+def evaluate(
+    directory, emitter, dxc=None, timeout=60, output=None, sm66=False, dxc_no_validation=False
+):
     rows = []
-    counts = Counter(total=0, emitted=0, failed=0, dxc_passed=0, dxc_failed=0)
+    counts = Counter(
+        total=0, emitted=0, emitted_with_defaults=0, failed=0, dxc_passed=0, dxc_failed=0
+    )
+    profiles = {}
     reasons = Counter()
     seen = Counter()
     opcodes = Counter()
@@ -285,36 +290,69 @@ def evaluate(directory, emitter, dxc=None, timeout=60, output=None):
                         raise ValueError("worker returned success without HLSL source")
                     counts["emitted"] += 1
                     row["emitted"] = True
+                    row["synthesized_keys"] = sorted(
+                        set(
+                            line.removeprefix("DEFAULT: ")
+                            for line in result.stdout.splitlines()
+                            if line.startswith("DEFAULT: ")
+                        )
+                    )
+                    row["status"] = (
+                        "emitted_with_defaults" if row["synthesized_keys"] else "emitted"
+                    )
+                    if row["synthesized_keys"]:
+                        counts["emitted_with_defaults"] += 1
                     if output:
                         output.mkdir(parents=True, exist_ok=True)
                         artifact = output / source.name
                         shutil.copyfile(source, artifact)
                         row["source"] = str(artifact.resolve())
                     if dxc:
-                        dxil = source.with_suffix(".dxil")
-                        compiled = subprocess.run(
-                            [
-                                str(dxc),
-                                "-T",
-                                TARGETS[env.stage] + "_6_0",
-                                "-E",
-                                "main",
-                                "-Fo",
-                                str(dxil),
-                                str(source),
-                            ],
-                            capture_output=True,
-                            text=True,
-                            timeout=timeout,
-                            check=False,
+                        row["dxc_attempts"] = []
+                        for model in ("6_0", "6_6") if sm66 else ("6_0",):
+                            target = TARGETS[env.stage] + "_" + model
+                            tally = profiles.setdefault(target, {"passed": 0, "failed": 0})
+                            dxil = source.with_suffix("." + model + ".dxil")
+                            dxil.unlink(missing_ok=True)
+                            dxc_command = [str(dxc), "-T", target, "-E", "main", "-Fo", str(dxil)]
+                            if dxc_no_validation:
+                                dxc_command.append("-Vd")
+                            dxc_command.append(str(source))
+                            attempt = {"profile": target, "validation": not dxc_no_validation}
+                            try:
+                                compiled = subprocess.run(
+                                    dxc_command,
+                                    capture_output=True,
+                                    text=True,
+                                    timeout=timeout,
+                                    check=False,
+                                )
+                                attempt["diagnostics"] = compiled.stdout + compiled.stderr
+                                if (
+                                    compiled.returncode
+                                    or not dxil.is_file()
+                                    or not dxil.stat().st_size
+                                ):
+                                    raise ValueError(
+                                        failure_reason(attempt["diagnostics"], compiled.returncode)
+                                    )
+                                attempt["status"] = "passed"
+                            except (OSError, ValueError, subprocess.TimeoutExpired) as error:
+                                attempt["status"] = "failed"
+                                attempt["reason"] = str(error)
+                            tally[attempt["status"]] += 1
+                            row["dxc_attempts"].append(attempt)
+                        row["dxc_diagnostics"] = "\n".join(
+                            attempt.get("diagnostics", attempt.get("reason", ""))
+                            for attempt in row["dxc_attempts"]
                         )
-                        row["dxc_diagnostics"] = compiled.stdout + compiled.stderr
-                        if compiled.returncode or not dxil.is_file() or not dxil.stat().st_size:
+                        failed = [a for a in row["dxc_attempts"] if a["status"] == "failed"]
+                        if failed:
                             counts["dxc_failed"] += 1
                             row["dxc"] = "failed"
                             raise ValueError(
                                 "DXC: "
-                                + failure_reason(row["dxc_diagnostics"], compiled.returncode)
+                                + "\n".join(a["profile"] + ": " + a["reason"] for a in failed)
                             )
                         counts["dxc_passed"] += 1
                         row["dxc"] = "passed"
@@ -335,6 +373,7 @@ def evaluate(directory, emitter, dxc=None, timeout=60, output=None):
     return {
         "counts": dict(counts),
         "stages": dict(seen),
+        "dxc_profiles": profiles,
         "failures_by_reason": dict(reasons),
         "failures_by_opcode": dict(opcodes),
         "rows": rows,
@@ -356,6 +395,14 @@ def main(argv=None):
     parser.add_argument(
         "--dxc", help="Optional DXC executable (DXC environment variable is also accepted)"
     )
+    parser.add_argument(
+        "--sm66", action="store_true", help="Also compile every emitted shader with SM 6.6"
+    )
+    parser.add_argument(
+        "--dxc-no-validation",
+        action="store_true",
+        help="Pass -Vd for DXC installations without a validator; default validates",
+    )
     parser.add_argument("--timeout", type=float, default=60)
     parser.add_argument(
         "--report", type=Path, help="Write JSON with every result and exact failure reason"
@@ -376,14 +423,24 @@ def main(argv=None):
     if dxc_request and not dxc:
         parser.error(f"requested DXC is unavailable: {dxc_request}")
     emitter = args.emitter.resolve()
-    report = evaluate(args.corpus, emitter, dxc, args.timeout, args.output)
+    report = evaluate(
+        args.corpus, emitter, dxc, args.timeout, args.output, args.sm66, args.dxc_no_validation
+    )
     counts = report["counts"]
-    print("| total | emitted | failed | DXC passed | DXC failed |")
-    print("| ---: | ---: | ---: | ---: | ---: |")
+    print("| total | emitted | failed | DXC passed | DXC failed | defaults |")
+    print("| ---: | ---: | ---: | ---: | ---: | ---: |")
     print(
         "| "
         + " | ".join(
-            str(counts[key]) for key in ("total", "emitted", "failed", "dxc_passed", "dxc_failed")
+            str(counts[key])
+            for key in (
+                "total",
+                "emitted",
+                "failed",
+                "dxc_passed",
+                "dxc_failed",
+                "emitted_with_defaults",
+            )
         )
         + " |"
     )

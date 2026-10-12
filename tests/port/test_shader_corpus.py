@@ -241,11 +241,70 @@ class ShaderCorpusLoaderTests(unittest.TestCase):
             self.assertEqual(calls, 5)
             self.assertEqual(
                 report["counts"],
-                {"total": 5, "emitted": 1, "failed": 5, "dxc_passed": 0, "dxc_failed": 1},
+                {
+                    "total": 5,
+                    "emitted": 1,
+                    "emitted_with_defaults": 0,
+                    "failed": 5,
+                    "dxc_passed": 0,
+                    "dxc_failed": 1,
+                },
             )
             self.assertIn("unsupported opcode ImageAtomicIAdd32", report["failures_by_reason"])
             self.assertEqual(report["failures_by_opcode"], {"ImageAtomicIAdd32": 1})
             self.assertTrue(any("signal 6" in reason for reason in report["failures_by_reason"]))
+
+    def test_defaults_and_both_dxc_profiles_with_validation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cache(root / "data.bin", 15, [[environment()]])
+            commands = []
+
+            def run(command, **kwargs):
+                commands.append(command)
+                if "-T" in command:
+                    Path(command[command.index("-Fo") + 1]).write_bytes(b"DXIL")
+                    return subprocess.CompletedProcess(command, 0, "", "")
+                Path(command[2]).write_text("void main() {}")
+                return subprocess.CompletedProcess(
+                    command, 0, "DEFAULT: stage texture format key=7\n" * 2, ""
+                )
+
+            for disabled in (False, True):
+                commands.clear()
+                with patch.object(corpus.subprocess, "run", side_effect=run):
+                    report = corpus.evaluate(
+                        root, Path("emitter"), "dxc", sm66=True, dxc_no_validation=disabled
+                    )
+                row = report["rows"][0]
+                self.assertEqual(row["status"], "emitted_with_defaults")
+                self.assertEqual(row["synthesized_keys"], ["stage texture format key=7"])
+                self.assertEqual(report["counts"]["emitted_with_defaults"], 1)
+                self.assertEqual(report["counts"]["dxc_passed"], 1)
+                self.assertEqual([a["profile"] for a in row["dxc_attempts"]], ["cs_6_0", "cs_6_6"])
+                self.assertEqual(report["dxc_profiles"]["cs_6_6"]["passed"], 1)
+                for command in commands[1:]:
+                    self.assertEqual("-Vd" in command, disabled)
+
+    def test_failed_sm60_still_attempts_sm66(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cache(root / "data.bin", 15, [[environment()]])
+
+            def run(command, **kwargs):
+                if "cs_6_0" in command:
+                    return subprocess.CompletedProcess(command, 1, "", "error: SM 6.6 required")
+                if "cs_6_6" in command:
+                    Path(command[command.index("-Fo") + 1]).write_bytes(b"DXIL")
+                else:
+                    Path(command[2]).write_text("void main() {}")
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            with patch.object(corpus.subprocess, "run", side_effect=run):
+                report = corpus.evaluate(root, Path("emitter"), "dxc", sm66=True)
+            self.assertEqual(report["counts"]["dxc_failed"], 1)
+            self.assertEqual(report["counts"]["failed"], 1)
+            self.assertEqual(report["dxc_profiles"]["cs_6_6"]["passed"], 1)
 
 
 class ShaderCorpusCompilerTests(unittest.TestCase):
@@ -259,6 +318,16 @@ class ShaderCorpusCompilerTests(unittest.TestCase):
         cls.emitter = Path(configured).resolve()
         if not cls.emitter.is_file():
             raise AssertionError(f"configured corpus compiler does not exist: {cls.emitter}")
+
+    def test_real_environment_defaults_preserve_captured_values(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "environment.bin"
+            path.write_bytes(environment(maps=[[(4, 4)], [(4, 3)], [((2 << 32) | 16, 123)], []]))
+            probe = self.emitter.with_name("nxbox-corpus-environment-test" + self.emitter.suffix)
+            result = subprocess.run(
+                [str(probe), str(path)], capture_output=True, text=True, timeout=30, check=False
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_native_cache_abi_sizes(self):
         result = subprocess.run(
@@ -277,6 +346,36 @@ class ShaderCorpusCompilerTests(unittest.TestCase):
             self.assertEqual(report["counts"]["total"], 8)
             self.assertEqual(report["counts"]["emitted"], 8, json.dumps(report, indent=2))
             self.assertEqual(report["counts"]["failed"], 0, json.dumps(report, indent=2))
+
+    def test_synthetic_missing_texture_and_cbuf_emit_and_compile_with_defaults(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sph = bytearray(80)
+            struct.pack_into("<I", sph, 72, 1)  # Live R0 fragment color output.
+            # TEX 2D, coordinate RZ, mask X, sparse predicate PT, bound cbuf offset 0.
+            tex = 0xC000000000070000 | (255 << 8) | (2 << 28) | (1 << 31) | (7 << 51)
+            code = bytes(sph) + struct.pack("<2Q", tex, EXIT)
+            cache(root / "defaults.bin", 15, [[environment(4, code=code, sph=bytes(sph))]])
+            dxc = shutil.which(os.environ.get("DXC", "dxc"))
+            report = corpus.evaluate(root, self.emitter, dxc, sm66=True)
+            self.assertEqual(report["counts"]["failed"], 0, report["rows"])
+            self.assertEqual(report["counts"]["emitted_with_defaults"], 1)
+            self.assertEqual(
+                report["rows"][0]["synthesized_keys"],
+                [
+                    "stage constant buffer key=8589934592",
+                    "stage texture format key=0",
+                    "stage texture type key=0",
+                ],
+            )
+            if dxc:
+                self.assertEqual(
+                    report["dxc_profiles"],
+                    {
+                        "ps_6_0": {"passed": 1, "failed": 0},
+                        "ps_6_6": {"passed": 1, "failed": 0},
+                    },
+                )
 
     def test_fragment_varying_has_an_isolated_input_signature(self):
         with tempfile.TemporaryDirectory() as directory:

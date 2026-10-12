@@ -62,6 +62,7 @@ int main(int argc, char **argv) {
                                                cfg, host);
     };
     auto program = translate(env);
+    std::set<std::string> defaults;
     if (argc == 4) {
       ShaderCorpus::Environment va{std::filesystem::path{argv[3]}};
       if (env.ShaderStage() != Shader::Stage::VertexB ||
@@ -71,6 +72,9 @@ int main(int argc, char **argv) {
       }
       auto first = translate(va);
       program = Shader::Maxwell::MergeDualVertexPrograms(first, program, env);
+      for (const auto &key : va.SynthesizedKeys()) {
+        defaults.insert("va " + key);
+      }
     }
     Shader::RuntimeInfo runtime{};
     runtime.generic_input_types.fill(Shader::AttributeType::Float);
@@ -101,6 +105,15 @@ int main(int argc, char **argv) {
     output << source;
     if (!output) {
       throw std::runtime_error("cannot write HLSL output");
+    }
+    for (const auto &key : env.SynthesizedKeys()) {
+      defaults.insert(std::string{env.ShaderStage() == Shader::Stage::VertexB
+                                      ? "vb "
+                                      : "stage "} +
+                      key);
+    }
+    for (const auto &key : defaults) {
+      std::cout << "DEFAULT: " << key << '\n';
     }
     return 0;
   } catch (const std::exception &error) {
