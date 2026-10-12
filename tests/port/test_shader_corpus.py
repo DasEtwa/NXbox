@@ -278,6 +278,21 @@ class ShaderCorpusCompilerTests(unittest.TestCase):
             self.assertEqual(report["counts"]["emitted"], 8, json.dumps(report, indent=2))
             self.assertEqual(report["counts"]["failed"], 0, json.dumps(report, indent=2))
 
+    def test_all_guest_stages_and_real_dual_vertex_merge(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cache(
+                root / "all.bin",
+                18,
+                [[environment(stage) for stage in (6, 0, 1, 2, 3, 4)], [environment(5)]],
+            )
+            report = corpus.evaluate(root, self.emitter)
+            self.assertEqual(report["counts"]["total"], 6)
+            self.assertEqual(set(report["stages"]), {"vb", "tcs", "tes", "gs", "fs", "cs"})
+            self.assertTrue(report["rows"][0]["emitted"], report["rows"][0])
+            self.assertGreaterEqual(report["counts"]["emitted"], 3)
+            self.assertEqual(report["counts"]["total"], len(report["rows"]))
+
     def test_real_worker_failure_preserves_following_shader(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -112,7 +112,7 @@ def cache_cases(path):
                 raise ValueError("duplicate or mixed compute/graphics pipeline stages")
             # SerializePipeline writes sizeof(Key), even when Key::Size is shorter for hashing.
             reader.read(24 if stages == [5] else graphics_key_size)
-            yield Case(f"{path.name}:pipeline{index}", envs)
+            yield Case(f"{path}:pipeline{index}", envs)
             index += 1
 
 
@@ -287,7 +287,9 @@ def evaluate(directory, emitter, dxc=None, timeout=60, output=None):
                     row["emitted"] = True
                     if output:
                         output.mkdir(parents=True, exist_ok=True)
-                        shutil.copyfile(source, output / source.name)
+                        artifact = output / source.name
+                        shutil.copyfile(source, artifact)
+                        row["source"] = str(artifact.resolve())
                     if dxc:
                         dxil = source.with_suffix(".dxil")
                         compiled = subprocess.run(
