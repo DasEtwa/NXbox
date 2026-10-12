@@ -19,6 +19,7 @@ class System;
 namespace D3D12 {
 
 class RasterizerD3D12;
+class PipelineCache;
 
 class AccelerateDMA : public Tegra::Engines::AccelerateDMAInterface {
 public:
@@ -107,6 +108,7 @@ private:
     BindingState bindings;
     D3D12DescriptorAllocator descriptors;
     IPipelineCache* pipeline_cache{};
+    std::unique_ptr<PipelineCache> default_pipeline_cache;
     BufferCacheRuntime buffer_runtime;
     TextureCacheRuntime texture_runtime;
     BufferCache buffer_cache;

@@ -3,7 +3,7 @@ on:
   workflow_call:
   workflow_dispatch:
   push:
-    branches: [main, port/xbox-series-x]
+    branches: [main, port/xbox-series-x, d3d12-integration]
     paths:
       - "src/**"
       - "CMakeLists.txt"

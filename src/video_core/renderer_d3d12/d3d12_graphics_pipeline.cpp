@@ -20,9 +20,9 @@ D3D12_SHADER_BYTECODE Bytecode(const StageProgram& program) {
 } // namespace
 
 GraphicsPipeline::GraphicsPipeline(ID3D12Device* device, ComPtr<ID3D12RootSignature> signature,
-                                   const Pso::GraphicsPsoState& state_,
+                                   const Pso::GraphicsPsoState& state_, u32 d3d_topology,
                                    std::span<const StageProgram> programs)
-    : state{state_}, root_signature{std::move(signature)} {
+    : state{state_}, topology{d3d_topology}, root_signature{std::move(signature)} {
     D3D12_GRAPHICS_PIPELINE_STATE_DESC desc{};
     desc.pRootSignature = root_signature.Get();
     for (const auto& program : programs) {

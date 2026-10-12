@@ -15,6 +15,7 @@
 #include "video_core/renderer_d3d12/d3d12_context.h"
 #include "video_core/renderer_d3d12/d3d12_dxc.h"
 #include "video_core/renderer_d3d12/d3d12_graphics_pipeline.h"
+#include "video_core/renderer_d3d12/d3d12_pipeline_iface.h"
 #include "video_core/renderer_d3d12/d3d12_pso_tables.h"
 #include "video_core/renderer_d3d12/d3d12_root_signature.h"
 
@@ -51,13 +52,19 @@ struct GraphicsPipelineKeyHash {
 void FillGraphicsState(Tegra::Engines::Maxwell3D& maxwell3d, Pso::GraphicsPsoState& state);
 
 // Pipelines are built synchronously on first use and live as long as the cache.
-class PipelineCache {
+class PipelineCache final : public IPipelineCache {
 public:
-    explicit PipelineCache(Context& context) : context{context} {}
+    // `maxwell3d` is the rasterizer's current-channel pointer (it changes on channel switch).
+    PipelineCache(Context& context, Tegra::Engines::Maxwell3D*& maxwell3d)
+        : context{context}, maxwell3d{maxwell3d} {}
+
+    // IPipelineCache. Until guest shader translation is wired (see TODO in the .cpp) every draw
+    // uses the stub VS/PS from stub_hlsl_emit.
+    IGraphicsPipeline* CurrentGraphicsPipeline() override;
 
     // Returns the pipeline for (state, stages), compiling HLSL->DXIL and creating the PSO on a
     // miss. `stages` must hold one entry per active stage.
-    GraphicsPipeline& GetGraphics(const Pso::GraphicsPsoState& state,
+    GraphicsPipeline& GetGraphics(const Pso::GraphicsPsoState& state, u32 d3d_topology,
                                   std::span<const StageInput> stages);
     ComputePipeline& GetCompute(const StageInput& stage);
 
@@ -74,6 +81,7 @@ private:
     };
 
     Context& context;
+    Tegra::Engines::Maxwell3D*& maxwell3d;
     DxcCache dxc;
     std::map<DescriptorCounts, Microsoft::WRL::ComPtr<ID3D12RootSignature>, CountsLess>
         root_signatures;

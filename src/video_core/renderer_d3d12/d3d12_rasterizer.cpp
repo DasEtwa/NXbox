@@ -12,6 +12,7 @@
 #include "video_core/textures/texture.h"
 #include "video_core/host1x/host1x.h"
 #include "video_core/memory_manager.h"
+#include "video_core/renderer_d3d12/d3d12_pipeline_cache.h"
 #include "video_core/renderer_d3d12/d3d12_rasterizer.h"
 
 namespace D3D12 {
@@ -29,7 +30,10 @@ RasterizerD3D12::RasterizerD3D12(Tegra::GPU& gpu, Tegra::MaxwellDeviceMemoryMana
                                  Context& context)
     : context{context}, device_memory{memory}, descriptors{context},
       buffer_runtime{context, bindings}, texture_runtime{context},
-      buffer_cache{memory, buffer_runtime}, texture_cache{texture_runtime, memory}, m_gpu{gpu} {}
+      buffer_cache{memory, buffer_runtime}, texture_cache{texture_runtime, memory}, m_gpu{gpu} {
+    default_pipeline_cache = std::make_unique<PipelineCache>(context, maxwell3d);
+    pipeline_cache = default_pipeline_cache.get();
+}
 RasterizerD3D12::~RasterizerD3D12() = default;
 
 namespace {

@@ -8,17 +8,8 @@
 
 namespace D3D12 {
 
-std::string TranslateToHlsl(const Shader::Profile& profile, const Shader::RuntimeInfo& runtime_info,
-                            Shader::IR::Program& program, Shader::Backend::Bindings& bindings) {
-#ifdef NXBOX_HAVE_HLSL_BACKEND
-    return Shader::Backend::HLSL::EmitHLSL(profile, runtime_info, program, bindings);
-#else
-    // TODO(integration): STUB, ignores the IR. Draws nothing meaningful; only lets the PSO
-    // path compile and link until the real HLSL backend is merged.
-    (void)profile;
-    (void)runtime_info;
-    (void)bindings;
-    switch (program.stage) {
+std::string_view StubHlsl(Shader::Stage stage) {
+    switch (stage) {
     case Shader::Stage::Fragment:
         return "float4 main() : SV_Target0 { return float4(1, 0, 1, 1); }\n";
     case Shader::Stage::Compute:
@@ -33,6 +24,19 @@ std::string TranslateToHlsl(const Shader::Profile& profile, const Shader::Runtim
     default:
         return "float4 main(uint id : SV_VertexID) : SV_Position { return float4(0, 0, 0, 1); }\n";
     }
+}
+
+std::string TranslateToHlsl(const Shader::Profile& profile, const Shader::RuntimeInfo& runtime_info,
+                            Shader::IR::Program& program, Shader::Backend::Bindings& bindings) {
+#ifdef NXBOX_HAVE_HLSL_BACKEND
+    return Shader::Backend::HLSL::EmitHLSL(profile, runtime_info, program, bindings);
+#else
+    // TODO(integration): STUB, ignores the IR. Draws nothing meaningful; only lets the PSO
+    // path compile and link until the real HLSL backend is merged.
+    (void)profile;
+    (void)runtime_info;
+    (void)bindings;
+    return std::string{StubHlsl(program.stage)};
 #endif
 }
 

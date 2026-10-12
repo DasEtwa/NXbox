@@ -1,14 +1,18 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <algorithm>
+#include <array>
+#include <exception>
 #include <bit>
 #include <cmath>
 #include <cstring>
 #include <tuple>
 #include <vector>
 
+#include "common/logging.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_cache.h"
 #include "video_core/renderer_d3d12/d3d12_texture_cache.h"
+#include "video_core/renderer_d3d12/stub_hlsl_emit.h"
 #include "video_core/surface.h"
 
 namespace D3D12 {
@@ -147,7 +151,7 @@ ID3D12RootSignature* PipelineCache::GetRootSignature(DescriptorCounts counts) {
     return it->second.Get();
 }
 
-GraphicsPipeline& PipelineCache::GetGraphics(const Pso::GraphicsPsoState& state,
+GraphicsPipeline& PipelineCache::GetGraphics(const Pso::GraphicsPsoState& state, u32 d3d_topology,
                                              std::span<const StageInput> stages) {
     GraphicsPipelineKey key{};
     key.state = state;
@@ -164,7 +168,7 @@ GraphicsPipeline& PipelineCache::GetGraphics(const Pso::GraphicsPsoState& state,
         programs.push_back({stage.stage, dxc.Compile(stage.hlsl, stage.stage)});
     }
     ID3D12RootSignature* signature = GetRootSignature(total);
-    auto pipeline = std::make_unique<GraphicsPipeline>(context.Device(), signature, state, programs);
+    auto pipeline = std::make_unique<GraphicsPipeline>(context.Device(), signature, state, d3d_topology, programs);
     return *graphics.emplace(key, std::move(pipeline)).first->second;
 }
 
@@ -176,6 +180,30 @@ ComputePipeline& PipelineCache::GetCompute(const StageInput& stage) {
     auto pipeline = std::make_unique<ComputePipeline>(
         context.Device(), GetRootSignature(stage.counts), dxil);
     return *compute.emplace(stage.hash, std::move(pipeline)).first->second;
+}
+
+IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline() {
+    if (!maxwell3d) {
+        return nullptr;
+    }
+    // TODO(integration): replace the stub stages with the translated guest shaders (Maxwell ->
+    // IR -> TranslateToHlsl) and call SetStageInfo with each program's Info.
+    static constexpr std::array kStubStages{Shader::Stage::VertexB, Shader::Stage::Fragment};
+    std::array<StageInput, kStubStages.size()> stages{};
+    for (size_t i = 0; i < kStubStages.size(); ++i) {
+        const auto stage = kStubStages[i];
+        stages[i] = {stage, 0x5eb0'0000u + static_cast<u64>(stage), StubHlsl(stage), {}};
+    }
+    Pso::GraphicsPsoState state;
+    FillGraphicsState(*maxwell3d, state);
+    const auto topology = Pso::PrimitiveTopology(
+        static_cast<u32>(maxwell3d->draw_manager.draw_state.topology), state.patch_vertices);
+    try {
+        return &GetGraphics(state, topology.topology, stages);
+    } catch (const std::exception& error) {
+        LOG_ERROR(Render, "D3D12 pipeline creation failed: {}", error.what());
+        return nullptr;
+    }
 }
 
 } // namespace D3D12
