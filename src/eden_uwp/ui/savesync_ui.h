@@ -8,6 +8,7 @@
 
 #include <winrt/Windows.UI.Core.h>
 
+#include "eden_uwp/save_sync.h"
 #include "eden_uwp/ui/input.h"
 #include "eden_uwp/ui/renderer.h"
 
@@ -20,8 +21,8 @@ namespace EdenXbox::Ui {
 
 // The game a sync is about.
 struct SyncGame {
-    std::string title_id;     // 16 hex digits, the id Eden names the save folder with
-    std::string name;         // GameNameFromNames over the NACP names, UTF-8
+    std::string title_id;      // 16 hex digits, the id Eden names the save folder with
+    std::string name;          // GameNameFromNames over the NACP names, UTF-8
     std::wstring display_name; // what the screen shows
 };
 
@@ -71,6 +72,9 @@ bool HasPendingSync(const std::filesystem::path& local_state);
 // After the game closed and Eden released the save files: uploads the Xbox save, with no screen
 // (nothing owns the window at that point). Blocks; call it on the game's worker thread, which has a
 // WinRT apartment. The debt noted by RunBootSync is cleared when it succeeds.
-void SyncAfterExitHeadless(const std::filesystem::path& local_state, const SyncGame& game);
+void SyncAfterExitHeadless(const std::filesystem::path& local_state, const SyncGame& game,
+                           const SaveSync::ProgressCallback& progress = {});
+void DrawExitSyncToast(Renderer& renderer, const SyncGame& game,
+                       const SaveSync::SyncProgress& progress);
 
 } // namespace EdenXbox::Ui

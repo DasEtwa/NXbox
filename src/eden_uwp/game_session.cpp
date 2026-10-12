@@ -1668,6 +1668,10 @@ void RunGameView(const winrt::Windows::UI::Core::CoreWindow& window, const std::
         return;
     }
     initial_frame = {};
+    std::atomic<bool> exit_sync{false};
+    std::mutex exit_sync_mutex;
+    SaveSync::SyncProgress exit_sync_progress;
+    std::unique_ptr<Ui::Renderer> exit_sync_renderer;
     std::thread worker([&, graphics = std::move(graphics)]() mutable {
         winrt::init_apartment(winrt::apartment_type::multi_threaded);
         SCOPE_EXIT {
@@ -1684,7 +1688,14 @@ void RunGameView(const winrt::Windows::UI::Core::CoreWindow& window, const std::
                     splash.get(), launch_status);
             // The game is over and Eden released the save files: this is the safe point to upload.
             if (sync_after_exit) {
-                Ui::SyncAfterExitHeadless(local_state, sync_game);
+                // Release Mesa before the dispatcher takes the window for the small upload toast.
+                FlushDeviceApiRing();
+                graphics.reset();
+                exit_sync.store(true, std::memory_order_release);
+                Ui::SyncAfterExitHeadless(local_state, sync_game, [&](const SaveSync::SyncProgress& progress) {
+                    const std::lock_guard<std::mutex> lock(exit_sync_mutex);
+                    exit_sync_progress = progress;
+                });
             }
         } catch (const winrt::hresult_error& error) {
             launch_status.phase.store(Ui::LaunchPhase::Failed);
@@ -1696,6 +1707,18 @@ void RunGameView(const winrt::Windows::UI::Core::CoreWindow& window, const std::
     });
     while (!done.load(std::memory_order_acquire)) {
         window.Dispatcher().ProcessEvents(CoreProcessEventsOption::ProcessAllIfPresent);
+        if (closed.load()) SaveSync::CancelSync();
+        if (exit_sync.load(std::memory_order_acquire) && !closed.load()) {
+            try {
+                if (!exit_sync_renderer) {
+                    exit_sync_renderer = std::make_unique<Ui::Renderer>();
+                    exit_sync_renderer->Initialize(window);
+                }
+                SaveSync::SyncProgress progress;
+                { const std::lock_guard<std::mutex> lock(exit_sync_mutex); progress = exit_sync_progress; }
+                Ui::DrawExitSyncToast(*exit_sync_renderer, sync_game, progress);
+            } catch (const winrt::hresult_error&) { exit_sync_renderer.reset(); }
+        }
         Sleep(1);
     }
     worker.join();

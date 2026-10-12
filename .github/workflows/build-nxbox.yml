@@ -21,6 +21,8 @@ jobs:
     runs-on: windows-2025
     timeout-minutes: 90
     env:
+      NXBOX_GDRIVE_CLIENT_ID: ${{ secrets.NXBOX_GDRIVE_CLIENT_ID }}
+      NXBOX_GDRIVE_CLIENT_SECRET: ${{ secrets.NXBOX_GDRIVE_CLIENT_SECRET }}
       SCCACHE_GHA_ENABLED: "true"
     steps:
       - uses: actions/checkout@v4

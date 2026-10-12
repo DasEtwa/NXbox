@@ -801,6 +801,7 @@ private:
             sync_account_ = GetSyncAccount();
             Toast(Tr(Text::SyncStateOff), now);
             break;
+        case SyncAccount::NotConfigured:
         case SyncAccount::SignedOut: {
             bool window_closed = false;
             const InputTransition transition(input_);
@@ -813,9 +814,6 @@ private:
             sync_account_ = GetSyncAccount();
             break;
         }
-        case SyncAccount::NotConfigured:
-            Toast(Tr(Text::SyncRowMissingHint), now);
-            break;
         }
     }
 

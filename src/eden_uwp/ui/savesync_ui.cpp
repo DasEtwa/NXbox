@@ -13,6 +13,7 @@
 #include <functional>
 #include <iterator>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -24,8 +25,10 @@
 #include "common/scope_exit.h"
 #include "eden_uwp/diagnostic.h"
 #include "eden_uwp/save_sync.h"
+#include "eden_uwp/save_sync/qrcodegen.hpp"
 #include "eden_uwp/ui/anim.h"
 #include "eden_uwp/ui/strings.h"
+#include "eden_uwp/ui/text_entry.h"
 #include "eden_uwp/ui/theme.h"
 #include "eden_uwp/ui/widgets.h"
 
@@ -94,10 +97,7 @@ bool RunFrames(Renderer& renderer, const CoreWindow& window, Input& input,
 }
 
 void DrawBackground(Renderer& renderer) {
-    const D2D1_GRADIENT_STOP glow[2] = {{0.0f, Theme::Rgb(0x26262B, 0.9f)},
-                                        {1.0f, Theme::Rgb(0x26262B, 0.0f)}};
-    renderer.FillGradient(RectF(0.0f, 0.0f, kCanvasWidth, 620.0f), 0.0f, glow, 2,
-                          Point2F(0.0f, 0.0f), Point2F(0.0f, 620.0f));
+    renderer.FillRounded(RectF(0, 0, kCanvasWidth, kCanvasHeight), 0, Theme::kBackground);
 }
 
 void DrawTitle(Renderer& renderer, const std::wstring& title) {
@@ -139,6 +139,8 @@ fs::path PendingFile(const fs::path& local_state) {
 
 const char* StatusName(SaveSync::SyncStatus status) {
     switch (status) {
+    case SaveSync::SyncStatus::AccountRequired:
+        return "account-required";
     case SaveSync::SyncStatus::Failed:
         return "failed";
     case SaveSync::SyncStatus::NotConfigured:
@@ -320,6 +322,7 @@ class SyncRunner {
 public:
     SyncRunner() = default;
     ~SyncRunner() {
+        SaveSync::CancelSync();
         Join();
     }
     SyncRunner(const SyncRunner&) = delete;
@@ -327,6 +330,7 @@ public:
 
     void Start(std::function<SaveSync::SyncResult(const SaveSync::ProgressCallback&)> operation) {
         Join();
+        SaveSync::ResetSyncCancellation();
         done_.store(false);
         {
             const std::lock_guard<std::mutex> lock(mutex_);
@@ -435,11 +439,16 @@ public:
     }
 
 private:
-    enum class Phase { Syncing, Conflict, Result };
+    enum class Phase { Syncing, Account, Conflict, Result };
 
     bool Frame(Clock::time_point now, std::uint64_t title, const std::string& name,
                Outcome& outcome) {
         DrawBackground(renderer_);
+        if (phase_ == Phase::Syncing && input_.Pressed(Button::B)) {
+            SaveSync::CancelSync();
+            outcome.conflict_left = true;
+            return false;
+        }
         if (phase_ == Phase::Syncing && runner_.Done()) {
             if (OnFinished(now, outcome)) {
                 return false; // nothing to say: go on
@@ -449,6 +458,8 @@ private:
         case Phase::Syncing:
             DrawProgress();
             return true;
+        case Phase::Account:
+            return DrawAccount(title, name);
         case Phase::Conflict:
             return DrawConflict(title, name, outcome);
         case Phase::Result:
@@ -464,6 +475,12 @@ private:
         Diagnostic(fmt::format("UI savesync {} -> {} {}", game_.title_id, StatusName(result.status),
                                result.message));
         outcome.status = result.status;
+        if (result.status == SaveSync::SyncStatus::AccountRequired) {
+            accounts_ = result.account_folders;
+            focus_ = 0;
+            phase_ = Phase::Account;
+            return false;
+        }
         if (result.status == SaveSync::SyncStatus::Conflict) {
             conflict_ = result;
             focus_ = result.cloud_modified > result.local_modified ? 1 : 0;
@@ -513,26 +530,51 @@ private:
         double fraction = 0.0;
         if (progress.total > 0) {
             fraction = static_cast<double>(progress.done) / static_cast<double>(progress.total);
-        } else {
-            // The size is not known yet: a slow swell instead of a fraction.
-            const double seconds =
-                std::chrono::duration<double>(Clock::now().time_since_epoch()).count();
-            fraction = 0.12 + 0.08 * std::sin(seconds * 3.0);
         }
         DrawProgressBar(renderer_, track, fraction);
         if (progress.total > 0) {
             renderer_.DrawString(std::to_wstring(static_cast<int>(fraction * 100.0)) + L"%",
-                                 Font::MetaStrong,
+                                 Font::MetaMono,
                                  RectF(track.right + 24.0f, track.top - 12.0f, track.right + 200.0f,
                                        track.bottom + 12.0f),
                                  Theme::kText, HAlign::Left, VAlign::Middle);
         }
+        DrawHints(renderer_, {{Theme::kButtonB, L"B", Tr(Text::SyncSkip)}});
         if (!progress.item.empty()) {
             renderer_.DrawString(
                 Widen(progress.item), Font::MetaMono,
                 RectF(kMargin, track.bottom + 24.0f, kMargin + kBarWidth, track.bottom + 56.0f),
                 Theme::kTextTertiary);
         }
+    }
+
+    bool DrawAccount(std::uint64_t title, const std::string& name) {
+        if (input_.Pressed(Button::B))
+            return false;
+        if (input_.Pressed(Button::Up))
+            focus_ = std::max(0, focus_ - 1);
+        if (input_.Pressed(Button::Down))
+            focus_ = std::min(static_cast<int>(accounts_.size()) - 1, focus_ + 1);
+        if (input_.Pressed(Button::A) && !accounts_.empty()) {
+            const auto owner = accounts_[focus_];
+            runner_.Start([title, name, owner](const SaveSync::ProgressCallback& progress) {
+                if (!SaveSync::SelectAccount(title, name, owner))
+                    return SaveSync::SyncResult{};
+                return SaveSync::SyncBeforeBoot(title, progress, name);
+            });
+            phase_ = Phase::Syncing;
+            return true;
+        }
+        DrawTitle(renderer_, Tr(Text::SyncChooseAccount));
+        const int first = std::max(0, focus_ - 3);
+        for (int i = first; i < std::min(first + 5, static_cast<int>(accounts_.size())); ++i) {
+            const float y = kBodyTop + (i - first) * 64.0f;
+            renderer_.DrawString((i == focus_ ? L"› " : L"  ") + Widen(accounts_[i]), Font::Body,
+                                 RectF(kMargin, y, kMargin + kTextWidth, y + 52), Theme::kText);
+        }
+        DrawHints(renderer_, {{Theme::kButtonA, L"A", Tr(Text::HintSelect)},
+                              {Theme::kButtonB, L"B", Tr(Text::SyncSkip)}});
+        return true;
     }
 
     // One side of a conflict: its newest file time, file count and size, as text.
@@ -550,10 +592,10 @@ private:
 
     bool DrawConflict(std::uint64_t title, const std::string& name, Outcome& outcome) {
         if (input_.Pressed(Button::Left)) {
-            focus_ = 0;
+            focus_ = std::max(0, focus_ - 1);
         }
         if (input_.Pressed(Button::Right)) {
-            focus_ = 1;
+            focus_ = std::min(2, focus_ + 1);
         }
         if (input_.Pressed(Button::B)) {
             Diagnostic("UI savesync conflict left unresolved " + game_.title_id);
@@ -561,9 +603,10 @@ private:
             return false;
         }
         if (input_.Pressed(Button::A)) {
-            const SaveSync::ConflictChoice choice = focus_ == 0
-                                                        ? SaveSync::ConflictChoice::KeepXbox
-                                                        : SaveSync::ConflictChoice::KeepCloud;
+            const SaveSync::ConflictChoice choice =
+                focus_ == 0 ? SaveSync::ConflictChoice::KeepXbox
+                            : (focus_ == 1 ? SaveSync::ConflictChoice::KeepCloud
+                                           : SaveSync::ConflictChoice::KeepBoth);
             Diagnostic(std::string("UI savesync conflict answer ") +
                        (focus_ == 0 ? "keep-xbox" : "keep-cloud"));
             runner_.Start([title, name, choice](const SaveSync::ProgressCallback& progress) {
@@ -592,6 +635,11 @@ private:
         const float left = kMargin + first + kPillGap;
         DrawChoicePill(renderer_, RectF(left, kChoiceTop, left + second, kChoiceTop + kPillHeight),
                        keep_cloud, false, focus_ == 1);
+        const float both_left = left + second + kPillGap;
+        const std::wstring both = Tr(Text::SyncKeepBoth);
+        DrawChoicePill(renderer_,
+                       RectF(both_left, kChoiceTop, both_left + 410, kChoiceTop + kPillHeight),
+                       both, false, focus_ == 2);
         DrawHints(renderer_, {{Theme::kButtonA, L"A", Tr(Text::HintSelect)},
                               {Theme::kButtonB, L"B", Tr(Text::SyncSkip)}});
         return true;
@@ -606,6 +654,7 @@ private:
     Phase phase_ = Phase::Syncing;
     SaveSync::SyncResult conflict_;
     int focus_ = 0;
+    std::vector<std::string> accounts_;
     std::wstring result_text_;
     bool result_is_problem_ = false;
     Clock::time_point result_until_{};
@@ -682,6 +731,59 @@ bool IsSetupDone(const fs::path& local_state) {
 SignInOutcome RunSignIn(Renderer& renderer, const CoreWindow& window, Input& input,
                         bool& window_closed) {
     window_closed = false;
+    bool use_dav = false;
+    int provider = 0;
+    window_closed = RunFrames(renderer, window, input, [&](Clock::time_point) {
+        if (input.Pressed(Button::B)) {
+            provider = -1;
+            return false;
+        }
+        if (input.Pressed(Button::Left))
+            provider = 0;
+        if (input.Pressed(Button::Right))
+            provider = 1;
+        if (input.Pressed(Button::A)) {
+            use_dav = provider == 1;
+            return false;
+        }
+        DrawBackground(renderer);
+        DrawTitle(renderer, Tr(Text::SyncRowTitle));
+        DrawChoicePill(renderer,
+                       RectF(kMargin, kChoiceTop, kMargin + 320, kChoiceTop + kPillHeight),
+                       Tr(Text::SyncGoogle), true, provider == 0);
+        DrawChoicePill(renderer,
+                       RectF(kMargin + 360, kChoiceTop, kMargin + 680, kChoiceTop + kPillHeight),
+                       Tr(Text::SyncWebDav), false, provider == 1);
+        DrawHints(renderer, {{Theme::kButtonA, L"A", Tr(Text::HintSelect)},
+                             {Theme::kButtonB, L"B", Tr(Text::HintCancel)}});
+        return true;
+    });
+    if (window_closed || provider == -1)
+        return SignInOutcome::Cancelled;
+    if (use_dav) {
+        std::vector<std::string> fields;
+        for (const auto key : {Text::SyncDavUrl, Text::SyncDavUser, Text::SyncDavPassword}) {
+            TextEntry entry(Tr(key), L"");
+            bool confirmed = false;
+            window_closed = RunFrames(renderer, window, input, [&](Clock::time_point now) {
+                const auto result = entry.Update(input);
+                entry.Draw(renderer, now);
+                if (result == TextEntry::Result::Confirmed) {
+                    confirmed = true;
+                    return false;
+                }
+                return result != TextEntry::Result::Cancelled;
+            });
+            if (window_closed || !confirmed)
+                return SignInOutcome::Cancelled;
+            fields.push_back(winrt::to_string(winrt::hstring(entry.Text())));
+        }
+        if (SaveSync::ConfigureWebDav(fields[0], fields[1], fields[2]))
+            return SignInOutcome::SignedIn;
+        window_closed =
+            RunMessage(renderer, window, input, Tr(Text::SyncWebDav), Tr(Text::SyncDavFailed));
+        return SignInOutcome::Failed;
+    }
     if (!SaveSync::IsConfigured()) {
         Diagnostic("UI savesync sign-in: savesync.json is missing");
         window_closed = RunMessage(renderer, window, input, Tr(Text::SyncRowTitle),
@@ -695,6 +797,7 @@ SignInOutcome RunSignIn(Renderer& renderer, const CoreWindow& window, Input& inp
     Clock::time_point code_since{};
     bool code_seen = false;
     int expires_in = 0;
+    std::optional<qrcodegen::QrCode> qr;
     window_closed = RunFrames(renderer, window, input, [&](Clock::time_point now) {
         DrawBackground(renderer);
         if (!finished && runner.Done()) {
@@ -725,9 +828,25 @@ SignInOutcome RunSignIn(Renderer& renderer, const CoreWindow& window, Input& inp
         if (runner.HasCode()) {
             const SaveSync::DeviceLogin login = runner.Login();
             if (!code_seen) {
+                qr = qrcodegen::QrCode::encodeText(login.url_with_code.c_str(),
+                                                   qrcodegen::QrCode::Ecc::MEDIUM);
                 code_seen = true;
                 code_since = now;
                 expires_in = login.expires_in_seconds;
+            }
+            if (qr) {
+                constexpr float cell = 8.0f;
+                const float x = 1410.0f, y = 460.0f;
+                renderer.FillRounded(RectF(x - 32, y - 32, x + (qr->getSize() + 4) * cell,
+                                           y + (qr->getSize() + 4) * cell),
+                                     0, Theme::kPrimaryFill);
+                for (int row = 0; row < qr->getSize(); ++row)
+                    for (int col = 0; col < qr->getSize(); ++col) {
+                        if (qr->getModule(col, row))
+                            renderer.FillRounded(RectF(x + col * cell, y + row * cell,
+                                                       x + (col + 1) * cell, y + (row + 1) * cell),
+                                                 0, Theme::kTextOnLight);
+                    }
             }
             renderer.DrawString(
                 Tr(Text::SyncCodeBody), Font::Body,
@@ -866,25 +985,48 @@ bool RunPendingSync(const CoreWindow& window, const fs::path& local_state) {
             outcome = flow.Run();
             return outcome.window_closed;
         });
-    if (!closed && !outcome.conflict_left && outcome.status != SaveSync::SyncStatus::Failed) {
+    if (!closed && !outcome.conflict_left &&
+        (outcome.status == SaveSync::SyncStatus::Uploaded ||
+         outcome.status == SaveSync::SyncStatus::Downloaded ||
+         outcome.status == SaveSync::SyncStatus::UpToDate ||
+         outcome.status == SaveSync::SyncStatus::NothingToSync)) {
         ClearPending(local_state);
     }
     return closed;
 }
 
-void SyncAfterExitHeadless(const fs::path& local_state, const SyncGame& game) {
+void DrawExitSyncToast(Renderer& renderer, const SyncGame& game,
+                       const SaveSync::SyncProgress& progress) {
+    renderer.BeginFrame();
+    renderer.DrawString(game.display_name, Font::TitleSmall, RectF(kMargin, 440, 1250, 540),
+                        Theme::kText);
+    const double fraction =
+        progress.total ? static_cast<double>(progress.done) / progress.total : 0.0;
+    std::wstring text = Tr(Text::SyncingAfterTitle);
+    if (progress.total)
+        text += L"  " + std::to_wstring(static_cast<int>(fraction * 100)) + L"%";
+    DrawToastCapsule(renderer, text, 1.0f);
+    DrawProgressBar(renderer, RectF(1320, 170, 1800, 178), fraction);
+    renderer.EndFrame();
+}
+
+void SyncAfterExitHeadless(const fs::path& local_state, const SyncGame& game,
+                           const SaveSync::ProgressCallback& progress) {
     if (!SyncEnabled()) {
         ClearPending(local_state);
         return;
     }
     Diagnostic("UI savesync after-exit " + game.title_id + " begin");
+    SaveSync::ResetSyncCancellation();
     const SaveSync::SyncResult result =
-        SaveSync::SyncAfterExit(ParseTitleId(game.title_id), {}, game.name);
+        SaveSync::SyncAfterExit(ParseTitleId(game.title_id), progress, game.name);
     Diagnostic(fmt::format("UI savesync after-exit {} -> {} {}", game.title_id,
                            StatusName(result.status), result.message));
     // A conflict or a failure keeps the debt: the next launch finishes it with a screen.
-    if (result.status != SaveSync::SyncStatus::Conflict &&
-        result.status != SaveSync::SyncStatus::Failed) {
+    if (result.status == SaveSync::SyncStatus::Uploaded ||
+        result.status == SaveSync::SyncStatus::Downloaded ||
+        result.status == SaveSync::SyncStatus::UpToDate ||
+        result.status == SaveSync::SyncStatus::NothingToSync) {
         ClearPending(local_state);
     }
 }

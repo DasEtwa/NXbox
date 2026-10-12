@@ -3,7 +3,12 @@
 // Save sync backend, see save_sync.h. Every rule below mirrors SwitchSaveSync (core/drive.c,
 // core/cloud.c, core/syncjob.c, core/syncstate.c, core/oauth.c); the comments name the source so a
 // change there is easy to follow here.
+#include <winrt/Windows.Data.Xml.Dom.h>
+#include <winrt/Windows.Security.Credentials.h>
+#include <winrt/Windows.Security.Cryptography.h>
 #include "eden_uwp/save_sync.h"
+#include "eden_uwp/save_sync/policy.h"
+#include "save_sync_credentials.h"
 
 #include <algorithm>
 #include <atomic>
@@ -28,11 +33,12 @@
 #include <utility>
 #include <vector>
 
+#include <nlohmann/json.hpp>
 #include <winrt/Windows.Foundation.Collections.h>
-#include <winrt/Windows.Data.Json.h>
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Storage.Streams.h>
 #include <winrt/Windows.Storage.h>
+#include <winrt/Windows.Web.Http.Filters.h>
 #include <winrt/Windows.Web.Http.Headers.h>
 #include <winrt/Windows.Web.Http.h>
 
@@ -45,8 +51,13 @@
 namespace EdenXbox::SaveSync {
 namespace {
 
+using Policy::BuildCloudFolderPath;
+using Policy::Decide;
+using Policy::SanitizeName;
+using Policy::SyncAction;
+std::atomic<bool> g_sync_cancel{false};
 namespace fs = std::filesystem;
-namespace wj = winrt::Windows::Data::Json;
+using Json = nlohmann::json;
 namespace wf = winrt::Windows::Foundation;
 namespace wh = winrt::Windows::Web::Http;
 namespace whh = winrt::Windows::Web::Http::Headers;
@@ -98,6 +109,11 @@ struct NotSignedInError : SyncError {
 struct NotConfiguredError : SyncError {
     using SyncError::SyncError;
 };
+
+void CheckCancelled() {
+    if (g_sync_cancel.load())
+        throw SyncError("sync cancelled");
+}
 
 void Log(const std::string& line) {
     Diagnostic("SAVESYNC " + line);
@@ -237,13 +253,12 @@ std::int64_t ParseRfc3339(const std::string& text) {
     int hour = 0;
     int minute = 0;
     int second = 0;
-    const bool shape_ok = ReadDigits(text, 0, 4, year) && text[4] == '-' &&
-                          ReadDigits(text, 5, 2, month) && text[7] == '-' &&
-                          ReadDigits(text, 8, 2, day) &&
-                          (text[10] == 'T' || text[10] == 't' || text[10] == ' ') &&
-                          ReadDigits(text, 11, 2, hour) && text[13] == ':' &&
-                          ReadDigits(text, 14, 2, minute) && text[16] == ':' &&
-                          ReadDigits(text, 17, 2, second);
+    const bool shape_ok =
+        ReadDigits(text, 0, 4, year) && text[4] == '-' && ReadDigits(text, 5, 2, month) &&
+        text[7] == '-' && ReadDigits(text, 8, 2, day) &&
+        (text[10] == 'T' || text[10] == 't' || text[10] == ' ') && ReadDigits(text, 11, 2, hour) &&
+        text[13] == ':' && ReadDigits(text, 14, 2, minute) && text[16] == ':' &&
+        ReadDigits(text, 17, 2, second);
     if (!shape_ok || month < 1 || month > 12 || day < 1 || day > 31) {
         return 0;
     }
@@ -340,41 +355,6 @@ std::string EscapeQueryLiteral(const std::string& in) {
 // Replaces every byte that cannot be part of a folder name with '_', cuts to outsz-1 bytes, drops
 // trailing spaces and dots, and falls back to "sem-nome" (SwitchSaveSync's own fallback name, kept
 // so both sides name the folder the same). Byte-wise on purpose, like the original.
-std::string SanitizeName(const std::string& in, std::size_t outsz) {
-    if (outsz == 0) {
-        return std::string();
-    }
-    std::string out;
-    for (std::size_t n = 0; n < in.size() && n + 1 < outsz; ++n) {
-        const unsigned char c = static_cast<unsigned char>(in[n]);
-        if (c == 0) {
-            break;
-        }
-        const bool bad = c < 0x20 || std::strchr("/\\:*?\"<>|", static_cast<int>(c)) != nullptr;
-        out.push_back(bad ? '_' : static_cast<char>(c));
-    }
-    while (!out.empty() && (out.back() == ' ' || out.back() == '.')) {
-        out.pop_back();
-    }
-    if (out.empty()) {
-        out = "sem-nome";
-        if (out.size() > outsz - 1) {
-            out.resize(outsz - 1); // snprintf(out, outsz, ...) cuts to the buffer
-        }
-    }
-    return out;
-}
-
-// "<game>/<account>", always two levels. The account part is what separates one save from another,
-// so it is never the one that gets truncated.
-std::string BuildCloudFolderPath(const std::string& game_name, const std::string& owner_name) {
-    const std::string game = SanitizeName(game_name, GameNameBuffer);
-    const std::string owner = SanitizeName(owner_name, OwnerNameBuffer);
-    const std::size_t reserved = owner.size() + 2;
-    const std::size_t room = FolderPathBuffer > reserved ? FolderPathBuffer - reserved : 0;
-    return game.substr(0, std::min(game.size(), room)) + "/" + owner;
-}
-
 std::vector<std::string> SplitPath(const std::string& path) {
     std::vector<std::string> parts;
     std::size_t start = 0;
@@ -395,8 +375,8 @@ std::vector<std::string> SplitPath(const std::string& path) {
 // A name that came from the cloud becomes a path on the Xbox, so it must not be able to leave the
 // save folder or name an NTFS stream.
 void ValidateCloudName(const std::string& name) {
-    bool bad = name.empty() || name == "." || name == ".." || name.back() == ' ' ||
-               name.back() == '.';
+    bool bad =
+        name.empty() || name == "." || name == ".." || name.back() == ' ' || name.back() == '.';
     for (const char ch : name) {
         const unsigned char c = static_cast<unsigned char>(ch);
         if (c < 0x20 || ch == '/' || ch == '\\' || ch == ':' || ch == '*' || ch == '?' ||
@@ -553,8 +533,8 @@ std::vector<LocalEntry> ScanLevel(const fs::path& dir, bool skip_meta,
         std::error_code status_ec;
         const fs::file_status status = it->status(status_ec);
         if (status_ec) {
-            throw SyncError("cannot read " + Utf8FromPath(entry.full) + " (" +
-                            status_ec.message() + ")");
+            throw SyncError("cannot read " + Utf8FromPath(entry.full) + " (" + status_ec.message() +
+                            ")");
         }
         if (fs::is_directory(status)) {
             entry.is_dir = true;
@@ -622,21 +602,13 @@ LocalTree ScanTree(const fs::path& root, bool skip_meta) {
 // values are SUMMED (wrapping), so the order never matters. Folders add nothing. Time is not part
 // of it, because a file downloaded from Drive is always "new".
 std::uint64_t FingerprintTree(const LocalTree& tree) {
-    constexpr std::uint64_t Basis = 1469598103934665603ull;
-    constexpr std::uint64_t Prime = 1099511628211ull;
-    constexpr std::uint64_t SizeMix = 0x9E3779B97F4A7C15ull;
     std::uint64_t sum = 0;
     std::vector<char> chunk(64 * 1024);
     for (const LocalEntry& entry : tree.entries) {
         if (entry.is_dir) {
             continue;
         }
-        std::uint64_t h = Basis;
-        for (const char ch : entry.name) {
-            h ^= static_cast<std::uint64_t>(static_cast<unsigned char>(ch));
-            h *= Prime;
-        }
-        h ^= entry.size * SizeMix;
+        std::uint64_t h = Policy::FingerprintSeed(entry.name, entry.size);
         std::ifstream in(entry.full, std::ios::binary);
         if (!in) {
             throw SyncError("cannot read " + Utf8FromPath(entry.full));
@@ -645,11 +617,8 @@ std::uint64_t FingerprintTree(const LocalTree& tree) {
         while (in) {
             in.read(chunk.data(), static_cast<std::streamsize>(chunk.size()));
             const std::streamsize got = in.gcount();
-            for (std::streamsize i = 0; i < got; ++i) {
-                const auto value = static_cast<unsigned char>(chunk[static_cast<std::size_t>(i)]);
-                h ^= static_cast<std::uint64_t>(value);
-                h *= Prime;
-            }
+            Policy::FingerprintBytes(h, reinterpret_cast<const unsigned char*>(chunk.data()),
+                                     static_cast<std::size_t>(got));
             seen += static_cast<std::uint64_t>(got);
         }
         if (in.bad() || seen != entry.size) {
@@ -717,38 +686,6 @@ private:
 // The decision (core/syncjob.c syncjob_sync_title)
 // ---------------------------------------------------------------------------------------------
 
-enum class SyncAction { Nothing, Upload, Download, Equal, Conflict };
-
-// Three numbers decide it: the Xbox save now, the cloud save now, and the save as it was when the
-// two last matched (the marker). With only two numbers you can see they differ, not who moved.
-SyncAction Decide(bool local_empty, bool cloud_empty, std::uint64_t local_fp,
-                  std::uint64_t cloud_fp, bool has_marker, std::uint64_t marker) {
-    if (local_empty && cloud_empty) {
-        return SyncAction::Nothing;
-    }
-    if (cloud_empty) {
-        return SyncAction::Upload; // first sync of this game
-    }
-    if (local_empty) {
-        return SyncAction::Download; // nothing here to lose
-    }
-    if (local_fp == cloud_fp) {
-        return SyncAction::Equal;
-    }
-    if (!has_marker) {
-        return SyncAction::Conflict; // both sides have a save and no earlier sync says who moved
-    }
-    const bool local_changed = local_fp != marker;
-    const bool cloud_changed = cloud_fp != marker;
-    if (local_changed && cloud_changed) {
-        return SyncAction::Conflict;
-    }
-    if (cloud_changed) {
-        return SyncAction::Download;
-    }
-    return SyncAction::Upload;
-}
-
 // ---------------------------------------------------------------------------------------------
 // HTTP
 // ---------------------------------------------------------------------------------------------
@@ -759,13 +696,16 @@ struct HttpRequest {
     std::string bearer; // access token, empty for none
     std::string content_type;
     std::vector<std::uint8_t> body;
+    std::map<std::string, std::string> headers;
+    std::function<void(std::uint64_t)> transferred;
 };
 
 struct HttpReply {
     int status = 0; // 0 when no answer came back
     std::vector<std::uint8_t> body;
     std::string location; // the Location header, for resumable uploads
-    std::string error;    // why there was no answer
+    std::string range;
+    std::string error; // why there was no answer
     std::string Text() const {
         if (body.empty()) {
             return std::string();
@@ -794,7 +734,7 @@ wh::HttpMethod MethodFor(const std::string& name) {
     if (name == "PATCH") {
         return wh::HttpMethod::Patch();
     }
-    return wh::HttpMethod::Get();
+    return wh::HttpMethod{winrt::to_hstring(name)};
 }
 
 // Windows.Web.Http, the same stack shader_share.cpp uses. One client per transport so the TLS
@@ -805,18 +745,27 @@ public:
         HttpReply reply;
         try {
             if (!client_) {
-                client_.emplace();
+                winrt::Windows::Web::Http::Filters::HttpBaseProtocolFilter filter;
+                filter.AllowAutoRedirect(false);
+                client_.emplace(filter);
             }
+            CheckCancelled();
             const wf::Uri uri{winrt::to_hstring(request.url)};
             wh::HttpRequestMessage message{MethodFor(request.method), uri};
             if (!request.bearer.empty()) {
                 message.Headers().Authorization(
                     whh::HttpCredentialsHeaderValue{L"Bearer", winrt::to_hstring(request.bearer)});
             }
+            for (const auto& [key, value] : request.headers) {
+                if (key == "Content-Range")
+                    continue;
+                message.Headers().TryAppendWithoutValidation(winrt::to_hstring(key),
+                                                             winrt::to_hstring(value));
+            }
             if (request.method == "GET") {
                 message.Headers().TryAppendWithoutValidation(L"Cache-Control", L"no-cache");
             }
-            if (!request.body.empty()) {
+            if (!request.body.empty() || request.headers.contains("Content-Range")) {
                 wst::DataWriter writer;
                 writer.WriteBytes(request.body);
                 wh::HttpBufferContent content{writer.DetachBuffer()};
@@ -824,9 +773,27 @@ public:
                     content.Headers().ContentType(whh::HttpMediaTypeHeaderValue::Parse(
                         winrt::to_hstring(request.content_type)));
                 }
+                if (request.headers.contains("Content-Range"))
+                    content.Headers().TryAppendWithoutValidation(
+                        L"Content-Range", winrt::to_hstring(request.headers.at("Content-Range")));
                 message.Content(content);
             }
-            const wh::HttpResponseMessage response = client_->SendRequestAsync(message).get();
+            auto operation = client_->SendRequestAsync(message);
+            if (request.transferred)
+                operation.Progress([callback = request.transferred](
+                                       const auto&, const wh::HttpProgress& progress) {
+                    callback(progress.BytesReceived);
+                });
+            while (operation.Status() == wf::AsyncStatus::Started) {
+                if (g_sync_cancel.load()) {
+                    operation.Cancel();
+                    throw SyncError("sync cancelled");
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            }
+            const wh::HttpResponseMessage response = operation.get();
+            if (response.Headers().HasKey(L"Range"))
+                reply.range = winrt::to_string(response.Headers().Lookup(L"Range"));
             reply.status = static_cast<int>(response.StatusCode());
             try {
                 const wf::Uri location = response.Headers().Location();
@@ -838,7 +805,15 @@ public:
             }
             const wh::IHttpContent response_content = response.Content();
             if (response_content) {
-                const wst::IBuffer buffer = response_content.ReadAsBufferAsync().get();
+                auto reading = response_content.ReadAsBufferAsync();
+                while (reading.Status() == wf::AsyncStatus::Started) {
+                    if (g_sync_cancel.load()) {
+                        reading.Cancel();
+                        throw SyncError("sync cancelled");
+                    }
+                    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                }
+                const wst::IBuffer buffer = reading.get();
                 const std::uint32_t length = buffer.Length();
                 if (length != 0) {
                     reply.body.assign(buffer.data(), buffer.data() + length);
@@ -864,56 +839,23 @@ private:
 // JSON (Windows.Data.Json)
 // ---------------------------------------------------------------------------------------------
 
-bool ParseJsonObject(const std::string& text, wj::JsonObject& out) {
-    std::string_view view(text);
-    // Notepad and PowerShell like to write a byte order mark; the parser does not.
-    if (view.size() >= 3 && static_cast<unsigned char>(view[0]) == 0xEF &&
-        static_cast<unsigned char>(view[1]) == 0xBB &&
-        static_cast<unsigned char>(view[2]) == 0xBF) {
-        view.remove_prefix(3);
-    }
-    if (view.empty()) {
-        return false;
-    }
-    try {
-        return wj::JsonObject::TryParse(winrt::to_hstring(view), out);
-    } catch (const winrt::hresult_error&) {
-        return false;
-    }
+bool ParseJsonObject(const std::string& text, Json& out) {
+    out = Json::parse(text, nullptr, false);
+    return out.is_object();
 }
-
-// A string field, or "" when it is missing or not a string.
-std::string JsonString(const wj::JsonObject& object, const wchar_t* key) {
-    if (!object.HasKey(key)) {
-        return std::string();
-    }
-    const wj::IJsonValue value = object.GetNamedValue(key);
-    if (value.ValueType() != wj::JsonValueType::String) {
-        return std::string();
-    }
-    return winrt::to_string(value.GetString());
+std::string JsonString(const Json& object, const wchar_t* key) {
+    const auto found = object.find(winrt::to_string(key));
+    return found != object.end() && found->is_string() ? found->get<std::string>() : std::string{};
 }
-
-double JsonNumber(const wj::JsonObject& object, const wchar_t* key, double fallback) {
-    if (!object.HasKey(key)) {
-        return fallback;
-    }
-    const wj::IJsonValue value = object.GetNamedValue(key);
-    if (value.ValueType() != wj::JsonValueType::Number) {
-        return fallback;
-    }
-    return value.GetNumber();
+double JsonNumber(const Json& object, const wchar_t* key, double fallback) {
+    const auto found = object.find(winrt::to_string(key));
+    return found != object.end() && found->is_number() ? found->get<double>() : fallback;
 }
-
-bool JsonArrayField(const wj::JsonObject& object, const wchar_t* key, wj::JsonArray& out) {
-    if (!object.HasKey(key)) {
+bool JsonArrayField(const Json& object, const wchar_t* key, Json& out) {
+    const auto found = object.find(winrt::to_string(key));
+    if (found == object.end() || !found->is_array())
         return false;
-    }
-    const wj::IJsonValue value = object.GetNamedValue(key);
-    if (value.ValueType() != wj::JsonValueType::Array) {
-        return false;
-    }
-    out = value.GetArray();
+    out = *found;
     return true;
 }
 
@@ -989,76 +931,73 @@ struct Config {
     std::string client_secret;
     std::string endpoint; // set instead of the two above when the auth server holds the credential
     std::string owner;    // optional account-folder name that replaces the Eden profile name
+    std::string dav_url, dav_user, dav_password;
     bool backend = false;
 };
 
 // savesync.json. A complete client_id + client_secret wins over an endpoint, as in credencial.c.
-bool LoadConfig(const Env& env, Config& out, std::string& reason) {
-    std::string text;
-    if (!ReadWholeFile(env.local_state / "savesync.json", text)) {
-        reason = "LocalState\\savesync.json is missing";
-        return false;
-    }
-    wj::JsonObject json;
-    if (!ParseJsonObject(text, json)) {
-        reason = "LocalState\\savesync.json is not valid JSON";
-        return false;
-    }
+bool LoadConfig(const Env&, Config& out, std::string& reason) {
     Config config;
-    config.client_id = Trim(JsonString(json, L"client_id"));
-    config.client_secret = Trim(JsonString(json, L"client_secret"));
-    config.owner = Trim(JsonString(json, L"owner"));
-    std::string endpoint = Trim(JsonString(json, L"endpoint"));
-    while (!endpoint.empty() && endpoint.back() == '/') {
-        endpoint.pop_back();
-    }
-    if (!config.client_id.empty() && !config.client_secret.empty()) {
-        out = config;
-        return true;
-    }
-    const std::string lowered = LowerAscii(endpoint);
-    if (!endpoint.empty() && lowered != "direct" && lowered != "direto" && lowered != "none") {
-        if (lowered.rfind("https://", 0) != 0) {
-            reason = "the endpoint in LocalState\\savesync.json must be an https URL";
-            return false;
+    try {
+        auto credential = winrt::Windows::Security::Credentials::PasswordVault{}.Retrieve(
+            L"NXbox.SaveSync", L"WebDAV");
+        credential.RetrievePassword();
+        Json json;
+        if (ParseJsonObject(winrt::to_string(credential.Password()), json)) {
+            config.dav_url = JsonString(json, L"url");
+            config.dav_user = JsonString(json, L"user");
+            config.dav_password = JsonString(json, L"password");
+            if (config.dav_url.rfind("https://", 0) == 0) {
+                out = config;
+                return true;
+            }
         }
-        config.client_id.clear();
-        config.client_secret.clear();
-        config.endpoint = endpoint;
-        config.backend = true;
-        out = config;
-        return true;
+    } catch (...) {
     }
-    reason = "LocalState\\savesync.json needs client_id and client_secret";
+    config.client_id = Credentials::ClientId;
+    config.client_secret = Credentials::ClientSecret;
+    out = config;
+    if (!config.client_id.empty() && !config.client_secret.empty())
+        return true;
+    reason = "Google Drive is unavailable in this build. Configure NXBOX_GDRIVE_CLIENT_ID and "
+             "NXBOX_GDRIVE_CLIENT_SECRET.";
     return false;
 }
 
 fs::path TokenPath(const Env& env) {
     return env.local_state / "savesync_token.json";
 }
-
+using winrt::Windows::Security::Credentials::PasswordCredential;
+using winrt::Windows::Security::Credentials::PasswordVault;
 std::string ReadRefreshToken(const Env& env) {
-    std::string text;
-    if (!ReadWholeFile(TokenPath(env), text)) {
-        return std::string();
+    // Never consume the old plaintext token; remove it and require a fresh login.
+    std::error_code ec;
+    fs::remove(TokenPath(env), ec);
+    try {
+        auto credential = PasswordVault{}.Retrieve(L"NXbox.SaveSync", L"Google");
+        credential.RetrievePassword();
+        return winrt::to_string(credential.Password());
+    } catch (...) {
+        return {};
     }
-    wj::JsonObject json;
-    if (!ParseJsonObject(text, json)) {
-        return std::string();
+}
+bool WriteRefreshToken(const Env&, const std::string& token) {
+    try {
+        PasswordVault{}.Add(
+            PasswordCredential{L"NXbox.SaveSync", L"Google", winrt::to_hstring(token)});
+        return true;
+    } catch (...) {
+        return false;
     }
-    return JsonString(json, L"refresh_token");
 }
-
-bool WriteRefreshToken(const Env& env, const std::string& token) {
-    wj::JsonObject json;
-    json.SetNamedValue(L"refresh_token",
-                       wj::JsonValue::CreateStringValue(winrt::to_hstring(token)));
-    return WriteWholeFile(TokenPath(env), winrt::to_string(json.Stringify()));
-}
-
 void RemoveRefreshToken(const Env& env) {
     std::error_code ec;
     fs::remove(TokenPath(env), ec);
+    try {
+        auto vault = PasswordVault{};
+        vault.Remove(vault.Retrieve(L"NXbox.SaveSync", L"Google"));
+    } catch (...) {
+    }
 }
 
 using FormFields = std::vector<std::pair<std::string, std::string>>;
@@ -1108,10 +1047,9 @@ DeviceLogin StartLogin(const Env& env) {
     }
     g_login_cancel.store(false);
     const HttpReply reply =
-        config.backend
-            ? PostForm(env, config.endpoint + "/device", {{"scope", DriveScope}})
-            : PostForm(env, DeviceCodeUrl,
-                       {{"client_id", config.client_id}, {"scope", DriveScope}});
+        config.backend ? PostForm(env, config.endpoint + "/device", {{"scope", DriveScope}})
+                       : PostForm(env, DeviceCodeUrl,
+                                  {{"client_id", config.client_id}, {"scope", DriveScope}});
     if (reply.status == 0) {
         login.error = "cannot reach Google (" + reply.error + ")";
         return login;
@@ -1121,11 +1059,11 @@ DeviceLogin StartLogin(const Env& env) {
         return login;
     }
     if (reply.status != 200) {
-        login.error = "Google answered HTTP " + std::to_string(reply.status) +
-                      " to the device code request";
+        login.error =
+            "Google answered HTTP " + std::to_string(reply.status) + " to the device code request";
         return login;
     }
-    wj::JsonObject json;
+    Json json;
     if (!ParseJsonObject(reply.Text(), json)) {
         login.error = "Google sent something that is not JSON";
         return login;
@@ -1211,12 +1149,12 @@ LoginResult PollLogin(const Env& env) {
             interval = std::min(interval + 10, 60); // the server asked us to ease off
             continue;
         }
-        wj::JsonObject json;
+        Json json;
         const bool parsed = ParseJsonObject(reply.Text(), json);
         if (reply.status == 200) {
             const std::string refresh_token =
                 parsed ? JsonString(json, L"refresh_token") : std::string();
-            if (refresh_token.empty()) {
+            if (refresh_token.empty() && config.dav_url.empty()) {
                 // Google skips the refresh token when the app was authorized before. The owner has
                 // to revoke the old grant at myaccount.google.com/permissions.
                 Log("sign-in: Google confirmed but sent no refresh token");
@@ -1262,14 +1200,13 @@ enum class RefreshOutcome { Ok, Revoked, RateLimited, Failed };
 RefreshOutcome RefreshAccessToken(const Env& env, const Config& config,
                                   const std::string& refresh_token, std::string& access_token,
                                   std::string& detail) {
-    const HttpReply reply =
-        config.backend
-            ? PostForm(env, config.endpoint + "/refresh", {{"refresh_token", refresh_token}})
-            : PostForm(env, TokenUrl,
-                       {{"client_id", config.client_id},
-                        {"client_secret", config.client_secret},
-                        {"refresh_token", refresh_token},
-                        {"grant_type", "refresh_token"}});
+    const HttpReply reply = config.backend ? PostForm(env, config.endpoint + "/refresh",
+                                                      {{"refresh_token", refresh_token}})
+                                           : PostForm(env, TokenUrl,
+                                                      {{"client_id", config.client_id},
+                                                       {"client_secret", config.client_secret},
+                                                       {"refresh_token", refresh_token},
+                                                       {"grant_type", "refresh_token"}});
     if (reply.status == 0) {
         detail = "no answer from Google (" + reply.error + ")";
         return RefreshOutcome::Failed;
@@ -1286,7 +1223,7 @@ RefreshOutcome RefreshAccessToken(const Env& env, const Config& config,
         detail = "Google answered HTTP " + std::to_string(reply.status) + " to the token refresh";
         return RefreshOutcome::Failed;
     }
-    wj::JsonObject json;
+    Json json;
     if (!ParseJsonObject(text, json)) {
         detail = "Google's token answer was not JSON";
         return RefreshOutcome::Failed;
@@ -1319,10 +1256,9 @@ std::vector<std::uint8_t> BuildMultipartRelated(const std::string& boundary,
                                                 const std::string& metadata_json,
                                                 const std::string& mime,
                                                 const std::vector<std::uint8_t>& data) {
-    const std::string head = "--" + boundary +
-                             "\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n" +
-                             metadata_json + "\r\n--" + boundary + "\r\nContent-Type: " + mime +
-                             "\r\n\r\n";
+    const std::string head =
+        "--" + boundary + "\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n" +
+        metadata_json + "\r\n--" + boundary + "\r\nContent-Type: " + mime + "\r\n\r\n";
     const std::string tail = "\r\n--" + boundary + "--";
     std::vector<std::uint8_t> body;
     body.reserve(head.size() + data.size() + tail.size());
@@ -1334,11 +1270,16 @@ std::vector<std::uint8_t> BuildMultipartRelated(const std::string& boundary,
 
 class Drive {
 public:
-    Drive(const Env& env, std::string access_token) : env_(env), token_(std::move(access_token)) {}
+    Drive(const Env& env, std::string access_token, Config config = {})
+        : env_(env), token_(std::move(access_token)), config_(std::move(config)) {}
+
+#include "eden_uwp/save_sync/webdav.inc"
 
     // find_by_name() with the folder mime type. A failed lookup is an error, never "not found":
     // creating after a failed search would make a second folder with the same name.
     std::optional<std::string> FindFolder(const std::string& parent_id, const std::string& name) {
+        if (!config_.dav_url.empty())
+            return DavFind(parent_id, name);
         std::string query = "name='" + EscapeQueryLiteral(name) + "' and trashed=false";
         if (!parent_id.empty()) {
             query += " and '" + EscapeQueryLiteral(parent_id) + "' in parents";
@@ -1352,22 +1293,22 @@ public:
         if (reply.status != 200) {
             Fail("find folder '" + name + "'", reply);
         }
-        wj::JsonObject json;
+        Json json;
         if (!ParseJsonObject(reply.Text(), json)) {
             throw SyncError("find folder '" + name + "': Google's answer was not JSON");
         }
         // core/drive.c find_by_name(): an answer without a "files" key matched nothing.
-        if (!json.HasKey(L"files")) {
+        if (!json.contains("files")) {
             return std::nullopt;
         }
-        wj::JsonArray files;
+        Json files;
         if (!JsonArrayField(json, L"files", files)) {
             throw SyncError("find folder '" + name + "': Google's file list was malformed");
         }
-        if (files.Size() == 0) {
+        if (files.size() == 0) {
             return std::nullopt;
         }
-        const std::string id = JsonString(files.GetObjectAt(0), L"id");
+        const std::string id = JsonString(files.at(0), L"id");
         if (id.empty()) {
             return std::nullopt;
         }
@@ -1375,6 +1316,8 @@ public:
     }
 
     std::string CreateFolder(const std::string& parent_id, const std::string& name) {
+        if (!config_.dav_url.empty())
+            return DavCreate(parent_id, name);
         std::string body =
             "{\"name\":\"" + JsonEscape(name) + "\",\"mimeType\":\"" + FolderMime + "\"";
         if (!parent_id.empty()) {
@@ -1392,7 +1335,7 @@ public:
         if (reply.status != 200 && reply.status != 201) {
             Fail("create folder '" + name + "'", reply);
         }
-        wj::JsonObject json;
+        Json json;
         if (!ParseJsonObject(reply.Text(), json)) {
             throw SyncError("create folder '" + name + "': Google's answer was not JSON");
         }
@@ -1413,6 +1356,8 @@ public:
 
     // Every child of a folder that is not in the trash, all pages (SwitchSaveSync stops at 1000).
     std::vector<CloudItem> ListChildren(const std::string& folder_id) {
+        if (!config_.dav_url.empty())
+            return DavList(folder_id);
         std::vector<CloudItem> items;
         std::string page_token;
         for (;;) {
@@ -1430,15 +1375,15 @@ public:
             if (reply.status != 200) {
                 Fail("list folder", reply);
             }
-            wj::JsonObject json;
-            wj::JsonArray files;
+            Json json;
+            Json files;
             // 200 without a "files" array is Google answering with something else, not an empty
             // folder.
             if (!ParseJsonObject(reply.Text(), json) || !JsonArrayField(json, L"files", files)) {
                 throw SyncError("list folder: Google's answer had no file list");
             }
-            for (std::uint32_t i = 0; i < files.Size(); ++i) {
-                const wj::JsonObject entry = files.GetObjectAt(i);
+            for (std::uint32_t i = 0; i < files.size(); ++i) {
+                const Json entry = files.at(i);
                 CloudItem item;
                 item.id = JsonString(entry, L"id");
                 item.name = JsonString(entry, L"name");
@@ -1464,10 +1409,14 @@ public:
     }
 
     void Download(const std::string& file_id, const fs::path& destination, bool has_size,
-                  std::uint64_t expected_size, const std::string& label) {
+                  std::uint64_t expected_size, const std::string& label,
+                  const std::function<void(std::uint64_t)>& transferred = {}) {
         HttpRequest request;
         request.method = "GET";
-        request.url = std::string(FilesUrl) + "/" + UrlEncode(file_id) + "?alt=media";
+        request.url = config_.dav_url.empty()
+                          ? std::string(FilesUrl) + "/" + UrlEncode(file_id) + "?alt=media"
+                          : file_id;
+        request.transferred = transferred;
         const HttpReply reply = Call(std::move(request), true, "download");
         // Any 2xx counts, like http_download_to_file() (an empty file may come back as 204).
         if (reply.status < 200 || reply.status >= 300) {
@@ -1487,13 +1436,25 @@ public:
     // drive_upload(): update the file with this name when there is one (existing_id), else create
     // it.
     void Upload(const std::string& folder_id, const std::string& name, const fs::path& source,
-                std::uint64_t size, const std::string& existing_id) {
+                std::uint64_t size, const std::string& existing_id,
+                const std::function<void(std::uint64_t)>& transferred = {}) {
         if (size > MaxFileBytes) {
             throw SyncError("upload '" + name + "': the file is too large");
         }
         const std::vector<std::uint8_t> data = ReadFileBytes(source);
         if (data.size() != size) {
             throw SyncError("upload '" + name + "': the file changed while it was being read");
+        }
+        if (!config_.dav_url.empty()) {
+            HttpRequest request;
+            request.method = "PUT";
+            request.url = folder_id + "/" + UrlEncode(name);
+            request.content_type = FileMime;
+            request.body = data;
+            const auto reply = Call(std::move(request), true, "WebDAV upload");
+            if (reply.status < 200 || reply.status >= 300)
+                Fail("WebDAV upload", reply);
+            return;
         }
         const bool updating = !existing_id.empty();
         std::string metadata = "{\"name\":\"" + JsonEscape(name) + "\"";
@@ -1518,33 +1479,57 @@ public:
             }
             return;
         }
-        // Resumable: the first request carries only the metadata and returns the session URI, the
-        // second one sends the bytes. The file does not exist until the second one completes, so
-        // repeating the pair is safe.
-        for (int attempt = 1; attempt <= 2; ++attempt) {
-            HttpRequest open_request;
-            open_request.method = updating ? "PATCH" : "POST";
-            open_request.url = target + "?uploadType=resumable";
-            open_request.content_type = "application/json; charset=UTF-8";
-            open_request.body = ToBytes(metadata);
-            const HttpReply opened = Call(std::move(open_request), true, "start upload");
-            if (opened.status != 200 || opened.location.rfind("https://", 0) != 0) {
-                Fail("start upload '" + name + "'", opened);
-            }
-            HttpRequest put_request;
-            put_request.method = "PUT";
-            put_request.url = opened.location;
-            put_request.content_type = FileMime;
-            put_request.body = data;
-            const HttpReply sent = Call(std::move(put_request), true, "upload");
+        HttpRequest open_request;
+        open_request.method = updating ? "PATCH" : "POST";
+        open_request.url = target + "?uploadType=resumable";
+        open_request.content_type = "application/json; charset=UTF-8";
+        open_request.body = ToBytes(metadata);
+        const HttpReply opened = Call(std::move(open_request), false, "start upload");
+        if (opened.status != 200 || opened.location.rfind("https://", 0) != 0)
+            Fail("start upload", opened);
+        std::uint64_t offset = 0;
+        int stalls = 0;
+        while (offset < size) {
+            CheckCancelled();
+            const auto chunk = Policy::NextChunk(size, offset);
+            HttpRequest request;
+            request.method = "PUT";
+            request.url = opened.location;
+            request.content_type = FileMime;
+            request.headers["Content-Range"] = Policy::ContentRange(chunk, size);
+            request.body.assign(data.begin() + offset, data.begin() + offset + chunk.length);
+            HttpReply sent = Call(std::move(request), false, "upload chunk");
             if (sent.status == 200 || sent.status == 201) {
+                if (offset + chunk.length != size)
+                    throw SyncError("upload finished before final chunk");
                 return;
             }
-            if (attempt == 2 || sent.status == 401 || sent.status == 403 || sent.status == 404) {
-                Fail("upload '" + name + "'", sent);
+            if (sent.status != 308) {
+                if (sent.status != 0 && sent.status < 500)
+                    Fail("upload chunk", sent);
+                HttpRequest probe;
+                probe.method = "PUT";
+                probe.url = opened.location;
+                probe.headers["Content-Range"] = "bytes */" + std::to_string(size);
+                sent = Call(std::move(probe), true, "query upload offset");
+                if (sent.status == 200 || sent.status == 201)
+                    return;
+                if (sent.status != 308)
+                    Fail("query upload offset", sent);
             }
-            Log("upload '" + name + "' did not complete, starting it again");
+            const auto next = Policy::AcknowledgedOffset(sent.range, offset + chunk.length);
+            if (next > offset + chunk.length || next > size || next < offset)
+                throw SyncError("invalid upload offset");
+            if (next == offset) {
+                if (++stalls > 3)
+                    throw SyncError("upload made no progress");
+            } else
+                stalls = 0;
+            offset = next;
+            if (transferred)
+                transferred(offset);
         }
+        throw SyncError("upload was not committed");
     }
 
     // A PATCH {"trashed":true}, not a DELETE: the file stays recoverable for 30 days. 404 counts as
@@ -1552,7 +1537,13 @@ public:
     bool Trash(const std::string& file_id) {
         HttpRequest request;
         request.method = "PATCH";
-        request.url = std::string(FilesUrl) + "/" + UrlEncode(file_id);
+        request.url =
+            config_.dav_url.empty() ? std::string(FilesUrl) + "/" + UrlEncode(file_id) : file_id;
+        if (!config_.dav_url.empty()) {
+            request.method = "DELETE";
+            const auto reply = Call(std::move(request), true, "WebDAV prune");
+            return reply.status == 200 || reply.status == 204 || reply.status == 404;
+        }
         request.content_type = "application/json; charset=UTF-8";
         request.body = ToBytes("{\"trashed\":true}");
         const HttpReply reply = Call(std::move(request), true, "trash");
@@ -1563,14 +1554,24 @@ private:
     // Rate limits and server hiccups are retried with a growing pause. A request that is not safe
     // to repeat (a create) is only retried when the server said it did not process it.
     HttpReply Call(HttpRequest request, bool idempotent, const std::string& what) {
+        CheckCancelled();
         request.bearer = token_;
+        if (!config_.dav_url.empty()) {
+            using winrt::Windows::Security::Cryptography::BinaryStringEncoding;
+            using winrt::Windows::Security::Cryptography::CryptographicBuffer;
+            const auto bytes = CryptographicBuffer::ConvertStringToBinary(
+                winrt::to_hstring(config_.dav_user + ":" + config_.dav_password),
+                BinaryStringEncoding::Utf8);
+            request.headers["Authorization"] =
+                "Basic " + winrt::to_string(CryptographicBuffer::EncodeToBase64String(bytes));
+        }
         constexpr int MaxAttempts = 4;
         HttpReply reply;
         for (int attempt = 1; attempt <= MaxAttempts; ++attempt) {
             reply = env_.http->Send(request);
-            const bool refused = reply.status == 429 || reply.status == 503 ||
-                                 (reply.status == 403 &&
-                                  reply.Text().find("ateLimitExceeded") != std::string::npos);
+            const bool refused =
+                reply.status == 429 || reply.status == 503 ||
+                (reply.status == 403 && reply.Text().find("ateLimitExceeded") != std::string::npos);
             const bool hiccup = reply.status == 0 || reply.status == 500 || reply.status == 502 ||
                                 reply.status == 504;
             const bool retry = refused || (hiccup && idempotent);
@@ -1578,7 +1579,10 @@ private:
                 break;
             }
             Log(what + ": HTTP " + std::to_string(reply.status) + ", trying again");
-            env_.pause_for(std::chrono::milliseconds(500 << attempt));
+            for (int tick = 0; tick < (500 << attempt) / 20; ++tick) {
+                CheckCancelled();
+                env_.pause_for(std::chrono::milliseconds(20));
+            }
         }
         return reply;
     }
@@ -1595,6 +1599,7 @@ private:
 
     const Env& env_;
     std::string token_;
+    Config config_;
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -1605,8 +1610,9 @@ class Reporter {
 public:
     explicit Reporter(const ProgressCallback& callback) : callback_(callback) {}
 
-    void Emit(SyncStage stage, std::uint32_t done, std::uint32_t total,
+    void Emit(SyncStage stage, std::uint64_t done, std::uint64_t total,
               const std::string& item) const {
+        CheckCancelled();
         if (!callback_) {
             return;
         }
@@ -1648,22 +1654,20 @@ SavedState LoadState(const Env& env, const std::string& key) {
     if (!ReadWholeFile(StatePath(env), text)) {
         return state;
     }
-    wj::JsonObject root;
+    Json root;
     if (!ParseJsonObject(text, root)) {
         Log("savesync_state.json is unreadable; no markers are used");
         return state;
     }
-    if (!root.HasKey(L"saves") ||
-        root.GetNamedValue(L"saves").ValueType() != wj::JsonValueType::Object) {
+    if (!root.contains("saves") || !root.at("saves").is_object()) {
         return state;
     }
-    const wj::JsonObject saves = root.GetNamedObject(L"saves");
-    const winrt::hstring wide_key = winrt::to_hstring(key);
-    if (!saves.HasKey(wide_key) ||
-        saves.GetNamedValue(wide_key).ValueType() != wj::JsonValueType::Object) {
+    const Json saves = root.at("saves");
+    const std::string wide_key = key;
+    if (!saves.contains(wide_key) || !saves.at(wide_key).is_object()) {
         return state;
     }
-    const wj::JsonObject entry = saves.GetNamedObject(wide_key);
+    const Json entry = saves.at(wide_key);
     state.has_fingerprint = ParseHex64(JsonString(entry, L"fingerprint"), state.fingerprint);
     state.folder = JsonString(entry, L"folder");
     return state;
@@ -1674,37 +1678,32 @@ SavedState LoadState(const Env& env, const std::string& key) {
 void StoreState(const Env& env, const std::string& key, std::optional<std::uint64_t> fingerprint,
                 const std::string& folder) {
     try {
-        wj::JsonObject root;
+        Json root;
         std::string text;
         if (ReadWholeFile(StatePath(env), text)) {
-            wj::JsonObject parsed;
+            Json parsed;
             if (ParseJsonObject(text, parsed)) {
                 root = parsed;
             }
         }
-        wj::JsonObject saves;
-        if (root.HasKey(L"saves") &&
-            root.GetNamedValue(L"saves").ValueType() == wj::JsonValueType::Object) {
-            saves = root.GetNamedObject(L"saves");
+        Json saves;
+        if (root.contains("saves") && root.at("saves").is_object()) {
+            saves = root.at("saves");
         }
         const SavedState previous = LoadState(env, key);
-        wj::JsonObject entry;
+        Json entry;
         std::optional<std::uint64_t> kept = fingerprint;
         if (!kept && previous.has_fingerprint) {
             kept = previous.fingerprint;
         }
-        if (kept) {
-            entry.SetNamedValue(L"fingerprint",
-                                wj::JsonValue::CreateStringValue(winrt::to_hstring(Hex16(*kept))));
-        }
-        entry.SetNamedValue(L"folder",
-                            wj::JsonValue::CreateStringValue(winrt::to_hstring(folder)));
-        entry.SetNamedValue(L"synced_at",
-                            wj::JsonValue::CreateNumberValue(static_cast<double>(NowUnix())));
-        saves.SetNamedValue(winrt::to_hstring(key), entry);
-        root.SetNamedValue(L"version", wj::JsonValue::CreateNumberValue(1));
-        root.SetNamedValue(L"saves", saves);
-        if (!WriteWholeFile(StatePath(env), winrt::to_string(root.Stringify()))) {
+        if (kept)
+            entry["fingerprint"] = Hex16(*kept);
+        entry["folder"] = folder;
+        entry["synced_at"] = NowUnix();
+        saves[key] = entry;
+        root["version"] = 1;
+        root["saves"] = saves;
+        if (!WriteWholeFile(StatePath(env), root.dump())) {
             Log("could not write savesync_state.json");
         }
     } catch (const winrt::hresult_error& failure) {
@@ -1733,13 +1732,8 @@ struct Target {
 // the "future" location <nand>/user/save/account/<uuid>/<TITLEID & ~0xFF>/0 exists, which Eden
 // prefers.
 fs::path SaveDirFor(const Env& env, std::uint64_t title_id, const ActiveUser& user) {
-    const fs::path future = env.nand_dir / "user" / "save" / "account" / user.raw_uuid /
-                            Hex16(title_id & ~static_cast<std::uint64_t>(0xFF)) / "0";
-    std::error_code ec;
-    if (fs::exists(future, ec) && !ec) {
-        return future;
-    }
-    return env.nand_dir / "user" / "save" / "0000000000000000" / user.dir_name / Hex16(title_id);
+    return Policy::EdenSavePath(env.nand_dir, Policy::SaveKind::Account, title_id, user.dir_name,
+                                user.raw_uuid);
 }
 
 Target BuildTarget(const Env& env, std::uint64_t title_id, const ActiveUser& user,
@@ -1751,6 +1745,15 @@ Target BuildTarget(const Env& env, std::uint64_t title_id, const ActiveUser& use
     target.key = target.title_hex + "/" + user.dir_name;
     target.owner = config.owner.empty() ? user.name : config.owner;
     target.local_dir = SaveDirFor(env, title_id, user);
+    const auto device = env.nand_dir / "user" / "save" / "0000000000000000" / std::string(32, '0') /
+                        Hex16(title_id);
+    const auto future_device =
+        env.nand_dir / "user" / "save" / "device" / Hex16(title_id & ~0xFFull) / "0";
+    if (!fs::exists(target.local_dir) && (fs::exists(device) || fs::exists(future_device))) {
+        target.local_dir = fs::exists(future_device) ? future_device : device;
+        target.owner = "console";
+        target.key = target.title_hex + "/console";
+    }
     const std::string scratch = target.title_hex + "_" + user.dir_name;
     target.staging_dir = env.local_state / "savesync_staging" / scratch;
     target.backup_dir = env.local_state / "savesync_backup" / scratch;
@@ -1887,8 +1890,8 @@ void LogGameFolders(Drive& drive, const std::string& root_id, const std::string&
                 names += (names.empty() ? "'" : ", '") + child.name + "'";
             }
         }
-        Log("no cloud folder '" + wanted + "'; game folders in the cloud: " +
-            (names.empty() ? std::string("none") : names));
+        Log("no cloud folder '" + wanted +
+            "'; game folders in the cloud: " + (names.empty() ? std::string("none") : names));
     } catch (const std::exception&) {
         // The listing is only a courtesy.
     }
@@ -1983,13 +1986,16 @@ void DownloadSnapshot(Drive& drive, const CloudSnapshot& snapshot, const fs::pat
             throw SyncError("cannot create folder '" + dir + "' (" + dir_ec.message() + ")");
         }
     }
-    const std::uint32_t total = static_cast<std::uint32_t>(snapshot.files.size());
-    std::uint32_t done = 0;
+    const std::uint64_t total = snapshot.bytes;
+    std::uint64_t done = 0;
     report.Emit(SyncStage::Downloading, 0, total, std::string());
     for (const CloudFile& file : snapshot.files) {
         drive.Download(file.id, staging / PathFromUtf8(file.rel), file.has_size, file.size,
-                       file.rel);
-        ++done;
+                       file.rel, [&](std::uint64_t bytes) {
+                           report.Emit(SyncStage::Downloading, done + std::min(bytes, file.size),
+                                       total, file.rel);
+                       });
+        done += file.size;
         report.Emit(SyncStage::Downloading, done, total, file.rel);
     }
 }
@@ -1997,8 +2003,8 @@ void DownloadSnapshot(Drive& drive, const CloudSnapshot& snapshot, const fs::pat
 struct UploadContext {
     Drive& drive;
     const Reporter& report;
-    std::uint32_t total;
-    std::uint32_t done = 0;
+    std::uint64_t total;
+    std::uint64_t done = 0;
     bool prune_ok = true;
 };
 
@@ -2032,8 +2038,13 @@ void UploadDirectory(UploadContext& context, const std::string& cloud_folder_id,
                     break;
                 }
             }
-            context.drive.Upload(cloud_folder_id, entry.name, entry.full, entry.size, existing_id);
-            ++context.done;
+            context.drive.Upload(cloud_folder_id, entry.name, entry.full, entry.size, existing_id,
+                                 [&](std::uint64_t bytes) {
+                                     context.report.Emit(SyncStage::Uploading,
+                                                         context.done + std::min(bytes, entry.size),
+                                                         context.total, entry.name);
+                                 });
+            context.done += entry.size;
             context.report.Emit(SyncStage::Uploading, context.done, context.total, entry.name);
         }
     }
@@ -2065,7 +2076,12 @@ void ReplaceLocalSave(const fs::path& local_dir, const fs::path& staged_dir,
     const LocalTree before = ScanTree(local_dir, true);
     bool backed_up = false;
     if (before.files > 0) {
-        RemoveTree(backup_dir);
+        // Preserve older backups as well as the immediately previous save.
+        if (fs::exists(backup_dir))
+            fs::rename(
+                backup_dir,
+                backup_dir.string() + "." +
+                    std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
         CopyTree(local_dir, backup_dir, true);
         backed_up = true;
     }
@@ -2108,7 +2124,9 @@ public:
         root_id_ = drive_.EnsureFolder(std::string(), RootFolderName);
         saved_ = LoadState(env_, target_.key);
 
-        if (!game_name_.empty()) {
+        if (!saved_.folder.empty()) {
+            computed_path_ = saved_.folder;
+        } else if (!game_name_.empty()) {
             computed_path_ = BuildCloudFolderPath(game_name_, target_.owner);
         } else if (saved_.folder.find('/') != std::string::npos) {
             computed_path_ = saved_.folder; // no name this time: keep using the folder used before
@@ -2116,6 +2134,20 @@ public:
         if (computed_path_.empty()) {
             throw SyncError("the game name is not known yet: pass it to the sync call "
                             "(GameNameFromNames over the NACP names)");
+        }
+        if (saved_.folder.empty()) {
+            const auto game_folder =
+                drive_.FindFolder(root_id_, SanitizeName(game_name_, GameNameBuffer));
+            if (game_folder)
+                for (const auto& item : drive_.ListChildren(*game_folder)) {
+                    if (item.is_folder)
+                        result.account_folders.push_back(item.name);
+                }
+            if (std::find(result.account_folders.begin(), result.account_folders.end(),
+                          target_.owner) == result.account_folders.end())
+                result.account_folders.push_back(target_.owner);
+            result.status = SyncStatus::AccountRequired;
+            return;
         }
         cloud_ = LocateCloudFolder(drive_, root_id_, saved_.folder, computed_path_,
                                    [this] { return !OtherSavesExist(env_, target_); });
@@ -2209,8 +2241,19 @@ private:
         }
         const std::string folder_id =
             cloud_.found ? cloud_.folder_id : EnsureFolderPath(drive_, root_id_, path);
-        UploadContext context{drive_, report_, local_.files};
-        report_.Emit(SyncStage::Uploading, 0, local_.files, std::string());
+        // Retain the previous remote copy before any overwrite or prune, including keep-Xbox.
+        if (cloud_.found) {
+            const auto snapshot = ListCloudTree(drive_, cloud_.folder_id);
+            if (!snapshot.files.empty()) {
+                const auto backup =
+                    target_.backup_dir.parent_path() /
+                    (target_.backup_dir.filename().string() + ".cloud." +
+                     std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+                DownloadSnapshot(drive_, snapshot, backup, report_);
+            }
+        }
+        UploadContext context{drive_, report_, local_.bytes};
+        report_.Emit(SyncStage::Uploading, 0, local_.bytes, std::string());
         UploadDirectory(context, folder_id, target_.local_dir, true);
         cloud_.found = true;
         cloud_.folder_id = folder_id;
@@ -2235,6 +2278,7 @@ private:
     // The cloud save replaces the Xbox save.
     void ApplyCloud(std::uint64_t cloud_fp, SyncResult& result) {
         report_.Emit(SyncStage::Applying, 0, 0, std::string());
+        CheckCancelled();
         ReplaceLocalSave(target_.local_dir, target_.staging_dir, target_.backup_dir, cloud_fp);
         StoreState(env_, target_.key, cloud_fp, cloud_.path);
         result.status = SyncStatus::Downloaded;
@@ -2259,6 +2303,8 @@ private:
 
 const char* StatusName(SyncStatus status) {
     switch (status) {
+    case SyncStatus::AccountRequired:
+        return "account-required";
     case SyncStatus::Failed:
         return "failed";
     case SyncStatus::NotConfigured:
@@ -2296,7 +2342,7 @@ SyncResult RunSync(const Env& env, std::uint64_t title_id, const ProgressCallbac
             throw NotConfiguredError(reason);
         }
         const std::string refresh_token = ReadRefreshToken(env);
-        if (refresh_token.empty()) {
+        if (refresh_token.empty() && config.dav_url.empty()) {
             throw NotSignedInError("not signed in to Google");
         }
         ActiveUser user;
@@ -2310,7 +2356,9 @@ SyncResult RunSync(const Env& env, std::uint64_t title_id, const ProgressCallbac
         std::string access_token;
         std::string detail;
         const RefreshOutcome refreshed =
-            RefreshAccessToken(env, config, refresh_token, access_token, detail);
+            config.dav_url.empty()
+                ? RefreshAccessToken(env, config, refresh_token, access_token, detail)
+                : RefreshOutcome::Ok;
         if (refreshed == RefreshOutcome::Revoked) {
             // The token will never work again; keeping it would make every sync fail like a dead
             // network.
@@ -2321,7 +2369,7 @@ SyncResult RunSync(const Env& env, std::uint64_t title_id, const ProgressCallbac
             throw SyncError("cannot get a Google access token: " + detail);
         }
 
-        Drive drive(env, access_token);
+        Drive drive(env, access_token, config);
         SyncEngine engine(env, drive, report, std::move(target), game_name);
         engine.Run(mode, result);
     } catch (const NotSignedInError& failure) {
@@ -2383,7 +2431,10 @@ bool IsConfigured() {
 bool IsSignedIn() {
     try {
         const Env env = MakeEnv(nullptr);
-        return !ReadRefreshToken(env).empty();
+        Config config;
+        std::string reason;
+        return (LoadConfig(env, config, reason) && !config.dav_url.empty()) ||
+               !ReadRefreshToken(env).empty();
     } catch (...) {
         return false;
     }
@@ -2395,12 +2446,18 @@ void SignOut() {
     try {
         const Env env = MakeEnv(nullptr);
         RemoveRefreshToken(env);
+        try {
+            auto vault = PasswordVault{};
+            vault.Remove(vault.Retrieve(L"NXbox.SaveSync", L"WebDAV"));
+        } catch (...) {
+        }
         Log("signed out");
     } catch (...) {
     }
 }
 
 DeviceLogin StartDeviceLogin() {
+    ResetSyncCancellation();
     DeviceLogin login;
     try {
         WinrtTransport transport;
@@ -2433,7 +2490,61 @@ LoginResult PollDeviceLogin() {
     return LoginResult::Failed;
 }
 
+bool ConfigureWebDav(const std::string& url, const std::string& user, const std::string& password) {
+    try {
+        if (url.rfind("https://", 0) != 0 || user.empty() || password.empty())
+            return false;
+        wf::Uri parsed{winrt::to_hstring(url)};
+        if (!parsed.UserName().empty() || !parsed.Password().empty() || !parsed.Query().empty() ||
+            !parsed.Fragment().empty())
+            return false;
+        std::string base = url;
+        while (!base.empty() && base.back() == '/')
+            base.pop_back();
+        Json json;
+        json["url"] = base;
+        json["user"] = user;
+        json["password"] = password;
+        PasswordVault{}.Add(
+            PasswordCredential{L"NXbox.SaveSync", L"WebDAV", winrt::to_hstring(json.dump())});
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+bool IsWebDav() {
+    Config config;
+    std::string reason;
+    return LoadConfig(MakeEnv(nullptr), config, reason) && !config.dav_url.empty();
+}
+bool SelectAccount(std::uint64_t title_id, const std::string& game_name, const std::string& owner) {
+    const std::lock_guard<std::mutex> lock(g_sync_mutex);
+    try {
+        const Env env = MakeEnv(nullptr);
+        ActiveUser user;
+        Config config;
+        std::string reason;
+        if (!env.resolve_user(user) || !LoadConfig(env, config, reason))
+            return false;
+        const auto target = BuildTarget(env, title_id, user, config);
+        ValidateCloudName(owner);
+        StoreState(env, target.key, std::nullopt,
+                   SanitizeName(game_name, GameNameBuffer) + "/" + owner);
+        return LoadState(env, target.key).folder.ends_with("/" + owner);
+    } catch (...) {
+        return false;
+    }
+}
+
+void ResetSyncCancellation() {
+    g_sync_cancel.store(false);
+}
+void CancelSync() {
+    g_sync_cancel.store(true);
+}
+
 void CancelDeviceLogin() {
+    g_sync_cancel.store(true);
     g_login_cancel.store(true);
 }
 
