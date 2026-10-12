@@ -245,6 +245,8 @@ if (ENABLE_OPENGL)
         backend/glsl/var_alloc.h)
 endif()
 
+add_subdirectory(backend/hlsl)
+
 target_link_libraries(shader_recompiler PUBLIC common fmt::fmt sirit::sirit)
 
 if (MSVC)
