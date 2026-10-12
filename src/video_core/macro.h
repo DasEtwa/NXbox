@@ -222,11 +222,11 @@ using AnyCachedMacro = std::variant<
 struct MacroEngine {
     MacroEngine(bool is_interpreted_) noexcept : is_interpreted{is_interpreted_} {}
     // Store the uploaded macro code to compile them when they're called.
-    inline void AddCode(u32 method, u32 data) noexcept {
+    inline void AddCode(u32 method, u32 data) {
         uploaded_macro_code[method].push_back(data);
     }
     // Clear the code associated with a method.
-    inline void ClearCode(u32 method) noexcept {
+    inline void ClearCode(u32 method) {
         macro_cache.erase(method);
         uploaded_macro_code.erase(method);
     }
