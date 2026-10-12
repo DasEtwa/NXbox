@@ -160,6 +160,11 @@ u32 GenRandomArmInst(u32 pc, bool is_last_inst) {
             continue;
         }
 
+        // A32 hint aliases have reserved rotation bits, not random operands.
+        if ((inst & 0x0ffff000) == 0x0320f000 && (inst & 0x00000f00) != 0) {
+            continue;
+        }
+
         if (ShouldTestInst(inst, pc, false, is_last_inst)) {
             return inst;
         }

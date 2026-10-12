@@ -50,7 +50,7 @@ public:
 
     void testCaseStarting(const Catch::TestCaseInfo& info) override {
 #if defined(_WIN32) && defined(_M_X64)
-        static const auto observer = AddVectoredExceptionHandler(1, ReportNativeFault);
+        static const auto observer = AddVectoredExceptionHandler(0, ReportNativeFault);
         (void)observer;
         trace_native_faults = info.name == "A32: Large random arm block";
 #endif
