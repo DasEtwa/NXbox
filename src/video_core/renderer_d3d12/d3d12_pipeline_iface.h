@@ -6,6 +6,7 @@
 
 #include "common/common_types.h"
 #include "shader_recompiler/shader_info.h"
+#include "video_core/renderer_d3d12/d3d12_pso_tables.h"
 
 // Minimal seam between the descriptor/draw path (this worker) and the PSO worker.
 // d3d12_pipeline_cache.h / d3d12_graphics_pipeline.h must derive from these:
@@ -25,6 +26,9 @@ public:
     // nullptr while the PSO is still compiling: the draw is skipped.
     virtual ID3D12PipelineState* PipelineState() const = 0;
     virtual D3D_PRIMITIVE_TOPOLOGY Topology() const = 0;
+    virtual u32 ZeroVertexSlot() const {
+        return 32;
+    }
     // nullptr for a disabled stage. The Info must outlive the pipeline.
     virtual const Shader::Info* StageInfo(size_t stage) const = 0;
     // Dwords for the NxboxRootConstants block (hlsl_root_constants.h layout). Called every
@@ -48,11 +52,11 @@ class IPipelineCache {
 public:
     virtual ~IPipelineCache() = default;
     // Builds or looks up the pipeline for the current Maxwell3D state. nullptr skips the draw.
-    virtual IGraphicsPipeline* CurrentGraphicsPipeline() = 0;
+    virtual IGraphicsPipeline* CurrentGraphicsPipeline(const Pso::FramebufferFormats& formats) = 0;
 };
 
 // Output slot i of the fragment shader writes color target draw_buffers[i]; the rasterizer
-// binds OM slots 0..regs.rt_control.count-1 (null RTV where no target exists). The PSO's
+// binds the actual framebuffer slots (UNKNOWN for missing views). The PSO's
 // RTVFormats must follow the same slot order.
 // Root tables are never empty: declare every table with TableSize(count) (>= 1) descriptors.
 // Tables are shared by all stages in stage order 0..4 (registers keep counting across stages).

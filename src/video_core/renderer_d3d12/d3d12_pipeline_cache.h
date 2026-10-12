@@ -49,7 +49,7 @@ struct GraphicsPipelineKeyHash {
 };
 
 // Reads the Maxwell registers into the packed PSO key (blend, raster, depth-stencil, vertex
-// input, topology, RTV/DSV formats via the texture cache's format table).
+// input and topology). Actual framebuffer formats are applied by the draw path.
 void FillGraphicsState(Tegra::Engines::Maxwell3D& maxwell3d, Pso::GraphicsPsoState& state);
 
 // Pipelines are built synchronously on first use and live as long as the cache.
@@ -59,7 +59,7 @@ public:
         : VideoCommon::ShaderCache{memory}, context{context_} {}
     ~PipelineCache() override;
     void BindToChannel(s32 id) override;
-    IGraphicsPipeline* CurrentGraphicsPipeline() override;
+    IGraphicsPipeline* CurrentGraphicsPipeline(const Pso::FramebufferFormats& formats) override;
     ComputePipeline* CurrentComputePipeline();
     void LoadDiskResources(u64 title_id, std::stop_token stop_loading,
                            const VideoCore::DiskResourceLoadCallback& callback);

@@ -44,6 +44,12 @@ public:
     D3D_PRIMITIVE_TOPOLOGY Topology() const override {
         return static_cast<D3D_PRIMITIVE_TOPOLOGY>(topology);
     }
+    u32 ZeroVertexSlot() const override {
+        for (const auto& attribute : state.attributes)
+            if (attribute.enabled == 2)
+                return attribute.slot;
+        return 32;
+    }
     const Shader::Info* StageInfo(size_t stage) const override {
         return stage_infos[stage] ? &*stage_infos[stage] : nullptr;
     }

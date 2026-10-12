@@ -2,6 +2,7 @@
 #include <array>
 #include <cstring>
 #include <vector>
+#include "shader_recompiler/backend/hlsl/hlsl_vertex_semantic.h"
 
 #include "video_core/renderer_d3d12/d3d12_context.h"
 #include "video_core/renderer_d3d12/d3d12_graphics_pipeline.h"
@@ -86,7 +87,7 @@ GraphicsPipeline::GraphicsPipeline(ID3D12Device* device, ComPtr<ID3D12RootSignat
     ds.FrontFace = StencilFace(state.front);
     ds.BackFace = StencilFace(state.back);
 
-    // Input layout. Semantic ATTRIB<n> == guest attribute n (HLSL backend contract).
+    // Match the HLSL generic input signature exactly.
     std::array<D3D12_INPUT_ELEMENT_DESC, Pso::kNumVertexAttributes> elements{};
     UINT element_count = 0;
     for (UINT i = 0; i < Pso::kNumVertexAttributes; ++i) {
@@ -94,8 +95,9 @@ GraphicsPipeline::GraphicsPipeline(ID3D12Device* device, ComPtr<ID3D12RootSignat
         if (!a.enabled || a.dxgi == 0) {
             continue;
         }
-        elements[element_count++] = {"TEXCOORD",
-                                     i,
+        const auto semantic = Shader::Backend::HLSL::GenericSemantic(i);
+        elements[element_count++] = {semantic.name,
+                                     semantic.index,
                                      static_cast<DXGI_FORMAT>(a.dxgi),
                                      a.slot,
                                      a.offset,

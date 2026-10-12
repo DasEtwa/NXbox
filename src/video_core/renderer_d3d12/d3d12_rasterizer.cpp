@@ -227,8 +227,34 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         }
         return;
     }
+    std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
+    const auto& regs = maxwell3d->regs;
+    texture_cache.SynchronizeDescriptors(false);
+    texture_cache.UpdateRenderTargets(false);
+    auto* const cached_framebuffer = texture_cache.GetFramebuffer();
+    if (!cached_framebuffer)
+        return;
+    Framebuffer framebuffer_snapshot = *cached_framebuffer;
+    Framebuffer* const framebuffer = &framebuffer_snapshot;
+    Pso::FramebufferFormats formats{};
+    std::array<ImageView*, VideoCommon::NUM_RT> color_views{};
+    const u32 guest_rts = std::min<u32>(regs.rt_control.count, VideoCommon::NUM_RT);
+    for (u32 slot = 0; slot < guest_rts; ++slot) {
+        auto* view = framebuffer->Color(framebuffer->DrawBuffer(slot));
+        if (view && view->ImageHandle()) {
+            color_views[slot] = view;
+            formats.colors[slot] = static_cast<u32>(view->Description().Format);
+        }
+    }
+    ImageView* const depth_view = framebuffer->Depth();
+    const bool has_depth = depth_view && depth_view->ImageHandle();
+    if (has_depth)
+        formats.depth = static_cast<u32>(DsvFormat(depth_view->Description().Format));
+    Pso::GraphicsPsoState attachment_state{};
+    Pso::ApplyFramebufferFormats(attachment_state, formats);
+    const u32 num_rts = attachment_state.num_render_targets;
     query_runtime.PrepareDraw();
-    IGraphicsPipeline* const pipeline = pipeline_cache->CurrentGraphicsPipeline();
+    IGraphicsPipeline* const pipeline = pipeline_cache->CurrentGraphicsPipeline(formats);
     if (!pipeline)
         return;
     ID3D12PipelineState* const pso = pipeline->PipelineState();
@@ -236,11 +262,7 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     if (!pso || !root_signature)
         return;
 
-    std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
-    const auto& regs = maxwell3d->regs;
-
     // ---- 1. Gather views/samplers and tell the buffer cache what the shaders use ----
-    texture_cache.SynchronizeDescriptors(false);
     StageTableCounts totals{};
     bool has_images = false;
     for (size_t stage = 0; stage < NUM_GRAPHICS_STAGES; ++stage) {
@@ -362,18 +384,11 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         buffer_runtime.PostCopyBarrier();
         buffer_cache.any_buffer_uploaded = false;
     }
-    texture_cache.UpdateRenderTargets(false);
-    Framebuffer* const framebuffer = texture_cache.GetFramebuffer();
-    if (!framebuffer)
-        return;
-    const u32 num_rts = std::min<u32>(regs.rt_control.count, VideoCommon::NUM_RT);
 
     // ---- 2. Allocate every descriptor this draw needs (may submit the command list) ----
     const u32 cbv_size = TableSize(totals.cbv);
     const u32 srv_size = TableSize(totals.srv);
     const u32 uav_size = TableSize(totals.uav);
-    ImageView* const depth_view = framebuffer->Depth();
-    const bool has_depth = depth_view && depth_view->ImageHandle();
     descriptors.Reserve(cbv_size + srv_size + uav_size, TableSize(totals.sampler),
                         std::max(num_rts, 1u), has_depth ? 1u : 0u);
     const auto view_block = descriptors.AllocateViews(cbv_size + srv_size + uav_size);
@@ -499,17 +514,28 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     // Geometry buffers.
     auto& geometry = bindings.geometry;
     std::array<D3D12_VERTEX_BUFFER_VIEW, GeometryBindings::MaxVertexBuffers> vertex_views{};
-    u32 num_vertex_views = 0;
+    if (!zero_vertex_buffer) {
+        zero_vertex_buffer = context.CreateBuffer(65536, D3D12_HEAP_TYPE_UPLOAD);
+        std::fill(zero_vertex_buffer->mapped.begin(), zero_vertex_buffer->mapped.end(), u8{0});
+    }
+    context.Retain(zero_vertex_buffer);
+    u32 num_vertex_views = static_cast<u32>(vertex_views.size());
     for (u32 i = 0; i < GeometryBindings::MaxVertexBuffers; ++i) {
         const auto& slot = geometry.vertex[i];
-        if (!slot.resource || !slot.size)
+        // Disabled/unmapped guest streams still satisfy the shader signature with zeros.
+        if (!regs.vertex_streams[i].enable || !slot.resource || !slot.size) {
+            vertex_views[i] = {zero_vertex_buffer->handle->GetGPUVirtualAddress(), 65536, 0};
             continue;
+        }
         ValidateBufferView(slot.resource->handle->GetGPUVirtualAddress(),
                            slot.resource->handle->GetDesc().Width, slot.offset, slot.size);
         vertex_views[i] = {slot.resource->handle->GetGPUVirtualAddress() + slot.offset,
                            static_cast<UINT>(slot.size), slot.stride};
         need(slot.resource, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
-        num_vertex_views = i + 1;
+    }
+    const u32 zero_slot = pipeline->ZeroVertexSlot();
+    if (zero_slot < vertex_views.size()) {
+        vertex_views[zero_slot] = {zero_vertex_buffer->handle->GetGPUVirtualAddress(), 16, 0};
     }
     const auto& draw_state = maxwell3d->draw_manager.draw_state;
     const bool quads = draw_state.topology == Maxwell::PrimitiveTopology::Quads ||
@@ -538,12 +564,9 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         need(geometry.index, D3D12_RESOURCE_STATE_INDEX_BUFFER);
     }
     // Render targets.
-    std::array<ImageView*, VideoCommon::NUM_RT> color_views{};
     const SIZE_T rtv_stride =
         context.Device()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
     for (u32 slot = 0; slot < num_rts; ++slot) {
-        ImageView* view = framebuffer->Color(framebuffer->DrawBuffer(slot));
-        color_views[slot] = view && view->ImageHandle() ? view : nullptr;
         descriptors.CreateRtv({rtv_base.ptr + slot * rtv_stride}, color_views[slot]);
     }
     if (has_depth)

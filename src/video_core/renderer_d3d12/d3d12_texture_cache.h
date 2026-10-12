@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <optional>
 #include "video_core/renderer_d3d12/d3d12_compute_pass.h"
 #include "video_core/renderer_d3d12/d3d12_context.h"
 #include "video_core/renderer_d3d12/d3d12_formats.h"
@@ -176,14 +177,20 @@ class Framebuffer {
 public:
     Framebuffer(TextureCacheRuntime&, std::span<ImageView*, VideoCommon::NUM_RT> color,
                 ImageView* depth, const VideoCommon::RenderTargets& key)
-        : depth{depth}, draw_buffers{key.draw_buffers}, size{key.size} {
-        std::copy(color.begin(), color.end(), colors.begin());
+        : draw_buffers{key.draw_buffers}, size{key.size} {
+        // SlotVector relocates views as descriptors are discovered. Own snapshots so the
+        // format key and RTV/DSV bindings keep referencing the same live resources.
+        for (size_t i = 0; i < colors.size(); ++i)
+            if (color[i])
+                colors[i] = *color[i];
+        if (depth)
+            this->depth = *depth;
     }
-    ImageView* Color(size_t rt_index) const {
-        return colors[rt_index];
+    ImageView* Color(size_t rt_index) {
+        return colors[rt_index] ? &*colors[rt_index] : nullptr;
     }
-    ImageView* Depth() const {
-        return depth;
+    ImageView* Depth() {
+        return depth ? &*depth : nullptr;
     }
     u8 DrawBuffer(size_t slot) const {
         return draw_buffers[slot];
@@ -193,8 +200,8 @@ public:
     }
 
 private:
-    std::array<ImageView*, VideoCommon::NUM_RT> colors{};
-    ImageView* depth{};
+    std::array<std::optional<ImageView>, VideoCommon::NUM_RT> colors{};
+    std::optional<ImageView> depth;
     std::array<u8, VideoCommon::NUM_RT> draw_buffers{};
     VideoCommon::Extent2D size{};
 };

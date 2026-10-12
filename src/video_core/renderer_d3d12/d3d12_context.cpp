@@ -2,6 +2,7 @@
 #include "video_core/renderer_d3d12/d3d12_context.h"
 
 #include <algorithm>
+#include <atomic>
 #include <stdexcept>
 #include <d3d12sdklayers.h>
 #include <fmt/format.h>
@@ -49,6 +50,29 @@ void InfoMessage(D3D12_MESSAGE_CATEGORY category, D3D12_MESSAGE_SEVERITY severit
                  D3D12_MESSAGE_ID id, LPCSTR description, void*) noexcept {
     // The callback can run on runtime threads; never call D3D APIs here.
     try {
+#ifdef NXBOX_UWP
+        // No renderer call imports host-address heaps. Capture the runtime's caller once,
+        // including module offsets, so console evidence can identify an internal probe.
+        static std::atomic_flag heap_probe_captured = ATOMIC_FLAG_INIT;
+        if (static_cast<u32>(id) == 1086 && !heap_probe_captured.test_and_set()) {
+            void* frames[24]{};
+            const auto count = RtlCaptureStackBackTrace(0, 24, frames, nullptr);
+            for (USHORT i = 0; i < count; ++i) {
+                HMODULE module{};
+                char name[256]{};
+                GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                       GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                   reinterpret_cast<LPCWSTR>(frames[i]), &module);
+                if (module)
+                    GetModuleFileNameA(module, name, sizeof(name));
+                Diagnostic(fmt::format("D3D12 heap probe frame={} module={} offset={:#x} pc={}", i,
+                                       name,
+                                       reinterpret_cast<std::uintptr_t>(frames[i]) -
+                                           reinterpret_cast<std::uintptr_t>(module),
+                                       frames[i]));
+            }
+        }
+#endif
         Diagnostic(fmt::format("D3D12 InfoQueue severity={} id={} category={} {}",
                                static_cast<u32>(severity), static_cast<u32>(id),
                                static_cast<u32>(category), description ? description : ""));

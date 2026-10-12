@@ -3,6 +3,7 @@
 #include "shader_recompiler/backend/bindings.h"
 #include "shader_recompiler/backend/hlsl/hlsl_emit_context.h"
 #include "shader_recompiler/backend/hlsl/hlsl_helpers.h"
+#include "shader_recompiler/backend/hlsl/hlsl_vertex_semantic.h"
 #include "shader_recompiler/frontend/ir/program.h"
 #include "shader_recompiler/profile.h"
 #include "shader_recompiler/runtime_info.h"
@@ -212,7 +213,9 @@ EmitContext::EmitContext(IR::Program& program, Bindings& bindings, const Profile
         }
         const auto type =
             stage == Stage::Fragment ? "float4" : VectorType(runtime_info.generic_input_types[i]);
-        header += fmt::format("{}{} attr{} : TEXCOORD{};\n", interpolation, type, i, i);
+        const auto semantic = GenericSemantic(static_cast<std::uint32_t>(i));
+        header += fmt::format("{}{} attr{} : {}{};\n", interpolation, type, i, semantic.name,
+                              semantic.index);
     }
     header += "};\nstruct Output {\n";
     if (stage != Stage::Fragment) {

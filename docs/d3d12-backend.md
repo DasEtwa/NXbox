@@ -254,6 +254,7 @@ change emulation behavior and are intended only to isolate device removal:
 
 | Variable | Effect |
 | --- | --- |
+| `NXBOX_D3D12_PSO_LIBRARY` | Opt in to native pipeline libraries on Xbox/UWP. Disabled by default because even an empty library removes the Xbox device; DXIL disk caching remains active. |
 | `NXBOX_D3D12_NO_PSO_LIBRARY` | Skip native pipeline-library creation/load/store/serialization; keep direct PSOs and validated DXIL/recipe caching. |
 | `NXBOX_D3D12_NO_GPU_ASTC` | Disable accelerated ASTC uploads and the ASTC helper PSO; use the CPU conversion path. |
 | `NXBOX_D3D12_NO_COMPUTE` | Skip guest compute dispatches; retain helper compute and GPU work accounting. |
@@ -275,3 +276,27 @@ stale/corrupt records before passing their payload to the driver. New logs inclu
 identity and actual blob size, and native-library fallback cannot swallow a removed
 device. ASTC image stores already check output dimensions; no out-of-bounds store
 was established by this capture. A new console run is required to locate the fault.
+
+### Native console draw contracts
+
+The HLSL emitter and PSO input layout share `GenericSemantic` (`TEXCOORD` plus
+numeric guest attribute index). Only shader-read attributes enter the layout;
+constant/missing inputs have a dedicated zero-stride buffer slot. Disabled or
+unmapped guest streams also bind a zero buffer rather than inheriting stale IA
+bindings. The buffer uses committed upload memory, not host-pointer heap imports.
+
+Each draw snapshots the actual framebuffer views before requesting its PSO. The
+same snapshot supplies the RTV/DSV descriptors and the format key, preserving
+sRGB views and interior unbound output slots (UNKNOWN), dropping trailing null
+slots, and disabling depth/stencil tests when no DSV exists. DXIL/recipe cache
+versions invalidate older input layouts and register-derived attachment keys.
+
+In `/tmp/d3d12run4/run4_only_NO_PSO_LIBRARY/diag.txt`, id 1086 is severity 3
+(INFO), first emitted between command-allocator and command-list creation and
+before guest buffers exist. There is no `OpenExistingHeapFromAddress` call or
+host-address heap import in the native renderer or its buffer allocator: resources
+use `CreateCommittedResource`. That evidence does not identify the internal
+runtime caller, nor prove a failing guest import path. Xbox debug callbacks now
+capture the first such message's caller stack with module offsets. A new console
+run is needed to attribute it; no error message is suppressed or speculative
+allocation workaround enabled.

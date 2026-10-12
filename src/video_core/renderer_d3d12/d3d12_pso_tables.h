@@ -233,6 +233,12 @@ struct VertexAttributeState {
 inline constexpr std::size_t kNumRenderTargets = 8;
 inline constexpr std::size_t kNumVertexAttributes = 32;
 
+// Actual bound views, in fragment-output slot order. Zero means unbound.
+struct FramebufferFormats {
+    std::array<std::uint32_t, kNumRenderTargets> colors{};
+    std::uint32_t depth{};
+};
+
 // All values already in D3D12 numbering; no padding (checked below), so it is hashed and
 // compared as raw bytes like Vulkan's FixedPipelineState.
 struct GraphicsPsoState {
@@ -248,6 +254,35 @@ struct GraphicsPsoState {
     std::array<BlendTargetState, kNumRenderTargets> blend;
     std::array<VertexAttributeState, kNumVertexAttributes> attributes;
 };
+// Ignore trailing unbound slots, but preserve holes between fragment outputs.
+constexpr void ApplyFramebufferFormats(GraphicsPsoState& state, const FramebufferFormats& formats) {
+    state.rtv_formats = formats.colors;
+    state.dsv_format = formats.depth;
+    state.num_render_targets = 0;
+    for (std::size_t i = 0; i < formats.colors.size(); ++i)
+        if (formats.colors[i])
+            state.num_render_targets = static_cast<std::uint8_t>(i + 1);
+    if (!formats.depth)
+        state.depth_enable = state.depth_write = state.stencil_enable = 0;
+}
+
+// Only shader reads enter the layout. Missing attributes use a free slot with stride zero.
+constexpr void ApplyVertexReads(GraphicsPsoState& state, std::uint32_t reads) {
+    std::array<bool, kNumVertexAttributes> used{};
+    for (std::size_t i = 0; i < state.attributes.size(); ++i) {
+        auto& a = state.attributes[i];
+        if (!(reads & (std::uint32_t{1} << i)))
+            a = {};
+        else if (a.enabled)
+            used[a.slot] = true;
+    }
+    std::uint8_t zero_slot = 0;
+    while (zero_slot < used.size() && used[zero_slot])
+        ++zero_slot;
+    for (std::size_t i = 0; i < state.attributes.size(); ++i)
+        if ((reads & (std::uint32_t{1} << i)) && !state.attributes[i].enabled)
+            state.attributes[i] = {2, zero_slot, 0, 2, 0, 0, 0, 0}; // R32G32B32A32_FLOAT
+}
 static_assert(std::has_unique_object_representations_v<GraphicsPsoState>);
 static_assert(std::is_trivially_copyable_v<GraphicsPsoState>);
 

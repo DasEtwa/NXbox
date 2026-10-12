@@ -137,6 +137,7 @@ private:
     VideoCommon::ComputeUniformBufferSizes compute_uniform_sizes{};
     std::vector<VideoCommon::ImageViewInOut> view_scratch;
     std::vector<VideoCommon::SamplerId> sampler_scratch;
+    ResourcePtr zero_vertex_buffer;
     std::vector<std::pair<ResourcePtr, D3D12_RESOURCE_STATES>> state_scratch;
     ComPtr<ID3D12CommandSignature> draw_signature;
     ComPtr<ID3D12CommandSignature> indexed_signature;

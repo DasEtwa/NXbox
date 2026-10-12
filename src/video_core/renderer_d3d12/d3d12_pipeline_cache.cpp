@@ -173,22 +173,6 @@ void FillGraphicsState(Tegra::Engines::Maxwell3D& maxwell3d, Pso::GraphicsPsoSta
         }
     }
 
-    // Render target / depth formats from the texture cache's table.
-    const u32 count = std::min<u32>(regs.rt_control.count, Pso::kNumRenderTargets);
-    s.num_render_targets = static_cast<u8>(count);
-    for (u32 i = 0; i < count; ++i) {
-        const auto& rt = regs.rt[regs.rt_control.Map(i)];
-        if (rt.format != Tegra::RenderTargetFormat::NONE) {
-            s.rtv_formats[i] =
-                MaxwellFormat(VideoCore::Surface::PixelFormatFromRenderTargetFormat(rt.format))
-                    .view_format;
-        }
-    }
-    if (regs.zeta_enable != 0) {
-        s.dsv_format = Pso::DsvFormat(
-            MaxwellFormat(VideoCore::Surface::PixelFormatFromDepthFormat(regs.zeta.format))
-                .resource_format);
-    }
     s.sample_count = 1; // TODO: MSAA (regs.anti_alias_samples_mode)
 
     // Vertex input.
@@ -373,7 +357,7 @@ Shader::RuntimeInfo GraphicsRuntime(const Maxwell& regs, const Shader::IR::Progr
 }
 } // namespace
 
-IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline() {
+IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(const Pso::FramebufferFormats& formats) {
     if (!maxwell3d)
         return nullptr;
     std::scoped_lock lock{pipeline_mutex};
@@ -382,6 +366,7 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline() {
         return nullptr;
     Pso::GraphicsPsoState state;
     FillGraphicsState(*maxwell3d, state);
+    Pso::ApplyFramebufferFormats(state, formats);
     const auto topology = Pso::PrimitiveTopology(
         static_cast<u32>(maxwell3d->draw_manager.draw_state.topology), state.patch_vertices);
     GraphicsPipelineKey request{guest_hashes, state};
@@ -452,6 +437,12 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline() {
                               {counts.cbv, counts.srv, counts.uav, counts.sampler}});
             previous = &program;
         }
+        std::uint32_t vertex_reads = 0;
+        const auto& vertex_info = programs[guest_hashes[1] ? 1 : 0].info;
+        for (std::size_t i = 0; i < Pso::kNumVertexAttributes; ++i)
+            if (vertex_info.loads.Generic(i))
+                vertex_reads |= std::uint32_t{1} << i;
+        Pso::ApplyVertexReads(state, vertex_reads);
         auto& pipeline = GetGraphics(state, topology.topology, stages);
         for (size_t index = 1; index < 6; ++index) {
             if (guest_hashes[index])
@@ -474,6 +465,7 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline() {
                            guest_hashes[5],
                            StubHlsl(Shader::Stage::Fragment),
                            {}}};
+            Pso::ApplyVertexReads(state, 0);
             auto& fallback = GetGraphics(state, topology.topology, stages);
             guest_graphics.emplace(request, &fallback);
             return &fallback;
@@ -548,7 +540,7 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
     guest_compute.clear();
     graphics.clear();
     compute.clear();
-    const auto identity = DiskPipelineCache::QueryIdentity(context.Device(), {2, 1, 2});
+    const auto identity = DiskPipelineCache::QueryIdentity(context.Device(), {3, 1, 3});
     if (!identity) {
         LOG_WARNING(Render, "D3D12 adapter identity unavailable; disk PSO reuse disabled");
         disk.reset();

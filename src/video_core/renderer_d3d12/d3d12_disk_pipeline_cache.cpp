@@ -368,6 +368,12 @@ DiskPipelineCache::DiskPipelineCache(const std::filesystem::path& local_state,
         Diagnostic("D3D12 pipeline library disabled; direct PSO creation");
         return;
     }
+#ifdef NXBOX_UWP
+    if (!BisectEnabled("NXBOX_D3D12_PSO_LIBRARY")) {
+        Diagnostic("D3D12 pipeline library disabled on Xbox/UWP; DXIL disk cache active");
+        return;
+    }
+#endif
     Microsoft::WRL::ComPtr<ID3D12Device1> device1;
     D3D12_FEATURE_DATA_SHADER_CACHE support{};
     if (!CacheSucceeded(
