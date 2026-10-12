@@ -120,6 +120,8 @@ class RobustProfileTests(unittest.TestCase):
                 "D3D12 renderer teardown: non-standard exception",
                 "D3D12 compositor callback: non-standard exception",
                 "D3D12 frame notification: non-standard exception",
+                "D3D12 presentation initialization: non-standard exception",
+                "D3D12 applet capture: non-standard exception",
             ],
             "renderer_d3d12/d3d12_context.cpp": [
                 "D3D12 context teardown: non-standard exception",
@@ -131,7 +133,7 @@ class RobustProfileTests(unittest.TestCase):
             for reason in reasons:
                 with self.subTest(site=reason):
                     self.assertIn(reason, source)
-        self.assertEqual(sum(map(len, sites.values())), 9)
+        self.assertEqual(sum(map(len, sites.values())), 11)
 
     def test_profile_covers_process_and_reports_missing_access(self):
         source = (ROOT / "src/eden_uwp/crash_logger.cpp").read_text()

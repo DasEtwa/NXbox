@@ -328,6 +328,12 @@ RendererD3D12::RendererD3D12(Core::Frontend::EmuWindow& window,
     } catch (const std::exception& error) {
         ReportFailure(error);
         throw;
+    } catch (...) {
+        const EdenXbox::UnknownRendererException error{
+            "D3D12 presentation initialization: non-standard exception"};
+        ReportFailure(error);
+        // The renderer factory already handles runtime_error on initialization failure.
+        throw std::runtime_error(error.what());
     }
 }
 RendererD3D12::~RendererD3D12() {
@@ -382,7 +388,16 @@ void RendererD3D12::Composite(std::span<const Tegra::FramebufferConfig> layers) 
     }
 }
 std::vector<u8> RendererD3D12::GetAppletCaptureBuffer() {
-    return std::vector<u8>(VideoCore::Capture::TiledSize);
+    try {
+        return std::vector<u8>(VideoCore::Capture::TiledSize);
+    } catch (const std::exception& error) {
+        ReportFailure(error);
+    } catch (...) {
+        const EdenXbox::UnknownRendererException error{
+            "D3D12 applet capture: non-standard exception"};
+        ReportFailure(error);
+    }
+    return {};
 }
 VideoCore::RasterizerInterface* RendererD3D12::ReadRasterizer() {
     return &rasterizer;
