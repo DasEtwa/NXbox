@@ -6,13 +6,18 @@ installation. Each package gets a separate LocalState, saves, configuration and 
 recompile Switch code into native Xbox code.
 
 The implementation lives in `tools/nxbox-pack/`; `.github/workflows/nxbox-pack.yml` builds three
-single executable targets using Bun 1.3.14. No emulation or graphics source is changed.
+single executable targets using Bun 1.3.14. No emulation or graphics source is changed. Windows CI
+embeds its installed native Bun executable instead of downloading the baseline cross-target ZIP (Bun
+1.3.14 fails to extract that ZIP on Windows). Cross-compilation from other hosts retains the Windows
+x64 baseline target. The native Windows artifact inherits the installed Bun runtime's CPU
+requirements.
 
 ## Flow and runtime contracts
 
-1. Read a local NSP/XCI/NSZ/XCZ, `prod.keys`, and optional add-ons. Detect Portuguese/English via
-   locale; keep user-facing strings in one typed translation table. Never evaluate dragged input as
-   shell code. Reject missing, empty or unsupported files.
+1. Read a local NSP/XCI/NSZ/XCZ, `prod.keys`, optional add-ons, firmware, save data, mods and
+   `title.keys`. Detect Portuguese/English via locale; keep user-facing strings in one typed
+   translation table. Never evaluate dragged input as shell code. Reject missing, empty or
+   unsupported files.
 2. Identify the base game using an unambiguous `[0100…]` filename token, or ask for its ID. IDs must
    be 16 hex digits, start with `0100` and end in `000`; update/DLC IDs cannot become app
    identities. Infer the display name from the filename and let the user correct it. This release
@@ -46,14 +51,91 @@ single executable targets using Bun 1.3.14. No emulation or graphics source is c
    `base.nsp`/`base.xci` and `addon-N.nsp`/`addon-N.xci`. Stream multipart requests with known
    Content-Length and backpressure. Verify each file's reported remote byte size. Upload failures
    abort before creating direct-boot markers; game files are not hashed back from the console.
-10. Write `LocalState/game.txt` containing `games\\base.nsp` (or `.xci`) and
+10. Transfer optional firmware into a flat `LocalState/firmware/`, saves into Eden's NAND user save
+    tree, mods into `LocalState/eden/load/<titleid>/<modname>/`, and `title.keys` into
+    `LocalState/eden/keys/`. Create every destination folder with the Portal folder API before
+    uploading; verify remote byte sizes just like game content.
+11. Write `LocalState/game.txt` containing `games\\base.nsp` (or `.xci`) and
     `LocalState/skip_library.txt` containing `1`. These markers are sent last. On subsequent tile
     activation, `RunGameView` bypasses `Ui::RunLibrary`; `ResolveGamePath` resolves the fixed path
     within that app's LocalState. `LocalState/eden/keys` matches `EDEN_DIR` / `KEYS_DIR` in
     `src/common/fs/path_util.cpp`. `RunGame` already enumerates `LocalState/games` as an external
     content directory, so updates and DLC can be read without an extra NAND copy.
-11. Delete host temporary staging/decompressed content. Tell the user to set the new app's type to
+12. Delete host temporary staging/decompressed content. Tell the user to set the new app's type to
     **Game** in Dev Home and launch its tile. The tool does not change global console settings.
+
+## Optional content and running checklist
+
+After updates/DLC, the CLI asks for firmware, a save backup, mods (repeatable), and `title.keys`.
+Enter skips an optional step. Every accepted input updates the same running checklist; rejected
+optional inputs explain the problem in the selected system language and allow another drag-and-drop.
+Portuguese and English use the existing typed translation registry, with per-key English fallback.
+Firmware is recommended: without it, Mii screens and some system applets stay empty.
+
+Firmware inputs can be an NCA folder, an NCA ZIP, `rawnand.bin`, a contiguous set of
+`rawnand.bin.00` through `.NN`, or a ZIP containing either NAND layout. Dropping any split part
+selects the contiguous sibling set. A ZIP with multiple/ambiguous NAND sets is rejected. The CLI
+reads GPT and decrypts only SYSTEM with the 32-byte `bis_key_02` crypt/tweak halves from the
+supplied `prod.keys`. Random reads use 0x4000-byte AES-XTS sectors; no decrypted full NAND is
+written. For compressed ZIP members, a streaming pass discards all other partitions and spools only
+encrypted SYSTEM into the private temporary directory. ZIP64 is supported; split-volume ZIPs are
+not.
+
+The minimal FAT32 reader walks `/Contents/registered`, including hashed subdirectories and long
+filenames. An NCA directory's contiguous `00`, `01`, ... files are concatenated in order. Each
+result must have a 32-hex NCA name equal to the first 128 bits of its SHA-256, an encrypted NCA3
+header decryptable with `header_key`, and a matching declared file size. The set must contain
+`0100000000000809` Data (SystemVersion) and `0100000000000802` Data/PublicData (Mii model).
+SystemVersion is read from the RomFS `file` structure, including AES-CTR sections using the matching
+`key_area_key_<family>_<generation>`. Missing keys and incomplete sets have separate messages. The
+runtime performs its existing full archive integrity verification and installation at boot; the
+CLI's checks do not replace that verification.
+
+Bun 1.3.14 does not expose `aes-128-xts` on every platform. The crypto adapter uses that
+`node:crypto` cipher when available, otherwise implements block-aligned XTS using native
+`node:crypto` AES-ECB primitives. Tests check a fixed independent nonzero little-endian sector
+vector and a complete 0x4000-byte sector digest. Nintendo NCA headers use big-endian sector tweaks.
+SYSTEM tries the requested little-endian convention first, then Nintendo's big-endian convention (as
+used by Eden's `AesXtsStorage`); a full validated NCA set determines the convention, not sector
+zero.
+
+For saves, drop **one extracted JKSV/Checkpoint backup leaf** for this game, not the entire backup
+manager directory. A ZIP may contain the leaf's files directly or one enclosing backup directory.
+The latter wrapper is stripped once; folder inputs preserve all subdirectories. Explicit title IDs
+in backup paths must match the selected game. Unlabelled leaf backups cannot be identified from
+payload alone: the user selects the backup for the current title. The CLI prepares one Player
+profile in Eden's binary `profiles.dat` format and copies files to
+`LocalState/eden/nand/user/save/0000000000000000/<profile-u128>/<titleid>/`. It refuses save import
+if the installed app already has `profiles.dat`; existing profile/save migration is not implemented.
+Device-wide saves and encrypted raw Switch saves are not JKSV/Checkpoint backup leaf imports.
+
+Mods accept a mod folder/ZIP containing `romfs` and/or `exefs`, an Eden `load/<titleid>/<modname>/`
+tree, or a direct `romfs`/`exefs` folder. Direct folders share the `Imported` mod name; other
+layouts retain their mod names. Repeat the mods prompt to add another folder/ZIP; duplicate
+destination files and mismatching title IDs are rejected. Files go into
+`LocalState/eden/load/<titleid>/<modname>/romfs|exefs/...`. `title.keys` is optional and must be a
+nonempty file with that name. It is transferred to private LocalState, never runtime staging.
+
+ZIP extraction streams each member and validates CRC/size on complete members. Unsafe paths,
+symlinks, case collisions, encrypted ZIPs and unsupported compression methods are rejected. During
+NAND ZIP slicing, skipped bytes outside SYSTEM are not checked against a member's full CRC;
+extracted NCAs are individually hashed instead. Temporary SYSTEM/NCAs/saves/mods are private and
+removed on handled success or failure. An OS kill may leave the private temporary directory behind.
+Firmware, saves, mods and keys are never included in a compiled binary, runtime package or
+repository.
+
+Example of the accepted-input checklist in pt-BR (illustrative file counts):
+
+```text
+  [x] Jogo 01007EF00011E000 (13.4 GiB)
+  [x] Chaves (prod.keys)
+  [x] Update 01007EF00011E800 (3.0 GiB)
+  [ ] DLC -
+  [x] Firmware 18.1.0 — 229 arquivos
+  [x] Dados salvos 3 arquivos
+  [x] Mods 2 arquivos
+  [x] Chaves (title.keys) title.keys
+```
 
 ## Cross-platform deployment choice
 
@@ -110,7 +192,10 @@ Host tests cover language precedence/overrides, supported extensions, dragged pa
 manifest identity/XML escaping/contracts, ZIP traversal and payload checks, SHA-256 mismatch,
 authentication/CSRF, registration query encoding, streaming uploads and remote size verification. An
 HTTP mock integration test stages a runtime, registers it, transfers synthetic base/add-on/keys, and
-verifies exact direct-boot marker contents and ordering. It does not emulate Xbox deployment. The CI
+verifies exact direct-boot marker contents and ordering. It does not emulate Xbox deployment.
+Synthetic tests also build encrypted FAT32/GPT images with chunked NCAs, exercise raw/split/ZIP
+NAND, encrypted SystemVersion, independent XTS vectors, save profiles, mods, ZIP corruption and
+optional transfer folder/marker ordering. No real keys, firmware or game data are used. The CI
 matrix adds native compiled-binary smoke tests on Windows, macOS and Linux.
 
 A real Xbox Series test must confirm:

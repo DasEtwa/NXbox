@@ -44,6 +44,33 @@ export default {
   itemKeys: "Chaves (prod.keys)",
   itemUpdate: "Update",
   itemDlc: "DLC",
+  itemFirmware: "Firmware",
+  itemSaves: "Dados salvos",
+  itemMods: "Mods",
+  itemTitleKeys: "Chaves (title.keys)",
+  fileCount: "arquivos",
+  firmware:
+    "Arraste uma pasta de NCAs, ZIP de firmware ou backup rawnand do hekate; Enter pula (recomendado: sem firmware, telas Mii e alguns applets do sistema ficam vazios)",
+  saves: "Arraste a pasta de um backup JKSV/Checkpoint ou ZIP deste título; Enter pula",
+  mods: "Arraste pastas romfs/exefs ou pasta/ZIP de mods deste título; Enter pula",
+  titleKeys: "Arraste seu title.keys; Enter pula",
+  inputInvalid:
+    "Pasta/ZIP inválido: caminhos inseguros, formato não suportado, dados vazios ou sistema de arquivos corrompido.",
+  firmwareInvalid:
+    "Firmware rejeitado: SHA-256 do nome, cabeçalho NCA3 criptografado ou dados SystemVersion inválidos.",
+  firmwareIncomplete:
+    "Firmware incompleto: precisa de SystemVersion (0100000000000809, Data) e modelo Mii (0100000000000802, Data/PublicData).",
+  firmwareKeys:
+    "Firmware exige header_key e, para NAND, bis_key_02 (32 bytes, crypt+tweak). SystemVersion criptografado também exige a key_area_key correspondente no prod.keys.",
+  nandInvalid:
+    "NAND hekate inválida: partição SYSTEM ausente/ambígua no GPT, partes divididas ausentes ou FAT32 ilegível (confira bis_key_02).",
+  optionalMismatch:
+    "Rejeitado: ID do backup/mod não corresponde ao jogo. Arraste um único backup deste título.",
+  modsInvalid:
+    "Rejeitado: mods devem conter romfs/exefs em uma pasta de mod ou load/<titleid>/<modname>/.",
+  titleKeysInvalid: "Escolha um arquivo existente e não vazio chamado title.keys.",
+  saveExists:
+    "Importação interrompida: este app já tem um perfil. Use um app novo do jogo para não substituir usuário ou saves.",
   none: "-",
   rejectNoId:
     "Rejeitado: o nome do arquivo não tem um único [ID do título], então não dá para associar ao jogo.",

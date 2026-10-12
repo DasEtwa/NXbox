@@ -40,6 +40,33 @@ export default {
   itemKeys: "Keys (prod.keys)",
   itemUpdate: "Update",
   itemDlc: "DLC",
+  itemFirmware: "Firmware",
+  itemSaves: "Save data",
+  itemMods: "Mods",
+  itemTitleKeys: "Keys (title.keys)",
+  fileCount: "files",
+  firmware:
+    "Drag a firmware NCA folder, ZIP or hekate rawnand backup, or Enter to skip (recommended: without firmware, Mii screens and some system applets stay empty)",
+  saves: "Drag a JKSV/Checkpoint backup leaf folder or ZIP for this title, or Enter to skip",
+  mods: "Drag romfs/exefs folders or a mod folder/ZIP for this title, or Enter to skip",
+  titleKeys: "Drag title.keys, or Enter to skip",
+  inputInvalid:
+    "Invalid folder/ZIP: unsafe paths, unsupported archive, empty data or corrupt filesystem.",
+  firmwareInvalid:
+    "Firmware rejected: NCA filename SHA-256, encrypted NCA3 header or SystemVersion data is invalid.",
+  firmwareIncomplete:
+    "Firmware incomplete: requires SystemVersion (0100000000000809, Data) and Mii model (0100000000000802, Data/PublicData).",
+  firmwareKeys:
+    "Firmware requires header_key and, for NAND, bis_key_02 (32 bytes, crypt+tweak). Encrypted SystemVersion also requires the matching key_area_key in prod.keys.",
+  nandInvalid:
+    "Invalid hekate NAND: missing/ambiguous SYSTEM GPT partition, missing split parts or unreadable FAT32 (check bis_key_02).",
+  optionalMismatch:
+    "Rejected: backup/mod title ID does not match this game. Drop one backup leaf for this title.",
+  modsInvalid:
+    "Rejected: mods must contain romfs/exefs inside one mod folder or load/<titleid>/<modname>/.",
+  titleKeysInvalid: "Choose an existing, nonempty file named title.keys.",
+  saveExists:
+    "Save import stopped: this app already has a profile. Use a fresh game app to avoid replacing its user or saves.",
   none: "-",
   rejectNoId:
     "Rejected: no single [title ID] token in the file name, so it cannot be matched to the game.",
