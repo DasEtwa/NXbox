@@ -565,6 +565,12 @@ private:
                                        track.bottom + 12.0f),
                                  Theme::kText, HAlign::Left, VAlign::Middle);
         }
+        const std::wstring skip = L"B  " + std::wstring(Tr(Text::SyncSkip));
+        const float skip_width =
+            renderer_.MeasureString(skip, Font::Button).width + 2 * kPillPadding;
+        DrawChoicePill(renderer_,
+                       RectF(kMargin, kChoiceTop, kMargin + skip_width, kChoiceTop + kPillHeight),
+                       skip, false, false);
         DrawHints(renderer_, {{Theme::kButtonB, L"B", Tr(Text::SyncSkip)}});
         if (!progress.item.empty()) {
             renderer_.DrawString(
@@ -644,6 +650,9 @@ private:
             phase_ = Phase::Syncing;
             return true;
         }
+        renderer_.DrawString(Widen(conflict_.cloud_folder), Font::Nav,
+                             RectF(kMargin, kTitleTop, kMargin + kTextWidth, kTitleTop + 44),
+                             Theme::kTextSecondary);
         DrawTitle(renderer_, Tr(Text::SyncConflictTitle));
         renderer_.DrawString(Tr(Text::SyncConflictBody), Font::Body,
                              RectF(kMargin, 450.0f, kMargin + 1000.0f, 566.0f),
@@ -666,9 +675,12 @@ private:
                        keep_cloud, false, focus_ == 1);
         const float both_left = left + second + kPillGap;
         const std::wstring both = Tr(Text::SyncKeepBoth);
-        DrawChoicePill(renderer_,
-                       RectF(both_left, kChoiceTop, both_left + 410, kChoiceTop + kPillHeight),
-                       both, false, focus_ == 2);
+        DrawChoicePill(
+            renderer_,
+            RectF(both_left, kChoiceTop,
+                  both_left + renderer_.MeasureString(both, Font::Button).width + 2 * kPillPadding,
+                  kChoiceTop + kPillHeight),
+            both, false, focus_ == 2);
         DrawHints(renderer_, {{Theme::kButtonA, L"A", Tr(Text::HintSelect)},
                               {Theme::kButtonB, L"B", Tr(Text::SyncSkip)}});
         return true;

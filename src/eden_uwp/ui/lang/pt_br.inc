@@ -87,7 +87,7 @@
     {Text::SyncDenied, L"O acesso foi recusado."},
     {Text::SyncExpired, L"O código expirou. Tente de novo em Configurações."},
     {Text::SyncLoginFailed, L"Não deu para entrar. O arquivo de diagnóstico tem o motivo."},
-    {Text::SyncNotConfiguredBody, L"Google Drive precisa de NXBOX_GDRIVE_CLIENT_ID e NXBOX_GDRIVE_CLIENT_SECRET no build. Peça um build configurado ou use WebDAV."},
+    {Text::SyncNotConfiguredBody, L"Google Drive indisponível neste build. Instale uma versão configurada ou escolha WebDAV."},
     {Text::SyncRowTitle, L"SwitchSaveSync"},
     {Text::SyncStateOff, L"Desligado"},
     {Text::SyncStateOn, L"Conectado"},

@@ -86,7 +86,7 @@
     {Text::SyncDenied, L"Access was denied."},
     {Text::SyncExpired, L"The code expired. Try again in Settings."},
     {Text::SyncLoginFailed, L"Sign-in failed. The diagnostics file has the reason."},
-    {Text::SyncNotConfiguredBody, L"Google Drive requires NXBOX_GDRIVE_CLIENT_ID and NXBOX_GDRIVE_CLIENT_SECRET at build time. Ask the owner for a configured build, or use WebDAV."},
+    {Text::SyncNotConfiguredBody, L"Google Drive is unavailable in this build. Install a configured build or choose WebDAV."},
     {Text::SyncRowTitle, L"SwitchSaveSync"},
     {Text::SyncStateOff, L"Off"},
     {Text::SyncStateOn, L"Signed in"},
