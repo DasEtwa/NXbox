@@ -186,8 +186,8 @@ struct RendererD3D12::Impl {
         srv_stride = context.Device()->GetDescriptorHandleIncrementSize(heap.Type);
         AcquireBuffers();
         InitializePipeline();
-        LOG_WARNING(Render, "D3D12 P2 initialized: native caches/framebuffer presentation; guest "
-                            "pipelines stubbed");
+        LOG_INFO(Render, "D3D12 initialized: native caches/framebuffer presentation; guest "
+                         "pipeline path=Maxwell/HLSL/DXIL");
     }
     void Present(const Layout::FramebufferLayout& layout,
                  std::span<const Tegra::FramebufferConfig> layers, RasterizerD3D12& rasterizer) {
@@ -319,6 +319,6 @@ VideoCore::RasterizerInterface* RendererD3D12::ReadRasterizer() {
     return &rasterizer;
 }
 std::string RendererD3D12::GetDeviceVendor() const {
-    return "D3D12 (P2)";
+    return "D3D12";
 }
 } // namespace D3D12

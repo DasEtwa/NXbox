@@ -55,8 +55,12 @@ Teardown drains submitted work, including partial construction.
 - `d3d12_buffer_cache.*` and `d3d12_texture_cache.*` supply native parameter traits
   and explicitly instantiate `VideoCommon::BufferCache` / `TextureCache` in separate
   translation units. Channels, CPU invalidation, unmaps, downloads and frame ticks
-  are connected to the rasterizer. Guest callbacks/syncpoints drain cache work and
-  the queue before completing; the first implementation uses synchronous waits.
+  are connected to the rasterizer. `d3d12_fence_manager.*` derives from the shared
+  `VideoCommon::FenceManager`, matching Vulkan's cache-batch and guest callback
+  protocol. `SyncOperation` only queues callbacks; `FlushCommands` only submits.
+  Fence release uses GPU-thread waits (`HAS_ASYNC_CHECK=false`) because the direct
+  context has one allocator and event. Completion callbacks and retained resources
+  are detached before invocation so reentrant waits cannot replay the batch.
 - Buffers use committed DEFAULT resources. UPLOAD and READBACK rings allocate
   512-byte-aligned slices in 4 MiB pages, retaining allocations by fence tick and
   shared leases. A page resets only after completion and after every lease retires.

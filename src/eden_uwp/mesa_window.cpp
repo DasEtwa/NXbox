@@ -314,7 +314,7 @@ MesaWindow::MesaWindow(const CoreWindow& window_, u32 width, u32 height) : windo
     UpdateCurrentFramebufferLayout(width, height);
     if (native_d3d12) {
         Settings::values.renderer_backend = Settings::RendererBackend::D3D12;
-        Diagnostic("RENDERER D3D12 P1 native context; guest rendering is stubbed");
+        Diagnostic("RENDERER D3D12 native graphics/compute; guest Maxwell shaders use HLSL/DXIL");
         return;
     }
     runtime = std::make_shared<MesaRuntime>();

@@ -12,6 +12,7 @@
 #include "video_core/renderer_d3d12/d3d12_clear.h"
 #include "video_core/renderer_d3d12/d3d12_descriptor.h"
 #include "video_core/renderer_d3d12/d3d12_dispatch.h"
+#include "video_core/renderer_d3d12/d3d12_fence_manager.h"
 #include "video_core/renderer_d3d12/d3d12_index_converter.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_iface.h"
 #include "video_core/renderer_d3d12/d3d12_query_cache.h"
@@ -58,8 +59,7 @@ public:
 
     void Draw(bool is_indexed, u32 instance_count) override;
     void DrawIndirect() override;
-    // Integration: the PSO worker's PipelineCache registers itself here. Without it draws are
-    // skipped (with one warning).
+    // Overrides the built-in guest shader pipeline cache for alternate providers.
     void SetPipelineCache(IPipelineCache* cache) {
         pipeline_cache = cache;
     }
@@ -128,6 +128,7 @@ private:
     TransformFeedback transform_feedback;
     QueryCacheRuntime query_runtime;
     QueryCache query_cache;
+    FenceManager fence_manager;
     template <typename Func>
     void PrepareDraw(bool is_indexed, Func&& draw);
     ID3D12CommandSignature* IndirectSignature(bool indexed);
@@ -139,7 +140,6 @@ private:
     std::vector<std::pair<ResourcePtr, D3D12_RESOURCE_STATES>> state_scratch;
     ComPtr<ID3D12CommandSignature> draw_signature;
     ComPtr<ID3D12CommandSignature> indexed_signature;
-    bool flushing{};
     bool draw_logged{};
     bool quad_logged{};
     bool image_uav_logged{};

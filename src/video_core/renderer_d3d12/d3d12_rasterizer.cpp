@@ -9,7 +9,6 @@
 #include <optional>
 #include "common/alignment.h"
 #include "common/logging.h"
-#include "common/scope_exit.h"
 #include "video_core/control/channel_state.h"
 #include "video_core/engines/kepler_compute.h"
 #include "video_core/engines/maxwell_3d.h"
@@ -37,11 +36,21 @@ RasterizerD3D12::RasterizerD3D12(Tegra::GPU& gpu, Tegra::MaxwellDeviceMemoryMana
       buffer_cache{memory, buffer_runtime}, texture_cache{texture_runtime, memory},
       index_converter{context}, clear_renderer{context}, compute_dispatch{context},
       transform_feedback{context}, query_runtime{context, memory, buffer_cache, transform_feedback},
-      query_cache{gpu, *this, memory, query_runtime}, m_gpu{gpu} {
+      query_cache{gpu, *this, memory, query_runtime},
+      fence_manager{*this, gpu, texture_cache, buffer_cache, query_cache, context}, m_gpu{gpu} {
     default_pipeline_cache = std::make_unique<PipelineCache>(context, memory);
     pipeline_cache = default_pipeline_cache.get();
 }
-RasterizerD3D12::~RasterizerD3D12() = default;
+RasterizerD3D12::~RasterizerD3D12() {
+    // Query callbacks capture the cache. Drain while every cache/runtime is alive.
+    try {
+        fence_manager.SignalReference();
+        fence_manager.WaitPendingFences(true);
+        context.Finish();
+    } catch (const std::exception& error) {
+        LOG_ERROR(Render, "D3D12 rasterizer teardown: {}", error.what());
+    }
+}
 
 namespace {
 using Maxwell = Tegra::Engines::Maxwell3D::Regs;
@@ -983,7 +992,9 @@ void RasterizerD3D12::DisableGraphicsUniformBuffer(size_t stage, u32 index) {
     buffer_cache.DisableGraphicsUniformBuffer(stage, index);
 }
 void RasterizerD3D12::FlushAll() {
-    FlushCommands();
+    fence_manager.SignalReference();
+    fence_manager.WaitPendingFences(true);
+    context.Finish();
 }
 void RasterizerD3D12::FlushRegion(DAddr addr, u64 size, VideoCommon::CacheType which) {
     if (!addr || !size)
@@ -1058,30 +1069,28 @@ void RasterizerD3D12::ModifyGPUMemory(size_t as_id, GPUVAddr addr, u64 size) {
     buffer_cache.UnmapGPUMemory(as_id, addr, size);
 }
 void RasterizerD3D12::SignalFence(std::function<void()>&& func) {
-    FlushCommands();
-    func();
+    fence_manager.SignalFence(std::move(func));
 }
 void RasterizerD3D12::SyncOperation(std::function<void()>&& func) {
-    FlushCommands();
-    func();
+    fence_manager.SyncOperation(std::move(func));
 }
 void RasterizerD3D12::SignalSyncPoint(u32 value) {
-    FlushCommands();
-    auto& syncpoint_manager = m_gpu.Host1x().GetSyncpointManager();
-    syncpoint_manager.IncrementGuest(value);
-    syncpoint_manager.IncrementHost(value);
+    fence_manager.SignalSyncPoint(value);
 }
-void RasterizerD3D12::SignalReference() {}
+void RasterizerD3D12::SignalReference() {
+    fence_manager.SignalReference();
+}
 void RasterizerD3D12::ReleaseFences(bool force) {
-    if (force)
-        FlushCommands();
+    fence_manager.WaitPendingFences(force);
 }
 void RasterizerD3D12::FlushAndInvalidateRegion(DAddr addr, u64 size, VideoCommon::CacheType which) {
     FlushRegion(addr, size, which);
     InvalidateRegion(addr, size, which);
 }
 void RasterizerD3D12::WaitForIdle() {
-    FlushCommands();
+    query_cache.NotifyWFI();
+    context.Finish();
+    fence_manager.SignalOrdering();
 }
 void RasterizerD3D12::FragmentBarrier() {
     D3D12_RESOURCE_BARRIER barrier{};
@@ -1092,29 +1101,12 @@ void RasterizerD3D12::TiledCacheBarrier() {
     FragmentBarrier();
 }
 void RasterizerD3D12::FlushCommands() {
-    // QueryCache::CommitAsyncFlushes calls SyncOperation while committing reports.
-    // A nested fence must drain queued copies without recursively committing caches.
-    if (flushing) {
-        context.Finish();
-        return;
-    }
-    flushing = true;
-    SCOPE_EXIT {
-        flushing = false;
-    };
-    query_cache.NotifyWFI();
-    query_cache.CommitAsyncFlushes();
-    std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
-    buffer_cache.AccumulateFlushes();
-    buffer_cache.CommitAsyncFlushes();
-    texture_cache.CommitAsyncFlushes();
-    context.Finish();
-    query_cache.PopAsyncFlushes();
+    // Cache batches and guest callbacks belong to FenceManager, never submission.
+    context.Submit();
     default_pipeline_cache->FlushDiskCache();
-    buffer_cache.PopAsyncFlushes();
-    texture_cache.PopAsyncFlushes();
 }
 void RasterizerD3D12::TickFrame() {
+    fence_manager.TickFrame();
     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
     buffer_cache.TickFrame();
     texture_cache.TickFrame();

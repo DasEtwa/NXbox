@@ -5,6 +5,7 @@
 #include <stdexcept>
 #include <windows.h>
 #include "common/logging.h"
+#include "video_core/renderer_d3d12/d3d12_completion.h"
 #include "video_core/renderer_d3d12/d3d12_footprint.h"
 
 namespace D3D12 {
@@ -67,15 +68,15 @@ void Context::Wait(u64 tick) {
     }
     Check(device->GetDeviceRemovedReason(), "device removed after waiting");
     if (tick == submitted && !recording) {
-        for (auto& callback : completion)
-            callback();
-        completion.clear();
-        retained.clear();
+        CompleteBatch(completion, retained);
     }
 }
 ID3D12GraphicsCommandList* Context::Commands() {
     if (!recording) {
         Wait(submitted);
+    }
+    // A completion callback may have started the next command list.
+    if (!recording) {
         Check(allocator->Reset(), "allocator Reset");
         Check(commands->Reset(allocator.Get(), nullptr), "command list Reset");
         recording = true;

@@ -20,7 +20,8 @@ struct QueryCacheRuntimeImpl;
 // Integration: construct beside BufferCache/TransformFeedback, then construct
 // QueryCache with (gpu, rasterizer, device_memory, runtime). Route channel binding,
 // Query/ResetCounter, WFI, invalidation and fence flushes to QueryCache as Vulkan
-// does. FlushCommands must call NotifyWFI before Finish and guest callbacks.
+// does. FenceManager commits/pops cache batches and defers guest callbacks;
+// FlushCommands only submits native commands.
 // Draw calls PrepareDraw BEFORE setting any command-list state (bank drain
 // can reset the list), then BeginDraw/EndDraw immediately around Draw[Indexed].
 // Enable ZPassPixelCount64 from regs.zpass_pixel_count_enable. Bind SO targets
