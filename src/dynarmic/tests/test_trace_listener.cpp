@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: 0BSD
 #include <cstdio>
 
+#include <catch2/catch_test_case_info.hpp>
 #include <catch2/reporters/catch_reporter_event_listener.hpp>
 #include <catch2/reporters/catch_reporter_registrars.hpp>
 
