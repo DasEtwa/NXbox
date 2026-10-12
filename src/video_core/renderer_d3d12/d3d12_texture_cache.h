@@ -72,7 +72,9 @@ public:
     void InsertUploadMemoryBarrier() {}
     void TransitionImageLayout(Image&);
     bool HasBrokenTextureViewFormats() const {
-        return false;
+        // Maxwell view classes cross DXGI cast families. Let the shared cache
+        // create format-specific aliases and synchronize their guest bit patterns.
+        return true;
     }
     bool HasNativeBgr() const {
         return true;
@@ -137,6 +139,8 @@ public:
     u64 allocation_tick{};
 
 private:
+    bool TransferConverted(const StagingBufferRef&, std::span<const VideoCommon::BufferImageCopy>,
+                           bool download);
     void Transfer(const StagingBufferRef&, std::span<const VideoCommon::BufferImageCopy>,
                   bool download, const ResourcePtr& gpu_destination = {}, size_t gpu_offset = 0);
     TextureCacheRuntime* runtime{};
@@ -161,7 +165,7 @@ public:
     }
     FormatInfo HostFormat() const {
         auto result = host_format;
-        if (resource)
+        if (resource && !host_format.depth)
             result.view_format = static_cast<u32>(description.Format);
         return result;
     }
