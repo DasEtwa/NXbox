@@ -68,9 +68,11 @@ SPDX-License-Identifier: GPL-3.0-or-later
 > **\*New\* Native Direct3D 12 renderer.** The default path translates the Switch GPU to OpenGL and
 > then, through Mesa, to Direct3D 12. The new renderer (`NXBOX_RENDERER=d3d12`) talks to Direct3D 12
 > directly: Switch shaders are translated to HLSL and compiled with Microsoft's DXC, with no OpenGL or
-> Mesa in between. It already draws Super Mario 3D World's game-select screen correctly at 1920×1080,
-> including text the OpenGL path drops. It is still opt-in: about 24 FPS, and the app is suspended
-> after about 90 s. Plan and progress: [docs/d3d12-backend.md](docs/d3d12-backend.md).
+> Mesa in between. It draws Super Mario 3D World's game-select screen correctly at 1920×1080 and
+> 60 FPS, including text the OpenGL path drops, and reaches level 1-1, where lit geometry still
+> renders black. Every one of the 4,511 shaders captured from four games translates to HLSL and
+> compiles with DXC, checked offline by a corpus harness (`tools/nxbox/shader_corpus`). It is still
+> opt-in. Plan and progress: [docs/d3d12-backend.md](docs/d3d12-backend.md).
 
 ## Where it stands
 
@@ -80,8 +82,8 @@ Everything below was measured on a retail Xbox Series X in Developer Mode.
 | --- | --- |
 | CPU | Switch ARM64 code runs through the Dynarmic JIT inside the UWP sandbox, with a 128 MiB code cache |
 | Graphics (default) | OpenGL 4.6 on Direct3D 12 through a patched Mesa `d3d12` driver, built in CI |
-| Graphics (**\*New\***, opt-in) | Native Direct3D 12 renderer (`NXBOX_RENDERER=d3d12`): Switch shaders go Maxwell → IR → HLSL → DXC → DXIL. Draws Super Mario 3D World's game-select screen correctly; about 24 FPS, suspended after about 90 s. Geometry/tessellation shaders, transform feedback and MSAA are not done yet |
-| Frame pacing | OpenGL path: 60 FPS in Super Mario 3D World's hub, 30 FPS in Persona 5 Royal, about 12 FPS in Breath of the Wild (CPU bound). Loads still freeze the picture for a few seconds |
+| Graphics (**\*New\***, opt-in) | Native Direct3D 12 renderer (`NXBOX_RENDERER=d3d12`): Switch shaders go Maxwell → IR → HLSL → DXC → DXIL. 60 FPS on Super Mario 3D World's menus and reaches level 1-1 (lit geometry still black). MSAA, async fences and recyclable buffer heaps are in; renderer errors are logged and the game keeps running, and a failed D3D12 start falls back to OpenGL. All 4,511 corpus shaders compile with DXC; tessellation is still limited |
+| Frame pacing | OpenGL path: 60 FPS in Super Mario 3D World's hub, 30 FPS in Persona 5 Royal, about 12 FPS in Breath of the Wild, bound by the OpenGL/Mesa translation on the GPU thread (`NXBOX_THREAD_PROFILE=1` shows the ARM cores mostly idle). Loads still freeze the picture for a few seconds |
 | Shaders | Per-title pipeline cache, precompiled at boot so scene changes do not compile shaders. A cache can be shared between consoles over the LAN |
 | Memory | Guest memory is committed on demand. Persona 5 Royal peaks around 4.0 GB and Breath of the Wild around 4.5 GB of the 5 GiB app budget |
 | Audio | XAudio2 output |
@@ -118,7 +120,8 @@ Written up in the [port notes](docs/nxbox-port.md).
 - **Where it stands:** Super Mario 3D World reaches the 3D World hub at 60 FPS on the OpenGL path,
   with some views still drawing black polygons; the native Direct3D 12 renderer already draws its
   game-select screen correctly. Breath of the Wild loads a save (1.0, and 1.6 with both DLC) and runs
-  in the Shrine of Resurrection at about 12 FPS; the guest CPU is the bottleneck. Open bugs are
+  in the Shrine of Resurrection at about 12 FPS; the GPU thread (OpenGL through Mesa) is the
+  bottleneck, which the native renderer removes. Open bugs are
   tracked in the [issues](https://github.com/NspxMiguel/NXbox/issues).
 - **How it is built:** by one person in their spare time, with AI coding tools doing much of the
   hard work on a small budget. Progress comes in bursts, and long waits are usually tool limits.
@@ -136,10 +139,10 @@ Estimates are the maintainer's guess, not a promise; they move as bugs are found
 
 | Game | State | What happens today | Playable estimate |
 | --- | --- | --- | --- |
-| Super Mario 3D World + Bowser's Fury | **In-game** | 60 FPS on the OpenGL path: enters 3D World and reaches the hub with correct colours, but some camera angles draw black polygons and some text is missing. The native D3D12 renderer already draws the game-select screen correctly, text included, at about 24 FPS | 2–4 weeks |
-| The Legend of Zelda: Breath of the Wild (1.0, 1.6 + DLC) | **In-game** | Loads a save and runs in the Shrine of Resurrection at about 12 FPS; Link's geometry is broken. The guest CPU is the bottleneck | 1–3 months |
+| Super Mario 3D World + Bowser's Fury | **In-game** | 60 FPS on the OpenGL path: enters 3D World and reaches the hub with correct colours, but some camera angles draw black polygons and some text is missing. The native D3D12 renderer draws the menus correctly at 60 FPS and reaches level 1-1, with lit geometry still black | 2–4 weeks |
+| The Legend of Zelda: Breath of the Wild (1.0, 1.6 + DLC) | **In-game** | Loads a save and runs in the Shrine of Resurrection at about 12 FPS with Link drawn correctly; some terrain is still broken. Bound by the OpenGL translation on the GPU thread, so it moves to the native renderer next | 1–3 months |
 | Persona 5 Royal | **In-game** | Reaches the first playable area with audio; stutters on loads and has open bugs | 3–6 weeks |
-| Mario Kart 8 Deluxe | **Menus** | Reaches the menus; the Mii picker needs the console's own firmware (installer added, not yet tested) | 4–8 weeks |
+| Mario Kart 8 Deluxe | **Menus** | Reaches the menus; the Mii picker needs the console's own firmware (installer fixed for retail dumps, console test pending) | 4–8 weeks |
 | Bayonetta | Not tested | Planned after Breath of the Wild | — |
 
 ## How it works
