@@ -2623,14 +2623,9 @@ SyncResult ResolveConflict(std::uint64_t title_id, ConflictChoice choice,
                      profile_uuid, device_save);
 }
 
-std::string GameNameFromNames(const std::vector<std::string>& nacp_application_names) {
-    const std::size_t count = std::min(nacp_application_names.size(), NacpLanguageCount);
-    for (std::size_t i = 0; i < count; ++i) {
-        if (!nacp_application_names[i].empty()) {
-            return nacp_application_names[i].substr(0, NacpNameBytes);
-        }
-    }
-    return std::string();
+std::string GameNameFromNames(const std::vector<std::string>& nacp_application_names,
+                              std::uint64_t title_id) {
+    return Policy::NacpGameName(nacp_application_names, title_id);
 }
 
 } // namespace EdenXbox::SaveSync

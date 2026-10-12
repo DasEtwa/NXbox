@@ -1344,10 +1344,8 @@ bool FindLibraryGame(const winrt::Windows::UI::Core::CoreWindow& window,
         }
         choice.path = winrt::to_string(game.path.wstring());
         choice.title_id = game.title_id;
-        choice.sync_name = SaveSync::GameNameFromNames(game.nacp_names);
-        if (choice.sync_name.empty()) {
-            choice.sync_name = winrt::to_string(winrt::hstring(game.name));
-        }
+        choice.sync_name =
+            SaveSync::GameNameFromNames(game.nacp_names, std::stoull(game.title_id, nullptr, 16));
         choice.display_name = game.name;
         return true;
     }

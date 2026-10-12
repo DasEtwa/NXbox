@@ -26,6 +26,10 @@ using namespace EdenXbox::SaveSync::Policy;
 int main(int argc, char** argv) {
     const std::string mode = argv[1];
     if (mode == "names") {
+        assert(NacpGameName({"", "English title", "Outro título"}, 1) == "English title");
+        assert(NacpGameName({}, 0x42) == "Titulo desconhecido (0000000000000042)");
+        std::vector<std::string> ignored(17); ignored[16] = "not a NACP language";
+        assert(NacpGameName(ignored).empty());
         assert(SanitizeName("Zelda: Breath/World? .", 513) == "Zelda_ Breath_World_");
         assert(SanitizeName("Pokémon", 513) == "Pokémon");
         assert(SanitizeName("...", 65) == "sem-nome");

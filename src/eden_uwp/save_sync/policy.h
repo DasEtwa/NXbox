@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <stdexcept>
 #include <string>
+#include <vector>
 namespace EdenXbox::SaveSync::Policy {
 constexpr std::size_t GameNameBuffer = 0x201;
 constexpr std::size_t OwnerNameBuffer = 0x41;
@@ -85,6 +86,14 @@ inline std::string Hex16(std::uint64_t value) {
     char buffer[17];
     std::snprintf(buffer, sizeof(buffer), "%016llX", static_cast<unsigned long long>(value));
     return buffer;
+}
+inline std::string NacpGameName(const std::vector<std::string>& names, std::uint64_t title_id = 0) {
+    for (std::size_t i = 0; i < std::min<std::size_t>(16, names.size()); ++i) {
+        if (!names[i].empty())
+            return names[i].substr(0, 0x200);
+    }
+    // This literal is SwitchSaveSync's persisted folder name, independent of UI language.
+    return title_id ? "Titulo desconhecido (" + Hex16(title_id) + ")" : std::string{};
 }
 inline std::filesystem::path EdenSavePath(const std::filesystem::path& nand, SaveKind kind,
                                           std::uint64_t title, const std::string& user,

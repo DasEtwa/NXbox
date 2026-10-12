@@ -1597,10 +1597,8 @@ std::string RunLibrary(const winrt::Windows::UI::Core::CoreWindow& window, Chose
                     chosen->title_id = game->title_id;
                     // SwitchSaveSync names the cloud folder after the first NACP name, not after
                     // the name in the UI language.
-                    chosen->sync_name = SaveSync::GameNameFromNames(game->nacp_names);
-                    if (chosen->sync_name.empty()) {
-                        chosen->sync_name = winrt::to_string(winrt::hstring(game->name));
-                    }
+                    chosen->sync_name = SaveSync::GameNameFromNames(
+                        game->nacp_names, std::stoull(game->title_id, nullptr, 16));
                     chosen->display_name = game->name;
                 }
             }

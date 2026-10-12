@@ -177,7 +177,8 @@ SyncResult ResolveConflict(std::uint64_t title_id, ConflictChoice choice,
 
 /// The game name SwitchSaveSync uses for a title: the first non-empty application name among the
 /// first 16 NACP language entries (FileSys::NACP::GetApplicationNames()), independent of the
-/// console language. Empty when there is none.
-std::string GameNameFromNames(const std::vector<std::string>& nacp_application_names);
+/// console language. With no name, uses SwitchSaveSync's unknown-title folder when an ID is given.
+std::string GameNameFromNames(const std::vector<std::string>& nacp_application_names,
+                              std::uint64_t title_id = 0);
 
 } // namespace EdenXbox::SaveSync
