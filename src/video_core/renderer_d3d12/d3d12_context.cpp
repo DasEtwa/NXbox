@@ -886,10 +886,12 @@ ResourcePtr Context::CreateBuffer(u64 size, D3D12_HEAP_TYPE heap) {
     }
     try {
         if (auto resource = pool->Allocate(device.Get(), budget, desc, heap, state, pool)) {
+            const FrameProfile::Scope profile_alias{profile, FramePhase::Barriers};
             D3D12_RESOURCE_BARRIER barrier{};
             barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_ALIASING;
             barrier.Aliasing.pResourceAfter = resource->handle.Get();
             Commands()->ResourceBarrier(1, &barrier);
+            profile.Count(FrameCount::Barriers);
             Retain(resource);
             return resource;
         }
