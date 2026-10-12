@@ -120,7 +120,8 @@ public:
     static constexpr u32 RtvHeapSize = 4096;
     static constexpr u32 DsvHeapSize = 512;
 
-    explicit D3D12DescriptorAllocator(Context& context);
+    explicit D3D12DescriptorAllocator(Context& context, u32 view_capacity = ViewHeapSize,
+                                       u32 sampler_capacity = SamplerHeapSize);
 
     // Rebind for every draw: helpers can replace heaps within the same command list.
     // Reserve the whole draw/dispatch before allocating from any ring. Reclaiming
@@ -181,23 +182,35 @@ private:
     void Init(Ring& ring, D3D12_DESCRIPTOR_HEAP_TYPE type, u32 capacity, bool visible);
     DescriptorTable Allocate(Ring& ring, u32 count);
 
+    struct DescriptorKey {
+        std::array<u8, 64> description{};
+        std::uintptr_t resource{};
+        u32 kind{}, size{};
+        bool operator==(const DescriptorKey&) const = default;
+    };
+    struct DescriptorKeyHash {
+        size_t operator()(const DescriptorKey& key) const noexcept {
+            const std::string_view bytes{reinterpret_cast<const char*>(key.description.data()), key.size};
+            return std::hash<std::string_view>{}(bytes) ^ std::hash<std::uintptr_t>{}(key.resource) ^
+                   (static_cast<size_t>(key.kind) << 1);
+        }
+    };
     struct CachedDescriptor {
         D3D12_CPU_DESCRIPTOR_HANDLE handle;
         ResourcePtr resource; // Prevent address reuse while the descriptor is cached.
     };
     struct DescriptorCache {
         ComPtr<ID3D12DescriptorHeap> heap;
-        std::unordered_map<std::string, CachedDescriptor> entries;
+        std::unordered_map<DescriptorKey, CachedDescriptor, DescriptorKeyHash> entries;
         u32 cursor{}, stride{}, capacity{};
     };
     void InitCache(DescriptorCache& cache, D3D12_DESCRIPTOR_HEAP_TYPE type, u32 capacity);
     void RefreshCaches();
     void WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE type, const ResourcePtr& resource, u32 kind,
-                     const void* desc, size_t size, D3D12_CPU_DESCRIPTOR_HANDLE destination,
-                     const std::function<void(D3D12_CPU_DESCRIPTOR_HANDLE)>& create);
+                     const void* desc, size_t size, D3D12_CPU_DESCRIPTOR_HANDLE destination);
     u64 cache_tick{};
     DescriptorCache view_cache, sampler_cache;
-    std::unordered_map<SIZE_T, std::string> slot_contents;
+    std::unordered_map<SIZE_T, DescriptorKey> slot_contents;
     std::array<RecordingTableCache<DescriptorTable>, 2> table_cache;
     Context& context;
     Ring views{ViewHeapSize};

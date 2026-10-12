@@ -209,6 +209,10 @@ class T8PerfTests(unittest.TestCase):
         self.assertNotIn("context.Finish()", reserve)
         self.assertIn("context.Wait(oldest_blocked)", reserve)
         self.assertIn("CopyDescriptorsSimple", descriptors)
+        writer = descriptors.split("D3D12DescriptorAllocator::WriteCached(")[1].split("D3D12DescriptorAllocator::FindTable(")[0]
+        self.assertNotIn("std::function", writer)
+        self.assertNotIn("std::string key", writer)
+        self.assertIn("DescriptorKey key", writer)
         run = helpers.split("void ComputePasses::Run(")[1]
         self.assertNotIn("CreateDescriptorHeap", run)
         self.assertIn("descriptors.FindTable(view_key)", run)

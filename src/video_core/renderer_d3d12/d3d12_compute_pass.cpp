@@ -33,7 +33,7 @@ void RequireSize(const ComputeBufferView& view, std::uint64_t size) {
 }
 } // namespace
 ComputePasses::ComputePasses(Context& context)
-    : context{context}, dispatch{context}, descriptors{context},
+    : context{context}, dispatch{context}, descriptors{context, 4096, 256},
       root_signature{CreateComputeRootSignature(context.Device(), {0, 0, 3, 0})} {
     const std::array sources{HostShaders::ASTC_DECODER_HLSL,
                              HostShaders::BLOCK_LINEAR_UNSWIZZLE_2D_HLSL,

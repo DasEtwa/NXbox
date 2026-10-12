@@ -2,6 +2,7 @@
 #include "video_core/renderer_d3d12/d3d12_descriptor.h"
 
 #include <algorithm>
+#include <cstring>
 #include <stdexcept>
 #include "common/alignment.h"
 #include "video_core/renderer_d3d12/d3d12_texture_cache.h"
@@ -83,9 +84,12 @@ D3D12_SAMPLER_DESC MakeSamplerDesc(const Tegra::Texture::TSCEntry& entry) {
     return desc;
 }
 
-D3D12DescriptorAllocator::D3D12DescriptorAllocator(Context& context) : context{context} {
-    Init(views, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, ViewHeapSize, true);
-    Init(samplers, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, SamplerHeapSize, true);
+D3D12DescriptorAllocator::D3D12DescriptorAllocator(Context& context, u32 view_capacity, u32 sampler_capacity)
+    : context{context}, views{view_capacity}, samplers{sampler_capacity} {
+    if (!view_capacity || view_capacity > ViewHeapSize || !sampler_capacity || sampler_capacity > SamplerHeapSize)
+        throw std::invalid_argument("D3D12 descriptor heap capacity outside supported limits");
+    Init(views, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, view_capacity, true);
+    Init(samplers, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, sampler_capacity, true);
     Init(rtvs, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, RtvHeapSize, false);
     Init(dsvs, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, DsvHeapSize, false);
     InitCache(view_cache, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1024);
@@ -113,16 +117,16 @@ void D3D12DescriptorAllocator::RefreshCaches() {
 }
 void D3D12DescriptorAllocator::WriteCached(
     D3D12_DESCRIPTOR_HEAP_TYPE type, const ResourcePtr& resource, u32 kind, const void* desc,
-    size_t size, D3D12_CPU_DESCRIPTOR_HANDLE destination,
-    const std::function<void(D3D12_CPU_DESCRIPTOR_HANDLE)>& create) {
+    size_t size, D3D12_CPU_DESCRIPTOR_HANDLE destination) {
     const FrameProfile::Scope profile_write{context.Profile(), FramePhase::DescriptorWrites};
     RefreshCaches();
-    const auto identity =
-        reinterpret_cast<std::uintptr_t>(resource ? resource->handle.Get() : nullptr);
-    std::string key(reinterpret_cast<const char*>(&type), sizeof(type));
-    key.append(reinterpret_cast<const char*>(&identity), sizeof(identity));
-    key.append(reinterpret_cast<const char*>(&kind), sizeof(kind));
-    key.append(static_cast<const char*>(desc), size);
+    DescriptorKey key;
+    if (size > key.description.size())
+        throw std::invalid_argument("D3D12 descriptor exceeds cache key size");
+    key.resource = reinterpret_cast<std::uintptr_t>(resource ? resource->handle.Get() : nullptr);
+    key.kind = kind;
+    key.size = static_cast<u32>(size);
+    std::memcpy(key.description.data(), desc, size);
     const auto old_contents = slot_contents.find(destination.ptr);
     if (old_contents != slot_contents.end() && old_contents->second == key)
         return; // The slot has not changed; never overwrite an in-flight table.
@@ -137,7 +141,26 @@ void D3D12DescriptorAllocator::WriteCached(
         }
         auto handle = cache.heap->GetCPUDescriptorHandleForHeapStart();
         handle.ptr += static_cast<SIZE_T>(cache.cursor++) * cache.stride;
-        create(handle);
+        switch (kind) {
+        case 0: {
+            const auto* cbv = static_cast<const D3D12_CONSTANT_BUFFER_VIEW_DESC*>(desc);
+            context.Device()->CreateConstantBufferView(cbv->BufferLocation ? cbv : nullptr, handle);
+            break;
+        }
+        case 1:
+            context.Device()->CreateShaderResourceView(resource ? resource->handle.Get() : nullptr,
+                static_cast<const D3D12_SHADER_RESOURCE_VIEW_DESC*>(desc), handle);
+            break;
+        case 2:
+            context.Device()->CreateUnorderedAccessView(resource ? resource->handle.Get() : nullptr, nullptr,
+                static_cast<const D3D12_UNORDERED_ACCESS_VIEW_DESC*>(desc), handle);
+            break;
+        case 3:
+            context.Device()->CreateSampler(static_cast<const D3D12_SAMPLER_DESC*>(desc), handle);
+            break;
+        default:
+            throw std::invalid_argument("D3D12 unknown cached descriptor kind");
+        }
         context.Profile().Count(FrameCount::DescriptorWrites);
         found = cache.entries.emplace(key, CachedDescriptor{handle, resource}).first;
     }
@@ -158,10 +181,7 @@ void D3D12DescriptorAllocator::WriteUavDescriptor(const DescriptorTable& table, 
                                                   const ResourcePtr& resource,
                                                   const D3D12_UNORDERED_ACCESS_VIEW_DESC& desc) {
     WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, resource, 2, &desc, sizeof(desc),
-                table.Slot(slot), [&](auto handle) {
-                    context.Device()->CreateUnorderedAccessView(
-                        resource ? resource->handle.Get() : nullptr, nullptr, &desc, handle);
-                });
+                table.Slot(slot));
 }
 void D3D12DescriptorAllocator::Init(Ring& ring, D3D12_DESCRIPTOR_HEAP_TYPE type, u32 capacity,
                                     bool visible) {
@@ -264,8 +284,7 @@ D3D12_CPU_DESCRIPTOR_HANDLE D3D12DescriptorAllocator::AllocateDsv() {
 void D3D12DescriptorAllocator::WriteNullCbv(const DescriptorTable& table, u32 slot) {
     D3D12_CONSTANT_BUFFER_VIEW_DESC desc{};
     WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, {}, 0, &desc, sizeof(desc),
-                table.Slot(slot),
-                [&](auto handle) { context.Device()->CreateConstantBufferView(nullptr, handle); });
+                table.Slot(slot));
 }
 void D3D12DescriptorAllocator::WriteNullSrv(const DescriptorTable& table, u32 slot,
                                             D3D12_SRV_DIMENSION dimension) {
@@ -323,8 +342,7 @@ void D3D12DescriptorAllocator::WriteNullSampler(const DescriptorTable& table, u3
     desc.AddressU = desc.AddressV = desc.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
     desc.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
     desc.MaxLOD = D3D12_FLOAT32_MAX;
-    WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, {}, 3, &desc, sizeof(desc), table.Slot(slot),
-                [&](auto handle) { context.Device()->CreateSampler(&desc, handle); });
+    WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, {}, 3, &desc, sizeof(desc), table.Slot(slot));
 }
 
 void D3D12DescriptorAllocator::WriteCbv(const DescriptorTable& table, u32 slot,
@@ -349,8 +367,7 @@ void D3D12DescriptorAllocator::WriteCbv(const DescriptorTable& table, u32 slot,
     desc.BufferLocation = buffer.resource->handle->GetGPUVirtualAddress() + buffer.offset;
     desc.SizeInBytes = static_cast<UINT>(size);
     WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, buffer.resource, 0, &desc, sizeof(desc),
-                table.Slot(slot),
-                [&](auto handle) { context.Device()->CreateConstantBufferView(&desc, handle); });
+                table.Slot(slot));
 }
 
 void D3D12DescriptorAllocator::WriteStorageUav(const DescriptorTable& table, u32 slot,
@@ -385,10 +402,7 @@ void D3D12DescriptorAllocator::WriteTexelSrv(const DescriptorTable& table, u32 s
     desc.Buffer.FirstElement = buffer.offset / format.bytes_per_block;
     desc.Buffer.NumElements = buffer.size / format.bytes_per_block;
     WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, buffer.resource, 1, &desc, sizeof(desc),
-                table.Slot(slot), [&](auto handle) {
-                    context.Device()->CreateShaderResourceView(buffer.resource->handle.Get(), &desc,
-                                                               handle);
-                });
+                table.Slot(slot));
 }
 
 void D3D12DescriptorAllocator::WriteTexelUav(const DescriptorTable& table, u32 slot,
@@ -419,18 +433,14 @@ bool D3D12DescriptorAllocator::WriteImageSrv(const DescriptorTable& table, u32 s
     }
     const auto& desc = view.Description();
     WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, resource, 1, &desc, sizeof(desc),
-                table.Slot(slot), [&](auto handle) {
-                    context.Device()->CreateShaderResourceView(resource->handle.Get(), &desc,
-                                                               handle);
-                });
+                table.Slot(slot));
     return true;
 }
 
 void D3D12DescriptorAllocator::WriteSampler(const DescriptorTable& table, u32 slot,
                                             const Sampler& sampler) {
     const auto desc = MakeSamplerDesc(sampler.Entry());
-    WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, {}, 3, &desc, sizeof(desc), table.Slot(slot),
-                [&](auto handle) { context.Device()->CreateSampler(&desc, handle); });
+    WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, {}, 3, &desc, sizeof(desc), table.Slot(slot));
 }
 
 void D3D12DescriptorAllocator::CreateRtv(D3D12_CPU_DESCRIPTOR_HANDLE handle,
