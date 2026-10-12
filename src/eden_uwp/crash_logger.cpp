@@ -415,7 +415,8 @@ void RegisterProfileThread() noexcept {
 }
 
 void StartThreadProfiler() noexcept {
-    if (!ThreadProfile::Enabled()) return;
+    if (!ThreadProfile::Enabled())
+        return;
     try {
         RegisterProfileThread();
         static const auto profiler = [] {
