@@ -715,3 +715,51 @@ TEST_CASE("A64: Signed division boundaries differential", "[a64][unicorn][confor
         }
     }
 }
+
+TEST_CASE("A64: Complex floating point differential", "[a64][unicorn][conformance]") {
+    A64TestEnv jit_env{};
+    A64TestEnv uni_env{};
+    auto conf = GetUserConfig(jit_env);
+    A64::Jit jit{conf};
+    A64Unicorn uni{uni_env};
+    std::mt19937 random{0x1954};
+    A64Unicorn::RegisterArray regs{};
+    const std::array<u32, 3> bases{0x2e00e400, 0x2e00c400, 0x2f001000};
+
+    for (size_t variant = 0; variant < bases.size(); ++variant) {
+        for (u32 size = 1; size <= (variant == 2 ? 2U : 3U); ++size) {
+            for (u32 q = 0; q < 2; ++q) {
+                if (!q && (size == 3 || (variant == 2 && size == 2))) {
+                    continue;
+                }
+                const u32 rotations = variant == 0 ? 2 : 4;
+                const u32 indices = variant != 2 ? 1 : (size == 1 ? (q ? 4 : 2) : 2);
+                for (u32 rotation = 0; rotation < rotations; ++rotation) {
+                    for (u32 index = 0; index < indices; ++index) {
+                        for (size_t iteration = 0; iteration < 16; ++iteration) {
+                            A64Unicorn::VectorArray vecs{};
+                            for (size_t reg = 0; reg < 3; ++reg) {
+                                for (auto& part : vecs[reg]) {
+                                    part = (static_cast<u64>(random()) << 32) | random();
+                                }
+                            }
+                            u32 instruction = bases[variant] | (q << 30) | (size << 22) |
+                                              (2U << 16) | (1U << 5) |
+                                              static_cast<u32>(iteration % 3);
+                            instruction |= rotation << (variant == 0 ? 12 : variant == 1 ? 11 : 13);
+                            if (variant == 2) {
+                                instruction |= size == 1 ? ((index & 1) << 21) | ((index >> 1) << 11)
+                                                         : index << 11;
+                            }
+                            const u32 fpcr = (static_cast<u32>(iteration % 4) << 22) |
+                                             ((random() & 1) << 25) | ((random() & 1) << 19);
+                            INFO("variant=" << variant << " size=" << size << " instruction=" << instruction);
+                            RunTestInstance(jit, uni, jit_env, uni_env, conf, regs, vecs, 0,
+                                            {instruction}, 0, fpcr);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

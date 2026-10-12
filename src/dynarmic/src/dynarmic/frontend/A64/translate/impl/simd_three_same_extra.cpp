@@ -65,9 +65,6 @@ bool TranslatorVisitor::FCMLA_vec(bool Q, Imm<2> size, Vec Vm, Imm<2> rot, Vec V
 
     const size_t esize = 8U << size.ZeroExtend();
 
-    // TODO: Currently we don't support half-precision floating point
-    ASSERT(esize != 16);
-
     const size_t datasize = Q ? 128 : 64;
     const size_t num_elements = datasize / esize;
     const size_t num_iterations = num_elements / 2;
@@ -77,10 +74,10 @@ bool TranslatorVisitor::FCMLA_vec(bool Q, Imm<2> size, Vec Vm, Imm<2> rot, Vec V
     const IR::U128 operand3 = V(datasize, Vd);
     IR::U128 result = ir.ZeroVector();
 
-    IR::U32U64 element1;
-    IR::U32U64 element2;
-    IR::U32U64 element3;
-    IR::U32U64 element4;
+    IR::U16U32U64 element1;
+    IR::U16U32U64 element2;
+    IR::U16U32U64 element3;
+    IR::U16U32U64 element4;
     for (size_t e = 0; e < num_iterations; ++e) {
         const size_t first = e * 2;
         const size_t second = first + 1;
@@ -112,8 +109,8 @@ bool TranslatorVisitor::FCMLA_vec(bool Q, Imm<2> size, Vec Vm, Imm<2> rot, Vec V
             break;
         }
 
-        const IR::U32U64 operand3_elem1 = ir.VectorGetElement(esize, operand3, first);
-        const IR::U32U64 operand3_elem2 = ir.VectorGetElement(esize, operand3, second);
+        const IR::U16U32U64 operand3_elem1 = ir.VectorGetElement(esize, operand3, first);
+        const IR::U16U32U64 operand3_elem2 = ir.VectorGetElement(esize, operand3, second);
 
         result = ir.VectorSetElement(esize, result, first, ir.FPMulAdd(operand3_elem1, element2, element1));
         result = ir.VectorSetElement(esize, result, second, ir.FPMulAdd(operand3_elem2, element4, element3));
@@ -134,9 +131,6 @@ bool TranslatorVisitor::FCADD_vec(bool Q, Imm<2> size, Vec Vm, Imm<1> rot, Vec V
 
     const size_t esize = 8U << size.ZeroExtend();
 
-    // TODO: Currently we don't support half-precision floating point
-    ASSERT(esize != 16);
-
     const size_t datasize = Q ? 128 : 64;
     const size_t num_elements = datasize / esize;
     const size_t num_iterations = num_elements / 2;
@@ -145,8 +139,8 @@ bool TranslatorVisitor::FCADD_vec(bool Q, Imm<2> size, Vec Vm, Imm<1> rot, Vec V
     const IR::U128 operand2 = V(datasize, Vm);
     IR::U128 result = ir.ZeroVector();
 
-    IR::U32U64 element1;
-    IR::U32U64 element3;
+    IR::U16U32U64 element1;
+    IR::U16U32U64 element3;
     for (size_t e = 0; e < num_iterations; ++e) {
         const size_t first = e * 2;
         const size_t second = first + 1;
@@ -159,8 +153,8 @@ bool TranslatorVisitor::FCADD_vec(bool Q, Imm<2> size, Vec Vm, Imm<1> rot, Vec V
             element3 = ir.FPNeg(ir.VectorGetElement(esize, operand2, first));
         }
 
-        const IR::U32U64 operand1_elem1 = ir.VectorGetElement(esize, operand1, first);
-        const IR::U32U64 operand1_elem3 = ir.VectorGetElement(esize, operand1, second);
+        const IR::U16U32U64 operand1_elem1 = ir.VectorGetElement(esize, operand1, first);
+        const IR::U16U32U64 operand1_elem3 = ir.VectorGetElement(esize, operand1, second);
 
         result = ir.VectorSetElement(esize, result, first, ir.FPAdd(operand1_elem1, element1));
         result = ir.VectorSetElement(esize, result, second, ir.FPAdd(operand1_elem3, element3));
