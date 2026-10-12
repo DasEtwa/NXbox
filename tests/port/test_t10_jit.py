@@ -76,6 +76,7 @@ int main() { Check<Dynarmic::A32::UserConfig>(); Check<Dynarmic::A64::UserConfig
             "CONST_PROP": "ConstProp",
             "MISC_IR": "MiscIROpt",
             "CODE_SPEED": "CodeSpeed",
+            "DISABLE_VERIFICATION": "DisableVerification",
             "UNFUSE_FMA": "Unsafe_UnfuseFMA",
             "REDUCED_ERROR_FP": "Unsafe_ReducedErrorFP",
             "INACCURATE_NAN": "Unsafe_InaccurateNaN",

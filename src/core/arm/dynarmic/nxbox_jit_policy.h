@@ -29,6 +29,7 @@ void ApplyOptOuts(Config& config) {
         {"NXBOX_JIT_CONST_PROP", Flag::ConstProp},
         {"NXBOX_JIT_MISC_IR", Flag::MiscIROpt},
         {"NXBOX_JIT_CODE_SPEED", Flag::CodeSpeed},
+        {"NXBOX_JIT_DISABLE_VERIFICATION", Flag::DisableVerification},
         {"NXBOX_JIT_UNFUSE_FMA", Flag::Unsafe_UnfuseFMA},
         {"NXBOX_JIT_REDUCED_ERROR_FP", Flag::Unsafe_ReducedErrorFP},
         {"NXBOX_JIT_INACCURATE_NAN", Flag::Unsafe_InaccurateNaN},
