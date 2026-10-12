@@ -62,7 +62,9 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
 #ifdef HAS_D3D12
             auto* native_d3d12 = dynamic_cast<D3D12::RendererD3D12*>(&renderer);
             try {
-                if (!native_d3d12 || !native_d3d12->HasFailed()) {
+                if (native_d3d12 && native_d3d12->HasFailed()) {
+                    system.GPU().CancelSyncRequests();
+                } else {
 #endif
                     const NxboxStall::Scope busy_scope{NxboxStall::Kind::GpuBusy};
                     if (auto* submit_list = std::get_if<SubmitListCommand>(&next.data)) {
@@ -85,6 +87,7 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
                 if (!native_d3d12)
                     throw;
                 native_d3d12->ReportFailure(error);
+                system.GPU().CancelSyncRequests();
             }
 #endif
             state.signaled_fence.store(next.fence);

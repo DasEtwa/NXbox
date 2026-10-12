@@ -13,6 +13,7 @@
 #include <utility>
 
 #include "common/assert.h"
+#include "common/cancellable_sync_queue.h"
 #include "common/settings.h"
 #include "common/settings_enums.h"
 #include "core/core.h"
@@ -128,20 +129,16 @@ struct GPU::Impl {
     /// Request a host GPU memory flush from the CPU.
     template <typename Func>
     [[nodiscard]] u64 RequestSyncOperation(Func&& action) {
-        std::unique_lock lck{sync_request_mutex};
-        const u64 fence = ++last_sync_fence;
-        sync_requests.emplace_back(std::forward<Func>(action));
-        return fence;
+        return sync_requests.Request(std::forward<Func>(action));
     }
 
     /// Obtains current flush request fence id.
     [[nodiscard]] u64 CurrentSyncRequestFence() const {
-        return current_sync_fence.load(std::memory_order_relaxed);
+        return sync_requests.Completed();
     }
 
     void WaitForSyncOperation(const u64 fence) {
-        std::unique_lock lck{sync_request_mutex};
-        sync_request_cv.wait(lck, [this, fence] { return CurrentSyncRequestFence() >= fence; });
+        sync_requests.Wait(fence);
     }
 
     void WaitForIdle() {
@@ -152,18 +149,11 @@ struct GPU::Impl {
 
     /// Tick pending requests within the GPU.
     void TickWork() {
-        std::unique_lock lck{sync_request_mutex};
-        while (!sync_requests.empty()) {
-            auto request = std::move(sync_requests.front());
-            sync_requests.pop_front();
-            sync_request_mutex.unlock();
-            request();
-            current_sync_fence.fetch_add(1, std::memory_order_release);
-            sync_request_mutex.lock();
-            sync_request_cv.notify_all();
-        }
+        sync_requests.Tick();
     }
-
+    void CancelSyncRequests() {
+        sync_requests.Cancel();
+    }
     [[nodiscard]] u64 GetTicks() const {
         const u64 gpu_tick = system.CoreTiming().GetGPUTicks();
         return gpu_tick / GpuClockMultiplier(Settings::values.gpu_clock.GetValue());
@@ -336,11 +326,7 @@ struct GPU::Impl {
 
     std::condition_variable sync_cv;
 
-    std::list<std::function<void()>> sync_requests;
-    std::atomic<u64> current_sync_fence{};
-    u64 last_sync_fence{};
-    std::mutex sync_request_mutex;
-    std::condition_variable sync_request_cv;
+    Common::CancellableSyncQueue sync_requests;
 
     const bool is_async;
 
@@ -411,6 +397,10 @@ u64 GPU::CurrentSyncRequestFence() const {
 
 void GPU::WaitForSyncOperation(u64 fence) {
     return impl->WaitForSyncOperation(fence);
+}
+
+void GPU::CancelSyncRequests() {
+    impl->CancelSyncRequests();
 }
 
 void GPU::TickWork() {

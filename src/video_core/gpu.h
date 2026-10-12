@@ -173,6 +173,9 @@ public:
     /// Tick pending requests within the GPU.
     void TickWork();
 
+    /// Retire CPU synchronization requests after a terminal renderer failure.
+    void CancelSyncRequests();
+
     /// Gets a mutable reference to the Host1x interface
     [[nodiscard]] Host1x::Host1x& Host1x();
 
