@@ -1,0 +1,50 @@
+export default {
+  guide: "Drag the game file into this window and press Enter (supported: .nsp .xci .nsz .xcz)",
+  legal: "You must own the game and dump your own keys. NXbox Pack never downloads games or keys.",
+  keys: "Drag your prod.keys into this window and press Enter",
+  extra: "Drag an update/DLC file, or press Enter to continue (one file at a time)",
+  host: "Xbox address (Dev Home > Remote Access)",
+  found: "Xbox candidates found",
+  user: "Device Portal username",
+  password: "Device Portal password (hidden)",
+  saved: "Use credentials from the OS secure store? [Y/n]",
+  remember: "Save credentials in the OS secure store? [y/N]",
+  secureUnavailable: "Secure storage is unavailable; credentials are kept only for this session.",
+  fallback:
+    "Control NCA metadata extraction is not implemented. Using the filename title ID/name and a generic NXbox icon.",
+  title: "Base game title ID (16 hexadecimal digits starting with 0100)",
+  name: "Game display name",
+  runtime: "Downloading and verifying the NXbox runtime…",
+  install: "Registering your independent game app…",
+  upload: "Uploading to this app's private LocalState…",
+  done: "Ready. Open this game's tile in Xbox Dev Home; set its app type to Game for the full memory budget.",
+  failed: "NXbox Pack failed",
+  file: "Choose an existing, nonempty .nsp, .xci, .nsz or .xcz file.",
+  keyFile: "Choose an existing, nonempty file named prod.keys.",
+  titleInvalid:
+    "A base game title ID must contain 16 hex digits, begin with 0100 and end with 000.",
+  nameInvalid: "Enter a game name of 1–64 characters without control characters.",
+  compressed:
+    "NSZ/XCZ needs the optional nsz decompressor on PATH (nsz -D). Install it or provide an NSP/XCI dump.",
+  runtimeMissing:
+    "Runtime unavailable; CI downloads may require NXBOX_PACK_GITHUB_TOKEN. Supply --runtime-url and --runtime-sha256 (CI artifact ZIP or game APPX).",
+  runtimeInvalid: "Runtime download, checksum or payload validation failed.",
+  portal: "Device Portal request failed. Check the address, credentials and Dev Mode.",
+  deploy:
+    "Xbox registration failed or timed out. Check VCLibs and the Device Portal deployment log.",
+  interrupted: "Cancelled.",
+  secret: "A terminal is required to enter a hidden password.",
+  args: "Invalid arguments. Run --help.",
+  progress: "Sending",
+  itemGame: "Game",
+  itemKeys: "Keys (prod.keys)",
+  itemUpdate: "Update",
+  itemDlc: "DLC",
+  none: "-",
+  rejectNoId:
+    "Rejected: no single [title ID] token in the file name, so it cannot be matched to the game.",
+  rejectMismatch:
+    "Rejected: this title ID does not belong to the game (expected its update ID or DLC range).",
+  rejectDuplicate: "Rejected: this file or title ID was already added.",
+  help: "NXbox Pack\nUsage: nxbox-pack [--runtime-url HTTPS_URL --runtime-sha256 HEX] [--insecure-portal]\n--insecure-portal accepts the Xbox self-signed TLS certificate for this connection only.\nDefault runtime: latest NspxMiguel/NXbox release with a SHA-256 asset digest.\nNo games or keys are included in the staged runtime. NSZ/XCZ requires nsz on PATH.",
+};

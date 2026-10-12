@@ -63,6 +63,11 @@ add_executable(eden-uwp WIN32
     ui/savesync_ui.h
     ui/strings.cpp
     ui/strings.h
+    ui/language_match.h
+    ui/translation_tables.h
+    ui/lang/registry.inc
+    ui/lang/en.inc
+    ui/lang/pt_br.inc
     ui/text_entry.cpp
     ui/text_entry.h
     ui/updater.cpp

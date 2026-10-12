@@ -3,9 +3,13 @@
 
 namespace EdenXbox::Ui {
 
-enum class Language { Portuguese, English };
+enum class Language {
+#define NXBOX_LANGUAGE(id, tag, table) id,
+#include "eden_uwp/ui/lang/registry.inc"
+#undef NXBOX_LANGUAGE
+};
 
-// Every text the UI shows. Add the pt-BR and en strings to the table in strings.cpp, in this order.
+// Every text the UI shows. English must define every key; other languages may omit keys.
 enum class Text {
     NavLibrary,
     NavSettings,
@@ -242,8 +246,8 @@ enum class Text {
     Count,
 };
 
-// The UI language: NXBOX_LANG=pt|en when set (process environment or LocalState\nxbox_env.txt),
-// otherwise the first language of the system's preference list, otherwise English.
+// NXBOX_LANG accepts registered BCP-47 tags or their primary subtags (also in nxbox_env.txt).
+// Otherwise match the system preference list, with English as the final fallback.
 Language CurrentLanguage();
 
 const wchar_t* Tr(Text text);
