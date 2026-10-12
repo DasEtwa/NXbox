@@ -3,12 +3,17 @@
 
 #include <algorithm>
 #include <atomic>
+#include <mutex>
+#include <set>
 #include <stdexcept>
 #include <d3d12sdklayers.h>
 #include <fmt/format.h>
 #include <windows.h>
+#include "eden_uwp/renderer_boundary.h"
 #ifdef NXBOX_UWP
+#include "eden_uwp/crash_logger.h"
 #include "eden_uwp/diagnostic.h"
+#include "eden_uwp/thread_profile.h"
 #endif
 #include "common/logging.h"
 #include "video_core/renderer_d3d12/d3d12_completion.h"
@@ -319,6 +324,8 @@ Context::~Context() {
         Finish();
     } catch (const std::exception& error) {
         ReportFailure(error);
+    } catch (...) {
+        Diagnostic("D3D12 context teardown: non-standard exception");
     }
 }
 void Context::LogInfoQueue() noexcept {
@@ -329,18 +336,37 @@ void Context::LogInfoQueue() noexcept {
 }
 void Context::ReportFailure(const std::exception& error) noexcept {
     try {
-        Diagnostic(fmt::format(
-            "D3D12 boundary event=renderer_exception what={} removed={:#010x}", error.what(),
-            static_cast<u32>(device ? device->GetDeviceRemovedReason() : E_POINTER)));
-        LogInfoQueue();
-        LogDeviceDred(device.Get());
-        SetEnvironmentVariableA("NXBOX_D3D12_FIRST_FAILURE", error.what());
-        SetEnvironmentVariableA("NXBOX_D3D12_COMMAND_FAILURE", "1");
+        // The same unsupported state may recur every draw. Preserve its exact reason once.
+        static std::mutex mutex;
+        static std::set<std::string> reasons;
+        bool first;
+        {
+            const std::lock_guard lock{mutex};
+            first = reasons.emplace(error.what()).second;
+        }
+        if (first) {
+            Diagnostic(fmt::format(
+                "D3D12 boundary event=renderer_exception fallback=skip_work what={} "
+                "removed={:#010x}",
+                error.what(),
+                static_cast<u32>(device ? device->GetDeviceRemovedReason() : E_POINTER)));
+            LogInfoQueue();
+            LogDeviceDred(device.Get());
+            SetEnvironmentVariableA("NXBOX_D3D12_FIRST_FAILURE", error.what());
+        }
+        // Unsupported guest work is recoverable. Only device loss disables future submissions.
+        if (device && FAILED(device->GetDeviceRemovedReason()))
+            SetEnvironmentVariableA("NXBOX_D3D12_COMMAND_FAILURE", "1");
     } catch (...) {
-        SetEnvironmentVariableA("NXBOX_D3D12_COMMAND_FAILURE", "1");
-        Diagnostic("D3D12 failure reporting incomplete");
+        // Allocation/logging failure must not turn the noexcept reporter into terminate.
+#ifdef NXBOX_UWP
+        EdenXbox::CrashRendererException("failure_report", error.what());
+#endif
+        OutputDebugStringA(error.what());
+        OutputDebugStringA("\nD3D12 failure reporting incomplete\n");
     }
 }
+
 bool Context::IsFree(u64 tick) const {
     const auto completed = fence->GetCompletedValue();
     if (completed == UINT64_MAX) {
@@ -369,8 +395,15 @@ void Context::WaitSubmitted(u64 tick) {
             CloseHandle(wait_event);
             Check(result, "SetEventOnCompletion", device.Get());
         }
-        const auto wait = WaitForSingleObjectEx(wait_event, 10000, FALSE);
-        const auto wait_error = GetLastError();
+        DWORD wait;
+        DWORD wait_error;
+        {
+#ifdef NXBOX_UWP
+            const EdenXbox::ThreadProfile::Scope wait_scope{EdenXbox::ThreadProfile::Wait::Fence};
+#endif
+            wait = WaitForSingleObjectEx(wait_event, 10000, FALSE);
+            wait_error = GetLastError();
+        }
         CloseHandle(wait_event);
         if (wait != WAIT_OBJECT_0) {
             Diagnostic(fmt::format("D3D12 wait tick={} result={:#x}", tick, wait));
@@ -391,7 +424,19 @@ void Context::CompleteThrough(u64 tick) {
     while (!batches.empty() && batches.front().tick <= tick) {
         auto batch = std::move(batches.front());
         batches.pop_front();
-        CompleteBatch(batch.callbacks, batch.resources);
+        // Retain the batch resources until every callback has had its turn, including
+        // callbacks after a failed readback. Never replay an already detached batch.
+        for (auto& callback : batch.callbacks) {
+            try {
+                callback();
+            } catch (const std::exception& error) {
+                ReportFailure(error);
+            } catch (...) {
+                const EdenXbox::UnknownRendererException error{
+                    "D3D12 completion callback: non-standard exception"};
+                ReportFailure(error);
+            }
+        }
     }
 }
 void Context::Collect() {

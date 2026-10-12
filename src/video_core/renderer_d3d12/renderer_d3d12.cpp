@@ -9,6 +9,10 @@
 #include <dxgi1_4.h>
 #include <windows.h>
 #include "common/logging.h"
+#include "eden_uwp/renderer_boundary.h"
+#ifdef NXBOX_UWP
+#include "eden_uwp/thread_profile.h"
+#endif
 #include "core/frontend/emu_window.h"
 #include "core/frontend/graphics_context.h"
 #include "video_core/capture.h"
@@ -68,7 +72,9 @@ struct RendererD3D12::Impl {
         try {
             context.Finish();
         } catch (const std::exception& error) {
-            LOG_ERROR(Render, "D3D12 renderer teardown: {}", error.what());
+            context.ReportFailure(error);
+        } catch (...) {
+            Diagnostic("D3D12 renderer teardown: non-standard exception");
         }
     }
     D3D12_CPU_DESCRIPTOR_HANDLE Rtv(UINT index) const {
@@ -294,7 +300,14 @@ struct RendererD3D12::Impl {
         const bool log_present = ++present_sequence <= 8 || present_sequence % 120 == 0;
         if (log_present)
             Diagnostic("D3D12 Present begin");
-        const auto status = swapchain->Present(1, 0);
+        HRESULT status;
+        {
+#ifdef NXBOX_UWP
+            const EdenXbox::ThreadProfile::Scope present_scope{
+                EdenXbox::ThreadProfile::Wait::Present};
+#endif
+            status = swapchain->Present(1, 0);
+        }
         context.LogInfoQueue();
         Check(status, "Present", context.Device());
         Check(context.Device()->GetDeviceRemovedReason(), "after Present", context.Device());
@@ -311,14 +324,23 @@ RendererD3D12::RendererD3D12(Core::Frontend::EmuWindow& window,
         impl->Initialize(window);
         impl->Present(window.GetFramebufferLayout(), {}, rasterizer);
         impl->context.Finish();
+        SetEnvironmentVariableA("NXBOX_NATIVE_D3D12_ACTIVE", "1");
     } catch (const std::exception& error) {
         ReportFailure(error);
         throw;
+    } catch (...) {
+        const EdenXbox::UnknownRendererException error{
+            "D3D12 presentation initialization: non-standard exception"};
+        ReportFailure(error);
+        // The renderer factory already handles runtime_error on initialization failure.
+        throw std::runtime_error(error.what());
     }
 }
-RendererD3D12::~RendererD3D12() = default;
+RendererD3D12::~RendererD3D12() {
+    SetEnvironmentVariableA("NXBOX_NATIVE_D3D12_ACTIVE", nullptr);
+}
 bool RendererD3D12::ReportFailure(const std::exception& error) noexcept {
-    impl->failed = true;
+    impl->failed = FAILED(impl->context.Device()->GetDeviceRemovedReason());
     impl->context.ReportFailure(error);
     return true;
 }
@@ -326,31 +348,56 @@ bool RendererD3D12::HasFailed() const {
     return impl->failed;
 }
 void RendererD3D12::Composite(std::span<const Tegra::FramebufferConfig> layers) {
-    if (IsScreenshotPending()) {
-        renderer_settings.screenshot_requested = false;
-        const auto& size = renderer_settings.screenshot_framebuffer_layout;
-        std::fill_n(static_cast<u8*>(renderer_settings.screenshot_bits),
-                    static_cast<size_t>(size.width) * size.height * 4, u8{});
-        LOG_WARNING(Render, "D3D12 screenshot capture is stubbed");
-        renderer_settings.screenshot_complete_callback(false);
-    }
-    if (!impl->failed && render_window.IsShown()) {
-        try {
-            std::vector<Tegra::FramebufferConfig> display_layers;
-            const auto selected = Tegra::FilterLayerStack(
-                layers, Service::Nvnflinger::LayerStackId::Default, display_layers);
-            rasterizer.PreparePresentation();
-            impl->Present(render_window.GetFramebufferLayout(), selected, rasterizer);
-            ++m_current_frame;
-            render_window.OnFrameDisplayed();
-        } catch (const std::exception& error) {
-            ReportFailure(error);
+    try {
+        if (IsScreenshotPending()) {
+            renderer_settings.screenshot_requested = false;
+            const auto& size = renderer_settings.screenshot_framebuffer_layout;
+            std::fill_n(static_cast<u8*>(renderer_settings.screenshot_bits),
+                        static_cast<size_t>(size.width) * size.height * 4, u8{});
+            LOG_WARNING(Render, "D3D12 screenshot capture is stubbed");
+            renderer_settings.screenshot_complete_callback(false);
         }
+        if (!impl->failed && render_window.IsShown()) {
+            try {
+                std::vector<Tegra::FramebufferConfig> display_layers;
+                const auto selected = Tegra::FilterLayerStack(
+                    layers, Service::Nvnflinger::LayerStackId::Default, display_layers);
+                rasterizer.PreparePresentation();
+                impl->Present(render_window.GetFramebufferLayout(), selected, rasterizer);
+                ++m_current_frame;
+                render_window.OnFrameDisplayed();
+            } catch (const std::exception& error) {
+                ReportFailure(error);
+            }
+        }
+    } catch (const std::exception& error) {
+        ReportFailure(error);
+    } catch (...) {
+        const EdenXbox::UnknownRendererException error{
+            "D3D12 compositor callback: non-standard exception"};
+        ReportFailure(error);
     }
-    gpu.RendererFrameEndNotify();
+    try {
+        gpu.RendererFrameEndNotify();
+    } catch (const std::exception& error) {
+        ReportFailure(error);
+    } catch (...) {
+        const EdenXbox::UnknownRendererException error{
+            "D3D12 frame notification: non-standard exception"};
+        ReportFailure(error);
+    }
 }
 std::vector<u8> RendererD3D12::GetAppletCaptureBuffer() {
-    return std::vector<u8>(VideoCore::Capture::TiledSize);
+    try {
+        return std::vector<u8>(VideoCore::Capture::TiledSize);
+    } catch (const std::exception& error) {
+        ReportFailure(error);
+    } catch (...) {
+        const EdenXbox::UnknownRendererException error{
+            "D3D12 applet capture: non-standard exception"};
+        ReportFailure(error);
+    }
+    return {};
 }
 VideoCore::RasterizerInterface* RendererD3D12::ReadRasterizer() {
     return &rasterizer;

@@ -16,6 +16,9 @@ extern "C" __declspec(dllimport) unsigned long __stdcall GetCurrentThreadId();
 #include "core/core.h"
 #include "core/core_timing.h"
 #include "core/cpu_manager.h"
+#ifdef NXBOX_UWP
+#include "eden_uwp/crash_logger.h"
+#endif
 #include "core/hle/kernel/k_interrupt_manager.h"
 #include "core/hle/kernel/k_scheduler.h"
 #include "core/hle/kernel/k_thread.h"
@@ -178,6 +181,9 @@ void CpuManager::RunThread(std::stop_token token, std::size_t core) {
     system.RegisterCoreThread(core);
     std::string name = is_multicore ? ("CPUCore_" + std::to_string(core)) : std::string{"CPUThread"};
     Common::SetCurrentThreadName(name.c_str());
+#ifdef NXBOX_UWP
+    EdenXbox::RegisterProfileThread();
+#endif
 #ifdef YUZU_UWP_APPCONTAINER
     if (core < NxboxStall::cpu_thread_ids.size()) {
         NxboxStall::cpu_thread_ids[core].store(static_cast<std::uint32_t>(GetCurrentThreadId()));

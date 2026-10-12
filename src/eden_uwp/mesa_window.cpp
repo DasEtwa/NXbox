@@ -2,6 +2,7 @@
 #include "common/nxbox_stall.h"
 #include "common/scope_exit.h"
 #include "common/settings.h"
+#include "eden_uwp/crash_logger.h"
 #include "eden_uwp/diagnostic.h"
 #include "eden_uwp/mesa_window.h"
 #include "eden_uwp/ui/renderer.h"
@@ -304,6 +305,7 @@ private:
 MesaWindow::MesaWindow(const CoreWindow& window_, u32 width, u32 height) : window(window_) {
     // Load before choosing a graphics API: the native path must never load Mesa or create WGL.
     LoadRuntimeEnvironment();
+    StartThreadProfiler();
     const char* override_value = std::getenv("NXBOX_RENDERER");
     native_d3d12 = D3D12::UseNativeBackend(Settings::values.renderer_backend.GetValue() ==
                                                Settings::RendererBackend::D3D12,
