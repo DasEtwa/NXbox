@@ -348,7 +348,7 @@ static void RunTestInstance(Dynarmic::A32::Jit& jit,
     jit_env.ticks_left = ticks_left;
     CheckedRun([&]() { jit.Run(); });
 
-    uni_env.ticks_left = instructions.size();  // Unicorn counts thumb instructions weirdly.
+    uni_env.ticks_left = ticks_left;  // Unicorn 2 counts instructions, not Thumb halfwords.
     uni.Run();
 
     // SCOPE_FAIL {

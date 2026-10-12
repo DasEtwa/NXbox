@@ -299,6 +299,20 @@ static void RunTestInstance(Dynarmic::A64::Jit& jit, A64Unicorn& uni, A64TestEnv
     REQUIRE(uni.GetVectors() == jit.GetVectors());
     REQUIRE(uni.GetSP() == jit.GetSP());
     REQUIRE((uni.GetPstate() & 0xF0000000) == (jit.GetPstate() & 0xF0000000));
+    std::string memory_difference;
+    for (const auto& [address, value] : uni_env.modified_memory) {
+        const auto it = jit_env.modified_memory.find(address);
+        if (it == jit_env.modified_memory.end() || it->second != value) {
+            memory_difference += fmt::format("{:016x}: reference={:02x} jit={}\n", address, value,
+                                             it == jit_env.modified_memory.end() ? "unwritten" : fmt::format("{:02x}", it->second));
+        }
+    }
+    for (const auto& [address, value] : jit_env.modified_memory) {
+        if (!uni_env.modified_memory.contains(address)) {
+            memory_difference += fmt::format("{:016x}: reference=unwritten jit={:02x}\n", address, value);
+        }
+    }
+    INFO("memory differences=" << memory_difference);
     REQUIRE(uni_env.modified_memory == jit_env.modified_memory);
     REQUIRE(uni_env.interrupts.empty());
     REQUIRE(FP::FPSR{uni.GetFpsr()}.QC() == FP::FPSR{jit.GetFpsr()}.QC());
