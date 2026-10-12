@@ -567,7 +567,8 @@ ImageView::ImageView(TextureCacheRuntime&, const VideoCommon::NullImageViewParam
 ImageView::ImageView(TextureCacheRuntime&, const VideoCommon::ImageInfo& info,
                      const VideoCommon::ImageViewInfo& view, GPUVAddr addr)
     : ImageViewBase{info, view, addr}, buffer_size{VideoCommon::CalculateGuestSizeInBytes(info)},
-      sample_count{info.num_samples}, image_type{info.type}, host_format{MaxwellFormat(info.format)} {}
+      sample_count{info.num_samples}, image_type{info.type},
+      host_format{MaxwellFormat(info.format)} {}
 void ImageView::LogUnsupported(std::string_view condition) const {
     VideoCommon::ImageInfo info;
     info.format = format;
@@ -712,8 +713,7 @@ void TextureCacheRuntime::ConvertImage(Framebuffer*, ImageView& dst, ImageView& 
                    desc.Height >> dst.range.base.level, 1};
     try {
         BlitHelpers().CopyImage({dst.ImageHandle(), dst.HostFormat()},
-                                {src.ImageHandle(), src.HostFormat()},
-                                std::span{&copy, 1});
+                                {src.ImageHandle(), src.HostFormat()}, std::span{&copy, 1});
     } catch (const std::logic_error& error) {
         src.LogUnsupported(error.what());
     }
