@@ -303,7 +303,8 @@ static void RunTestInstance(Dynarmic::A32::Jit& jit,
                             const u32 cpsr,
                             const u32 fpscr,
                             const size_t ticks_left,
-                            const std::map<u32, u8>& initial_memory = {}, bool compare_pc = false) {
+                            const std::map<u32, u8>& initial_memory = {},
+                            bool compare_pc = false) {
     const u32 initial_pc = regs[15];
     const u32 num_words = initial_pc / sizeof(typename TestEnv::InstructionType);
     const u32 code_mem_size = num_words + static_cast<u32>(instructions.size());
