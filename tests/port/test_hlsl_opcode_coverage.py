@@ -122,6 +122,7 @@ class HlslOpcodeCoverageTests(unittest.TestCase):
         dxc = shutil.which(os.environ.get("DXC", "dxc"))
         profiles = {
             "vertex": "vs_6_0",
+            "packed10": "vs_6_0",
             "fragment": "ps_6_0",
             "compute": "cs_6_0",
             "waves": "cs_6_0",

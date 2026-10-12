@@ -54,7 +54,17 @@ int main() {
     static_assert(VertexFormatFor(VSize::R8G8B8A8, VType::UScaled).dxgi == 30);
     static_assert(VertexFormatFor(VSize::R8G8B8A8, VType::UScaled).scaled);
     static_assert(VertexFormatFor(VSize::A2B10G10R10, VType::UNorm).dxgi == 24);
-    static_assert(VertexFormatFor(VSize::A2B10G10R10, VType::SNorm).dxgi == 0);
+    // Signed 10:10:10:2 (SM3DW/MK8D normals and tangents) fetches as R10G10B10A2_UINT and
+    // decodes in HLSL; it must not be rejected (that skipped every level-geometry draw).
+    static_assert(VertexFormatFor(VSize::A2B10G10R10, VType::SNorm).dxgi == 25);
+    static_assert(VertexFormatFor(VSize::A2B10G10R10, VType::SInt).dxgi == 25);
+    static_assert(!VertexFormatFor(VSize::A2B10G10R10, VType::SNorm).scaled);
+    static_assert(VertexFormatForInputAssembler(VSize::A2B10G10R10, VType::SNorm).dxgi == 25);
+    static_assert(VertexFormatFor(VSize::A2B10G10R10, VType::SScaled).dxgi == 0);
+    static_assert(VertexSignedPacked10(VSize::A2B10G10R10, VType::SNorm));
+    static_assert(VertexSignedPacked10(VSize::A2B10G10R10, VType::SInt));
+    static_assert(!VertexSignedPacked10(VSize::A2B10G10R10, VType::UNorm));
+    static_assert(!VertexSignedPacked10(VSize::R16G16B16A16, VType::SNorm));
     static_assert(VertexFormatFor(VSize::B10G11R11, VType::Float).dxgi == 26);
     static_assert(VertexFormatFor(VSize::R32, VType::UInt).dxgi == 42);
     static_assert(VertexFormatFor(VSize::R8, VType::SInt).dxgi == 64);

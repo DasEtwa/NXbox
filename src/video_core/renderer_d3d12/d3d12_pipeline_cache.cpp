@@ -495,6 +495,14 @@ Shader::RuntimeInfo GraphicsRuntime(const Maxwell& regs, const Shader::IR::Progr
             continue;
         }
         using Type = Maxwell::VertexAttribute::Type;
+        if (Pso::VertexSignedPacked10(static_cast<u32>(attribute.size.Value()),
+                                      static_cast<u32>(attribute.type.Value()))) {
+            // Fetched as R10G10B10A2_UINT (see Pso::VertexFormatFor); HLSL decodes.
+            runtime.generic_input_types[i] = attribute.type.Value() == Type::SNorm
+                                                 ? Shader::AttributeType::SignedNorm10
+                                                 : Shader::AttributeType::SignedInt10;
+            continue;
+        }
         switch (attribute.type.Value()) {
         case Type::SInt:
             runtime.generic_input_types[i] = Shader::AttributeType::SignedInt;

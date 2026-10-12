@@ -161,7 +161,7 @@ int main() {
             assert(VertexStorageByteSize(size,current.swap_rb) >= VertexByteSize(size));
         }
     }
-    assert(baseline==54 && mapped==182 && native==187);
+    assert(baseline==56 && mapped==186 && native==191);
 }
 """.replace("SIZES", ",".join(map(str, sizes)))
         with tempfile.TemporaryDirectory() as temp:

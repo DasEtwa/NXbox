@@ -45,6 +45,8 @@ std::string VectorType(AttributeType type) {
         return "int4";
     case AttributeType::UnsignedInt:
     case AttributeType::UnsignedScaled:
+    case AttributeType::SignedNorm10:
+    case AttributeType::SignedInt10:
         return "uint4";
     default:
         return "float4";

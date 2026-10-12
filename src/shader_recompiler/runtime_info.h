@@ -23,6 +23,10 @@ enum class AttributeType : u8 {
     SignedScaled,
     UnsignedScaled,
     Disabled,
+    // Packed 10:10:10:2 fetched as raw unsigned components (D3D12 lacks SNORM/SINT spellings);
+    // the shader sign-extends and, for SignedNorm10, normalizes each component.
+    SignedNorm10,
+    SignedInt10,
 };
 
 enum class InputTopology {

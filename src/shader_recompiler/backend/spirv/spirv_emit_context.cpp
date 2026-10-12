@@ -212,6 +212,8 @@ Id GetAttributeType(EmitContext& ctx, AttributeType type) {
     case AttributeType::UnsignedScaled:
         return ctx.profile.support_scaled_attributes ? ctx.F32[4] : ctx.U32[4];
     case AttributeType::Disabled:
+    case AttributeType::SignedNorm10: // D3D12-only fetch policy; Vulkan uses native formats.
+    case AttributeType::SignedInt10:
         break;
     }
     throw InvalidArgument("Invalid attribute type {}", type);

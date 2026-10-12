@@ -26,7 +26,16 @@ void EmitGetAttribute(EmitContext& ctx, IR::Inst& inst, IR::Attribute attr,
             value = fmt::format("asfloat({})", value);
         else if (type == AttributeType::SignedScaled || type == AttributeType::UnsignedScaled)
             value = fmt::format("float({})", value);
-        else if (type == AttributeType::Disabled)
+        else if (type == AttributeType::SignedNorm10 || type == AttributeType::SignedInt10) {
+            // D3D12 has no R10G10B10A2_SNORM/SINT; the IA fetches R10G10B10A2_UINT and the
+            // shader sign-extends each component (10-bit xyz, 2-bit w) here.
+            const u32 bits = IR::GenericAttributeElement(attr) == 3 ? 2 : 10;
+            const auto wide = fmt::format("(int({} << {}u) >> {}u)", value, 32 - bits, 32 - bits);
+            value = type == AttributeType::SignedInt10
+                        ? fmt::format("asfloat({})", wide)
+                        : fmt::format("max(float({}) * {}, -1.0f)", wide,
+                                      bits == 2 ? "1.0f" : "(1.0f / 511.0f)");
+        } else if (type == AttributeType::Disabled)
             value = IR::GenericAttributeElement(attr) == 3 ? "1.0f" : "0.0f";
     } else if (attr == IR::Attribute::FrontFace || attr == IR::Attribute::VertexId ||
                attr == IR::Attribute::InstanceId || attr == IR::Attribute::PrimitiveId ||

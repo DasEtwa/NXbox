@@ -623,10 +623,41 @@ void UnsupportedRollback() {
   }
   Require(bindings.uniform_buffer == 7, "Failure advanced bindings");
 }
+void PackedSignedAttributes() {
+  // Maxwell A2B10G10R10 SNorm/SInt vertex formats have no D3D12 IA spelling; the
+  // input assembler fetches R10G10B10A2_UINT and the shader decodes each component.
+  Fixture f{Stage::VertexB};
+  f.program.info.loads.Set(IR::Attribute::Generic0X);
+  f.program.info.loads.Set(IR::Attribute::Generic0W);
+  f.program.info.loads.Set(IR::Attribute::Generic1Y);
+  f.program.info.stores.Set(IR::Attribute::PositionX);
+  const auto x = f.Add(IR::Opcode::GetAttribute,
+                       {IR::Value{IR::Attribute::Generic0X}, IR::Value{0u}});
+  const auto w = f.Add(IR::Opcode::GetAttribute,
+                       {IR::Value{IR::Attribute::Generic0W}, IR::Value{0u}});
+  const auto y = f.Add(IR::Opcode::GetAttribute,
+                       {IR::Value{IR::Attribute::Generic1Y}, IR::Value{0u}});
+  const auto sum = f.Add(IR::Opcode::FPAdd32, {x, w});
+  const auto all = f.Add(IR::Opcode::FPAdd32, {sum, y});
+  f.Add(IR::Opcode::SetAttribute,
+        {IR::Value{IR::Attribute::PositionX}, all, IR::Value{0u}});
+  RuntimeInfo runtime{};
+  runtime.generic_input_types[0] = AttributeType::SignedNorm10;
+  runtime.generic_input_types[1] = AttributeType::SignedInt10;
+  Bindings bindings;
+  const auto text = f.Emit(bindings, {}, runtime);
+  Contains(text, "uint4 attr0 : TEXCOORD0");
+  Contains(text, "uint4 attr1 : TEXCOORD1");
+  Contains(text, "max(float((int(input.attr0.x << 22u) >> 22u)) * (1.0f / 511.0f), -1.0f)");
+  Contains(text, "max(float((int(input.attr0.w << 30u) >> 30u)) * 1.0f, -1.0f)");
+  Contains(text, "asfloat((int(input.attr1.y << 22u) >> 22u))");
+  std::ofstream("hlsl_packed10.hlsl") << text;
+}
 } // namespace
 int main() {
   try {
     Vertex();
+    PackedSignedAttributes();
     Fragment();
     MultisampleFetch();
     Compute();

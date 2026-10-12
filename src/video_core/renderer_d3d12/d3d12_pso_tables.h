@@ -465,7 +465,10 @@ constexpr VertexFormat VertexFormatFor(std::uint32_t size, std::uint32_t type, b
         f = t == VType::UNorm ? 65 : t == VType::UInt ? 62 : 0;
         break; // A8_UNORM / R8_UINT
     case A2B10G10R10:
-        f = pick(0, 24, 0, 25, 0);
+        // SNorm/SInt fetch the raw UINT components; the HLSL vertex shader sign-extends
+        // and normalizes them (AttributeType::SignedNorm10 / SignedInt10). SScaled would
+        // read negatives as large positives through the scaled float() path, so reject it.
+        f = type == VType::SScaled ? 0 : pick(25, 24, 25, 25, 0);
         break;
     case B10G11R11:
         f = t == VType::Float ? 26 : 0;
@@ -500,6 +503,11 @@ constexpr VertexFormat VertexFormatForInputAssembler(std::uint32_t size, std::ui
         format.dxgi = VertexFormatFor(expanded, type).dxgi;
     }
     return format;
+}
+
+// Signed packed 10:10:10:2 attributes are fetched as R10G10B10A2_UINT and decoded in HLSL.
+constexpr bool VertexSignedPacked10(std::uint32_t size, std::uint32_t type) {
+    return size == VSize::A2B10G10R10 && (type == VType::SNorm || type == VType::SInt);
 }
 
 // DXGI depth-stencil view format from the typeless resource format used by the texture cache
