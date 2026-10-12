@@ -60,6 +60,10 @@ const char* UnsupportedState(const Maxwell& regs, u32 topology) {
         return "anti_alias_alpha_control.alpha_to_one requires fragment epilogue";
     if (regs.iterated_blend.enable || regs.iterated_blend.enable_alpha)
         return "iterated_blend requires programmable blend emulation";
+    if (regs.polygon_mode_front == Maxwell::PolygonMode::Line &&
+        (topology == 7 || topology == 8 || topology == 9))
+        return "polygon_mode_front=Line for quads/quad strips/polygons requires boundary-edge "
+               "emulation";
     if (regs.polygon_mode_front == Maxwell::PolygonMode::Point)
         return "polygon_mode_front=Point requires point rasterization emulation";
     if (regs.polygon_mode_front != regs.polygon_mode_back)

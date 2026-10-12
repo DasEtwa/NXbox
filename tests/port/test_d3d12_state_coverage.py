@@ -252,6 +252,7 @@ int main() {
     assert((expand(Topology::TriangleStrip,5,Provoking::First)==std::vector<unsigned>{0,1,2,1,3,2,2,3,4}));
     assert((expand(Topology::TriangleStrip,5,Provoking::Last)==std::vector<unsigned>{2,0,1,3,2,1,4,2,3}));
     assert((expand(Topology::TriangleFan,5,Provoking::First)==std::vector<unsigned>{1,2,0,2,3,0,3,4,0}));
+    assert((expand(Topology::Polygon,5,Provoking::First)==std::vector<unsigned>{1,2,0,2,3,0,3,4,0}));
     assert((expand(Topology::TriangleFan,5,Provoking::Last)==std::vector<unsigned>{2,0,1,3,0,2,4,0,3}));
     assert((expand(Topology::QuadStrip,4,Provoking::Last)==std::vector<unsigned>{3,1,0,3,0,2}));
     // New adjacency list/strip conversion discards incomplete restart segments.

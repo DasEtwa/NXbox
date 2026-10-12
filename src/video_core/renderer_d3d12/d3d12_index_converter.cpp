@@ -140,7 +140,7 @@ void EmitSegment(Topology topology, std::size_t begin, std::size_t n, ReadIndex 
     case static_cast<std::uint32_t>(Topology::TriangleFan):
     case static_cast<std::uint32_t>(Topology::Polygon):
         for (std::size_t i = 2; i < n; ++i) {
-            if (provoking == Provoking::First && topology == Topology::TriangleFan)
+            if (provoking == Provoking::First)
                 triangle(i - 1, i, 0);
             else
                 triangle(0, i - 1, i);
