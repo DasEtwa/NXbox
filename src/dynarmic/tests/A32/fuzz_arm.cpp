@@ -319,6 +319,10 @@ static void RunTestInstance(Dynarmic::A32::Jit& jit,
     std::copy(instructions.begin(), instructions.end(), uni_env.code_mem.begin() + num_words);
     jit_env.PadCodeMem();
     uni_env.PadCodeMem();
+    jit_env.code_mem_modified_by_guest = false;
+    uni_env.code_mem_modified_by_guest = false;
+    jit_env.interrupts.clear();
+    uni_env.interrupts.clear();
     jit_env.modified_memory = initial_memory;
     uni_env.modified_memory = initial_memory;
 

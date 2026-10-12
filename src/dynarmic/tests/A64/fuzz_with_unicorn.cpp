@@ -175,6 +175,10 @@ static void RunTestInstance(Dynarmic::A64::Jit& jit, A64Unicorn& uni, A64TestEnv
     uni_env.code_mem.emplace_back(0x14000000);  // B .
     jit_env.code_mem_start_address = instructions_start;
     uni_env.code_mem_start_address = instructions_start;
+    jit_env.code_mem_modified_by_guest = false;
+    uni_env.code_mem_modified_by_guest = false;
+    jit_env.interrupts.clear();
+    uni_env.interrupts.clear();
     jit_env.modified_memory.clear();
     uni_env.modified_memory.clear();
 

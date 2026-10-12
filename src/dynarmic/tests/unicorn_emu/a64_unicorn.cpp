@@ -36,6 +36,17 @@ A64Unicorn::~A64Unicorn() {
 void A64Unicorn::Run() {
     while (testenv.ticks_left > 0) {
         CHECKED(uc_emu_start(uc, GetPC(), END_ADDRESS, 0, 1));
+        // The hook value is only 64 bits even for a 128-bit vector store. Read back
+        // committed bytes after the instruction to capture its complete result.
+        for (const auto& [address, size] : pending_writes) {
+            for (int byte = 0; byte < size; ++byte) {
+                const u64 byte_address = address + static_cast<u64>(byte);
+                u8 value;
+                CHECKED(uc_mem_read(uc, byte_address, &value, sizeof(value)));
+                testenv.MemoryWrite(byte_address, value, sizeof(value));
+            }
+        }
+        pending_writes.clear();
         testenv.ticks_left--;
         if (!testenv.interrupts.empty() || testenv.code_mem_modified_by_guest) {
             return;
@@ -150,6 +161,7 @@ void A64Unicorn::ClearPageCache() {
         CHECKED(uc_mem_unmap(uc, page->address, 4096));
     }
     pages.clear();
+    pending_writes.clear();
 }
 
 void A64Unicorn::DumpMemoryInformation() {
@@ -189,11 +201,9 @@ bool A64Unicorn::UnmappedMemoryHook(uc_engine* uc, uc_mem_type /*type*/, u64 sta
     const auto generate_page = [&](u64 base_address) {
         // printf("generate_page(%" PRIx64 ")\n", base_address);
 
-        const u32 permissions = [&]() -> u32 {
-            if (base_address < this_->testenv.code_mem.size() * 4)
-                return UC_PROT_READ | UC_PROT_EXEC;
-            return UC_PROT_READ;
-        }();
+        // The test callbacks model flat memory; writes are observed by MemoryWriteHook.
+        // Read-only pages turn normal stores into mapping faults in Unicorn 2.
+        constexpr u32 permissions = UC_PROT_ALL;
 
         auto page = std::make_unique<Page>();
         page->address = base_address;
@@ -226,8 +236,8 @@ bool A64Unicorn::UnmappedMemoryHook(uc_engine* uc, uc_mem_type /*type*/, u64 sta
     return true;
 }
 
-bool A64Unicorn::MemoryWriteHook(uc_engine* /*uc*/, uc_mem_type /*type*/, u64 start_address, int size, u64 value, void* user_data) {
+bool A64Unicorn::MemoryWriteHook(uc_engine* /*uc*/, uc_mem_type /*type*/, u64 start_address, int size, u64 /*value*/, void* user_data) {
     auto* this_ = static_cast<A64Unicorn*>(user_data);
-    this_->testenv.MemoryWrite(start_address, value, size);
+    this_->pending_writes.emplace_back(start_address, size);
     return true;
 }

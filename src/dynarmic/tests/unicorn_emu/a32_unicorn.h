@@ -9,6 +9,7 @@
 #pragma once
 
 #include <array>
+#include <utility>
 #include <vector>
 
 #ifdef _MSC_VER
@@ -88,4 +89,5 @@ private:
     uc_hook mem_write_prot_hook{};
 
     std::vector<std::unique_ptr<Page>> pages;
+    std::vector<std::pair<u32, int>> pending_writes;
 };
