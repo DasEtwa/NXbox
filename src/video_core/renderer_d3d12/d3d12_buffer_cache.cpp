@@ -12,8 +12,9 @@ namespace {
 void InvalidRange(u32 kind, const char* label, u64 offset, u64 size, u64 width) {
     static std::array<std::atomic_flag, 7> reported{};
     if (!reported[kind].test_and_set())
-        Diagnostic(fmt::format("D3D12 {} rejected offset={} size={} resource_bytes={}; substituting zero/skip",
-                               label, offset, size, width));
+        Diagnostic(fmt::format(
+            "D3D12 {} rejected offset={} size={} resource_bytes={}; substituting zero/skip", label,
+            offset, size, width));
 }
 } // namespace
 
@@ -184,7 +185,8 @@ void BufferCacheRuntime::BindUniformBuffer(const Buffer& buffer, u32 offset, u32
         return;
     }
     if (size > 65536 || offset > width || size > width - offset) {
-        InvalidRange(5, "uniform binding exceeds synchronized buffer range or 64 KiB", offset, size, width);
+        InvalidRange(5, "uniform binding exceeds synchronized buffer range or 64 KiB", offset, size,
+                     width);
         bindings.stages[bindings.current_stage].uniform.push_back({nullptr, 0, 0});
         return;
     }
@@ -208,7 +210,8 @@ void BufferCacheRuntime::BindStorageBuffer(const Buffer& buffer, u32 offset, u32
     auto resource = buffer.Handle();
     const auto width = resource ? resource->handle->GetDesc().Width : 0;
     if (offset > width || size > width - offset || (offset & 3)) {
-        InvalidRange(6, "raw storage binding requires an in-bounds word-aligned range", offset, size, width);
+        InvalidRange(6, "raw storage binding requires an in-bounds word-aligned range", offset,
+                     size, width);
         bindings.stages[bindings.current_stage].storage.push_back({nullptr, 0, 0, is_written});
         return;
     }

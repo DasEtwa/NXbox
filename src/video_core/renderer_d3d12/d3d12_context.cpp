@@ -5,17 +5,17 @@
 #include <atomic>
 #include <mutex>
 #include <set>
-#include <unordered_map>
 #include <stdexcept>
+#include <unordered_map>
 #include <d3d12sdklayers.h>
 #include <fmt/format.h>
 #include <windows.h>
 #include "eden_uwp/renderer_boundary.h"
 #ifdef NXBOX_UWP
+#include <winrt/Windows.System.h>
 #include "eden_uwp/crash_logger.h"
 #include "eden_uwp/diagnostic.h"
 #include "eden_uwp/thread_profile.h"
-#include <winrt/Windows.System.h>
 #endif
 #include "common/logging.h"
 #include "video_core/renderer_d3d12/d3d12_completion.h"
@@ -557,8 +557,8 @@ u64 NativeBufferMemoryTarget(u64 cache) noexcept {
     MEMORYSTATUSEX memory{};
     memory.dwLength = sizeof(memory);
     if (GlobalMemoryStatusEx(&memory))
-        return BufferMemoryTarget(memory.ullTotalPhys,
-                                  memory.ullTotalPhys - memory.ullAvailPhys, cache);
+        return BufferMemoryTarget(memory.ullTotalPhys, memory.ullTotalPhys - memory.ullAvailPhys,
+                                  cache);
     return 1ULL << 30;
 }
 namespace {
@@ -586,7 +586,8 @@ struct BufferHeapPool {
     }
     ResourcePtr Allocate(ID3D12Device* device, const std::shared_ptr<MemoryBudget>& budget,
                          const D3D12_RESOURCE_DESC& desc, D3D12_HEAP_TYPE type,
-                         D3D12_RESOURCE_STATES state, const std::shared_ptr<BufferHeapPool>& owner) {
+                         D3D12_RESOURCE_STATES state,
+                         const std::shared_ptr<BufferHeapPool>& owner) {
         const auto allocation = device->GetResourceAllocationInfo(0, 1, &desc);
         if (allocation.SizeInBytes == UINT64_MAX || allocation.SizeInBytes > BufferHeapPage::Size)
             return {};
@@ -614,26 +615,29 @@ struct BufferHeapPool {
             heap.Properties.Type = type;
             heap.Properties.CreationNodeMask = heap.Properties.VisibleNodeMask = 1;
             heap.Flags = D3D12_HEAP_FLAG_ALLOW_ONLY_BUFFERS;
-            Check(device->CreateHeap(&heap, IID_PPV_ARGS(&page->handle)), "Create buffer heap", device);
+            Check(device->CreateHeap(&heap, IID_PPV_ARGS(&page->handle)), "Create buffer heap",
+                  device);
             budget->used += BufferHeapPage::Size;
             pages.push_back(page);
             start = page->slots.Allocate(count);
         }
-        ResourcePtr resource{pending.release(), [page, start = *start, count, owner](Resource* value) {
-            delete value; // Release the resource before recycling its heap range.
-            const std::scoped_lock lock{page->mutex};
-            page->slots.Release(start, count);
-        }};
-        Check(device->CreatePlacedResource(page->handle.Get(), u64{*start} * BufferHeapSlots::Alignment,
-                                          &desc, state, nullptr, IID_PPV_ARGS(&resource->handle)),
+        ResourcePtr resource{
+            pending.release(), [page, start = *start, count, owner](Resource* value) {
+                delete value; // Release the resource before recycling its heap range.
+                const std::scoped_lock lock{page->mutex};
+                page->slots.Release(start, count);
+            }};
+        Check(device->CreatePlacedResource(page->handle.Get(),
+                                           u64{*start} * BufferHeapSlots::Alignment, &desc, state,
+                                           nullptr, IID_PPV_ARGS(&resource->handle)),
               "Create placed buffer", device);
         resource->heap = type;
         resource->state = state;
         resource->allocation_size = allocation.SizeInBytes;
         if (type != D3D12_HEAP_TYPE_DEFAULT) {
             void* mapped{};
-            const D3D12_RANGE range{0, type == D3D12_HEAP_TYPE_READBACK
-                                          ? static_cast<SIZE_T>(desc.Width) : 0};
+            const D3D12_RANGE range{
+                0, type == D3D12_HEAP_TYPE_READBACK ? static_cast<SIZE_T>(desc.Width) : 0};
             Check(resource->handle->Map(0, &range, &mapped), "Map placed buffer", device);
             resource->mapped = {static_cast<u8*>(mapped), static_cast<size_t>(desc.Width)};
         }
@@ -672,12 +676,12 @@ ResourcePtr Context::CreateResource(const D3D12_RESOURCE_DESC& desc, D3D12_HEAP_
     properties.Type = heap;
     properties.CreationNodeMask = properties.VisibleNodeMask = 1;
     auto result = device->CreateCommittedResource(&properties, D3D12_HEAP_FLAG_NONE, &desc, state,
-                                                   nullptr, IID_PPV_ARGS(&resource->handle));
+                                                  nullptr, IID_PPV_ARGS(&resource->handle));
     if (result == E_OUTOFMEMORY) {
         Finish();
         BufferPool(budget)->Trim();
         result = device->CreateCommittedResource(&properties, D3D12_HEAP_FLAG_NONE, &desc, state,
-                                                  nullptr, IID_PPV_ARGS(&resource->handle));
+                                                 nullptr, IID_PPV_ARGS(&resource->handle));
     }
     Check(result, "CreateCommittedResource after fence retirement", device.Get());
     resource->heap = heap;

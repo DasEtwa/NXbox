@@ -131,9 +131,21 @@ class T7BuffersTests(unittest.TestCase):
             binary = Path(folder) / "buffers"
             source.write_text(source_text)
             result = subprocess.run(
-                ["clang++", "-std=c++20", "-Wall", "-Wextra", "-Werror",
-                 "-fsanitize=address,undefined", "-I", str(ROOT / "src"),
-                 str(source), "-o", str(binary)], capture_output=True, text=True,
+                [
+                    "clang++",
+                    "-std=c++20",
+                    "-Wall",
+                    "-Wextra",
+                    "-Werror",
+                    "-fsanitize=address,undefined",
+                    "-I",
+                    str(ROOT / "src"),
+                    str(source),
+                    "-o",
+                    str(binary),
+                ],
+                capture_output=True,
+                text=True,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             subprocess.run([str(binary)], check=True, timeout=20)

@@ -3,9 +3,9 @@
 
 #include <algorithm>
 #include <cstdint>
-#include <vector>
 #include <deque>
 #include <optional>
+#include <vector>
 
 namespace D3D12 {
 // Soft cache target: reserve space for the CPU/JIT and adapt to the actual process limit.
@@ -43,7 +43,10 @@ public:
         std::fill_n(slots.begin() + start, count, false);
         used -= count;
     }
-    std::uint32_t Used() const noexcept { return used; }
+    std::uint32_t Used() const noexcept {
+        return used;
+    }
+
 private:
     std::vector<bool> slots;
     std::uint32_t used{};
