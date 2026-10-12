@@ -113,6 +113,21 @@ USHORT Capture(void** frames) noexcept {
     }
 }
 
+// The first stack word is the caller for leaf getters without a stack frame.
+// Keep the raw candidate separate from the handler stack; it is not an unwind.
+void *LeafCaller(const CONTEXT *context) noexcept {
+#if defined(_M_X64)
+    __try {
+        return *reinterpret_cast<void *const *>(context->Rsp);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return nullptr;
+    }
+#else
+    (void)context;
+    return nullptr;
+#endif
+}
+
 void RecordCrash(const char* event, DWORD code, EXCEPTION_POINTERS* info = nullptr) noexcept {
     if (in_crash_handler) {
         return;
@@ -145,6 +160,19 @@ void RecordCrash(const char* event, DWORD code, EXCEPTION_POINTERS* info = nullp
         Address(line, info->ExceptionRecord->ExceptionAddress);
         Write(line);
     }
+#if defined(_M_X64)
+    if (info && info->ContextRecord) {
+        Crash::Line line;
+        Prefix(line, "fault_context");
+        line.Add(" rcx=0x");
+        line.Number(info->ContextRecord->Rcx, 16);
+        line.Add(" rsp=0x");
+        line.Number(info->ContextRecord->Rsp, 16);
+        line.Add(" leaf_caller_candidate=");
+        Address(line, LeafCaller(info->ContextRecord));
+        Write(line);
+    }
+#endif
     // This is the handler/caller stack, not a reconstruction of the interrupted stack. The
     // exception PC above is authoritative. Use the UWP stack capture without DbgHelp symbols.
     void* frames[96]{};

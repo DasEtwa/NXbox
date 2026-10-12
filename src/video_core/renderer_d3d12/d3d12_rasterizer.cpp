@@ -49,8 +49,19 @@ RasterizerD3D12::RasterizerD3D12(Tegra::GPU& gpu, Tegra::MaxwellDeviceMemoryMana
       fence_manager{*this, gpu, texture_cache, buffer_cache, query_cache, context}, m_gpu{gpu} {
     default_pipeline_cache = std::make_unique<PipelineCache>(context, memory);
     pipeline_cache = default_pipeline_cache.get();
+    context.Profile().guest_visibility = [this] {
+        std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
+        return query_runtime.VisibilityDiagnostics() +
+               " pending_guest_fences=" + std::to_string(fence_manager.PendingGuestFences()) +
+               " pending_guest_callbacks=" + std::to_string(fence_manager.PendingGuestCallbacks()) +
+               " uncommitted_buffer_writes=" +
+               std::to_string(buffer_cache.HasUncommittedFlushes()) +
+               " uncommitted_texture_writes=" +
+               std::to_string(texture_cache.HasUncommittedFlushes());
+    };
 }
 RasterizerD3D12::~RasterizerD3D12() {
+    context.Profile().guest_visibility = {};
     // Query callbacks capture the cache. Drain while every cache/runtime is alive.
     try {
         fence_manager.SignalReference();
@@ -1915,13 +1926,18 @@ void RasterizerD3D12::FlushAll() {
 void RasterizerD3D12::FlushRegion(DAddr addr, u64 size, VideoCommon::CacheType which) {
     if (!addr || !size)
         return;
+    if (True(which & VideoCommon::CacheType::TextureCache)) {
+        std::scoped_lock lock{texture_cache.mutex};
+        texture_cache.DownloadMemory(addr, size);
+    }
+    if (True(which & VideoCommon::CacheType::BufferCache)) {
+        std::scoped_lock lock{buffer_cache.mutex};
+        buffer_cache.DownloadMemory(addr, size);
+    }
+    // A report can be newer than overlapping cached buffer/image contents.
+    // Publish queries last so downloads cannot overwrite the final guest value.
     if (True(which & VideoCommon::CacheType::QueryCache))
         query_cache.FlushRegion(addr, size);
-    std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
-    if (True(which & VideoCommon::CacheType::BufferCache))
-        buffer_cache.DownloadMemory(addr, size);
-    if (True(which & VideoCommon::CacheType::TextureCache))
-        texture_cache.DownloadMemory(addr, size);
 }
 bool RasterizerD3D12::MustFlushRegion(DAddr addr, u64 size, VideoCommon::CacheType which) {
     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
@@ -1946,20 +1962,35 @@ void RasterizerD3D12::InvalidateRegion(DAddr addr, u64 size, VideoCommon::CacheT
         query_cache.InvalidateRegion(addr, size);
 }
 bool RasterizerD3D12::OnCPUWrite(DAddr addr, u64 size) {
-    std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
-    default_pipeline_cache->OnCacheInvalidation(addr, size);
-    query_cache.InvalidateRegion(addr, size);
-    const bool cached = buffer_cache.OnCPUWrite(addr, size);
-    texture_cache.WriteMemory(addr, size);
-    return cached;
+    {
+        std::scoped_lock lock{buffer_cache.mutex};
+        // Defer cached CPU stores while the buffer still owns GPU-written bytes.
+        if (buffer_cache.OnCPUWrite(addr, size))
+            return true;
+    }
+    {
+        std::scoped_lock lock{texture_cache.mutex};
+        texture_cache.WriteMemory(addr, size);
+    }
+    default_pipeline_cache->InvalidateRegion(addr, size);
+    return false;
 }
 void RasterizerD3D12::OnCacheInvalidation(DAddr addr, u64 size) {
-    InvalidateRegion(addr, size);
+    // Gathering cached CPU stores is not an explicit guest query overwrite.
+    // Keep pending reports alive, as the OpenGL/Vulkan backends do.
+    InvalidateRegion(addr, size,
+                     VideoCommon::CacheType::BufferCache | VideoCommon::CacheType::TextureCache |
+                         VideoCommon::CacheType::ShaderCache);
 }
 VideoCore::RasterizerDownloadArea RasterizerD3D12::GetFlushArea(PAddr addr, u64 size) {
     {
         std::scoped_lock lock{texture_cache.mutex};
         if (const auto area = texture_cache.GetFlushArea(addr, size))
+            return *area;
+    }
+    {
+        std::scoped_lock lock{buffer_cache.mutex};
+        if (const auto area = buffer_cache.GetFlushArea(addr, size))
             return *area;
     }
     VideoCore::RasterizerDownloadArea new_area{

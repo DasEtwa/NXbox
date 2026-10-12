@@ -74,7 +74,9 @@ struct Memory {
     std::optional<u64> GpuToCpuAddress(u64 address) { return address; }
 };
 struct GPU { u64 GetTicks() { return 1234; } };
-struct Impl {
+struct Runtime {};
+template<class Traits> struct Impl {
+    Runtime runtime;
     StreamerInterface payload,counter;
     std::array<StreamerInterface*,2> streamers{&payload,&counter};
     Rasterizer rasterizer;
@@ -84,7 +86,7 @@ struct Impl {
     Query* ObtainQuery(QueryLocation loc) { return streamers[loc.stream_id.value]->GetQuery(loc.query_id.value); }
 };
 template<class Traits> struct QueryCacheBase {
-    std::unique_ptr<Impl> impl=std::make_unique<Impl>();
+    std::unique_ptr<Impl<Traits>> impl=std::make_unique<Impl<Traits>>();
     Memory* gpu_memory=&impl->device_memory;
     std::mutex cache_mutex;
     std::unordered_map<u64,std::unordered_map<u32,QueryLocation>> cached_queries;

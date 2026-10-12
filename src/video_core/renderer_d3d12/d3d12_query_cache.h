@@ -3,6 +3,7 @@
 
 #include <memory>
 #include <span>
+#include <string>
 #include <utility>
 
 #include "video_core/query_cache/query_cache_base.h"
@@ -66,6 +67,9 @@ public:
     bool HostConditionalRenderingCompareValues(VideoCommon::LookupData first,
                                                VideoCommon::LookupData second, bool qc_dirty,
                                                bool equal_check);
+    void ReportPending();
+    void ReportCompleted(bool invalidated);
+    std::string VisibilityDiagnostics() const;
     void PrepareDraw();
     void BeginDraw(bool has_geometry_shader = false);
     void EndDraw();

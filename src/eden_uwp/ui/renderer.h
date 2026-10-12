@@ -157,6 +157,7 @@ private:
         formats_;
     D2D1::Matrix3x2F canvas_ = D2D1::Matrix3x2F::Identity();
     bool drawing_ = false;
+    bool overlay_present_logged_{};
     bool overlay_ = false;
 };
 

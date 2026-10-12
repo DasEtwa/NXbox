@@ -1119,9 +1119,11 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
                       session_ui.overlay_open.load(std::memory_order_acquire));
         switch (gamepad->HomeCombo()) {
         case HomeComboAction::Prompt:
+            Diagnostic("HOME_COMBO action=Prompt");
             session_ui.overlay_open.store(true, std::memory_order_release);
             break;
         case HomeComboAction::GoHome:
+            Diagnostic("HOME_COMBO action=GoHome");
             session_ui.return_home.store(true, std::memory_order_release);
             break;
         case HomeComboAction::None:

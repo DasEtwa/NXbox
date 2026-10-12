@@ -262,7 +262,8 @@ public:
         return enabled;
     }
     void Count(FrameCount counter, u64 amount = 1);
-    void EndFrame();
+    void EndFrame(bool presented = true);
+    std::function<std::string()> guest_visibility;
     void BindRecordingThread();
 
 private:

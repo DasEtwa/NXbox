@@ -109,6 +109,7 @@ Renderer::~Renderer() {
 
 void Renderer::Initialize(const winrt::Windows::UI::Core::CoreWindow& window, bool overlay) {
     overlay_ = overlay;
+    overlay_present_logged_ = false;
     const D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0};
     CheckHr(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
                               D3D11_CREATE_DEVICE_BGRA_SUPPORT, levels, ARRAYSIZE(levels),
@@ -151,6 +152,11 @@ void Renderer::Initialize(const winrt::Windows::UI::Core::CoreWindow& window, bo
         desc.Width = static_cast<UINT>(window.Bounds().Width * scale);
         desc.Height = static_cast<UINT>(window.Bounds().Height * scale);
     }
+    if (overlay)
+        Diagnostic(fmt::format(
+            "SESSION_OVERLAY_CREATE foreground={} size={}x{} alpha={} scaling={}",
+            (desc.Flags & DXGI_SWAP_CHAIN_FLAG_FOREGROUND_LAYER) != 0, desc.Width, desc.Height,
+            static_cast<int>(desc.AlphaMode), static_cast<int>(desc.Scaling)));
     if (window) {
         CheckHr(dxgi_factory->CreateSwapChainForCoreWindow(
                     d3d_device_.Get(), winrt::get_unknown(window), &desc, nullptr, &swap_chain_),
@@ -321,6 +327,10 @@ void Renderer::EndFrame(Pixels* capture) {
             CrashGpuError("DXGI.Present1", result, d3d_device_->GetDeviceRemovedReason());
         }
         CheckHr(result, "Present1");
+        if (overlay_ && !overlay_present_logged_) {
+            overlay_present_logged_ = true;
+            Diagnostic("SESSION_OVERLAY_PRESENT complete");
+        }
     }
 }
 

@@ -296,7 +296,7 @@ void FrameProfile::Count(FrameCount counter, u64 amount) {
     if (OnOwner())
         counts[static_cast<size_t>(counter)] += amount;
 }
-void FrameProfile::EndFrame() {
+void FrameProfile::EndFrame(bool presented) {
     if (!enabled)
         return;
     // Renderer initialization can run on the UI thread; runtime frame recording
@@ -309,7 +309,7 @@ void FrameProfile::EndFrame() {
     }
     BindRecordingThread();
     Switch(timing.active);
-    ++frames;
+    frames += presented ? 1 : 0;
     const auto wall = ProfileWallTime();
     if (wall - start_wall < 50000000)
         return;
@@ -333,8 +333,11 @@ void FrameProfile::EndFrame() {
             line += fmt::format(" {}_cpu_ms={:.3f}", names[i],
                                 static_cast<double>(timing.cpu[i]) / 10000.0);
         for (size_t i = 0; i < counts.size(); ++i)
-            line += fmt::format(" {}={} {}_per_frame={:.2f}", counters[i], counts[i], counters[i],
-                                static_cast<double>(counts[i]) / static_cast<double>(frames));
+            line += fmt::format(
+                " {}={} {}_per_frame={:.2f}", counters[i], counts[i], counters[i],
+                frames ? static_cast<double>(counts[i]) / static_cast<double>(frames) : 0.0);
+        if (guest_visibility)
+            line += guest_visibility();
         Diagnostic(line);
     } catch (...) {
         Diagnostic("D3D12 frame profile formatting failed");
@@ -636,6 +639,8 @@ u64 Context::Submit() {
     }
     Check(queue->Signal(fence.Get(), tick), "Signal", device.Get());
     submitted = tick;
+    // Report progress even when the guest has stopped presenting.
+    profile.EndFrame(false);
     LogInfoQueue();
     return submitted;
 }

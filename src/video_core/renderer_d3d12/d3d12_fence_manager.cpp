@@ -34,7 +34,18 @@ FenceManager::~FenceManager() {
     StopFenceThread();
 }
 void FenceManager::SignalFence(std::function<void()>&& func) {
-    GenericFenceManager::SignalFence(std::move(func));
+    ++pending_guest_fences;
+    GenericFenceManager::SignalFence([this, func = std::move(func)] {
+        func();
+        --pending_guest_fences;
+    });
+}
+void FenceManager::SyncOperation(std::function<void()> &&func) {
+    ++pending_guest_callbacks;
+    GenericFenceManager::SyncOperation([this, func = std::move(func)] {
+        func();
+        --pending_guest_callbacks;
+    });
 }
 void FenceManager::SignalSyncPoint(u32 value) {
     syncpoint_manager.IncrementGuest(value);

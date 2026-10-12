@@ -283,13 +283,22 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
         }
         sub_container.insert_or_assign(base, query_location);
     }
+    if constexpr (requires { impl->runtime.ReportPending(); }) {
+        if (!immediate_payload)
+            impl->runtime.ReportPending();
+    }
     std::function<void()> operation([this, is_synced, streamer, query_base = query, query_location,
                                      pointer, pointer_timestamp] {
         std::scoped_lock lock(cache_mutex);
+        const auto complete = [&](bool invalidated) {
+            if constexpr (requires { impl->runtime.ReportCompleted(invalidated); })
+                impl->runtime.ReportCompleted(invalidated);
+        };
         if (True(query_base->flags & QueryFlagBits::IsInvalidated)) {
             if (!is_synced) [[likely]] {
                 impl->pending_unregister.push_back(query_location);
             }
+            complete(true);
             return;
         }
         if (False(query_base->flags & QueryFlagBits::IsFinalValueSynced)) [[unlikely]] {
@@ -298,6 +307,7 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
             if (!is_synced) [[likely]] {
                 impl->pending_unregister.push_back(query_location);
             }
+            complete(true);
             return;
         }
         query_base->value += streamer->GetAmendValue();
@@ -310,6 +320,7 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
             u32 value = static_cast<u32>(query_base->value);
             std::memcpy(pointer, &value, sizeof(value));
         }
+        complete(false);
         if (!is_synced) [[likely]] {
             impl->pending_unregister.push_back(query_location);
         }

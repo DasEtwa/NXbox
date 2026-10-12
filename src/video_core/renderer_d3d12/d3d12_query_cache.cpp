@@ -231,6 +231,7 @@ struct QueryCacheRuntimeImpl {
     std::array<Draw, BankSize> draws{};
     std::array<std::array<u64, 4>, TypeCount> totals{}, baselines{};
     std::array<bool, TypeCount> enabled{};
+    std::atomic<u64> pending_reports{}, completed_reports{}, invalidated_reports{}, report_copies{};
     u32 count{};
     bool drawing{}, predicate_set{};
 };
@@ -251,6 +252,21 @@ VideoCommon::StreamerInterface* QueryCacheRuntime::GetStreamerInterface(QueryTyp
     }
     const auto index = static_cast<size_t>(type);
     return index < TypeCount ? impl->streamers[index].get() : nullptr;
+}
+void QueryCacheRuntime::ReportPending() { ++impl->pending_reports; }
+void QueryCacheRuntime::ReportCompleted(bool invalidated) {
+    --impl->pending_reports;
+    if (invalidated)
+        ++impl->invalidated_reports;
+    else
+        ++impl->completed_reports;
+}
+std::string QueryCacheRuntime::VisibilityDiagnostics() const {
+    return " pending_guest_queries=" + std::to_string(impl->pending_reports.load()) +
+           " guest_query_writes=" + std::to_string(impl->completed_reports.load()) +
+           " guest_query_invalidations=" + std::to_string(impl->invalidated_reports.load()) +
+           " query_buffer_copies=" + std::to_string(impl->report_copies.load()) +
+           " pending_native_queries=" + std::to_string(impl->count);
 }
 void QueryCacheRuntime::PrepareDraw() {
     if (BisectEnabled("NXBOX_D3D12_NO_QUERIES"))
@@ -371,6 +387,7 @@ void QueryCacheRuntime::CopyValue(DAddr address, const ResourcePtr& source, u64 
     auto resource = buffer->Handle();
     impl->context.Transition(source, D3D12_RESOURCE_STATE_COPY_SOURCE);
     impl->context.Transition(resource, D3D12_RESOURCE_STATE_COPY_DEST);
+    ++impl->report_copies;
     impl->context.MarkWork("query report/predicate copy");
     impl->context.Commands()->CopyBufferRegion(resource->handle.Get(), destination,
                                                source->handle.Get(), offset, size);

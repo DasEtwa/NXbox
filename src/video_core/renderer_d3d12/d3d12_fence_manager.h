@@ -38,6 +38,9 @@ public:
     ~FenceManager() override;
     void SignalFence(std::function<void()>&& func);
     void SignalSyncPoint(u32 value);
+    void SyncOperation(std::function<void()> &&func);
+    u64 PendingGuestFences() const { return pending_guest_fences.load(); }
+    u64 PendingGuestCallbacks() const { return pending_guest_callbacks.load(); }
     void SignalReference();
     void LogSyncpoints() const;
 
@@ -49,6 +52,7 @@ protected:
 
 private:
     Context& context;
+    std::atomic<u64> pending_guest_fences{}, pending_guest_callbacks{};
     std::atomic<u64> pending_syncpoints{};
     std::atomic<u64> signaled_syncpoints{};
 };
