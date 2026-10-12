@@ -8,6 +8,8 @@
 #include "video_core/engines/maxwell_dma.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/renderer_d3d12/d3d12_buffer_cache.h"
+#include "video_core/renderer_d3d12/d3d12_descriptor.h"
+#include "video_core/renderer_d3d12/d3d12_pipeline_iface.h"
 #include "video_core/renderer_d3d12/d3d12_texture_cache.h"
 
 namespace Core {
@@ -48,6 +50,12 @@ public:
     ~RasterizerD3D12() override;
 
     void Draw(bool is_indexed, u32 instance_count) override;
+    void DrawIndirect() override;
+    // Integration: the PSO worker's PipelineCache registers itself here. Without it draws are
+    // skipped (with one warning).
+    void SetPipelineCache(IPipelineCache* cache) {
+        pipeline_cache = cache;
+    }
     void DrawTexture() override;
     void Clear(u32 layer_count) override;
     void DispatchCompute() override;
@@ -96,11 +104,26 @@ public:
 private:
     Context& context;
     Tegra::MaxwellDeviceMemoryManager& device_memory;
+    BindingState bindings;
+    D3D12DescriptorAllocator descriptors;
+    IPipelineCache* pipeline_cache{};
     BufferCacheRuntime buffer_runtime;
     TextureCacheRuntime texture_runtime;
     BufferCache buffer_cache;
     TextureCache texture_cache;
+    template <typename Func>
+    void PrepareDraw(bool is_indexed, Func&& draw);
+    ID3D12CommandSignature* IndirectSignature(bool indexed);
+    std::array<u32, NUM_GRAPHICS_STAGES> uniform_masks{};
+    VideoCommon::UniformBufferSizes uniform_sizes{};
+    std::vector<VideoCommon::ImageViewInOut> view_scratch;
+    std::vector<VideoCommon::SamplerId> sampler_scratch;
+    std::vector<std::pair<ResourcePtr, D3D12_RESOURCE_STATES>> state_scratch;
+    ComPtr<ID3D12CommandSignature> draw_signature;
+    ComPtr<ID3D12CommandSignature> indexed_signature;
     bool draw_logged{};
+    bool quad_logged{};
+    bool image_uav_logged{};
     bool compute_logged{};
     Tegra::GPU& m_gpu;
     AccelerateDMA m_accelerate_dma;
