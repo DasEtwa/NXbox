@@ -16,8 +16,7 @@ namespace {
 
 // A32 unprivileged accesses are post-indexed, including when executed in user mode.
 // Keep the access type explicit so a privileged caller cannot acquire elevated access.
-bool UnprivilegedTransfer(TranslatorVisitor& v, bool add, Reg n, Reg t, IR::U32 offset,
-                          size_t bitsize, bool load, bool sign_extend) {
+bool UnprivilegedTransfer(TranslatorVisitor& v, bool add, Reg n, Reg t, IR::U32 offset, size_t bitsize, bool load, bool sign_extend) {
     const IR::U32 address = v.ir.GetRegister(n);
     const IR::U32 offset_address = add ? v.ir.Add(address, offset) : v.ir.Sub(address, offset);
     if (load) {

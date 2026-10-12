@@ -16,14 +16,8 @@
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
-#include "dynarmic/mcl/bit.hpp"
-#include "common/common_types.h"
 
-#include "dynarmic/tests/fuzz_util.h"
-#include "dynarmic/tests/rand_int.h"
-#include "dynarmic/tests/unicorn_emu/a32_unicorn.h"
-#include "dynarmic/tests/A32/testenv.h"
-#include "dynarmic/tests/native/testenv.h"
+#include "common/common_types.h"
 #include "dynarmic/common/fp/fpcr.h"
 #include "dynarmic/common/fp/fpsr.h"
 #include "dynarmic/common/llvm_disassemble.h"
@@ -35,6 +29,12 @@
 #include "dynarmic/ir/basic_block.h"
 #include "dynarmic/ir/location_descriptor.h"
 #include "dynarmic/ir/opcodes.h"
+#include "dynarmic/mcl/bit.hpp"
+#include "dynarmic/tests/A32/testenv.h"
+#include "dynarmic/tests/fuzz_util.h"
+#include "dynarmic/tests/native/testenv.h"
+#include "dynarmic/tests/rand_int.h"
+#include "dynarmic/tests/unicorn_emu/a32_unicorn.h"
 
 // Must be declared last for all necessary operator<< to be declared prior to this.
 #include <fmt/format.h>
@@ -675,14 +675,22 @@ TEST_CASE("A32: Unprivileged transfers differential", "[arm][unicorn][conformanc
     A32Unicorn<ArmTestEnv> uni{uni_env};
     std::mt19937 random{0x1932};
     const std::array<u32, 16> encodings{
-        0x04f12000, 0x06f12003,  // LDRBT immediate/register
-        0x04b12000, 0x06b12003,  // LDRT immediate/register
-        0x04e12000, 0x06e12003,  // STRBT immediate/register
-        0x04a12000, 0x06a12003,  // STRT immediate/register
-        0x00f120b0, 0x00b120b3,  // LDRHT immediate/register
-        0x00f120d0, 0x00b120d3,  // LDRSBT immediate/register
-        0x00f120f0, 0x00b120f3,  // LDRSHT immediate/register
-        0x00e120b0, 0x00a120b3,  // STRHT immediate/register
+        0x04f12000,
+        0x06f12003,  // LDRBT immediate/register
+        0x04b12000,
+        0x06b12003,  // LDRT immediate/register
+        0x04e12000,
+        0x06e12003,  // STRBT immediate/register
+        0x04a12000,
+        0x06a12003,  // STRT immediate/register
+        0x00f120b0,
+        0x00b120b3,  // LDRHT immediate/register
+        0x00f120d0,
+        0x00b120d3,  // LDRSBT immediate/register
+        0x00f120f0,
+        0x00b120f3,  // LDRSHT immediate/register
+        0x00e120b0,
+        0x00a120b3,  // STRHT immediate/register
     };
 
     for (size_t form = 0; form < encodings.size(); ++form) {
@@ -703,8 +711,7 @@ TEST_CASE("A32: Unprivileged transfers differential", "[arm][unicorn][conformanc
                 const u32 offset = random() & 0xff;
                 instruction |= form < 8 ? offset : ((offset & 0xf0) << 4) | (offset & 0xf);
             } else if (form < 8) {
-                instruction |= (static_cast<u32>(iteration % 4) << 5) |
-                               (static_cast<u32>(iteration % 32) << 7);
+                instruction |= (static_cast<u32>(iteration % 4) << 5) | (static_cast<u32>(iteration % 32) << 7);
             }
             const u32 cpsr = (random() & 0xf0000000) | 0x10;  // User mode.
             INFO("form=" << form << " iteration=" << iteration << " instruction=" << instruction);
