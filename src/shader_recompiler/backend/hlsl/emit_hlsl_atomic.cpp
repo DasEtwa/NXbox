@@ -824,7 +824,6 @@ void EmitGlobalAtomicAddF32(EmitContext& ctx, IR::Inst& inst, std::string_view a
         ctx.Add("if (!nx_global_matched) {{");
         ctx.GlobalMemoryAccess(buffer_index, address, 4);
         const auto o = "uint(" + std::string(address) + " - nx_global_base)";
-        const auto result = ctx.var_alloc.Define(inst, HlslVarType::F32);
         ctx.Add("{{ uint old_value = ssbo{}.Load({}); uint previous; do {{ uint new_value = "
                 "asuint(asfloat(old_value) + {}); ssbo{}.InterlockedCompareExchange({}, old_value, "
                 "new_value, previous); if (previous == old_value) break; old_value = previous; }} "
