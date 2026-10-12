@@ -789,3 +789,32 @@ TEST_CASE("A32: Thumb IT skipped-slot differential", "[thumb][unicorn][conforman
         }
     }
 }
+
+TEST_CASE("A32: User-mode CPS differential", "[arm][unicorn][conformance]") {
+    ArmTestEnv jit_env{};
+    ArmTestEnv uni_env{};
+    A32::Jit jit{GetUserConfig(jit_env)};
+    A32Unicorn<ArmTestEnv> uni{uni_env};
+    std::mt19937 random{0x19c5};
+    const std::array<u32, 5> bases{0xf1020000, 0xf1080000, 0xf10a0000, 0xf10c0000, 0xf10e0000};
+    for (const u32 base : bases) {
+        for (size_t iteration = 0; iteration < 128; ++iteration) {
+            A32Unicorn<ArmTestEnv>::RegisterArray regs{};
+            A32Unicorn<ArmTestEnv>::ExtRegArray vecs{};
+            for (auto& reg : regs) {
+                reg = random();
+            }
+            regs[15] = 0;
+            u32 instruction = base;
+            if (base & 0x00080000) {
+                instruction |= (1 + random() % 7) << 6;
+            }
+            if (base & 0x00020000) {
+                const std::array<u32, 7> modes{0x10, 0x11, 0x12, 0x13, 0x17, 0x1b, 0x1f};
+                instruction |= modes[iteration % modes.size()];
+            }
+            const u32 cpsr = (random() & 0xf8000000) | ((random() & 7) << 6) | 0x10;
+            RunTestInstance(jit, uni, jit_env, uni_env, regs, vecs, {instruction}, cpsr, 0, 1, {}, true);
+        }
+    }
+}

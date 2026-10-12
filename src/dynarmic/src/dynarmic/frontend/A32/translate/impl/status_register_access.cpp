@@ -15,7 +15,8 @@ namespace Dynarmic::A32 {
 // CPS<effect> <iflags>{, #<mode>}
 // CPS #<mode>
 bool TranslatorVisitor::arm_CPS() {
-    UNREACHABLE();
+    // CPS is a NOP in user mode, matching the Thumb translation.
+    return true;
 }
 
 // MRS<c> <Rd>, <spec_reg>

@@ -122,9 +122,9 @@ class CpuConformanceTests(unittest.TestCase):
         ]
         self.assertEqual(
             {row["handler"] for row in stubs},
-            {"arm_RFE", "arm_SRS", "arm_CPS", "arm_LDM_usr", "arm_LDM_eret", "arm_STM_usr"},
+            {"arm_RFE", "arm_SRS", "arm_LDM_usr", "arm_LDM_eret", "arm_STM_usr"},
         )
-        self.assertEqual(len(stubs), 6)
+        self.assertEqual(len(stubs), 5)
 
 
 def report(destination):
