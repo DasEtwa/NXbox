@@ -49,6 +49,9 @@ namespace {
 void InfoMessage(D3D12_MESSAGE_CATEGORY category, D3D12_MESSAGE_SEVERITY severity,
                  D3D12_MESSAGE_ID id, LPCSTR description, void*) noexcept {
     // The callback can run on runtime threads; never call D3D APIs here.
+    // Resource creation/destruction and runtime probes are informational traffic.
+    if (severity > D3D12_MESSAGE_SEVERITY_WARNING)
+        return;
     try {
 #ifdef NXBOX_UWP
         // No renderer call imports host-address heaps. Capture the runtime's caller once,
@@ -109,7 +112,8 @@ void LogDeviceInfoQueue(ID3D12Device* device) noexcept {
                 continue;
             std::vector<u8> storage(size);
             auto* message = reinterpret_cast<D3D12_MESSAGE*>(storage.data());
-            if (SUCCEEDED(info->GetMessage(i, message, &size)))
+            if (SUCCEEDED(info->GetMessage(i, message, &size)) &&
+                message->Severity <= D3D12_MESSAGE_SEVERITY_WARNING)
                 Diagnostic(fmt::format("D3D12 InfoQueue severity={} id={} {}",
                                        static_cast<u32>(message->Severity),
                                        static_cast<u32>(message->ID), message->pDescription));
@@ -300,15 +304,15 @@ Context::Context() {
     queue->SetName(L"NXbox direct queue");
     Check(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence)), "CreateFence",
           device.Get());
-    Check(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator)),
-          "CreateCommandAllocator", device.Get());
-    Check(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.Get(), nullptr,
-                                    IID_PPV_ARGS(&commands)),
+    for (auto& slot : allocators) {
+        Check(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
+                                             IID_PPV_ARGS(&slot.handle)),
+              "CreateCommandAllocator", device.Get());
+    }
+    Check(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocators[0].handle.Get(),
+                                    nullptr, IID_PPV_ARGS(&commands)),
           "CreateCommandList", device.Get());
     Check(commands->Close(), "initial Close", device.Get());
-    event = CreateEventExW(nullptr, nullptr, 0, EVENT_ALL_ACCESS);
-    if (!event)
-        Check(HRESULT_FROM_WIN32(GetLastError()), "CreateEventExW", device.Get());
 }
 Context::~Context() {
     try {
@@ -316,8 +320,6 @@ Context::~Context() {
     } catch (const std::exception& error) {
         ReportFailure(error);
     }
-    if (event)
-        CloseHandle(event);
 }
 void Context::LogInfoQueue() noexcept {
     if (info_callback.registered)
@@ -353,13 +355,25 @@ void Context::Wait(u64 tick) {
             throw std::invalid_argument("D3D12 future fence");
         Submit();
     }
+    WaitSubmitted(tick);
+    LogInfoQueue();
+}
+void Context::WaitSubmitted(u64 tick) {
     if (!IsFree(tick)) {
-        Check(fence->SetEventOnCompletion(tick, event), "SetEventOnCompletion", device.Get());
-        const auto wait = WaitForSingleObjectEx(event, 10000, FALSE);
+        // Each waiter owns its event; GPU and fencing threads may wait concurrently.
+        const HANDLE wait_event = CreateEventExW(nullptr, nullptr, 0, EVENT_ALL_ACCESS);
+        if (!wait_event)
+            Check(HRESULT_FROM_WIN32(GetLastError()), "CreateEventExW", device.Get());
+        const auto result = fence->SetEventOnCompletion(tick, wait_event);
+        if (FAILED(result)) {
+            CloseHandle(wait_event);
+            Check(result, "SetEventOnCompletion", device.Get());
+        }
+        const auto wait = WaitForSingleObjectEx(wait_event, 10000, FALSE);
+        const auto wait_error = GetLastError();
+        CloseHandle(wait_event);
         if (wait != WAIT_OBJECT_0) {
-            const auto wait_error = GetLastError();
-            Diagnostic(
-                fmt::format("D3D12 wait tick={} submitted={} result={:#x}", tick, submitted, wait));
+            Diagnostic(fmt::format("D3D12 wait tick={} result={:#x}", tick, wait));
             Check(device->GetDeviceRemovedReason(), "device removed while waiting", device.Get());
             Check(wait == WAIT_FAILED ? HRESULT_FROM_WIN32(wait_error)
                                       : HRESULT_FROM_WIN32(ERROR_TIMEOUT),
@@ -368,33 +382,54 @@ void Context::Wait(u64 tick) {
         }
     }
     Check(device->GetDeviceRemovedReason(), "device removed after waiting", device.Get());
-    LogInfoQueue();
-    if (tick == submitted && !recording) {
-        CompleteBatch(completion, retained);
+    CompleteThrough(tick);
+}
+void Context::CompleteThrough(u64 tick) {
+    // Keep callback execution ordered with readback retirement on the fencing thread.
+    // Detach first so reentrant waits cannot replay a batch.
+    std::scoped_lock lock{completion_mutex};
+    while (!batches.empty() && batches.front().tick <= tick) {
+        auto batch = std::move(batches.front());
+        batches.pop_front();
+        CompleteBatch(batch.callbacks, batch.resources);
     }
+}
+void Context::Collect() {
+    const auto completed = fence->GetCompletedValue();
+    if (completed == UINT64_MAX)
+        IsFree(0); // Preserve device removal diagnostics.
+    CompleteThrough(completed);
 }
 ID3D12GraphicsCommandList* Context::Commands() {
     if (!recording) {
-        Wait(submitted);
+        Collect();
+        auto& slot = allocators[allocator_index];
+        WaitSubmitted(slot.tick);
     }
     // A completion callback may have started the next command list.
     if (!recording) {
-        Check(allocator->Reset(), "allocator Reset", device.Get());
-        Check(commands->Reset(allocator.Get(), nullptr), "command list Reset", device.Get());
+        Check(allocators[allocator_index].handle->Reset(), "allocator Reset", device.Get());
+        Check(commands->Reset(allocators[allocator_index].handle.Get(), nullptr),
+              "command list Reset", device.Get());
         recording = true;
     }
     return commands.Get();
 }
 void Context::MarkWork(std::string_view label) {
     Commands();
-    if (std::find(work.begin(), work.end(), label) == work.end())
-        work.emplace_back(label);
+    if (std::find(work.begin(), work.end(), label) != work.end())
+        return;
+    work.emplace_back(label);
     // PIX string marker encoding consumed by DRED breadcrumb contexts.
     const std::wstring marker(label.begin(), label.end());
     commands->SetMarker(0, marker.c_str(),
                         static_cast<UINT>((marker.size() + 1) * sizeof(wchar_t)));
 }
 u64 Context::Submit() {
+    // QueueFence and FlushCommands can both request the same submission.
+    // Empty requests reuse its value instead of emitting another queue signal.
+    if (!recording)
+        return submitted;
     if (recording) {
         LogInfoQueue();
         Check(commands->Close(), "Close", device.Get());
@@ -409,16 +444,27 @@ u64 Context::Submit() {
                                       contents.empty() ? "barriers/state" : contents);
         const std::wstring wide_name(name.begin(), name.end());
         commands->SetName(wide_name.c_str());
-        Diagnostic(fmt::format("D3D12 ExecuteCommandLists sequence={} tick={} contents={}",
-                               execute_sequence, CurrentTick(), contents));
+        if (execute_sequence <= 8 || execute_sequence % 120 == 0)
+            Diagnostic(fmt::format("D3D12 ExecuteCommandLists sequence={} tick={} contents={}",
+                                   execute_sequence, CurrentTick(), contents));
         Check(device->GetDeviceRemovedReason(), "before ExecuteCommandLists", device.Get());
         queue->ExecuteCommandLists(1, lists);
         recording = false;
+        allocators[allocator_index].tick = CurrentTick();
+        allocator_index = (allocator_index + 1) % allocators.size();
         work.clear();
         LogInfoQueue();
         Check(device->GetDeviceRemovedReason(), "after ExecuteCommandLists", device.Get());
     }
-    Check(queue->Signal(fence.Get(), ++submitted), "Signal", device.Get());
+    const u64 tick = CurrentTick();
+    {
+        std::scoped_lock lock{completion_mutex};
+        batches.push_back({tick, std::move(completion), std::move(retained)});
+        completion.clear();
+        retained.clear();
+    }
+    Check(queue->Signal(fence.Get(), tick), "Signal", device.Get());
+    submitted = tick;
     LogInfoQueue();
     return submitted;
 }
@@ -427,7 +473,9 @@ void Context::Finish() {
 }
 void Context::Retain(const ResourcePtr& resource) {
     Commands();
-    retained.push_back(resource);
+    // Consecutive bindings commonly retain the same image/buffer several times.
+    if (retained.empty() || retained.back() != resource)
+        retained.push_back(resource);
 }
 void Context::Transition(const ResourcePtr& resource, D3D12_RESOURCE_STATES state) {
     if (!resource)
@@ -450,10 +498,17 @@ void Context::AfterCompletion(std::function<void()> callback) {
 }
 ResourcePtr Context::CreateResource(const D3D12_RESOURCE_DESC& desc, D3D12_HEAP_TYPE heap,
                                     D3D12_RESOURCE_STATES state) {
+    Collect();
     const auto allocation = device->GetResourceAllocationInfo(0, 1, &desc);
-    if (allocation.SizeInBytes == UINT64_MAX ||
-        allocation.SizeInBytes > MemoryBudget::Limit - budget->used)
-        throw std::runtime_error("D3D12 cache allocation exceeds 512 MiB budget");
+    if (allocation.SizeInBytes == UINT64_MAX || allocation.SizeInBytes > MemoryBudget::Limit)
+        throw std::runtime_error("D3D12 resource allocation exceeds 512 MiB budget");
+    if (allocation.SizeInBytes > MemoryBudget::Limit - budget->used) {
+        // In-flight leases can outlive cache eviction. Retire them before rejecting
+        // an allocation that fits the device budget once pending work completes.
+        Finish();
+        if (allocation.SizeInBytes > MemoryBudget::Limit - budget->used)
+            throw std::runtime_error("D3D12 cache allocation exceeds 512 MiB budget");
+    }
     auto resource = std::make_shared<Resource>();
     D3D12_HEAP_PROPERTIES properties{};
     properties.Type = heap;
@@ -493,6 +548,7 @@ ResourcePtr Context::CreateBuffer(u64 size, D3D12_HEAP_TYPE heap) {
     return CreateResource(desc, heap, state);
 }
 void StagingRing::Collect() {
+    context.Collect();
     for (auto& page : pages) {
         if (context.IsFree(page.tick) && page.resource.use_count() == 1)
             page.cursor = 0;
@@ -516,8 +572,37 @@ StagingBufferRef StagingRing::Request(size_t size) {
     for (const auto& page : pages)
         capacity += page.resource->mapped.size();
     const u64 page_size = std::max(4ULL << 20, aligned);
-    if (page_size > (64ULL << 20) - capacity)
-        throw std::runtime_error("D3D12 staging ring exceeds 64 MiB; submit pending work");
+    if (page_size > (64ULL << 20)) {
+        // Oversized guest images use a dedicated lease, not a permanent ring page.
+        auto buffer = context.CreateBuffer(aligned, heap);
+        return {buffer, 0, buffer->mapped.first(size)};
+    }
+    if (page_size > (64ULL << 20) - capacity) {
+        // Submit the producer before waiting, then reuse completed, unleased pages.
+        // A request can arrive with a tight staging lease still held by its caller.
+        context.Finish();
+        Collect();
+        for (auto& page : pages) {
+            if (aligned <= page.resource->mapped.size() - page.cursor) {
+                const auto offset = page.cursor;
+                page.cursor += aligned;
+                page.tick = context.CurrentTick();
+                return {page.resource, static_cast<size_t>(offset),
+                        page.resource->mapped.subspan(offset, size)};
+            }
+        }
+        // Drop completed smaller pages to make room for this size class.
+        std::erase_if(pages, [&](const Page& page) {
+            return context.IsFree(page.tick) && page.resource.use_count() == 1;
+        });
+        capacity = 0;
+        for (const auto& page : pages)
+            capacity += page.resource->mapped.size();
+        if (page_size > (64ULL << 20) - capacity) {
+            auto buffer = context.CreateBuffer(aligned, heap);
+            return {buffer, 0, buffer->mapped.first(size)};
+        }
+    }
     pages.push_back({context.CreateBuffer(page_size, heap), aligned, context.CurrentTick()});
     return {pages.back().resource, 0, pages.back().resource->mapped.first(size)};
 }

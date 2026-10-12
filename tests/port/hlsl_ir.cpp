@@ -77,6 +77,19 @@ void Fragment() {
     Contains(text, "SV_Depth");
     Require(bindings.texture == 1, "Texture counter");
     std::ofstream("hlsl_fragment.hlsl") << text;
+    // Attachment specialization clears export metadata but keeps the original IR.
+    // Stores into unbound targets must disappear from both declarations and body.
+    f.Add(IR::Opcode::SetFragColor, {IR::Value{3u}, IR::Value{0u}, red});
+    Bindings masked_bindings;
+    const auto masked = f.Emit(masked_bindings);
+    Require(masked.find("SV_Target3") == masked.npos, "Unbound target signature");
+    Require(masked.find("output.color3") == masked.npos, "Unbound target store");
+    f.program.info.stores_frag_color[0] = false;
+    Bindings depth_bindings;
+    const auto depth_only = f.Emit(depth_bindings);
+    Require(depth_only.find("SV_Target") == depth_only.npos, "Depth-only color signature");
+    Require(depth_only.find("output.color0") == depth_only.npos, "Depth-only color store");
+    Contains(depth_only, "SV_Depth");
 }
 void Compute() {
     Fixture f{Stage::Compute};
@@ -239,34 +252,30 @@ void ArithmeticAndPseudoResults() {
     std::ofstream("hlsl_arithmetic.hlsl") << text;
 }
 void ChainedResourceBindings() {
-  Fixture vertex{Stage::VertexB};
-  vertex.program.info.texture_descriptors.push_back(
-      {.type = TextureType::Color2D, .count = 1});
-  vertex.program.info.texture_buffer_descriptors.push_back({.count = 1});
-  vertex.program.info.storage_buffers_descriptors.push_back({.count = 1});
-  vertex.program.info.image_descriptors.push_back(
-      {.type = TextureType::Color2D,
-       .format = ImageFormat::R32_UINT,
-       .count = 1});
-  vertex.program.info.image_buffer_descriptors.push_back(
-      {.format = ImageFormat::R32_UINT, .count = 1});
-  Bindings bindings;
-  const auto first = vertex.Emit(bindings);
-  Contains(first, "samp0 : register(s0, space0)");
-  Contains(first, "ssbo0 : register(u0, space0)");
-  Contains(first, "img1 : register(u1, space0)");
-  Contains(first, "img2 : register(u2, space0)");
-  Fixture fragment{Stage::Fragment};
-  fragment.program.info.texture_descriptors.push_back(
-      {.type = TextureType::Color2D, .count = 1});
-  fragment.program.info.storage_buffers_descriptors.push_back({.count = 1});
-  const auto second = fragment.Emit(bindings);
-  Contains(second, "tex2 : register(t2, space0)");
-  Contains(second, "samp2 : register(s1, space0)");
-  Contains(second, "ssbo0 : register(u3, space0)");
-  Require(bindings.texture == 3 && bindings.hlsl_sampler == 2 &&
-              bindings.storage_buffer + bindings.image == 4,
-          "Stage append order must match native descriptor tables");
+    Fixture vertex{Stage::VertexB};
+    vertex.program.info.texture_descriptors.push_back({.type = TextureType::Color2D, .count = 1});
+    vertex.program.info.texture_buffer_descriptors.push_back({.count = 1});
+    vertex.program.info.storage_buffers_descriptors.push_back({.count = 1});
+    vertex.program.info.image_descriptors.push_back(
+        {.type = TextureType::Color2D, .format = ImageFormat::R32_UINT, .count = 1});
+    vertex.program.info.image_buffer_descriptors.push_back(
+        {.format = ImageFormat::R32_UINT, .count = 1});
+    Bindings bindings;
+    const auto first = vertex.Emit(bindings);
+    Contains(first, "samp0 : register(s0, space0)");
+    Contains(first, "ssbo0 : register(u0, space0)");
+    Contains(first, "img1 : register(u1, space0)");
+    Contains(first, "img2 : register(u2, space0)");
+    Fixture fragment{Stage::Fragment};
+    fragment.program.info.texture_descriptors.push_back({.type = TextureType::Color2D, .count = 1});
+    fragment.program.info.storage_buffers_descriptors.push_back({.count = 1});
+    const auto second = fragment.Emit(bindings);
+    Contains(second, "tex2 : register(t2, space0)");
+    Contains(second, "samp2 : register(s1, space0)");
+    Contains(second, "ssbo0 : register(u3, space0)");
+    Require(bindings.texture == 3 && bindings.hlsl_sampler == 2 &&
+                bindings.storage_buffer + bindings.image == 4,
+            "Stage append order must match native descriptor tables");
 }
 void UnsupportedRollback() {
     Fixture f{Stage::Compute};

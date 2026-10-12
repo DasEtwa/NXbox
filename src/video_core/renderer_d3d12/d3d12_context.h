@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include <array>
+#include <atomic>
+#include <deque>
 #include <exception>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <span>
 #include <string>
 #include <string_view>
@@ -21,7 +25,7 @@ bool BisectEnabled(const char* name) noexcept;
 void Check(HRESULT result, const char* operation, ID3D12Device* device = nullptr);
 void CheckPipeline(HRESULT result, const char* operation, ID3D12Device* device, u64 hash);
 struct MemoryBudget {
-    u64 used{};
+    std::atomic<u64> used{};
     static constexpr u64 Limit = 512ULL << 20;
 };
 struct Resource {
@@ -39,7 +43,7 @@ struct StagingBufferRef {
     size_t offset{};
     std::span<u8> mapped_span;
 };
-// One direct queue, serialized allocators. Every referenced resource is retained
+// One direct queue, bounded in-flight allocators. Every referenced resource is retained
 // until completion, including resources evicted from the shared caches.
 class Context {
 public:
@@ -55,6 +59,9 @@ public:
     void LogInfoQueue() noexcept;
     void Wait(u64 tick);
     bool IsFree(u64 tick) const;
+    // Completion thread: never submit or touch command recording state.
+    void WaitSubmitted(u64 tick);
+    void Collect();
     u64 CurrentTick() const {
         return submitted + 1;
     }
@@ -78,7 +85,12 @@ private:
     ComPtr<ID3D12Device> device;
     ComPtr<ID3D12CommandQueue> queue;
     ComPtr<ID3D12Fence> fence;
-    ComPtr<ID3D12CommandAllocator> allocator;
+    struct AllocatorSlot {
+        ComPtr<ID3D12CommandAllocator> handle;
+        u64 tick{};
+    };
+    std::array<AllocatorSlot, 8> allocators;
+    size_t allocator_index{};
     ComPtr<ID3D12GraphicsCommandList> commands;
     struct InfoCallback {
         ComPtr<ID3D12InfoQueue1> queue;
@@ -91,10 +103,18 @@ private:
     } info_callback;
     u64 execute_sequence{};
     std::vector<std::string> work;
-    HANDLE event{};
+
     u64 submitted{};
     bool recording{};
     std::shared_ptr<MemoryBudget> budget = std::make_shared<MemoryBudget>();
+    struct Batch {
+        u64 tick;
+        std::vector<std::function<void()>> callbacks;
+        std::vector<ResourcePtr> resources;
+    };
+    std::recursive_mutex completion_mutex;
+    std::deque<Batch> batches;
+    void CompleteThrough(u64 tick);
     std::vector<ResourcePtr> retained;
     std::vector<std::function<void()>> completion;
 };

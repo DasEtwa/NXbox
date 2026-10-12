@@ -56,28 +56,37 @@ public:
                         std::optional<u32> stream = std::nullopt) override {
         const auto query =
             BuildQuery(timestamp, address, runtime.ReadCounter(type, stream.value_or(0)));
-        pending.push_back(query);
+        {
+            std::scoped_lock lock{pending_mutex};
+            pending.push_back(query);
+        }
         return query;
     }
     bool HasPendingSync() const override {
+        std::scoped_lock lock{pending_mutex};
         return !pending.empty();
     }
     void SyncWrites() override {
         std::vector<VideoCommon::SyncValuesStruct> values;
-        for (const auto index : pending) {
-            auto& query = slot_queries[index];
-            using VideoCommon::QueryFlagBits;
-            if (True(query.flags & (QueryFlagBits::IsInvalidated | QueryFlagBits::IsRewritten))) {
-                continue;
+        {
+            std::scoped_lock lock{pending_mutex};
+            for (const auto index : pending) {
+                auto& query = slot_queries[index];
+                using VideoCommon::QueryFlagBits;
+                if (True(query.flags &
+                         (QueryFlagBits::IsInvalidated | QueryFlagBits::IsRewritten))) {
+                    continue;
+                }
+                values.push_back({query.guest_address, query.value,
+                                  True(query.flags & QueryFlagBits::HasTimestamp) ? 8ULL : 4ULL});
+                query.flags |= QueryFlagBits::IsHostSynced;
             }
-            values.push_back({query.guest_address, query.value,
-                              True(query.flags & QueryFlagBits::HasTimestamp) ? 8ULL : 4ULL});
-            query.flags |= QueryFlagBits::IsHostSynced;
+            pending.clear();
         }
-        pending.clear();
         runtime.SyncValues<VideoCommon::SyncValuesStruct>(values);
     }
     void Free(size_t index) override {
+        std::scoped_lock lock{pending_mutex};
         std::erase(pending, index);
         SimpleStreamer::Free(index);
     }
@@ -85,6 +94,7 @@ public:
 private:
     QueryCacheRuntime& runtime;
     QueryType type;
+    mutable std::mutex pending_mutex;
     std::vector<size_t> pending;
 };
 } // namespace

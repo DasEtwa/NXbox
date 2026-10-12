@@ -6,6 +6,7 @@
 
 namespace EdenXbox {
 void InstallCrashHandlers() noexcept;
+void InstallThreadCrashHandlers() noexcept;
 void OpenCrashLog();
 void ObserveCrashLifecycle();
 void CrashEvent(std::string_view event, std::uint64_t usage = 0, std::uint64_t limit = 0,

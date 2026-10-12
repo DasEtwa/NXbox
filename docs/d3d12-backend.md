@@ -42,8 +42,8 @@ swapchain.
 
 P1 creates a hardware D3D12 device at feature level 11_0, direct queue, event-backed
 fence, allocator/list, two RTVs and an opaque RGBA8 flip-discard CoreWindow swapchain.
-P2 retains serialized submission: allocator and presentation descriptors are reused
-only after the previous fence completes. `Context` is shared by the renderer and
+The integration path uses eight fence-tagged allocators and a presentation descriptor
+slice per swapchain buffer. Each is reused only after its own fence completes. `Context` is shared by the renderer and
 both cache runtimes; every command retains its resources until completion. Layout
 changes retire work before releasing buffers and calling ResizeBuffers. Fence waits
 are bounded at 10 seconds and check device removal. Presentation failure latches
@@ -58,15 +58,25 @@ Teardown drains submitted work, including partial construction.
   are connected to the rasterizer. `d3d12_fence_manager.*` derives from the shared
   `VideoCommon::FenceManager`, matching Vulkan's cache-batch and guest callback
   protocol. `SyncOperation` only queues callbacks; `FlushCommands` only submits.
-  Fence release uses GPU-thread waits (`HAS_ASYNC_CHECK=false`) because the direct
-  context has one allocator and event. Completion callbacks and retained resources
-  are detached before invocation so reentrant waits cannot replay the batch.
+  Fence release uses the shared completion thread (`HAS_ASYNC_CHECK=true`). It only
+  waits on already submitted values with a private event, completes CPU readback
+  repacking, then retires cache batches and guest callbacks. Recording stays on the
+  GPU thread. Completion batches detach before invocation; memory accounting is
+  atomic because leases can retire on either thread. Completion failures propagate
+  to the renderer boundary and wake forced drains. Teardown joins the fencing
+  thread while the derived manager and caches are still alive.
 - Buffers use committed DEFAULT resources. UPLOAD and READBACK rings allocate
   512-byte-aligned slices in 4 MiB pages, retaining allocations by fence tick and
   shared leases. A page resets only after completion and after every lease retires.
   Each ring is capped at 64 MiB; all committed cache allocations share a hard
   512 MiB ceiling, including staging. Large buffer fills submit in 1 MiB chunks.
-  Exhaustion reports an error rather than recycling live storage.
+  Ring pressure submits and waits before reusing completed, unleased pages; larger
+  size classes evict idle smaller pages. Oversized requests and leased-page pressure
+  use temporary storage under the same 512 MiB device ceiling. Deferred texture
+  downloads use zero-offset leases until CPU unswizzling finishes. Image-to-buffer
+  DMA downloads copy into a padded DEFAULT footprint, then fan out with GPU row
+  copies to the tight guest buffer and to READBACK storage. READBACK heaps remain
+  COPY_DEST; CPU repacking finishes before the guest callback retires.
 - Textures are committed DEFAULT resources with typeless storage for legal typed
   view casts. The std-only format table covers every Maxwell PixelFormat and marks
   missing mappings explicitly unsupported. CPU ASTC conversion uses VideoCommon,
@@ -83,7 +93,7 @@ Teardown drains submitted work, including partial construction.
   A built-in full-screen triangle, compiled with DXC at startup as `vs_6_0`/`ps_6_0`,
   handles crop, flips, rotation, scaling into the display rectangle and layer blend
   modes. Shader model 6.0 is checked separately from feature level. Each layer gets
-  its own fence-retired SRV slot (up to 64). Empty frames retain the P1 test clear.
+  its own fence-retired SRV slot (up to 64 per swapchain buffer). Empty frames retain the P1 test clear.
 
 The integration branch translates guest graphics and compute through Maxwell IR,
 HLSL and packaged DXC into native PSOs. Vertex A/B programs merge before emission.
@@ -329,3 +339,34 @@ may reduce CPU/GPU overlap; measure it in the next console run. Host regression
 tests cover dirty-table invalidation, no-readback fence ordering and the actual
 native manager's last-syncpoint completion. They do not establish console pixels
 or sustained guest progress; both require another hardware capture.
+
+### Console run 7 follow-up
+
+Run 7 (`a24fbd3b7`) rendered the game-select screen correctly at 1920x1080.
+The final process (`pid=5268`) records GPU-thread `SIGABRT` at tick 265707359,
+then a 5078 ms heartbeat gap and `Suspending` at tick 265712843. Memory was
+1753100288 bytes against a 5368709120-byte limit, with `device_lost=0`.
+This is an abort preceding suspension, not evidence of a swapchain timeout or
+process memory-limit termination. The captured 24 handler frames stop inside
+C++ runtime unwinding and do not identify the original throwing operation.
+
+The follow-up removes synchronous syncpoint drains, single-allocator serialization
+and per-frame compositor drains. It handles staging pressure without throwing on
+the 64 MiB ring cap, filters informational resource-creation traffic, samples
+submission/presentation diagnostics, and emits one marker per work label per batch.
+Fragment export metadata and HLSL stores are masked by the bound attachment formats;
+the existing framebuffer PSO key keeps each signature paired with its RTV layout.
+Fatal diagnostics now capture 96 frames and any active C++ exception. The GPU and
+fencing threads install their own MSVC terminate handlers, which were previously
+installed only on the main thread.
+
+Query reports register their cache entry before publishing an asynchronous callback.
+The native completion requirement also prevents low-accuracy settings from recycling
+a query slot while its callback still references it. Pending-list locks are released
+before D3D12 uploads to allow completion reentry.
+
+Host tests cover asynchronous callback ordering without another guest command,
+completion failure waking a forced drain, staging pressure with live CPU leases,
+query publication/retirement at low accuracy, GPU DMA row layouts and destination
+contracts, and HLSL export/store masking. A new console run is still required to establish
+whether these fixes remove the run-7 abort and to measure the resulting frame rate.

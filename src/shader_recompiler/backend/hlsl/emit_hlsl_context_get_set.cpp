@@ -57,6 +57,8 @@ void EmitGetAttributeIndexed(EmitContext& ctx, IR::Inst& inst, std::string_view 
     ctx.Add("}}");
 }
 void EmitSetFragColor(EmitContext& ctx, u32 index, u32 component, std::string_view value) {
+    if (!ctx.info.stores_frag_color.at(index))
+        return;
     const auto type = ctx.runtime_info.color_output_types.at(index);
     const auto cast = type == AttributeType::SignedInt     ? "asint"
                       : type == AttributeType::UnsignedInt ? "asuint"

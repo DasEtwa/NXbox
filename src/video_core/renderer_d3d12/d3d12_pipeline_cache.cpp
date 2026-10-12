@@ -120,8 +120,8 @@ void FillGraphicsState(Tegra::Engines::Maxwell3D& maxwell3d, Pso::GraphicsPsoSta
     s.patch_vertices = static_cast<u8>(regs.patch_vertices);
 
     // Rasterizer. Front face flips with the window origin like the Vulkan backend.
-    const auto cull = Pso::CullMode(regs.gl_cull_test_enabled != 0,
-                                    static_cast<u32>(regs.gl_cull_face));
+    const auto cull =
+        Pso::CullMode(regs.gl_cull_test_enabled != 0, static_cast<u32>(regs.gl_cull_face));
     s.cull_mode = static_cast<u8>(cull.mode);
     s.cull_all = cull.cull_all;
     bool ccw = regs.gl_front_face == Maxwell::FrontFace::CounterClockWise;
@@ -426,6 +426,12 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(const Pso::Framebuffer
             auto& program = programs[index];
             if (index == 0)
                 program.stage = Shader::Stage::VertexB;
+            if (program.stage == Shader::Stage::Fragment) {
+                // Guest shaders may export more colors than this framebuffer binds.
+                // Specialize the DXIL signature together with the PSO attachment key.
+                for (size_t slot = 0; slot < formats.colors.size(); ++slot)
+                    program.info.stores_frag_color[slot] &= formats.colors[slot] != 0;
+            }
             const auto runtime = GraphicsRuntime(maxwell3d->regs, program, previous);
             Shader::Maxwell::ConvertLegacyToGeneric(program, runtime);
             sources[index] =

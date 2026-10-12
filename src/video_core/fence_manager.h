@@ -10,7 +10,9 @@
 #include <condition_variable>
 #include <cstring>
 #include <deque>
+#include <exception>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <thread>
 #include <queue>
@@ -23,6 +25,10 @@
 #include "video_core/host1x/host1x.h"
 #include "video_core/host1x/syncpoint_manager.h"
 #include "video_core/rasterizer_interface.h"
+
+#ifdef NXBOX_UWP
+#include "eden_uwp/crash_logger.h"
+#endif
 
 namespace VideoCommon {
 
@@ -90,8 +96,11 @@ public:
         }
         CommitAsyncFlushes();
         TFence new_fence = CreateFence(!should_flush);
+        std::unique_lock fence_lock{guard, std::defer_lock};
         if constexpr (can_async_check) {
-            guard.lock();
+            fence_lock.lock();
+            if (thread_error)
+                std::rethrow_exception(thread_error);
         }
         if (delay_fence) {
             uncommitted_operations.emplace_back(std::move(func));
@@ -106,7 +115,7 @@ public:
             rasterizer.FlushCommands();
         }
         if constexpr (can_async_check) {
-            guard.unlock();
+            fence_lock.unlock();
             cv.notify_all();
         }
         rasterizer.InvalidateGPUCache();
@@ -125,18 +134,18 @@ public:
             if (!force) {
                 return;
             }
-            std::mutex wait_mutex;
-            std::condition_variable wait_cv;
-            std::atomic<bool> wait_finished{};
-            std::function<void()> func([&] {
-                std::scoped_lock lk(wait_mutex);
-                wait_finished.store(true, std::memory_order_relaxed);
-                wait_cv.notify_all();
+            // Shared state remains alive if completion fails before this marker runs.
+            auto wait_finished = std::make_shared<std::atomic<bool>>(false);
+            SignalFence([this, wait_finished] {
+                std::scoped_lock lock{guard};
+                wait_finished->store(true, std::memory_order_release);
+                cv.notify_all();
             });
-            SignalFence(std::move(func));
-            std::unique_lock lk(wait_mutex);
-            wait_cv.wait(
-                lk, [&wait_finished] { return wait_finished.load(std::memory_order_relaxed); });
+            std::unique_lock lk(guard);
+            cv.wait(lk,
+                    [&] { return thread_error || wait_finished->load(std::memory_order_acquire); });
+            if (thread_error)
+                std::rethrow_exception(thread_error);
         }
     }
 
@@ -153,10 +162,15 @@ protected:
     }
 
     virtual ~FenceManager() {
+        StopFenceThread();
+    }
+
+    void StopFenceThread() {
         if constexpr (can_async_check) {
             fence_thread.request_stop();
             cv.notify_all();
-            fence_thread.join();
+            if (fence_thread.joinable())
+                fence_thread.join();
         }
     }
 
@@ -204,35 +218,46 @@ private:
     }
 
     void ReleaseThreadFunc(std::stop_token stop_token) {
+#ifdef NXBOX_UWP
+        EdenXbox::InstallThreadCrashHandlers();
+#endif
         Common::SetCurrentThreadName("GPUFencingThread");
         Common::SetCurrentThreadPriority(Common::ThreadPriority::High);
         Common::SetCurrentThreadToPerformanceCores();
 
-        TFence current_fence;
-        std::deque<std::function<void()>> current_operations;
-        while (!stop_token.stop_requested()) {
-            {
-                std::unique_lock lock(guard);
-                cv.wait(lock, [&] { return stop_token.stop_requested() || !fences.empty(); });
-                if (stop_token.stop_requested()) [[unlikely]] {
-                    return;
+        try {
+            TFence current_fence;
+            std::deque<std::function<void()>> current_operations;
+            while (!stop_token.stop_requested()) {
+                {
+                    std::unique_lock lock(guard);
+                    cv.wait(lock, [&] { return stop_token.stop_requested() || !fences.empty(); });
+                    if (stop_token.stop_requested()) [[unlikely]] {
+                        return;
+                    }
+                    current_fence = std::move(fences.front());
+                    current_operations = std::move(pending_operations.front());
+                    fences.pop();
+                    pending_operations.pop_front();
                 }
-                current_fence = std::move(fences.front());
-                current_operations = std::move(pending_operations.front());
-                fences.pop();
-                pending_operations.pop_front();
+                if (!current_fence->IsStubbed()) {
+                    WaitFence(current_fence);
+                }
+                PopAsyncFlushes();
+                for (auto& operation : current_operations) {
+                    operation();
+                }
+                {
+                    std::unique_lock lock(ring_guard);
+                    delayed_destruction_ring.Push(std::move(current_fence));
+                }
             }
-            if (!current_fence->IsStubbed()) {
-                WaitFence(current_fence);
-            }
-            PopAsyncFlushes();
-            for (auto& operation : current_operations) {
-                operation();
-            }
-            {
-                std::unique_lock lock(ring_guard);
-                delayed_destruction_ring.Push(std::move(current_fence));
-            }
+        } catch (...) {
+            // Propagate to the producer's renderer boundary instead of terminating
+            // the process or leaving a forced drain asleep forever.
+            std::scoped_lock lock{guard};
+            thread_error = std::current_exception();
+            cv.notify_all();
         }
     }
 
@@ -270,6 +295,7 @@ private:
     std::deque<std::function<void()>> uncommitted_operations;
     std::deque<std::deque<std::function<void()>>> pending_operations;
 
+    std::exception_ptr thread_error;
     std::mutex guard;
     std::mutex ring_guard;
     std::condition_variable cv;

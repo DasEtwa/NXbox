@@ -26,7 +26,13 @@ public:
     StagingBufferRef UploadStagingBuffer(size_t size, bool = false) {
         return upload.Request(size);
     }
-    StagingBufferRef DownloadStagingBuffer(size_t size, bool = false) {
+    StagingBufferRef DownloadStagingBuffer(size_t size, bool deferred = false) {
+        // Shared async texture retirement indexes mapped_span by absolute offset.
+        // A dedicated lease starts at zero and stays alive until CPU unswizzling ends.
+        if (deferred) {
+            auto buffer = context.CreateBuffer(size, D3D12_HEAP_TYPE_READBACK);
+            return {buffer, 0, buffer->mapped.first(size)};
+        }
         return readback.Request(size);
     }
     void FreeDeferredStagingBuffer(StagingBufferRef& ref) {
@@ -103,6 +109,8 @@ public:
     void DownloadMemory(const StagingBufferRef&, std::span<const VideoCommon::BufferImageCopy>);
     void UploadMemory(ResourcePtr, size_t, std::span<const VideoCommon::BufferImageCopy>);
     void DownloadMemory(ResourcePtr, size_t, std::span<const VideoCommon::BufferImageCopy>);
+    void DownloadMemory(std::span<const ResourcePtr> buffers, std::span<const size_t> offsets,
+                        std::span<const VideoCommon::BufferImageCopy> copies);
     bool IsRescaled() const {
         return false;
     }
@@ -122,7 +130,7 @@ public:
 
 private:
     void Transfer(const StagingBufferRef&, std::span<const VideoCommon::BufferImageCopy>,
-                  bool download);
+                  bool download, const ResourcePtr& gpu_destination = {}, size_t gpu_offset = 0);
     TextureCacheRuntime* runtime{};
     ResourcePtr resource;
     FormatInfo host_format{};
@@ -210,7 +218,7 @@ struct TextureCacheParams {
     static constexpr bool FRAMEBUFFER_BLITS = false;
     static constexpr bool HAS_EMULATED_COPIES = false;
     static constexpr bool HAS_DEVICE_MEMORY_INFO = true;
-    static constexpr bool IMPLEMENTS_ASYNC_DOWNLOADS = false;
+    static constexpr bool IMPLEMENTS_ASYNC_DOWNLOADS = true;
     static constexpr bool HAS_MSAA_DOWNLOADS = false;
     using Runtime = TextureCacheRuntime;
     using Image = D3D12::Image;

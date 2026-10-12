@@ -38,7 +38,7 @@ template <typename T, int N> struct DelayedDestructionRing {
 namespace Tegra {
 namespace Host1x {
 struct SyncpointManager {
-    int guest{}, host{};
+    std::atomic<int> guest{}, host{};
     void IncrementGuest(u32) { ++guest; }
     void IncrementHost(u32) { ++host; }
 };
@@ -61,7 +61,7 @@ DRIVER = r"""
 struct Cache {
     std::mutex mutex;
     bool dirty{}, ready{};
-    int commits{}, pops{}, pending{};
+    std::atomic<int> commits{}, pops{}, pending{};
     std::function<void()> on_commit;
     void AccumulateFlushes() {}
     bool HasUncommittedFlushes() { return dirty; }
@@ -212,20 +212,36 @@ using TextureCache = Cache;
 using BufferCache = Cache;
 using QueryCache = Cache;
 struct Context {
-    u64 submitted{}, completed{};
-    int waits{};
+    std::atomic<u64> submitted{}, completed{};
+    std::atomic<int> waits{};
+    bool fail = false;
+    std::mutex guard;
+    std::condition_variable cv;
     u64 Submit() { return ++submitted; }
     bool IsFree(u64 tick) const { return completed >= tick; }
-    void Wait(u64 tick) { ++waits; completed = tick; }
+    void WaitSubmitted(u64 tick) {
+        ++waits;
+        if (fail) throw std::runtime_error("simulated device failure");
+        std::unique_lock lock(guard);
+        cv.wait(lock, [&] { return completed >= tick; });
+    }
+    void ReportFailure(const std::exception&) {}
+    void Complete() {
+        std::scoped_lock lock(guard);
+        completed.store(submitted.load());
+        cv.notify_all();
+    }
 };
-inline std::vector<std::string> diagnostics;
-inline void Diagnostic(const std::string& message) { diagnostics.push_back(message); }
+inline void Diagnostic(const std::string&) {}
 }
 """
         )
         with tempfile.TemporaryDirectory(prefix="nxbox-d3d12-native-fences-") as temp:
             temp = Path(temp)
-            (temp / "stubs.h").write_text("#include <cassert>\n#include <string>\n" + native_stubs)
+            (temp / "stubs.h").write_text(
+                "#include <cassert>\n#include <string>\n#include <condition_variable>\n"
+                + native_stubs
+            )
             for name in (
                 "common/common_types.h",
                 "common/settings.h",
@@ -257,18 +273,34 @@ int main() {
     Settings::high = false;
     D3D12::Context context;
     D3D12::FenceManager manager(rasterizer, gpu, texture, buffer, query, context);
+    // Queue multiple submissions without waiting for GPU completion on the producer.
     manager.SignalSyncPoint(7);
-    assert(gpu.host.sync.guest == 1 && gpu.host.sync.host == 1);
-    assert(context.completed == context.submitted && context.waits == 1);
-    assert(D3D12::diagnostics.back() == "D3D12_SYNCPOINTS pending=0 signaled=1");
-    bool callback = false;
+    manager.SignalReference();
+    std::atomic<bool> callback{};
     manager.SignalFence([&] {
-        assert(context.completed == context.submitted);
+        assert(context.completed >= 3);
+        assert(gpu.host.sync.host == 1);
         callback = true;
     });
-    assert(callback && context.waits == 2);
-    manager.SignalReference();
-    assert(context.waits == 3 && query.commits == query.pops);
+    assert(context.submitted == 3 && context.completed == 0);
+    assert(gpu.host.sync.guest == 1 && gpu.host.sync.host == 0 && !callback);
+    // No further guest command or presentation is needed to retire the last fence.
+    context.Complete();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (!callback && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::yield();
+    assert(callback && gpu.host.sync.host == 1);
+    assert(query.commits == query.pops && buffer.commits == buffer.pops);
+    assert(texture.commits == texture.pops && context.waits == 3);
+    D3D12::Context broken;
+    broken.fail = true;
+    D3D12::FenceManager failing(rasterizer, gpu, texture, buffer, query, broken);
+    failing.SignalReference();
+    bool rejected = false;
+    try { failing.WaitPendingFences(true); }
+    catch (const std::runtime_error&) { rejected = true; }
+    assert(rejected); // A failed completion thread cannot strand a forced drain.
+
 }
 """)
             binary = temp / "native"

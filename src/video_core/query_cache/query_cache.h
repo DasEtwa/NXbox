@@ -10,8 +10,8 @@
 #include <deque>
 #include <memory>
 #include <mutex>
-#include "common/container/unordered_map.h"
 #include <utility>
+#include "common/container/unordered_map.h"
 
 #include "common/assert.h"
 #include "common/common_types.h"
@@ -260,9 +260,32 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
     };
     u8* pointer = impl->device_memory.template GetPointer<u8>(cpu_addr);
     u8* pointer_timestamp = impl->device_memory.template GetPointer<u8>(cpu_addr + 8);
-    bool is_synced = (Settings::IsGPUFenceBehaviorDefault() ? !Settings::IsGPULevelHigh() : !Settings::IsGPUFenceBehaviorBalanced() && !Settings::IsGPUFenceBehaviorAccurate()) && is_fence;
+    bool is_synced =
+        (Settings::IsGPUFenceBehaviorDefault() ? !Settings::IsGPULevelHigh()
+                                               : !Settings::IsGPUFenceBehaviorBalanced() &&
+                                                     !Settings::IsGPUFenceBehaviorAccurate()) &&
+        is_fence;
+    if constexpr (requires { Traits::REQUIRE_GPU_COMPLETION; }) {
+        if constexpr (Traits::REQUIRE_GPU_COMPLETION)
+            is_synced = false;
+    }
+    const bool immediate_payload =
+        !is_fence && !Settings::IsGPULevelHigh() && counter_type == QueryType::Payload;
+    // Register before publishing the callback: an already completed native fence
+    // can retire on the completion thread before SignalFence returns.
+    if (!is_synced && !immediate_payload) {
+        auto [cont_addr, base] = gen_caching_indexing(cpu_addr);
+        std::scoped_lock lock(cache_mutex);
+        auto& sub_container = cached_queries.try_emplace(cont_addr).first->second;
+        if (const auto current = sub_container.find(base); current != sub_container.end()) {
+            auto* old_query = impl->ObtainQuery(current->second);
+            old_query->flags |= QueryFlagBits::IsRewritten;
+        }
+        sub_container.insert_or_assign(base, query_location);
+    }
     std::function<void()> operation([this, is_synced, streamer, query_base = query, query_location,
                                      pointer, pointer_timestamp] {
+        std::scoped_lock lock(cache_mutex);
         if (True(query_base->flags & QueryFlagBits::IsInvalidated)) {
             if (!is_synced) [[likely]] {
                 impl->pending_unregister.push_back(query_location);
@@ -311,20 +334,6 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
     if (is_synced) {
         streamer->Free(new_query_id);
         return;
-    }
-    auto [cont_addr, base] = gen_caching_indexing(cpu_addr);
-    {
-        std::scoped_lock lock(cache_mutex);
-        auto it1 = cached_queries.try_emplace(cont_addr);
-        auto& sub_container = it1.first->second;
-        auto it_current = sub_container.find(base);
-        if (it_current == sub_container.end()) {
-            sub_container.insert_or_assign(base, query_location);
-            return;
-        }
-        auto* old_query = impl->ObtainQuery(it_current->second);
-        old_query->flags |= QueryFlagBits::IsRewritten;
-        sub_container.insert_or_assign(base, query_location);
     }
 }
 

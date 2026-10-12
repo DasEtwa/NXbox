@@ -55,6 +55,8 @@ struct RendererD3D12::Impl {
     ComPtr<ID3D12RootSignature> root;
     std::array<ComPtr<ID3D12PipelineState>, 3> pipelines;
     std::array<ResourcePtr, BufferCount> buffers;
+    std::array<u64, BufferCount> present_ticks{};
+    u64 present_sequence{};
     UINT rtv_stride{};
     UINT srv_stride{};
     u32 width{};
@@ -185,7 +187,7 @@ struct RendererD3D12::Impl {
               "Create RTV heap", context.Device());
         rtv_stride = context.Device()->GetDescriptorHandleIncrementSize(heap.Type);
         heap.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-        heap.NumDescriptors = MaxLayers;
+        heap.NumDescriptors = MaxLayers * BufferCount;
         heap.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
         Check(context.Device()->CreateDescriptorHeap(&heap, IID_PPV_ARGS(&srv_heap)),
               "Create SRV heap", context.Device());
@@ -200,11 +202,13 @@ struct RendererD3D12::Impl {
     }
     void Present(const Layout::FramebufferLayout& layout,
                  std::span<const Tegra::FramebufferConfig> layers, RasterizerD3D12& rasterizer) {
-        // Completes transfers and CPU readback, and retires the previous descriptor use.
-        context.Finish();
+        // Each swapchain buffer owns a descriptor slice; wait only when reusing it.
+        context.Collect();
         const auto new_width = std::max(1u, layout.width);
         const auto new_height = std::max(1u, layout.height);
         if (width != new_width || height != new_height) {
+            context.Finish();
+            present_ticks.fill(0);
             for (auto& buffer : buffers)
                 buffer.reset();
             Check(swapchain->ResizeBuffers(BufferCount, new_width, new_height,
@@ -223,6 +227,7 @@ struct RendererD3D12::Impl {
         for (const auto& layer : layers)
             textures.push_back(rasterizer.FramebufferTexture(layer));
         const UINT index = swapchain->GetCurrentBackBufferIndex();
+        context.WaitSubmitted(present_ticks[index]);
         context.MarkWork(layers.empty() ? "init present clear" : "frame present clear/compositor");
         auto* commands = context.Commands();
         context.Transition(buffers[index], D3D12_RESOURCE_STATE_RENDER_TARGET);
@@ -246,9 +251,9 @@ struct RendererD3D12::Impl {
                            static_cast<LONG>(screen.right), static_cast<LONG>(screen.bottom)};
         commands->RSSetViewports(1, &viewport);
         commands->RSSetScissorRects(1, &scissor);
-        UINT slot{};
+        UINT slot = index * MaxLayers;
         for (const auto& layer : layers) {
-            const auto& texture = textures[slot];
+            const auto& texture = textures[slot - index * MaxLayers];
             context.Transition(texture.resource, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
             auto cpu = srv_heap->GetCPUDescriptorHandleForHeapStart();
             auto gpu_handle = srv_heap->GetGPUDescriptorHandleForHeapStart();
@@ -281,13 +286,16 @@ struct RendererD3D12::Impl {
             commands->DrawInstanced(3, 1, 0, 0);
         }
         context.Transition(buffers[index], D3D12_RESOURCE_STATE_PRESENT);
-        context.Submit();
-        Diagnostic("D3D12 Present begin");
+        present_ticks[index] = context.Submit();
+        const bool log_present = ++present_sequence <= 8 || present_sequence % 120 == 0;
+        if (log_present)
+            Diagnostic("D3D12 Present begin");
         const auto status = swapchain->Present(1, 0);
         context.LogInfoQueue();
         Check(status, "Present", context.Device());
         Check(context.Device()->GetDeviceRemovedReason(), "after Present", context.Device());
-        Diagnostic("D3D12 Present complete");
+        if (log_present)
+            Diagnostic("D3D12 Present complete");
     }
 };
 RendererD3D12::RendererD3D12(Core::Frontend::EmuWindow& window,
