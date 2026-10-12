@@ -3,6 +3,8 @@
 
 #include <array>
 #include <atomic>
+#include <condition_variable>
+#include <cstdint>
 #include <deque>
 #include <exception>
 #include <functional>
@@ -11,18 +13,33 @@
 #include <span>
 #include <string>
 #include <string_view>
-#include <vector>
-#include <cstdint>
-#include <condition_variable>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 namespace D3D12 {
 enum class FramePhase : size_t {
-    DrawSetup, DescriptorWrites, Barriers, Pso, BufferUpload, TextureUpload, Submit, FenceWait, Count
+    DrawSetup,
+    DescriptorWrites,
+    Barriers,
+    Pso,
+    BufferUpload,
+    TextureUpload,
+    Submit,
+    FenceWait,
+    Count
 };
-enum class FrameCount : size_t { Draws, Dispatches, Barriers, DescriptorCopies, DescriptorWrites, PsoCompiles, Executes, Count };
+enum class FrameCount : size_t {
+    Draws,
+    Dispatches,
+    Barriers,
+    DescriptorCopies,
+    DescriptorWrites,
+    PsoCompiles,
+    Executes,
+    Count
+};
 // Monotonic CPU samples, independent of the host clock API, for exclusive phases.
 struct FrameTiming {
     std::array<std::uint64_t, static_cast<size_t>(FramePhase::Count)> cpu{};
@@ -47,8 +64,11 @@ public:
     using Result = std::shared_ptr<Value>;
     using Compile = std::function<Result()>;
     using Report = std::function<void(std::string_view)>;
-    explicit AsyncPsoCache(bool enabled_, Report report_) : enabled{enabled_}, report{std::move(report_)} {}
-    ~AsyncPsoCache() { Stop(); }
+    explicit AsyncPsoCache(bool enabled_, Report report_)
+        : enabled{enabled_}, report{std::move(report_)} {}
+    ~AsyncPsoCache() {
+        Stop();
+    }
     AsyncPsoCache(const AsyncPsoCache&) = delete;
     AsyncPsoCache& operator=(const AsyncPsoCache&) = delete;
 
@@ -197,16 +217,20 @@ public:
         ~Scope();
         Scope(const Scope&) = delete;
         Scope& operator=(const Scope&) = delete;
+
     private:
         FrameProfile* profile{};
         FramePhase previous{};
         u64 wall_start{};
         bool wait{};
     };
-    bool Enabled() const { return enabled; }
+    bool Enabled() const {
+        return enabled;
+    }
     void Count(FrameCount counter, u64 amount = 1);
     void EndFrame();
     void BindRecordingThread();
+
 private:
     bool OnOwner();
     void Switch(FramePhase phase);
@@ -242,7 +266,9 @@ public:
     void Transition(const ResourcePtr& resource, D3D12_RESOURCE_STATES state);
     // Explicit batch keeps raw Commands() users ordered; no hidden deferred barriers.
     void TransitionBatch(std::span<const std::pair<ResourcePtr, D3D12_RESOURCE_STATES>> uses);
-    FrameProfile& Profile() { return profile; }
+    FrameProfile& Profile() {
+        return profile;
+    }
     void Retain(const ResourcePtr& resource);
     void AfterCompletion(std::function<void()> callback);
     ResourcePtr CreateResource(const D3D12_RESOURCE_DESC& desc, D3D12_HEAP_TYPE heap,

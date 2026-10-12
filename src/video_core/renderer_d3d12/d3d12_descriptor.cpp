@@ -64,8 +64,8 @@ D3D12_SAMPLER_DESC MakeSamplerDesc(const Tegra::Texture::TSCEntry& entry) {
     desc.Filter = anisotropy > 1.0f
                       ? static_cast<D3D12_FILTER>(D3D12_ANISOTROPIC_FILTERING_BIT |
                                                   D3D12_ENCODE_BASIC_FILTER(1, 1, 1, reduction))
-                      : static_cast<D3D12_FILTER>(
-                            D3D12_ENCODE_BASIC_FILTER(min_linear, mag_linear, mip_linear, reduction));
+                      : static_cast<D3D12_FILTER>(D3D12_ENCODE_BASIC_FILTER(min_linear, mag_linear,
+                                                                            mip_linear, reduction));
     desc.AddressU = AddressMode(entry.wrap_u);
     desc.AddressV = AddressMode(entry.wrap_v);
     desc.AddressW = AddressMode(entry.wrap_p);
@@ -92,11 +92,13 @@ D3D12DescriptorAllocator::D3D12DescriptorAllocator(Context& context) : context{c
     InitCache(sampler_cache, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, 256);
 }
 
-void D3D12DescriptorAllocator::InitCache(DescriptorCache& cache, D3D12_DESCRIPTOR_HEAP_TYPE type, u32 capacity) {
+void D3D12DescriptorAllocator::InitCache(DescriptorCache& cache, D3D12_DESCRIPTOR_HEAP_TYPE type,
+                                         u32 capacity) {
     D3D12_DESCRIPTOR_HEAP_DESC desc{};
     desc.Type = type;
     desc.NumDescriptors = capacity;
-    Check(context.Device()->CreateDescriptorHeap(&desc, IID_PPV_ARGS(&cache.heap)), "create CPU descriptor cache", context.Device());
+    Check(context.Device()->CreateDescriptorHeap(&desc, IID_PPV_ARGS(&cache.heap)),
+          "create CPU descriptor cache", context.Device());
     cache.stride = context.Device()->GetDescriptorHandleIncrementSize(type);
     cache.capacity = capacity;
 }
@@ -109,12 +111,14 @@ void D3D12DescriptorAllocator::RefreshCaches() {
     slot_contents.clear();
     // Sampler descriptions do not reference resources and stay valid across ticks.
 }
-void D3D12DescriptorAllocator::WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE type, const ResourcePtr& resource,
-                                         u32 kind, const void* desc, size_t size, D3D12_CPU_DESCRIPTOR_HANDLE destination,
-                                         const std::function<void(D3D12_CPU_DESCRIPTOR_HANDLE)>& create) {
+void D3D12DescriptorAllocator::WriteCached(
+    D3D12_DESCRIPTOR_HEAP_TYPE type, const ResourcePtr& resource, u32 kind, const void* desc,
+    size_t size, D3D12_CPU_DESCRIPTOR_HANDLE destination,
+    const std::function<void(D3D12_CPU_DESCRIPTOR_HANDLE)>& create) {
     const FrameProfile::Scope profile_write{context.Profile(), FramePhase::DescriptorWrites};
     RefreshCaches();
-    const auto identity = reinterpret_cast<std::uintptr_t>(resource ? resource->handle.Get() : nullptr);
+    const auto identity =
+        reinterpret_cast<std::uintptr_t>(resource ? resource->handle.Get() : nullptr);
     std::string key(reinterpret_cast<const char*>(&type), sizeof(type));
     key.append(reinterpret_cast<const char*>(&identity), sizeof(identity));
     key.append(reinterpret_cast<const char*>(&kind), sizeof(kind));
@@ -141,7 +145,8 @@ void D3D12DescriptorAllocator::WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE type, cons
     context.Profile().Count(FrameCount::DescriptorCopies);
     slot_contents[destination.ptr] = std::move(key);
 }
-std::optional<DescriptorTable> D3D12DescriptorAllocator::FindTable(std::string_view key, bool sampler) {
+std::optional<DescriptorTable> D3D12DescriptorAllocator::FindTable(std::string_view key,
+                                                                   bool sampler) {
     RefreshCaches();
     return table_cache[sampler ? 1 : 0].Find(context.CurrentTick(), key);
 }
@@ -149,17 +154,22 @@ void D3D12DescriptorAllocator::RememberTable(std::string key, DescriptorTable ta
     RefreshCaches();
     table_cache[sampler ? 1 : 0].Remember(context.CurrentTick(), std::move(key), table);
 }
-void D3D12DescriptorAllocator::WriteUavDescriptor(const DescriptorTable& table, u32 slot, const ResourcePtr& resource,
-                                                const D3D12_UNORDERED_ACCESS_VIEW_DESC& desc) {
-    WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, resource, 2, &desc, sizeof(desc), table.Slot(slot),
-                [&](auto handle) { context.Device()->CreateUnorderedAccessView(resource ? resource->handle.Get() : nullptr, nullptr, &desc, handle); });
+void D3D12DescriptorAllocator::WriteUavDescriptor(const DescriptorTable& table, u32 slot,
+                                                  const ResourcePtr& resource,
+                                                  const D3D12_UNORDERED_ACCESS_VIEW_DESC& desc) {
+    WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, resource, 2, &desc, sizeof(desc),
+                table.Slot(slot), [&](auto handle) {
+                    context.Device()->CreateUnorderedAccessView(
+                        resource ? resource->handle.Get() : nullptr, nullptr, &desc, handle);
+                });
 }
 void D3D12DescriptorAllocator::Init(Ring& ring, D3D12_DESCRIPTOR_HEAP_TYPE type, u32 capacity,
                                     bool visible) {
     D3D12_DESCRIPTOR_HEAP_DESC desc{};
     desc.Type = type;
     desc.NumDescriptors = capacity;
-    desc.Flags = visible ? D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE : D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+    desc.Flags =
+        visible ? D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE : D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
     Diagnostic("D3D12 descriptor heap type=" + std::to_string(static_cast<u32>(type)) +
                " capacity=" + std::to_string(capacity) + " visible=" + std::to_string(visible));
     Check(context.Device()->CreateDescriptorHeap(&desc, IID_PPV_ARGS(&ring.heap)),
@@ -253,7 +263,8 @@ D3D12_CPU_DESCRIPTOR_HANDLE D3D12DescriptorAllocator::AllocateDsv() {
 
 void D3D12DescriptorAllocator::WriteNullCbv(const DescriptorTable& table, u32 slot) {
     D3D12_CONSTANT_BUFFER_VIEW_DESC desc{};
-    WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, {}, 0, &desc, sizeof(desc), table.Slot(slot),
+    WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, {}, 0, &desc, sizeof(desc),
+                table.Slot(slot),
                 [&](auto handle) { context.Device()->CreateConstantBufferView(&desc, handle); });
 }
 void D3D12DescriptorAllocator::WriteNullSrv(const DescriptorTable& table, u32 slot,
@@ -294,8 +305,9 @@ void D3D12DescriptorAllocator::WriteNullSrv(const DescriptorTable& table, u32 sl
         desc.Texture2D.MipLevels = 1;
         break;
     }
-    WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, {}, 1, &desc, sizeof(desc), table.Slot(slot),
-                [&](auto handle) { context.Device()->CreateShaderResourceView(nullptr, &desc, handle); });
+    WriteCached(
+        D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, {}, 1, &desc, sizeof(desc), table.Slot(slot),
+        [&](auto handle) { context.Device()->CreateShaderResourceView(nullptr, &desc, handle); });
 }
 void D3D12DescriptorAllocator::WriteNullUav(const DescriptorTable& table, u32 slot) {
     D3D12_UNORDERED_ACCESS_VIEW_DESC desc{};
@@ -336,7 +348,8 @@ void D3D12DescriptorAllocator::WriteCbv(const DescriptorTable& table, u32 slot,
     D3D12_CONSTANT_BUFFER_VIEW_DESC desc{};
     desc.BufferLocation = buffer.resource->handle->GetGPUVirtualAddress() + buffer.offset;
     desc.SizeInBytes = static_cast<UINT>(size);
-    WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, buffer.resource, 0, &desc, sizeof(desc), table.Slot(slot),
+    WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, buffer.resource, 0, &desc, sizeof(desc),
+                table.Slot(slot),
                 [&](auto handle) { context.Device()->CreateConstantBufferView(&desc, handle); });
 }
 
@@ -358,7 +371,8 @@ void D3D12DescriptorAllocator::WriteStorageUav(const DescriptorTable& table, u32
 
 void D3D12DescriptorAllocator::WriteTexelSrv(const DescriptorTable& table, u32 slot,
                                              const BoundBuffer& buffer) {
-    const auto format = MaxwellFormat(static_cast<VideoCore::Surface::PixelFormat>(buffer.pixel_format));
+    const auto format =
+        MaxwellFormat(static_cast<VideoCore::Surface::PixelFormat>(buffer.pixel_format));
     if (!buffer.resource || !format.Supported() || !format.bytes_per_block ||
         buffer.size < format.bytes_per_block) {
         WriteNullSrv(table, slot, D3D12_SRV_DIMENSION_BUFFER);
@@ -370,13 +384,17 @@ void D3D12DescriptorAllocator::WriteTexelSrv(const DescriptorTable& table, u32 s
     desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     desc.Buffer.FirstElement = buffer.offset / format.bytes_per_block;
     desc.Buffer.NumElements = buffer.size / format.bytes_per_block;
-    WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, buffer.resource, 1, &desc, sizeof(desc), table.Slot(slot),
-                [&](auto handle) { context.Device()->CreateShaderResourceView(buffer.resource->handle.Get(), &desc, handle); });
+    WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, buffer.resource, 1, &desc, sizeof(desc),
+                table.Slot(slot), [&](auto handle) {
+                    context.Device()->CreateShaderResourceView(buffer.resource->handle.Get(), &desc,
+                                                               handle);
+                });
 }
 
 void D3D12DescriptorAllocator::WriteTexelUav(const DescriptorTable& table, u32 slot,
                                              const BoundBuffer& buffer) {
-    const auto format = MaxwellFormat(static_cast<VideoCore::Surface::PixelFormat>(buffer.pixel_format));
+    const auto format =
+        MaxwellFormat(static_cast<VideoCore::Surface::PixelFormat>(buffer.pixel_format));
     if (!buffer.resource || !format.Supported() || !format.bytes_per_block ||
         buffer.size < format.bytes_per_block) {
         WriteNullUav(table, slot);
@@ -400,8 +418,11 @@ bool D3D12DescriptorAllocator::WriteImageSrv(const DescriptorTable& table, u32 s
         return false;
     }
     const auto& desc = view.Description();
-    WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, resource, 1, &desc, sizeof(desc), table.Slot(slot),
-                [&](auto handle) { context.Device()->CreateShaderResourceView(resource->handle.Get(), &desc, handle); });
+    WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, resource, 1, &desc, sizeof(desc),
+                table.Slot(slot), [&](auto handle) {
+                    context.Device()->CreateShaderResourceView(resource->handle.Get(), &desc,
+                                                               handle);
+                });
     return true;
 }
 

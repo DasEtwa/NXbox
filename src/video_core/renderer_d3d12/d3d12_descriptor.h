@@ -2,12 +2,12 @@
 #pragma once
 
 #include <array>
-#include <vector>
-#include <unordered_map>
-#include <optional>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
+#include <vector>
 
 namespace D3D12 {
 // A recording owns immutable slots only until its submission tick changes.
@@ -24,6 +24,7 @@ public:
         Refresh(current);
         tables.insert_or_assign(std::move(key), std::move(value));
     }
+
 private:
     void Refresh(std::uint64_t current) {
         if (tick != current) {
@@ -191,8 +192,8 @@ private:
     };
     void InitCache(DescriptorCache& cache, D3D12_DESCRIPTOR_HEAP_TYPE type, u32 capacity);
     void RefreshCaches();
-    void WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE type, const ResourcePtr& resource,
-                     u32 kind, const void* desc, size_t size, D3D12_CPU_DESCRIPTOR_HANDLE destination,
+    void WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE type, const ResourcePtr& resource, u32 kind,
+                     const void* desc, size_t size, D3D12_CPU_DESCRIPTOR_HANDLE destination,
                      const std::function<void(D3D12_CPU_DESCRIPTOR_HANDLE)>& create);
     u64 cache_tick{};
     DescriptorCache view_cache, sampler_cache;

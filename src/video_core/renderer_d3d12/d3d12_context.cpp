@@ -314,16 +314,27 @@ void FrameProfile::EndFrame() {
     if (wall - start_wall < 50000000)
         return;
     try {
-        constexpr std::array names{"draw_setup", "descriptor_writes", "barriers", "pso", "buffer_upload", "texture_upload", "submit", "fence_wait"};
-        constexpr std::array counters{"draws", "dispatches", "barriers", "descriptor_copies", "descriptor_writes", "pso_compiles", "ExecuteCommandLists"};
+        constexpr std::array names{"draw_setup",    "descriptor_writes", "barriers", "pso",
+                                   "buffer_upload", "texture_upload",    "submit",   "fence_wait"};
+        constexpr std::array counters{"draws",
+                                      "dispatches",
+                                      "barriers",
+                                      "descriptor_copies",
+                                      "descriptor_writes",
+                                      "pso_compiles",
+                                      "ExecuteCommandLists"};
         const double elapsed = static_cast<double>(wall - start_wall);
-        std::string line = fmt::format("D3D12_FRAME_PROFILE thread={} frames={} gpu_thread_cpu_pct={:.2f} fence_wait_wall_ms={:.3f}", owner.load(), frames,
-                                     100.0 * static_cast<double>(timing.last - initial_cpu) / elapsed,
-                                     static_cast<double>(fence_wall) / 10000.0);
+        std::string line = fmt::format(
+            "D3D12_FRAME_PROFILE thread={} frames={} gpu_thread_cpu_pct={:.2f} "
+            "fence_wait_wall_ms={:.3f}",
+            owner.load(), frames, 100.0 * static_cast<double>(timing.last - initial_cpu) / elapsed,
+            static_cast<double>(fence_wall) / 10000.0);
         for (size_t i = 0; i < timing.cpu.size(); ++i)
-            line += fmt::format(" {}_cpu_ms={:.3f}", names[i], static_cast<double>(timing.cpu[i]) / 10000.0);
+            line += fmt::format(" {}_cpu_ms={:.3f}", names[i],
+                                static_cast<double>(timing.cpu[i]) / 10000.0);
         for (size_t i = 0; i < counts.size(); ++i)
-            line += fmt::format(" {}={} {}_per_frame={:.2f}", counters[i], counts[i], counters[i], static_cast<double>(counts[i]) / static_cast<double>(frames));
+            line += fmt::format(" {}={} {}_per_frame={:.2f}", counters[i], counts[i], counters[i],
+                                static_cast<double>(counts[i]) / static_cast<double>(frames));
         Diagnostic(line);
     } catch (...) {
         Diagnostic("D3D12 frame profile formatting failed");
@@ -332,7 +343,7 @@ void FrameProfile::EndFrame() {
     counts.fill(0);
     frames = fence_wall = 0;
     initial_cpu = ProfileCpuTime();
-        timing.Reset(initial_cpu);
+    timing.Reset(initial_cpu);
     start_wall = ProfileWallTime();
 }
 Context::Context() {
@@ -681,7 +692,8 @@ void Context::TransitionBatch(std::span<const std::pair<ResourcePtr, D3D12_RESOU
             continue;
         D3D12_RESOURCE_BARRIER barrier{};
         barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        barrier.Transition = {resource->handle.Get(), D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, resource->state, state};
+        barrier.Transition = {resource->handle.Get(), D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+                              resource->state, state};
         barriers.push_back(barrier);
         resource->state = state;
     }

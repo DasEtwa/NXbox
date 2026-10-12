@@ -147,11 +147,22 @@ class T8PerfTests(unittest.TestCase):
         source.write_text(DRIVER)
         subprocess.run(
             [
-                "clang++", "-std=c++20", "-Wall", "-Wextra", "-Werror", "-pthread",
-                "-fsanitize=address,undefined", "-I", str(ROOT / "src"),
-                str(source), "-o", str(cls.binary),
+                "clang++",
+                "-std=c++20",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                "-pthread",
+                "-fsanitize=address,undefined",
+                "-I",
+                str(ROOT / "src"),
+                str(source),
+                "-o",
+                str(cls.binary),
             ],
-            check=True, capture_output=True, text=True,
+            check=True,
+            capture_output=True,
+            text=True,
         )
 
     @classmethod
@@ -189,7 +200,9 @@ class T8PerfTests(unittest.TestCase):
         self.assertIn("wall - start_wall < 50000000", context)
         self.assertIn("Profile().EndFrame()", renderer)
         self.assertIn("FirstInfoWarning(message->Severity, message->ID)", context)
-        reserve = descriptors.split("D3D12DescriptorAllocator::Reserve(")[1].split("D3D12DescriptorAllocator::SetHeaps(")[0]
+        reserve = descriptors.split("D3D12DescriptorAllocator::Reserve(")[1].split(
+            "D3D12DescriptorAllocator::SetHeaps("
+        )[0]
         self.assertNotIn("context.Finish()", reserve)
         self.assertIn("context.Wait(oldest_blocked)", reserve)
         self.assertIn("CopyDescriptorsSimple", descriptors)
@@ -198,7 +211,16 @@ class T8PerfTests(unittest.TestCase):
         self.assertIn("descriptors.FindTable(view_key)", run)
         self.assertIn("context.TransitionBatch(transitions)", dispatch)
         self.assertEqual(dispatch.count("Count(FrameCount::Dispatches)"), 2)
-        for phase in ("draw_setup", "descriptor_writes", "barriers", "pso", "buffer_upload", "texture_upload", "submit", "fence_wait"):
+        for phase in (
+            "draw_setup",
+            "descriptor_writes",
+            "barriers",
+            "pso",
+            "buffer_upload",
+            "texture_upload",
+            "submit",
+            "fence_wait",
+        ):
             self.assertIn(f'"{phase}"', context)
 
 
