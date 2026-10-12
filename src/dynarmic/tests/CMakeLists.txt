@@ -3,6 +3,7 @@
 include(TargetArchitectureSpecificSources)
 
 add_executable(dynarmic_tests
+    test_trace_listener.cpp
     fp/FPToFixed.cpp
     fp/FPValue.cpp
     fp/mantissa_util_tests.cpp

@@ -169,6 +169,11 @@ static Dynarmic::A64::UserConfig GetUserConfig(A64TestEnv& jit_env) {
 }
 
 static void RunTestInstance(Dynarmic::A64::Jit& jit, A64Unicorn& uni, A64TestEnv& jit_env, A64TestEnv& uni_env, Dynarmic::A64::UserConfig& conf, const A64Unicorn::RegisterArray& regs, const A64Unicorn::VectorArray& vecs, const size_t instructions_start, const std::vector<u32>& instructions, const u32 pstate, const u32 fpcr) {
+    std::string program;
+    for (const auto instruction : instructions) {
+        program += fmt::format("{:08x} ", instruction);
+    }
+    INFO("instructions=" << program << " fpcr=" << std::hex << fpcr);
     jit_env.code_mem = instructions;
     uni_env.code_mem = instructions;
     jit_env.code_mem.emplace_back(0x14000000);  // B .

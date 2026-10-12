@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include <cstdio>
 #include <string>
 #include <vector>
 
@@ -123,8 +124,12 @@ public:
         UNREACHABLE(); //ASSERT(false && "CallSVC({})", swi);
     }
 
-    void ExceptionRaised(u64 pc, Dynarmic::A64::Exception /*exception*/) override {
-        UNREACHABLE(); //ASSERT(false && "ExceptionRaised({:016x})", pc);
+    void ExceptionRaised(u64 pc, Dynarmic::A64::Exception exception) override {
+        std::fprintf(stderr, "Unexpected A64 guest exception %u at %llx, instruction %08x\n",
+                     static_cast<unsigned>(exception), static_cast<unsigned long long>(pc),
+                     MemoryReadCode(pc).value_or(0));
+        std::fflush(stderr);
+        UNREACHABLE();
     }
 
     void AddTicks(std::uint64_t ticks) override {
