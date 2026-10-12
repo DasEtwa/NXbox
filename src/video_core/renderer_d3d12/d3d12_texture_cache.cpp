@@ -150,8 +150,19 @@ void Image::DownloadMemory(ResourcePtr buffer, size_t offset,
         throw std::runtime_error("D3D12 P2 download requires mapped staging");
     DownloadMemory({buffer, offset, buffer->mapped.subspan(offset)}, copies);
 }
+void Image::DownloadMemory(std::span<const ResourcePtr> buffers, std::span<const size_t> offsets,
+                           std::span<const VideoCommon::BufferImageCopy> copies) {
+    if (buffers.size() != 2 || offsets.size() != 2 || !buffers[0] || !buffers[1] ||
+        buffers[0]->heap != D3D12_HEAP_TYPE_DEFAULT || offsets[1] > buffers[1]->mapped.size())
+        throw std::invalid_argument("D3D12 invalid DMA download destinations");
+    if (host_format.converted_astc || VideoCore::Surface::IsPixelFormatASTC(info.format))
+        throw std::runtime_error("D3D12 converted ASTC readback is not reversible");
+    Transfer({buffers[1], offsets[1], buffers[1]->mapped.subspan(offsets[1])}, copies, true,
+             buffers[0], offsets[0]);
+}
 void Image::Transfer(const StagingBufferRef& input,
-                     std::span<const VideoCommon::BufferImageCopy> copies, bool download) {
+                     std::span<const VideoCommon::BufferImageCopy> copies, bool download,
+                     const ResourcePtr& gpu_destination, size_t gpu_offset) {
     auto map = input;
     if (!map.buffer || map.mapped_span.empty())
         throw std::invalid_argument("D3D12 missing mapped texture staging");
@@ -230,9 +241,17 @@ void Image::Transfer(const StagingBufferRef& input,
                 throw std::invalid_argument("D3D12 partial BC copy must be block aligned");
             auto aligned = download ? runtime->DownloadStagingBuffer(padded_size)
                                     : runtime->UploadStagingBuffer(padded_size);
-            footprint.Offset = aligned.offset;
+            ResourcePtr padded_gpu;
+            if (gpu_destination) {
+                // READBACK heaps cannot become COPY_SOURCE. Download once into a
+                // DEFAULT footprint, then fan out to tight GPU storage and readback.
+                padded_gpu = context.CreateBuffer(padded_size, D3D12_HEAP_TYPE_DEFAULT);
+                context.Transition(padded_gpu, D3D12_RESOURCE_STATE_COPY_DEST);
+            }
+            context.Retain(resource); // Staging pressure may have submitted the earlier retain.
+            footprint.Offset = padded_gpu ? 0 : aligned.offset;
             D3D12_TEXTURE_COPY_LOCATION linear{};
-            linear.pResource = aligned.buffer->handle.Get();
+            linear.pResource = padded_gpu ? padded_gpu->handle.Get() : aligned.buffer->handle.Get();
             linear.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
             linear.PlacedFootprint = footprint;
             D3D12_TEXTURE_COPY_LOCATION texture{};
@@ -257,6 +276,22 @@ void Image::Transfer(const StagingBufferRef& input,
                 context.MarkWork("upload/copy");
                 context.Commands()->CopyTextureRegion(&linear, 0, 0, 0, &texture,
                                                       full_subresource ? nullptr : &box);
+                if (padded_gpu) {
+                    context.Transition(padded_gpu, D3D12_RESOURCE_STATE_COPY_SOURCE);
+                    context.Transition(gpu_destination, D3D12_RESOURCE_STATE_COPY_DEST);
+                    ForEachRowCopy(gpu_destination->handle->GetDesc().Width, padded_size,
+                                   CheckedAdd(gpu_offset, base), 0, row_bytes, num_rows,
+                                   extent.depth, row_stride, slice_stride,
+                                   footprint.Footprint.RowPitch, padded_slice,
+                                   [&](u64 destination, u64 source, u64 size) {
+                                       context.Commands()->CopyBufferRegion(
+                                           gpu_destination->handle.Get(), destination,
+                                           padded_gpu->handle.Get(), source, size);
+                                   });
+                    context.Commands()->CopyBufferRegion(aligned.buffer->handle.Get(),
+                                                         aligned.offset, padded_gpu->handle.Get(),
+                                                         0, padded_size);
+                }
                 // The caller's tight staging stays leased through CPU unpack after the fence.
                 context.AfterCompletion([map, aligned, base, slice_stride, row_stride, padded_slice,
                                          row_bytes, num_rows, depth = extent.depth,
@@ -273,7 +308,7 @@ ImageView::ImageView(TextureCacheRuntime&, const VideoCommon::ImageViewInfo& inf
     : ImageViewBase{info, image.info, id, image.gpu_addr}, resource{image.Handle()} {
     const auto view_info = MaxwellFormat(info.format);
     if (!view_info.Supported() || (!VideoCore::Surface::IsPixelFormatASTC(info.format) &&
-                                view_info.resource_format != image.HostFormat().resource_format))
+                                   view_info.resource_format != image.HostFormat().resource_format))
         throw std::runtime_error("D3D12 incompatible texture view cast");
     description.Format = static_cast<DXGI_FORMAT>(VideoCore::Surface::IsPixelFormatASTC(info.format)
                                                       ? image.HostFormat().view_format

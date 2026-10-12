@@ -10,6 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 DRIVER = r"""
 #include <cassert>
+#include <algorithm>
 #include <array>
 #include <vector>
 #include <limits>
@@ -90,6 +91,25 @@ int main() {
     std::vector<std::uint8_t> output(guest.size(), 0xa5);
     RepackRows(output, placed, row_bytes, rows, depth, guest_pitch, guest_pitch * rows, 256, 256 * rows);
     assert(output == guest);
+    // DMA uses one padded DEFAULT buffer for GPU storage and CPU readback.
+    // Its row plan must produce exactly the same bytes as CPU repacking.
+    std::vector<std::uint8_t> gpu_output(32 + guest.size(), 0xa5);
+    int copies = 0;
+    ForEachRowCopy(gpu_output.size(), staging.size(), 32, 512, row_bytes, rows, depth,
+                   guest_pitch, guest_pitch * rows, 256, 256 * rows,
+                   [&](std::uint64_t dst, std::uint64_t src, std::uint64_t size) {
+                       ++copies;
+                       std::memcpy(gpu_output.data() + dst, staging.data() + src, size);
+                   });
+    assert(copies == rows * depth);
+    assert(std::equal(guest.begin(), guest.end(), gpu_output.begin() + 32));
+    copies = 0;
+    rejects<std::out_of_range>([&] {
+        ForEachRowCopy(10, staging.size(), 32, 512, row_bytes, rows, depth,
+                       guest_pitch, guest_pitch * rows, 256, 256 * rows,
+                       [&](auto, auto, auto) { ++copies; });
+    });
+    assert(copies == 0);
     assert(staging[0] == 0xcc && placed[row_bytes] == 0xcc);
     rejects<std::out_of_range>([&]{ RepackRows(std::span(output).first(10), placed, row_bytes, rows, depth, guest_pitch, guest_pitch * rows, 256, 256 * rows); });
     rejects<std::invalid_argument>([&]{ RepackRows(output, placed, row_bytes, rows, depth, 1, guest_pitch * rows, 256, 256 * rows); });

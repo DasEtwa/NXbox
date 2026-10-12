@@ -109,6 +109,8 @@ public:
     void DownloadMemory(const StagingBufferRef&, std::span<const VideoCommon::BufferImageCopy>);
     void UploadMemory(ResourcePtr, size_t, std::span<const VideoCommon::BufferImageCopy>);
     void DownloadMemory(ResourcePtr, size_t, std::span<const VideoCommon::BufferImageCopy>);
+    void DownloadMemory(std::span<const ResourcePtr> buffers, std::span<const size_t> offsets,
+                        std::span<const VideoCommon::BufferImageCopy> copies);
     bool IsRescaled() const {
         return false;
     }
@@ -128,7 +130,7 @@ public:
 
 private:
     void Transfer(const StagingBufferRef&, std::span<const VideoCommon::BufferImageCopy>,
-                  bool download);
+                  bool download, const ResourcePtr& gpu_destination = {}, size_t gpu_offset = 0);
     TextureCacheRuntime* runtime{};
     ResourcePtr resource;
     FormatInfo host_format{};

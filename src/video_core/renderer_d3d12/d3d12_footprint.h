@@ -57,6 +57,31 @@ constexpr CopyFootprint MakeFootprint(FormatInfo format, std::uint32_t width, st
             slice,
             CheckedMultiply(slice, depth)};
 }
+// Plan GPU row copies with the same tight/padded layout as CPU repacking. Validate
+// both ranges before invoking the visitor so a bad extent cannot partially copy.
+template <typename Visitor>
+void ForEachRowCopy(std::uint64_t destination_size, std::uint64_t source_size,
+                    std::uint64_t destination_offset, std::uint64_t source_offset,
+                    std::uint64_t row_bytes, std::uint32_t rows, std::uint32_t depth,
+                    std::uint64_t destination_pitch, std::uint64_t destination_slice,
+                    std::uint64_t source_pitch, std::uint64_t source_slice, Visitor&& visitor) {
+    if (!row_bytes || !rows || !depth || destination_pitch < row_bytes ||
+        source_pitch < row_bytes || destination_slice < CheckedMultiply(destination_pitch, rows) ||
+        source_slice < CheckedMultiply(source_pitch, rows))
+        throw std::invalid_argument("D3D12 invalid GPU row layout");
+    const auto required = [=](std::uint64_t offset, std::uint64_t pitch, std::uint64_t slice) {
+        return CheckedAdd(offset,
+                          CheckedAdd(CheckedMultiply(slice, depth - 1),
+                                     CheckedAdd(CheckedMultiply(pitch, rows - 1), row_bytes)));
+    };
+    if (required(destination_offset, destination_pitch, destination_slice) > destination_size ||
+        required(source_offset, source_pitch, source_slice) > source_size)
+        throw std::out_of_range("D3D12 GPU row copy bounds");
+    for (std::uint32_t z = 0; z < depth; ++z)
+        for (std::uint32_t y = 0; y < rows; ++y)
+            visitor(destination_offset + z * destination_slice + y * destination_pitch,
+                    source_offset + z * source_slice + y * source_pitch, row_bytes);
+}
 // Repack only meaningful bytes; padding is neither sourced nor copied back to the guest.
 inline void RepackRows(std::span<std::uint8_t> destination, std::span<const std::uint8_t> source,
                        std::uint64_t row_bytes, std::uint32_t rows, std::uint32_t depth,

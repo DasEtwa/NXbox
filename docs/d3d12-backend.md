@@ -73,7 +73,10 @@ Teardown drains submitted work, including partial construction.
   Ring pressure submits and waits before reusing completed, unleased pages; larger
   size classes evict idle smaller pages. Oversized requests and leased-page pressure
   use temporary storage under the same 512 MiB device ceiling. Deferred texture
-  downloads use zero-offset leases until CPU unswizzling finishes.
+  downloads use zero-offset leases until CPU unswizzling finishes. Image-to-buffer
+  DMA downloads copy into a padded DEFAULT footprint, then fan out with GPU row
+  copies to the tight guest buffer and to READBACK storage. READBACK heaps remain
+  COPY_DEST; CPU repacking finishes before the guest callback retires.
 - Textures are committed DEFAULT resources with typeless storage for legal typed
   view casts. The std-only format table covers every Maxwell PixelFormat and marks
   missing mappings explicitly unsupported. CPU ASTC conversion uses VideoCommon,
@@ -364,5 +367,6 @@ before D3D12 uploads to allow completion reentry.
 
 Host tests cover asynchronous callback ordering without another guest command,
 completion failure waking a forced drain, staging pressure with live CPU leases,
-query publication/retirement at low accuracy, and HLSL export/store masking. A new console run is still required to establish
+query publication/retirement at low accuracy, GPU DMA row layouts and destination
+contracts, and HLSL export/store masking. A new console run is still required to establish
 whether these fixes remove the run-7 abort and to measure the resulting frame rate.
