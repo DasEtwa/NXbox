@@ -12,8 +12,26 @@
 #include "core/file_sys/system_archive/system_archive.h"
 #include "core/file_sys/system_archive/system_version.h"
 #include "core/file_sys/system_archive/time_zone_binary.h"
+#include "core/file_sys/vfs/vfs_vector.h"
 
 namespace FileSys::SystemArchive {
+
+namespace {
+VirtualDir EmptyLocalNews() {
+    // No offline articles: the HLE news service does not consume firmware tutorials.
+    return std::make_shared<VectorVfsDirectory>(std::vector<VirtualFile>{},
+                                                std::vector<VirtualDir>{});
+}
+
+VirtualDir EmptyCertificateStore() {
+    // Public sslT header, zero entries: no trust anchors or console credentials.
+    constexpr std::array<u8, 8> header{'s', 's', 'l', 'T', 0, 0, 0, 0};
+    return std::make_shared<VectorVfsDirectory>(
+        std::vector<VirtualFile>{MakeArrayFile(header, "ssl_TrustedCerts.bdf"),
+                                 MakeArrayFile(header, "ssl_TrustedCerts.tcf")},
+        std::vector<VirtualDir>{});
+}
+} // namespace
 
 struct SystemArchiveDescriptor {
     const char* name;
@@ -22,7 +40,8 @@ struct SystemArchiveDescriptor {
 
 constexpr inline SystemArchiveDescriptor GetSystemArchive(u64 title_id) {
     switch (title_id) {
-    case 0x0100000000000800: return {"CertStore", nullptr};
+    case 0x0100000000000800:
+        return {"CertStore", &EmptyCertificateStore};
     case 0x0100000000000801: return {"ErrorMessage", nullptr};
     case 0x0100000000000802: return {"MiiModel", &MiiModel};
     case 0x0100000000000803: return {"BrowserDll", nullptr};
@@ -33,7 +52,8 @@ constexpr inline SystemArchiveDescriptor GetSystemArchive(u64 title_id) {
     case 0x0100000000000808: return {"Dictionary", nullptr};
     case 0x0100000000000809: return {"SystemVersion", &SystemVersion};
     case 0x010000000000080A: return {"AvatarImage", nullptr};
-    case 0x010000000000080B: return {"LocalNews", nullptr};
+    case 0x010000000000080B:
+        return {"LocalNews", &EmptyLocalNews};
     case 0x010000000000080C: return {"Eula", nullptr};
     case 0x010000000000080D: return {"UrlBlackList", nullptr};
     case 0x010000000000080E: return {"TimeZoneBinary", &TimeZoneBinary};
@@ -76,7 +96,8 @@ constexpr inline SystemArchiveDescriptor GetSystemArchive(u64 title_id) {
 
 VirtualFile SynthesizeSystemArchive(const u64 title_id) {
     auto const desc = GetSystemArchive(title_id);
-    LOG_INFO(Service_FS, "Synthesizing system archive '{}' ({:#016x}).", desc.name, title_id);
+    LOG_INFO(Service_FS, "Synthesizing system archive '{}' ({:#016x}).",
+             desc.name != nullptr ? desc.name : "Unknown", title_id);
     if (desc.supplier != nullptr) {
         if (auto const dir = desc.supplier(); dir != nullptr) {
             if (auto const romfs = CreateRomFS(dir); romfs != nullptr) {

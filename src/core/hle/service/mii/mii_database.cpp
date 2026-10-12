@@ -28,12 +28,12 @@ StoreData NintendoFigurineDatabase::Get(std::size_t index) const {
 }
 
 u32 NintendoFigurineDatabase::GetCount(const DatabaseSessionMetadata& metadata) const {
-    if (magic == MiiMagic) {
+    if (metadata.magic == MiiMagic) {
         return GetDatabaseLength();
     }
 
     u32 mii_count{};
-    for (std::size_t index = 0; index < mii_count; ++index) {
+    for (std::size_t index = 0; index < database_length; ++index) {
         const auto& store_data = Get(index);
         if (!store_data.IsSpecial()) {
             mii_count++;
