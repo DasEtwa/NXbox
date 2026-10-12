@@ -13,7 +13,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 <p align="center">
   <b>A Nintendo Switch emulator that runs natively on an Xbox Series X.</b><br>
   A port of <a href="https://git.eden-emu.dev/eden-emu/eden">Eden</a> to the Xbox UWP sandbox: the Switch's ARM64 code runs
-  through a JIT, and its graphics go to Direct3D 12: today through OpenGL on Mesa, and, <b>new</b>, through a
+  through a JIT, and its graphics go to Direct3D 12: today through OpenGL on Mesa, and, <b>*New*</b>, through a
   native Direct3D 12 renderer.
 </p>
 
@@ -64,7 +64,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 > as working well: each has open bugs (see the [compatibility table](#compatibility)). There is no
 > public release yet: builds come from CI.
 
-> **New: native Direct3D 12 renderer.** The default path translates the Switch GPU to OpenGL and
+> **\*New\* Native Direct3D 12 renderer.** The default path translates the Switch GPU to OpenGL and
 > then, through Mesa, to Direct3D 12. The new renderer (`NXBOX_RENDERER=d3d12`) talks to Direct3D 12
 > directly: Switch shaders are translated to HLSL and compiled with Microsoft's DXC, with no OpenGL or
 > Mesa in between. It already draws Super Mario 3D World's game-select screen correctly at 1920×1080,
@@ -79,7 +79,7 @@ Everything below was measured on a retail Xbox Series X in Developer Mode.
 | --- | --- |
 | CPU | Switch ARM64 code runs through the Dynarmic JIT inside the UWP sandbox, with a 128 MiB code cache |
 | Graphics (default) | OpenGL 4.6 on Direct3D 12 through a patched Mesa `d3d12` driver, built in CI |
-| Graphics (**new**, opt-in) | Native Direct3D 12 renderer (`NXBOX_RENDERER=d3d12`): Switch shaders go Maxwell → IR → HLSL → DXC → DXIL. Draws Super Mario 3D World's game-select screen correctly; about 24 FPS, suspended after about 90 s. Geometry/tessellation shaders, transform feedback and MSAA are not done yet |
+| Graphics (**\*New\***, opt-in) | Native Direct3D 12 renderer (`NXBOX_RENDERER=d3d12`): Switch shaders go Maxwell → IR → HLSL → DXC → DXIL. Draws Super Mario 3D World's game-select screen correctly; about 24 FPS, suspended after about 90 s. Geometry/tessellation shaders, transform feedback and MSAA are not done yet |
 | Frame pacing | OpenGL path: 60 FPS in Super Mario 3D World's hub, 30 FPS in Persona 5 Royal, about 12 FPS in Breath of the Wild (CPU bound). Loads still freeze the picture for a few seconds |
 | Shaders | Per-title pipeline cache, precompiled at boot so scene changes do not compile shaders. A cache can be shared between consoles over the LAN |
 | Memory | Guest memory is committed on demand. Persona 5 Royal peaks around 4.0 GB and Breath of the Wild around 4.5 GB of the 5 GiB app budget |
@@ -149,7 +149,7 @@ flowchart LR
     core --> gl["OpenGL 4.6 renderer (default)"]
     gl --> mesa["Mesa d3d12 (patched)"]
     mesa --> d3d["Direct3D 12 on Xbox"]
-    core --> native["New: native D3D12 renderer<br/>Maxwell → HLSL → DXC"]
+    core --> native["*New* native D3D12 renderer<br/>Maxwell → HLSL → DXC"]
     native --> d3d
     core --> audio["XAudio2"]
     pad["Xbox controller"] --> core
@@ -161,7 +161,7 @@ flowchart LR
   [aerisarn/mesa-uwp](https://github.com/aerisarn/mesa-uwp) in CI.
 - `src/video_core/renderer_d3d12/` and `src/shader_recompiler/backend/hlsl/`: the new native
   Direct3D 12 renderer and its HLSL shader backend.
-- `tools/nxbox-pack/`: **new**, a command-line tool for Windows, macOS and Linux that turns a game you
+- `tools/nxbox-pack/`: **\*New\*** a command-line tool for Windows, macOS and Linux that turns a game you
   own into its own Xbox app (no emulator menu) and installs it through the Device Portal.
 - `tools/shader-share/`: a small server that keeps the largest valid shader cache per title.
 
@@ -178,7 +178,7 @@ You need an Xbox Series X|S in **Developer Mode** and your own dumps:
    converted on the console the first time the library sees them.
 4. Launch NXbox from the dashboard and pick the game in the library.
 
-**New:** [NXbox Pack](tools/nxbox-pack/README.md) does steps 1–4 for one game at a time: drag the
+**\*New\*** [NXbox Pack](tools/nxbox-pack/README.md) does steps 1–4 for one game at a time: drag the
 game, your keys and any updates/DLC into its window, and it installs that game as its own app that
 boots straight into the game. To try the native renderer, add `NXBOX_RENDERER=d3d12` to
 `LocalState\nxbox_env.txt`.
