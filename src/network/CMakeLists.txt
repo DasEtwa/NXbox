@@ -12,6 +12,7 @@ add_library(network STATIC
     packet.cpp
     packet.h
     ldn_packet.h
+    proxy_packet.h
     room.cpp
     room.h
     room_member.cpp

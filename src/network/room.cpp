@@ -16,6 +16,7 @@
 #include "common/polyfill_thread.h"
 #include "enet/enet.h"
 #include "network/ldn_packet.h"
+#include "network/proxy_packet.h"
 #include "network/packet.h"
 #include "network/room.h"
 #include "network/verify_user.h"
@@ -828,24 +829,18 @@ IPv4Address Room::RoomImpl::GenerateFakeIPAddress() {
 void Room::RoomImpl::HandleProxyPacket(const ENetEvent* event) {
     Packet in_packet;
     in_packet.Append(event->packet->data, event->packet->dataLength);
-    in_packet.IgnoreBytes(sizeof(u8)); // Message type
-
-    in_packet.IgnoreBytes(sizeof(u8));          // Domain
-    in_packet.IgnoreBytes(sizeof(IPv4Address)); // IP
-    in_packet.IgnoreBytes(sizeof(u16));         // Port
-
-    in_packet.IgnoreBytes(sizeof(u8)); // Domain
-    IPv4Address remote_ip;
-    in_packet.Read(remote_ip);          // IP
-    in_packet.IgnoreBytes(sizeof(u16)); // Port
-
-    in_packet.IgnoreBytes(sizeof(u8)); // Protocol
-
-    bool broadcast;
-    in_packet.Read(broadcast); // Broadcast
-
-    Packet out_packet;
-    out_packet.Append(event->packet->data, event->packet->dataLength);
+    ProxyPacket proxy{};
+    if (!DeserializeProxyPacket(in_packet, proxy)) return;
+    {
+        std::lock_guard lock(member_mutex);
+        const auto sender = std::find_if(members.begin(), members.end(),
+                                        [&](const Member& member) { return member.peer == event->peer; });
+        if (sender == members.end()) return;
+        proxy.local_endpoint.ip = sender->fake_ip;
+    }
+    const auto remote_ip = proxy.remote_endpoint.ip;
+    const bool broadcast = proxy.broadcast;
+    const auto out_packet = SerializeProxyPacket(proxy);
     ENetPacket* enet_packet = enet_packet_create(out_packet.GetData(), out_packet.GetDataSize(),
                                                  ENET_PACKET_FLAG_RELIABLE);
 

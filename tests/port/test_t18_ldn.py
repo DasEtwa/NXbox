@@ -18,7 +18,13 @@ HARNESS = r"""
 #include <iostream>
 #include <thread>
 #include "network/ldn_packet.h"
+#include "network/proxy_packet.h"
+#include "eden_uwp/multiplayer_strings.h"
 #include "core/hle/service/ldn/lan_discovery.h"
+namespace EdenXbox::Ui {
+Language language = Language::English;
+Language CurrentLanguage() { return language; }
+}
 using namespace Network;
 using namespace Service::LDN;
 namespace Network {
@@ -51,6 +57,10 @@ LDNPacket Wire(LDNPacketType type, const void* data = nullptr, size_t size = 0) 
 }
 int main() {
     int cases = 0;
+    EdenXbox::Ui::language = EdenXbox::Ui::Language::Portuguese;
+    assert(std::wstring(EdenXbox::Ui::Multiplayer::Tr(EdenXbox::Ui::Multiplayer::Text::Nickname)) == L"Seu apelido"); ++cases;
+    EdenXbox::Ui::language = EdenXbox::Ui::Language::English;
+    assert(std::wstring(EdenXbox::Ui::Multiplayer::Tr(EdenXbox::Ui::Multiplayer::Text::Nickname)) == L"Your nickname"); ++cases;
     for (u8 type = 0; type < 6; ++type) {
         size_t size = (type == 1 || type == 3) ? 0x480 : (type == 2 || type == 4) ? 0x40 : 0;
         std::vector<u8> data(size, 0xA5);
@@ -86,6 +96,18 @@ int main() {
         u64 value{}; std::string name; numeric.Read(value); numeric.Read(name);
         assert(numeric && value == 0x0102030405060708 && name == "room"); ++cases;
     }
+    ProxyPacket proxy{}; proxy.protocol = Protocol::UDP;
+    proxy.local_endpoint.family = Domain::INET; proxy.local_endpoint.portno = 0x1234;
+    proxy.remote_endpoint.family = Domain::INET; proxy.remote_endpoint.portno = 0x5678;
+    proxy.data = {1,2,3,4};
+    auto proxy_wire = SerializeProxyPacket(proxy); ProxyPacket proxy_decoded{};
+    assert(DeserializeProxyPacket(proxy_wire, proxy_decoded) && proxy_decoded.data == proxy.data &&
+           proxy_decoded.local_endpoint.portno == 0x1234 && proxy_decoded.remote_endpoint.portno == 0x5678); ++cases;
+    for (size_t cut = 0; cut < proxy_wire.GetDataSize(); ++cut) {
+        Packet truncated; truncated.Append(proxy_wire.GetData(), cut);
+        assert(!DeserializeProxyPacket(truncated, proxy_decoded));
+    }
+    ++cases;
     LANDiscovery host; assert(host.Initialize().IsSuccess());
     UserConfig user{}; NetworkConfig config{}; SecurityConfig security{};
     config.node_count_max = 2;
@@ -217,6 +239,8 @@ class LdnTests(unittest.TestCase):
             if include.exists():
                 flags += ["-I", str(include)]
             # Optional LLVM coverage writes only outside the repository.
+            if os.environ.get("T18_SANITIZERS"):
+                flags += ["-fsanitize=address,undefined", "-fno-omit-frame-pointer"]
             coverage = os.environ.get("T18_COVERAGE_DIR")
             if coverage:
                 flags += ["-fprofile-instr-generate", "-fcoverage-mapping"]

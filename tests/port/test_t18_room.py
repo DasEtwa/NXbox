@@ -59,7 +59,7 @@ int main() {
     });
     ProxyPacket datagram{};
     datagram.local_endpoint.family = Domain::INET;
-    datagram.local_endpoint.ip = second.GetFakeIpAddressSnapshot();
+    datagram.local_endpoint.ip = {1,2,3,4};
     datagram.local_endpoint.portno = 12340;
     datagram.remote_endpoint.family = Domain::INET;
     datagram.remote_endpoint.ip = first.GetFakeIpAddressSnapshot();
@@ -118,6 +118,8 @@ class RoomTests(unittest.TestCase):
             ]
             if Path("/opt/homebrew/include").exists():
                 flags += ["-I", "/opt/homebrew/include"]
+            if os.environ.get("T18_SANITIZERS"):
+                flags += ["-fsanitize=address,undefined", "-fno-omit-frame-pointer"]
             coverage = os.environ.get("T18_COVERAGE_DIR")
             if coverage:
                 flags += ["-fprofile-instr-generate", "-fcoverage-mapping"]

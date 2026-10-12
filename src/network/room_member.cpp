@@ -13,6 +13,7 @@
 #include "common/socket_types.h"
 #include "enet/enet.h"
 #include "network/ldn_packet.h"
+#include "network/proxy_packet.h"
 #include "network/packet.h"
 #include "network/room_member.h"
 
@@ -372,30 +373,9 @@ void RoomMember::RoomMemberImpl::HandleProxyPackets(const ENetEvent* event) {
     Packet packet;
     packet.Append(event->packet->data, event->packet->dataLength);
 
-    // Ignore the first byte, which is the message id.
-    packet.IgnoreBytes(sizeof(u8)); // Ignore the message type
-
-    // Parse the ProxyPacket from the packet
-    u8 local_family;
-    packet.Read(local_family);
-    proxy_packet.local_endpoint.family = static_cast<Domain>(local_family);
-    packet.Read(proxy_packet.local_endpoint.ip);
-    packet.Read(proxy_packet.local_endpoint.portno);
-
-    u8 remote_family;
-    packet.Read(remote_family);
-    proxy_packet.remote_endpoint.family = static_cast<Domain>(remote_family);
-    packet.Read(proxy_packet.remote_endpoint.ip);
-    packet.Read(proxy_packet.remote_endpoint.portno);
-
-    u8 protocol_type;
-    packet.Read(protocol_type);
-    proxy_packet.protocol = static_cast<Protocol>(protocol_type);
-
-    packet.Read(proxy_packet.broadcast);
-    packet.Read(proxy_packet.data);
-
-    Invoke<ProxyPacket>(proxy_packet);
+    if (DeserializeProxyPacket(packet, proxy_packet)) {
+        Invoke<ProxyPacket>(proxy_packet);
+    }
 }
 
 void RoomMember::RoomMemberImpl::HandleLdnPackets(const ENetEvent* event) {
@@ -657,22 +637,7 @@ bool RoomMember::IsConnected() const {
 }
 
 void RoomMember::SendProxyPacket(const ProxyPacket& proxy_packet) {
-    Packet packet;
-    packet.Write(static_cast<u8>(IdProxyPacket));
-
-    packet.Write(static_cast<u8>(proxy_packet.local_endpoint.family));
-    packet.Write(proxy_packet.local_endpoint.ip);
-    packet.Write(proxy_packet.local_endpoint.portno);
-
-    packet.Write(static_cast<u8>(proxy_packet.remote_endpoint.family));
-    packet.Write(proxy_packet.remote_endpoint.ip);
-    packet.Write(proxy_packet.remote_endpoint.portno);
-
-    packet.Write(static_cast<u8>(proxy_packet.protocol));
-    packet.Write(proxy_packet.broadcast);
-    packet.Write(proxy_packet.data);
-
-    room_member_impl->Send(std::move(packet));
+    room_member_impl->Send(SerializeProxyPacket(proxy_packet));
 }
 
 void RoomMember::SendLdnPacket(const LDNPacket& ldn_packet) {
