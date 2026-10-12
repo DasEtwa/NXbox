@@ -1552,8 +1552,10 @@ void RunGameView(const winrt::Windows::UI::Core::CoreWindow& window, const std::
             ApplyEdenSettingsFile(TitleSettings::File(local_state, choice.title_id));
             sync_game.profile_uuid = SaveSync::ActiveProfileUuid();
             splash->Release();
-            if (Ui::HasPendingSync(local_state) && Ui::RunPendingSync(window, local_state)) return;
-            if (Ui::RunBootSync(window, local_state, sync_game)) return;
+            if (Ui::HasPendingSync(local_state) && Ui::RunPendingSync(window, local_state))
+                return;
+            if (Ui::RunBootSync(window, local_state, sync_game))
+                return;
             splash = std::make_unique<Ui::LaunchScreen>(window, local_state, protocol_title);
             splash->SetName(choice.display_name);
             sync_after_exit = true;
@@ -1563,7 +1565,9 @@ void RunGameView(const winrt::Windows::UI::Core::CoreWindow& window, const std::
         // A worker does the copying; the window keeps pumping so the system sees a live app.
         auto mover = std::async(std::launch::async, [&local_state] {
             winrt::init_apartment(winrt::apartment_type::multi_threaded);
-            SCOPE_EXIT { winrt::uninit_apartment(); };
+            SCOPE_EXIT {
+                winrt::uninit_apartment();
+            };
             ProcessMoves(local_state);
         });
         while (mover.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready) {
@@ -1705,10 +1709,11 @@ void RunGameView(const winrt::Windows::UI::Core::CoreWindow& window, const std::
                 FlushDeviceApiRing();
                 graphics.reset();
                 exit_sync.store(true, std::memory_order_release);
-                Ui::SyncAfterExitHeadless(local_state, sync_game, [&](const SaveSync::SyncProgress& progress) {
-                    const std::lock_guard<std::mutex> lock(exit_sync_mutex);
-                    exit_sync_progress = progress;
-                });
+                Ui::SyncAfterExitHeadless(
+                    local_state, sync_game, [&](const SaveSync::SyncProgress& progress) {
+                        const std::lock_guard<std::mutex> lock(exit_sync_mutex);
+                        exit_sync_progress = progress;
+                    });
             }
         } catch (const winrt::hresult_error& error) {
             launch_status.phase.store(Ui::LaunchPhase::Failed);
@@ -1720,7 +1725,8 @@ void RunGameView(const winrt::Windows::UI::Core::CoreWindow& window, const std::
     });
     while (!done.load(std::memory_order_acquire)) {
         window.Dispatcher().ProcessEvents(CoreProcessEventsOption::ProcessAllIfPresent);
-        if (closed.load()) SaveSync::CancelSync();
+        if (closed.load())
+            SaveSync::CancelSync();
         if (exit_sync.load(std::memory_order_acquire) && !closed.load()) {
             try {
                 if (!exit_sync_renderer) {
@@ -1728,9 +1734,14 @@ void RunGameView(const winrt::Windows::UI::Core::CoreWindow& window, const std::
                     exit_sync_renderer->Initialize(window);
                 }
                 SaveSync::SyncProgress progress;
-                { const std::lock_guard<std::mutex> lock(exit_sync_mutex); progress = exit_sync_progress; }
+                {
+                    const std::lock_guard<std::mutex> lock(exit_sync_mutex);
+                    progress = exit_sync_progress;
+                }
                 Ui::DrawExitSyncToast(*exit_sync_renderer, sync_game, progress);
-            } catch (const winrt::hresult_error&) { exit_sync_renderer.reset(); }
+            } catch (const winrt::hresult_error&) {
+                exit_sync_renderer.reset();
+            }
         }
         Sleep(1);
     }
