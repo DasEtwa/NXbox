@@ -25,6 +25,14 @@ import { loadCredentials, saveCredentials } from "./credentials";
 import { prepareContent } from "./content";
 import { checkAddon, renderChecklist, type Item } from "./checklist";
 import { Prompt } from "./prompt";
+import { prepareFirmware } from "./firmware";
+import {
+  prepareSaves,
+  prepareMods,
+  prepareTitleKeys,
+  type Transfer,
+  type OptionalContent,
+} from "./optional";
 
 export function parseArgs(args: string[]): {
   help: boolean;
@@ -97,9 +105,12 @@ export async function main(): Promise<void> {
     const gameInfo = { titleId, size: Bun.file(game).size };
     const keys = draggedPath(await prompt.ask(text.keys));
     await validateFile(keys, true);
+    temporary = await mkdtemp(join(tmpdir(), "nxbox-pack-"));
+    const transfers: Transfer[] = [];
+    const checklist: OptionalContent = {};
     const extras: string[] = [];
     const added: Item[] = [];
-    const show = () => console.log(renderChecklist(text, gameInfo, true, added));
+    const show = () => console.log(renderChecklist(text, gameInfo, true, added, checklist));
     show();
     for (;;) {
       const answer = await prompt.ask(text.extra);
@@ -114,13 +125,56 @@ export async function main(): Promise<void> {
       }
       show();
     }
+    for (const kind of ["firmware", "saves", "mods", "titleKeys"] as const) {
+      for (;;) {
+        const answer = await prompt.ask(text[kind]);
+        if (!answer) break;
+        const path = draggedPath(answer);
+        const staging = join(temporary, `${kind}-${crypto.randomUUID()}`);
+        try {
+          if (kind === "firmware") {
+            const prepared = await prepareFirmware(path, keys, staging);
+            transfers.push(
+              ...prepared.files.map((f) => ({
+                path: f.path,
+                destination: `LocalState/firmware/${f.name}`,
+              })),
+            );
+            checklist.firmware = `${prepared.version} — ${prepared.files.length} ${text.fileCount}`;
+          } else if (kind === "titleKeys") {
+            transfers.push(await prepareTitleKeys(path));
+            checklist.titleKeys = "title.keys";
+          } else {
+            const prepared = await (kind === "saves" ? prepareSaves : prepareMods)(
+              path,
+              titleId,
+              staging,
+            );
+            if (
+              prepared.files.some((f) =>
+                transfers.some((t) => t.destination.toLowerCase() === f.destination.toLowerCase()),
+              )
+            )
+              throw new PackError("rejectDuplicate");
+            transfers.push(...prepared.files);
+            checklist[kind] =
+              `${kind === "mods" ? transfers.filter((f) => f.destination.startsWith("LocalState/eden/load/")).length : prepared.count} ${text.fileCount}`;
+          }
+          show();
+          if (kind !== "mods") break;
+        } catch (error) {
+          console.log(text[error instanceof PackError ? error.code : "inputInvalid"]);
+          await rm(staging, { recursive: true, force: true });
+          show();
+        }
+      }
+    }
     console.log(text.fallback);
     const name = validateName(await prompt.ask(text.name, filenameName(game)));
     // Resolve the runtime before collecting credentials or changing console state.
     const source = options.source ?? (await latestRuntime());
     console.log(text.runtime);
     const runtime = await downloadRuntime(source);
-    temporary = await mkdtemp(join(tmpdir(), "nxbox-pack-"));
     const directory = join(temporary, "runtime");
     const files = await stageRuntime(runtime, directory, titleId, name);
     const content: string[] = [];
@@ -158,6 +212,7 @@ export async function main(): Promise<void> {
       content,
       keys,
       temporary,
+      transfers,
       onUploading: () => console.log(text.upload),
       onProgress: (remoteName, sent, total) => {
         if (Date.now() - lastProgress > 5000 || sent === total) {

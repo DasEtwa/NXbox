@@ -145,6 +145,11 @@ export class DevicePortal {
       path: path ? `/${path.replace(/^[/\\]+/, "")}` : "",
     });
   }
+  async listFiles(pkg: string, path: string): Promise<{ Name: string }[]> {
+    const response = await this.raw("GET", `/api/filesystem/apps/files?${this.query(pkg, path)}`);
+    const data = (await response.json()) as { Items?: { Name: string }[] };
+    return data.Items ?? [];
+  }
   async makeFolder(pkg: string, parent: string, name: string): Promise<void> {
     const query = this.query(pkg, parent);
     query.set("newfoldername", name);

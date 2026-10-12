@@ -43,12 +43,17 @@ type Labels = {
   itemUpdate: string;
   itemDlc: string;
   none: string;
+  itemFirmware?: string;
+  itemSaves?: string;
+  itemMods?: string;
+  itemTitleKeys?: string;
 };
 export function renderChecklist(
   labels: Labels,
   game: { titleId: string; size: number },
   keys: boolean,
   items: Item[],
+  optional: { firmware?: string; saves?: string; mods?: string; titleKeys?: string } = {},
 ): string {
   const line = (done: boolean, label: string, detail: string) =>
     `  [${done ? "x" : " "}] ${label}${detail ? ` ${detail}` : ""}`;
@@ -61,6 +66,14 @@ export function renderChecklist(
     const label = kind === "update" ? labels.itemUpdate : labels.itemDlc;
     if (!found.length) rows.push(line(false, label, labels.none));
     for (const i of found) rows.push(line(true, label, `${i.titleId} (${formatSize(i.size)})`));
+  }
+  for (const [field, label] of [
+    ["firmware", labels.itemFirmware],
+    ["saves", labels.itemSaves],
+    ["mods", labels.itemMods],
+    ["titleKeys", labels.itemTitleKeys],
+  ] as const) {
+    if (label) rows.push(line(Boolean(optional[field]), label, optional[field] ?? labels.none));
   }
   return rows.join("\n");
 }
