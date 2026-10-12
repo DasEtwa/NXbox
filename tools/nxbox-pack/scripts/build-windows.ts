@@ -13,3 +13,5 @@ const child = Bun.spawn(
   { stdin: "inherit", stdout: "inherit", stderr: "inherit" },
 );
 process.exitCode = await child.exited;
+
+export {};
