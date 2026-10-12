@@ -100,6 +100,7 @@ class AppletPolicyTests(unittest.TestCase):
         self.assertIn("input.Push(m_system.Kernel(), storage);", source)
         self.assertIn("applet->frontend && !applet->is_completed", source)
         self.assertIn("!m_system.IsShuttingDown()", source)
+        self.assertIn("applet->display_layer_manager.SetWindowVisibility(false);", source)
         caller = (ROOT / "src/core/hle/service/am/service/library_applet_accessor.cpp").read_text()
         self.assertIn("fallback_input.push_back(", caller)
         self.assertIn("m_applet->guest_returned = true;", caller)

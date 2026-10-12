@@ -378,6 +378,11 @@ void WindowSystem::PruneTerminatedAppletsLocked() {
         }
 #endif
 
+        // An accessor can outlive the guest process: hide its layers and release retained input
+        // now, rather than keeping a dead applet visible until the last accessor is destroyed.
+        applet->display_layer_manager.SetWindowVisibility(false);
+        applet->fallback_input.clear();
+
         // Erase from caller applet's list of children.
         if (auto caller_applet = applet->caller_applet.lock(); caller_applet) {
             std::scoped_lock lk2{caller_applet->lock};
