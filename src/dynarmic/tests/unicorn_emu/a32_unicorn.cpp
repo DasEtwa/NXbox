@@ -42,6 +42,9 @@ template<class TestEnvironment>
 void A32Unicorn<TestEnvironment>::Run() {
     // Thumb execution mode requires the LSB to be set to 1.
     constexpr u64 pc_mask = std::is_same_v<TestEnvironment, ArmTestEnv> ? 0 : 1;
+    // Unicorn 2 cannot recover a lazy access near the 32-bit address-space end.
+    // Mapping the final page before execution avoids its UC_ERR_MAP recovery bug.
+    UnmappedMemoryHook(uc, UC_MEM_READ_UNMAPPED, 0xfffff000, 1, 0, this);
     while (testenv.ticks_left > 0) {
         const u32 pc = GetPC() | pc_mask;
         if (!testenv.IsInCodeMem(pc)) {
