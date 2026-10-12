@@ -17,6 +17,8 @@ namespace D3D12 {
 // Stage order matches Maxwell: 0 VertexB, 1 TessControl, 2 TessEval, 3 Geometry, 4 Fragment.
 inline constexpr size_t NUM_GRAPHICS_STAGES = 5;
 
+class GraphicsPipeline;
+
 class IGraphicsPipeline {
 public:
     virtual ~IGraphicsPipeline() = default;
@@ -31,6 +33,11 @@ public:
     }
     // nullptr for a disabled stage. The Info must outlive the pipeline.
     virtual const Shader::Info* StageInfo(size_t stage) const = 0;
+    // The concrete native pipeline, nullptr otherwise. Used instead of dynamic_cast:
+    // parts of the UWP build have no RTTI, where the cast throws.
+    virtual const GraphicsPipeline* AsNative() const {
+        return nullptr;
+    }
     // Dwords for the NxboxRootConstants block (hlsl_root_constants.h layout). Called every
     // draw. y_flip is true when the Maxwell viewport has a negative height: D3D12 cannot
     // express that, so the vertex shader must negate clip-space Y.

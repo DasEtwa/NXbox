@@ -77,6 +77,9 @@ public:
     const Pso::GraphicsPsoState& State() const {
         return state;
     }
+    const GraphicsPipeline* AsNative() const override {
+        return this;
+    }
     // Cull mode FrontAndBack: D3D12 cannot express it, the rasterizer must skip the draw.
     bool CullsEverything() const {
         return (state.cull_all & 1) != 0;

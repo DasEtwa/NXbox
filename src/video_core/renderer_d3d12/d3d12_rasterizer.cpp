@@ -757,7 +757,7 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     }
     context.Retain(zero_vertex_buffer);
     u32 num_vertex_views = static_cast<u32>(vertex_views.size());
-    const auto* native_pipeline = dynamic_cast<const GraphicsPipeline*>(pipeline);
+    const GraphicsPipeline* const native_pipeline = pipeline->AsNative();
     if (!native_pipeline) {
         SkipDraw("vertex layout unavailable for native pipeline");
         return;
