@@ -744,13 +744,14 @@ ImageView::ImageView(TextureCacheRuntime&, const VideoCommon::ImageViewInfo& inf
     description.Shader4ComponentMapping =
         D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(mapping[0], mapping[1], mapping[2], mapping[3]);
     UINT view_plane{};
-    if (host_format.planes == 2) {
+    if (host_format.depth) {
         const bool stencil_first =
             info.format == VideoCore::Surface::PixelFormat::S8_UINT_D24_UNORM;
         const bool stencil_only = info.format == VideoCore::Surface::PixelFormat::S8_UINT;
         const bool any_red =
             std::ranges::find(sources, Tegra::Texture::SwizzleSource::R) != sources.end();
-        const bool depth_selected = info.format == VideoCore::Surface::PixelFormat::X8_D24_UNORM ||
+        const bool depth_selected = host_format.planes == 1 ||
+                                    info.format == VideoCore::Surface::PixelFormat::X8_D24_UNORM ||
                                     (!stencil_only && (stencil_first ? !any_red : any_red));
         view_plane = depth_selected ? 0u : 1u;
         if (view_plane)
@@ -892,11 +893,24 @@ ResourcePtr TextureCacheRuntime::ResolveFramebuffer(ImageView& view) {
 }
 bool TextureCacheRuntime::CanDownloadImage(const Image& image) const {
     const auto format = image.HostFormat();
-    return image.Handle() && !format.converted_astc &&
-           !(VideoCore::Surface::IsPixelFormatBCn(image.info.format) && format.block_width == 1) &&
-           format.conversion != FormatConversion::Etc2 &&
-           format.conversion != FormatConversion::Eac &&
-           !VideoCore::Surface::IsPixelFormatASTC(image.info.format);
+    if (!image.Handle())
+        return false;
+    if (format.converted_astc || VideoCore::Surface::IsPixelFormatASTC(image.info.format)) {
+        UnsupportedImage(image.info, format, "converted ASTC readback is not reversible");
+        return false;
+    }
+    if (VideoCore::Surface::IsPixelFormatBCn(image.info.format) && format.block_width == 1) {
+        UnsupportedImage(
+            image.info, format,
+            "decoded BCn readback needs a lossy encoder; original guest blocks retained");
+        return false;
+    }
+    if (format.conversion == FormatConversion::Etc2 || format.conversion == FormatConversion::Eac) {
+        UnsupportedImage(image.info, format,
+                         "ETC2/EAC readback needs a lossy encoder; original guest blocks retained");
+        return false;
+    }
+    return true;
 }
 ComputePasses& TextureCacheRuntime::ComputeHelpers() {
     if (!compute_passes)
