@@ -843,7 +843,7 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
                            static_cast<u32>(regs.gl_cull_face) == 0x404;
     const auto cull =
         Pso::CullMode(regs.gl_cull_test_enabled != 0, static_cast<u32>(regs.gl_cull_face));
-    if (regs.zeta_enable && regs.stencil_enable &&
+    if (Pso::DsvHasStencil(formats.depth) && regs.zeta_enable && regs.stencil_enable &&
         Pso::IndependentStencil(regs.stencil_two_side_enable != 0, cull.mode,
                                 regs.stencil_front_ref, regs.stencil_back_ref,
                                 regs.stencil_front_func_mask, regs.stencil_back_func_mask,

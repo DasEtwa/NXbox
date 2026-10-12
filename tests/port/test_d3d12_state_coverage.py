@@ -36,7 +36,7 @@ blend_per_target_enabled blend_per_target color_mask_common
 polygon_offset_fill_enable polygon_offset_line_enable polygon_offset_point_enable
 zeta_enable depth_test_enable depth_test_func depth_write_enabled
 stencil_enable stencil_front_op stencil_back_op stencil_front_func_mask
-stencil_front_mask stencil_two_side_enable gl_cull_test_enabled gl_cull_face gl_front_face
+stencil_front_mask stencil_two_side_enable gl_cull_test_enabled gl_front_face
 viewport_clip_control vertex_stream_instances
 """,
 )
@@ -72,6 +72,7 @@ register(
     "ConservativeRasterizationTier",
     "conservative_raster_enable",
 )
+register("partial", "d3d12_pipeline_cache.cpp", "gl_cull_face=FrontAndBack", "gl_cull_face")
 register("emulated", "d3d12_rasterizer.cpp", "index_converter.Convert", "primitive_restart")
 register("partial", "d3d12_rasterizer.cpp", "IndexConversion::Provoking", "provoking_vertex")
 register("partial", "d3d12_pipeline_cache.cpp", "logic_op RTV format", "logic_op")
@@ -215,6 +216,8 @@ unsigned sdk_logic(unsigned op, unsigned s, unsigned d) {
     assert(false); return 0;
 }
 int main() {
+    static_assert(Pso::DsvHasStencil(20) && Pso::DsvHasStencil(45));
+    static_assert(!Pso::DsvHasStencil(40) && !Pso::DsvHasStencil(55) && !Pso::DsvHasStencil(0));
     static_assert(offsetof(Shader::Backend::HLSL::RootConstants, draw_id) == 10 * sizeof(std::uint32_t));
     static_assert(!Pso::IndependentStencil(false,1,1,2,255,0,255,0));
     static_assert(!Pso::IndependentStencil(true,2,1,2,255,0,255,0));
@@ -296,6 +299,10 @@ int main() {
     }
     state.attributes[0].divisor=UINT32_MAX;
     assert(hash!=Pso::HashBytes(&state,sizeof(state)));
+    // Same topology class/shaders still need different IA wrapper identities.
+    const std::uint32_t line_list=2, line_strip=3;
+    assert(Pso::HashBytes(&line_list,sizeof(line_list),123) !=
+           Pso::HashBytes(&line_strip,sizeof(line_strip),123));
 }
 """
 
@@ -356,6 +363,13 @@ class D3D12StateCoverageTests(unittest.TestCase):
             "program.info.interpolation[attribute] == Shader::Interpolation::Flat", source
         )
         self.assertIn("sizeof(regs.provoking_vertex)", source)
+        graphics = source.split("GraphicsPipeline& PipelineCache::GetGraphics", 1)[1].split(
+            "ComputePipeline& PipelineCache::GetCompute", 1
+        )[0]
+        self.assertNotIn("key.stage_hashes[5] = d3d_topology", graphics)
+        self.assertGreater(
+            graphics.index("Pso::HashBytes(&d3d_topology"), graphics.index("total += stage.counts")
+        )
 
     def test_guest_shader_failures_skip_instead_of_rendering_stub_outputs(self):
         source = (NATIVE / "d3d12_pipeline_cache.cpp").read_text()

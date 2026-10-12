@@ -44,6 +44,12 @@ void ReportUnsupported(std::string_view reason) {
 const char* UnsupportedState(const Maxwell& regs, u32 topology) {
     if (topology > 14)
         return "invalid Maxwell PrimitiveTopology";
+    if (Pso::CullMode(regs.gl_cull_test_enabled != 0, static_cast<u32>(regs.gl_cull_face))
+            .cull_all &&
+        (Pso::TopologyType(topology) == Pso::kTopologyTypeTriangle ||
+         Pso::TopologyType(topology) == Pso::kTopologyTypePatch))
+        return "gl_cull_face=FrontAndBack requires rasterizer discard preserving vertex/query "
+               "effects";
     if (!regs.rasterize_enable)
         return "rasterize_enable=0 requires discard with vertex/query side effects";
     if (regs.IsShaderConfigEnabled(Maxwell::ShaderType::TessellationInit) ||
@@ -295,7 +301,6 @@ GraphicsPipeline& PipelineCache::GetGraphics(const Pso::GraphicsPsoState& state,
                                              std::span<const StageInput> stages) {
     std::scoped_lock lock{pipeline_mutex};
     GraphicsPipelineKey key{};
-    key.stage_hashes[5] = d3d_topology;
     key.state = state;
     DescriptorCounts total;
     for (const auto& stage : stages) {
@@ -303,6 +308,9 @@ GraphicsPipeline& PipelineCache::GetGraphics(const Pso::GraphicsPsoState& state,
             Pso::HashBytes(stage.hlsl.data(), stage.hlsl.size(), stage.hash);
         total += stage.counts;
     }
+    // Fragment occupies slot 5: folding topology after stage hashes prevents
+    // its shader hash from overwriting the wrapper's IA topology identity.
+    key.stage_hashes[5] = Pso::HashBytes(&d3d_topology, sizeof(d3d_topology), key.stage_hashes[5]);
     if (const auto it = graphics.find(key); it != graphics.end()) {
         return *it->second;
     }
@@ -465,6 +473,8 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(
     Pso::GraphicsPsoState state;
     FillGraphicsState(*maxwell3d, state);
     Pso::ApplyFramebufferFormats(state, formats);
+    if (!Pso::DsvHasStencil(state.dsv_format))
+        state.stencil_enable = 0;
     if (state.stencil_enable & 2) {
         D3D12_FEATURE_DATA_D3D12_OPTIONS14 options{};
         if (FAILED(context.Device()->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS14, &options,

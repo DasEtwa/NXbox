@@ -387,6 +387,10 @@ constexpr std::uint32_t DsvFormat(std::uint32_t resource_format) {
     }
 }
 
+constexpr bool DsvHasStencil(std::uint32_t format) {
+    return format == 20 || format == 45; // D32_FLOAT_S8X24_UINT / D24_UNORM_S8_UINT
+}
+
 // ---- Packed graphics state key -------------------------------------------------------------
 struct BlendTargetState {
     std::uint8_t enable, write_mask, src, dst, op, src_alpha, dst_alpha, op_alpha;

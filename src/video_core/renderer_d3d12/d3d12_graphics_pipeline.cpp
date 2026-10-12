@@ -86,6 +86,8 @@ GraphicsPipeline::GraphicsPipeline(ID3D12Device* device, ComPtr<ID3D12RootSignat
                                    std::span<const StageProgram> programs, DiskPipelineCache* disk,
                                    u64 key, std::span<const u8> recipe)
     : state{state_}, topology{d3d_topology}, root_signature{std::move(signature)} {
+    if (!Pso::DsvHasStencil(state.dsv_format))
+        state.stencil_enable = 0;
     D3D12_GRAPHICS_PIPELINE_STATE_DESC desc{};
     desc.pRootSignature = root_signature.Get();
     for (const auto& program : programs) {
