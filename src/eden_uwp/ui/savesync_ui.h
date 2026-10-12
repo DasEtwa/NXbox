@@ -21,6 +21,7 @@ namespace EdenXbox::Ui {
 
 // The game a sync is about.
 struct SyncGame {
+    bool device_save = false;
     std::string profile_uuid;  // stable identity for pending jobs and conflict retries
     std::string title_id;      // 16 hex digits, the id Eden names the save folder with
     std::string name;          // GameNameFromNames over the NACP names, UTF-8

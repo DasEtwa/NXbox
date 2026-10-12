@@ -427,8 +427,10 @@ public:
                    game_.title_id + " begin");
         runner_.Start([title, name, this](const SaveSync::ProgressCallback& progress) {
             return mode_ == FlowMode::BeforeBoot
-                       ? SaveSync::SyncBeforeBoot(title, progress, name, {}, game_.profile_uuid)
-                       : SaveSync::SyncAfterExit(title, progress, name, {}, game_.profile_uuid);
+                       ? SaveSync::SyncBeforeBoot(title, progress, name, {}, game_.profile_uuid,
+                                                  game_.device_save)
+                       : SaveSync::SyncAfterExit(title, progress, name, {}, game_.profile_uuid,
+                                                 game_.device_save);
         });
         Outcome outcome;
         outcome.window_closed = RunFrames(renderer_, window_, input_, [&](Clock::time_point now) {
@@ -441,6 +443,18 @@ public:
 
 private:
     enum class Phase { Syncing, Account, Conflict, Result };
+
+    void StartConsole(std::uint64_t title, const std::string& name) {
+        game_.device_save = true;
+        runner_.Start([this, title, name](const SaveSync::ProgressCallback& progress) {
+            return mode_ == FlowMode::BeforeBoot
+                       ? SaveSync::SyncBeforeBoot(title, progress, name, {}, game_.profile_uuid,
+                                                  true)
+                       : SaveSync::SyncAfterExit(title, progress, name, {}, game_.profile_uuid,
+                                                 true);
+        });
+        phase_ = Phase::Syncing;
+    }
 
     bool Frame(Clock::time_point now, std::uint64_t title, const std::string& name,
                Outcome& outcome) {
@@ -477,6 +491,10 @@ private:
                                result.message));
         outcome.status = result.status;
         if (result.status == SaveSync::SyncStatus::AccountRequired) {
+            if (result.account_folders.size() == 1 && result.account_folders.front() == "console") {
+                StartConsole(ParseTitleId(game_.title_id), game_.name);
+                return false;
+            }
             accounts_ = result.account_folders;
             focus_ = 0;
             phase_ = Phase::Account;
@@ -490,6 +508,13 @@ private:
             return false;
         }
         outcome.conflict_left = false;
+        if (!game_.device_save && (result.status == SaveSync::SyncStatus::Uploaded ||
+                                   result.status == SaveSync::SyncStatus::Downloaded ||
+                                   result.status == SaveSync::SyncStatus::UpToDate ||
+                                   result.status == SaveSync::SyncStatus::NothingToSync)) {
+            StartConsole(ParseTitleId(game_.title_id), game_.name);
+            return false;
+        }
         const wchar_t* text = ResultText(result.status);
         if (text == nullptr) {
             return true;
@@ -559,9 +584,11 @@ private:
         if (input_.Pressed(Button::A) && !accounts_.empty()) {
             const auto owner = accounts_[focus_];
             runner_.Start([title, name, owner, this](const SaveSync::ProgressCallback& progress) {
-                if (!SaveSync::SelectAccount(title, name, owner, game_.profile_uuid))
+                if (!SaveSync::SelectAccount(title, name, owner, game_.profile_uuid,
+                                             game_.device_save))
                     return SaveSync::SyncResult{};
-                return SaveSync::SyncBeforeBoot(title, progress, name, {}, game_.profile_uuid);
+                return SaveSync::SyncBeforeBoot(title, progress, name, {}, game_.profile_uuid,
+                                                game_.device_save);
             });
             phase_ = Phase::Syncing;
             return true;
@@ -1023,17 +1050,22 @@ void SyncAfterExitHeadless(const fs::path& local_state, const SyncGame& game,
     }
     Diagnostic("UI savesync after-exit " + game.title_id + " begin");
     SaveSync::ResetSyncCancellation();
-    const SaveSync::SyncResult result = SaveSync::SyncAfterExit(
-        ParseTitleId(game.title_id), progress, game.name, {}, game.profile_uuid);
-    Diagnostic(fmt::format("UI savesync after-exit {} -> {} {}", game.title_id,
-                           StatusName(result.status), result.message));
-    // A conflict or a failure keeps the debt: the next launch finishes it with a screen.
-    if (result.status == SaveSync::SyncStatus::Uploaded ||
-        result.status == SaveSync::SyncStatus::Downloaded ||
-        result.status == SaveSync::SyncStatus::UpToDate ||
-        result.status == SaveSync::SyncStatus::NothingToSync) {
-        ClearPending(local_state);
+    bool complete = true;
+    for (const bool device : {false, true}) {
+        const auto result = SaveSync::SyncAfterExit(ParseTitleId(game.title_id), progress,
+                                                    game.name, {}, game.profile_uuid, device);
+        Diagnostic(fmt::format("UI savesync after-exit {} device={} -> {} {}", game.title_id,
+                               device, StatusName(result.status), result.message));
+        const bool console_only = !device &&
+                                  result.status == SaveSync::SyncStatus::AccountRequired &&
+                                  result.account_folders == std::vector<std::string>{"console"};
+        complete = complete && (console_only || result.status == SaveSync::SyncStatus::Uploaded ||
+                                result.status == SaveSync::SyncStatus::Downloaded ||
+                                result.status == SaveSync::SyncStatus::UpToDate ||
+                                result.status == SaveSync::SyncStatus::NothingToSync);
     }
+    if (complete)
+        ClearPending(local_state);
 }
 
 } // namespace EdenXbox::Ui

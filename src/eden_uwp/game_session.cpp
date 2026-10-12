@@ -1544,8 +1544,20 @@ void RunGameView(const winrt::Windows::UI::Core::CoreWindow& window, const std::
         splash->Draw(launch_status);
         Diagnostic("PROTOCOL_LAUNCH " + protocol_title);
         Diagnostic("PROTOCOL_PHASE keys");
-        // Direct launches neither resolve game.url nor mutate game.txt, pending sync, or moves.
-        // SaveSync needs an explicit conflict policy before it can run without its prompts.
+        if (Ui::SyncEnabled()) {
+            sync_game.title_id = choice.title_id;
+            sync_game.name = choice.sync_name;
+            sync_game.display_name = choice.display_name;
+            ApplyEdenSettingsFile();
+            ApplyEdenSettingsFile(TitleSettings::File(local_state, choice.title_id));
+            sync_game.profile_uuid = SaveSync::ActiveProfileUuid();
+            splash->Release();
+            if (Ui::HasPendingSync(local_state) && Ui::RunPendingSync(window, local_state)) return;
+            if (Ui::RunBootSync(window, local_state, sync_game)) return;
+            splash = std::make_unique<Ui::LaunchScreen>(window, local_state, protocol_title);
+            splash->SetName(choice.display_name);
+            sync_after_exit = true;
+        }
     }
     if (!protocol_launch && std::filesystem::exists(local_state / "move.txt")) {
         // A worker does the copying; the window keeps pumping so the system sees a live app.

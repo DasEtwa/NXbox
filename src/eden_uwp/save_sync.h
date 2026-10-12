@@ -40,7 +40,7 @@ bool IsConfigured();
 void ResetSyncCancellation();
 void CancelSync();
 bool SelectAccount(std::uint64_t title_id, const std::string& game_name, const std::string& owner,
-                   const std::string& profile_uuid = {});
+                   const std::string& profile_uuid = {}, bool device_save = false);
 bool ConfigureWebDav(const std::string& url, const std::string& user, const std::string& password);
 bool IsWebDav();
 std::string ActiveProfileUuid();
@@ -155,13 +155,13 @@ struct SyncResult {
 SyncResult SyncBeforeBoot(std::uint64_t title_id, const ProgressCallback& progress = {},
                           const std::string& game_name = {},
                           std::optional<SystemSave> system_save = {},
-                          const std::string& profile_uuid = {});
+                          const std::string& profile_uuid = {}, bool device_save = false);
 
 /// The same reconciliation, meant for after the game closed and Eden released the save files.
 SyncResult SyncAfterExit(std::uint64_t title_id, const ProgressCallback& progress = {},
                          const std::string& game_name = {},
                          std::optional<SystemSave> system_save = {},
-                         const std::string& profile_uuid = {});
+                         const std::string& profile_uuid = {}, bool device_save = false);
 
 enum class ConflictChoice {
     KeepXbox,  // the Xbox save overwrites the cloud copy
@@ -173,7 +173,7 @@ enum class ConflictChoice {
 SyncResult ResolveConflict(std::uint64_t title_id, ConflictChoice choice,
                            const ProgressCallback& progress = {}, const std::string& game_name = {},
                            std::optional<SystemSave> system_save = {},
-                           const std::string& profile_uuid = {});
+                           const std::string& profile_uuid = {}, bool device_save = false);
 
 /// The game name SwitchSaveSync uses for a title: the first non-empty application name among the
 /// first 16 NACP language entries (FileSys::NACP::GetApplicationNames()), independent of the

@@ -1750,7 +1750,8 @@ fs::path SaveDirFor(const Env& env, std::uint64_t title_id, const ActiveUser& us
 }
 
 Target BuildTarget(const Env& env, std::uint64_t title_id, const ActiveUser& user,
-                   const Config& config, std::optional<SystemSave> system_save = {}) {
+                   const Config& config, std::optional<SystemSave> system_save = {},
+                   bool device_save = false) {
     Target target;
     target.title_id = title_id;
     target.title_hex = Hex16(title_id);
@@ -1758,12 +1759,9 @@ Target BuildTarget(const Env& env, std::uint64_t title_id, const ActiveUser& use
     target.key = target.title_hex + "/" + user.dir_name;
     target.owner = config.owner.empty() ? user.name : config.owner;
     target.local_dir = SaveDirFor(env, title_id, user);
-    const auto device = env.nand_dir / "user" / "save" / "0000000000000000" / std::string(32, '0') /
-                        Hex16(title_id);
-    const auto future_device =
-        env.nand_dir / "user" / "save" / "device" / Hex16(title_id & ~0xFFull) / "0";
-    if (!fs::exists(target.local_dir) && (fs::exists(device) || fs::exists(future_device))) {
-        target.local_dir = fs::exists(future_device) ? future_device : device;
+    if (device_save) {
+        target.local_dir =
+            Policy::EdenSavePath(env.nand_dir, Policy::SaveKind::Device, title_id, {}, {});
         target.owner = "console";
         target.key = target.title_hex + "/console";
     }
@@ -1776,7 +1774,7 @@ Target BuildTarget(const Env& env, std::uint64_t title_id, const ActiveUser& use
             Policy::EdenSavePath(env.nand_dir, Policy::SaveKind::System, title_id, {}, {},
                                  system_save->save_id, system_save->system_space);
     }
-    const std::string scratch = target.title_hex + "_" + user.dir_name +
+    const std::string scratch = target.title_hex + "_" + (device_save ? "console" : user.dir_name) +
                                 (system_save ? "_system_" + Hex16(system_save->save_id) : "");
     target.staging_dir = env.local_state / "savesync_staging" / scratch;
     target.backup_dir = env.local_state / "savesync_backup" / scratch;
@@ -2164,13 +2162,23 @@ public:
             saved_ = LoadState(env_, target_.key);
         }
         if (saved_.folder.empty()) {
-            const auto game_folder =
-                drive_.FindFolder(root_id_, SanitizeName(game_name_, GameNameBuffer));
+            const auto game_folder = drive_.FindFolder(root_id_, SplitPath(computed_path_).front());
+            bool has_console = false;
             if (game_folder)
                 for (const auto& item : drive_.ListChildren(*game_folder)) {
-                    if (item.is_folder)
-                        result.account_folders.push_back(item.name);
+                    if (item.is_folder) {
+                        if (item.name == "console")
+                            has_console = true;
+                        else
+                            result.account_folders.push_back(item.name);
+                    }
                 }
+            if (has_console && result.account_folders.empty() &&
+                ScanTree(target_.local_dir, true).files == 0) {
+                result.account_folders.push_back("console");
+                result.status = SyncStatus::AccountRequired;
+                return;
+            }
             if (std::find(result.account_folders.begin(), result.account_folders.end(),
                           target_.owner) == result.account_folders.end())
                 result.account_folders.push_back(target_.owner);
@@ -2363,7 +2371,7 @@ const char* StatusName(SyncStatus status) {
 // into a result. Nothing in here writes to the Xbox save unless a decision above allowed it.
 SyncResult RunSync(const Env& env, std::uint64_t title_id, const ProgressCallback& progress,
                    const std::string& game_name, Mode mode, const char* trigger,
-                   std::optional<SystemSave> system_save = {}) {
+                   std::optional<SystemSave> system_save = {}, bool device_save = false) {
     SyncResult result;
     const Reporter report(progress);
     try {
@@ -2383,7 +2391,7 @@ SyncResult RunSync(const Env& env, std::uint64_t title_id, const ProgressCallbac
         if (!env.resolve_user || !env.resolve_user(user)) {
             throw SyncError("cannot tell which Eden user is active");
         }
-        Target target = BuildTarget(env, title_id, user, config, system_save);
+        Target target = BuildTarget(env, title_id, user, config, system_save, device_save);
         Log(std::string(trigger) + " " + target.title_hex + " user " + user.dir_name);
 
         report.Emit(SyncStage::Connecting, 0, 0, std::string());
@@ -2431,13 +2439,14 @@ SyncResult RunSync(const Env& env, std::uint64_t title_id, const ProgressCallbac
 SyncResult RunPublic(std::uint64_t title_id, const ProgressCallback& progress,
                      const std::string& game_name, Mode mode, const char* trigger,
                      std::optional<SystemSave> system_save = {},
-                     const std::string& profile_uuid = {}) {
+                     const std::string& profile_uuid = {}, bool device_save = false) {
     SyncResult failed;
     const std::lock_guard<std::mutex> guard(g_sync_mutex);
     try {
         WinrtTransport transport;
         const Env session_env = MakeEnv(&transport, profile_uuid);
-        return RunSync(session_env, title_id, progress, game_name, mode, trigger, system_save);
+        return RunSync(session_env, title_id, progress, game_name, mode, trigger, system_save,
+                       device_save);
     } catch (const winrt::hresult_error& failure) {
         failed.message = winrt::to_string(failure.message());
     } catch (const std::exception& failure) {
@@ -2559,7 +2568,7 @@ bool IsWebDav() {
     return LoadConfig(MakeEnv(nullptr), config, reason) && !config.dav_url.empty();
 }
 bool SelectAccount(std::uint64_t title_id, const std::string& game_name, const std::string& owner,
-                   const std::string& profile_uuid) {
+                   const std::string& profile_uuid, bool device_save) {
     const std::lock_guard<std::mutex> lock(g_sync_mutex);
     try {
         const Env env = MakeEnv(nullptr, profile_uuid);
@@ -2568,10 +2577,9 @@ bool SelectAccount(std::uint64_t title_id, const std::string& game_name, const s
         std::string reason;
         if (!env.resolve_user(user) || !LoadConfig(env, config, reason))
             return false;
-        const auto target = BuildTarget(env, title_id, user, config);
+        const auto target = BuildTarget(env, title_id, user, config, {}, device_save);
         ValidateCloudName(owner);
-        StoreState(env, target.key, std::nullopt,
-                   SanitizeName(game_name, GameNameBuffer) + "/" + owner);
+        StoreState(env, target.key, std::nullopt, BuildCloudFolderPath(game_name, owner));
         return LoadState(env, target.key).folder.ends_with("/" + owner);
     } catch (...) {
         return false;
@@ -2592,25 +2600,27 @@ void CancelDeviceLogin() {
 
 SyncResult SyncBeforeBoot(std::uint64_t title_id, const ProgressCallback& progress,
                           const std::string& game_name, std::optional<SystemSave> system_save,
-                          const std::string& profile_uuid) {
+                          const std::string& profile_uuid, bool device_save) {
     return RunPublic(title_id, progress, game_name, Mode::Reconcile, "before boot", system_save,
-                     profile_uuid);
+                     profile_uuid, device_save);
 }
 
 SyncResult SyncAfterExit(std::uint64_t title_id, const ProgressCallback& progress,
                          const std::string& game_name, std::optional<SystemSave> system_save,
-                         const std::string& profile_uuid) {
+                         const std::string& profile_uuid, bool device_save) {
     return RunPublic(title_id, progress, game_name, Mode::AfterExit, "after exit", system_save,
-                     profile_uuid);
+                     profile_uuid, device_save);
 }
 
 SyncResult ResolveConflict(std::uint64_t title_id, ConflictChoice choice,
                            const ProgressCallback& progress, const std::string& game_name,
-                           std::optional<SystemSave> system_save, const std::string& profile_uuid) {
+                           std::optional<SystemSave> system_save, const std::string& profile_uuid,
+                           bool device_save) {
     const bool keep_xbox = choice == ConflictChoice::KeepXbox;
-    return RunPublic(
-        title_id, progress, game_name, keep_xbox ? Mode::ForceUpload : Mode::ForceDownload,
-        keep_xbox ? "resolve (keep Xbox)" : "resolve (keep cloud)", system_save, profile_uuid);
+    return RunPublic(title_id, progress, game_name,
+                     keep_xbox ? Mode::ForceUpload : Mode::ForceDownload,
+                     keep_xbox ? "resolve (keep Xbox)" : "resolve (keep cloud)", system_save,
+                     profile_uuid, device_save);
 }
 
 std::string GameNameFromNames(const std::vector<std::string>& nacp_application_names) {
