@@ -749,7 +749,16 @@ std::unique_ptr<GraphicsPipeline> ShaderCache::CreateGraphicsPipeline(
         device, texture_cache, buffer_cache, program_manager, state_tracker, thread_worker,
         &shader_notify, sources, sources_spirv, infos, key, force_context_flush);
 #ifdef NXBOX_UWP
-    pipeline->dump_artifacts = std::move(artifacts);
+    // Keeping every pipeline's guest code and host source costs RAM the 5 GiB app limit cannot
+    // spare; retain them only when a dump is requested or NXBOX_SHADER_RETAIN=1.
+    static const bool retain_artifacts = [] {
+        const char* dump = std::getenv("NXBOX_DUMP_SHADERS");
+        const char* keep = std::getenv("NXBOX_SHADER_RETAIN");
+        return (dump && *dump) || (keep && *keep == '1');
+    }();
+    if (retain_artifacts) {
+        pipeline->dump_artifacts = std::move(artifacts);
+    }
 #endif
     return pipeline;
 
