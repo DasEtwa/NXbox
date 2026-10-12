@@ -83,6 +83,9 @@ private:
     const bool use_asynchronous_shaders;
     const bool strict_context_required;
 
+#ifdef NXBOX_UWP
+    std::string last_dump_selection;
+#endif
     GraphicsPipelineKey graphics_key{};
     GraphicsPipeline* current_pipeline{};
 
