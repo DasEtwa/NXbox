@@ -623,6 +623,8 @@ struct BufferHeapPool {
         }
         ResourcePtr resource{
             pending.release(), [page, start = *start, count, owner](Resource* value) {
+                // The owner capture preserves the pool while a fence still holds this lease.
+                (void)owner;
                 delete value; // Release the resource before recycling its heap range.
                 const std::scoped_lock lock{page->mutex};
                 page->slots.Release(start, count);

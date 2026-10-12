@@ -10,7 +10,7 @@
 namespace D3D12 {
 namespace {
 void InvalidRange(u32 kind, const char* label, u64 offset, u64 size, u64 width) {
-    static std::array<std::atomic_flag, 7> reported{};
+    static std::array<std::atomic_flag, 8> reported{};
     if (!reported[kind].test_and_set())
         Diagnostic(fmt::format(
             "D3D12 {} rejected offset={} size={} resource_bytes={}; substituting zero/skip", label,
@@ -38,7 +38,7 @@ void BufferCacheRuntime::TickFrame(Common::SlotVector<Buffer>& buffers) {
 void BufferCacheRuntime::CopyBuffer(ResourcePtr dst, ResourcePtr src,
                                     std::span<const VideoCommon::BufferCopy> copies, bool, bool) {
     if (!dst || !src) {
-        InvalidRange(0, "null buffer copy", 0, 0, 0);
+        InvalidRange(7, "null buffer copy", 0, 0, 0);
         return;
     }
     const auto src_size = src->handle->GetDesc().Width;

@@ -118,6 +118,11 @@ int main() {
     auto next=allocate(256); assert(device.last_offset==0);
     auto same=BufferPool(budget); assert(same==pool);
     auto other=BufferPool(std::make_shared<MemoryBudget>()); assert(other!=pool);
+    std::weak_ptr<BufferHeapPool> lifetime=pool;
+    same.reset(); pool.reset();
+    assert(!lifetime.expired()); // Only the placed resource's deleter keeps the pool alive.
+    next.reset();
+    assert(lifetime.expired() && budget->used==0);
 }
 """
 
