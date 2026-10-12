@@ -743,6 +743,19 @@ TEST_CASE("A64: Complex floating point differential", "[a64][unicorn][conformanc
                                     part = (static_cast<u64>(random()) << 32) | random();
                                 }
                             }
+                            if (size == 1 && iteration < 8) {
+                                const std::array<u16, 16> edges{0, 0x8000, 1, 0x8001, 0x03ff, 0x0400, 0x3c00, 0xbc00,
+                                                                0x7bff, 0xfbff, 0x7c00, 0xfc00, 0x7e01, 0xfe02, 0x7c01, 0xfc02};
+                                for (size_t reg = 0; reg < 3; ++reg) {
+                                    for (size_t part = 0; part < 2; ++part) {
+                                        vecs[reg][part] = 0;
+                                        for (size_t lane = 0; lane < 4; ++lane) {
+                                            const u16 value = edges[(iteration + reg * 5 + part * 4 + lane) % edges.size()];
+                                            vecs[reg][part] |= static_cast<u64>(value) << (lane * 16);
+                                        }
+                                    }
+                                }
+                            }
                             u32 instruction = bases[variant] | (q << 30) | (size << 22) | (2U << 16) | (1U << 5) | static_cast<u32>(iteration % 3);
                             instruction |= rotation << (variant == 0 ? 12 : variant == 1 ? 11
                                                                                          : 13);
