@@ -434,7 +434,12 @@ set(NXBOX_JIT_VERSION_MANIFEST "${CMAKE_CXX_COMPILER_ID}|${CMAKE_CXX_COMPILER_VE
 foreach(NXBOX_JIT_VERSION_INPUT IN LISTS NXBOX_JIT_VERSION_INPUTS)
     file(SHA256 "${NXBOX_JIT_VERSION_INPUT}" NXBOX_JIT_INPUT_HASH)
     string(APPEND NXBOX_JIT_VERSION_MANIFEST "|${NXBOX_JIT_INPUT_HASH}")
-    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${NXBOX_JIT_VERSION_INPUT}")
+    # CMakeLists.txt files are already configure dependencies; listing them again makes Ninja
+    # define them as outputs twice.
+    get_filename_component(NXBOX_JIT_INPUT_NAME "${NXBOX_JIT_VERSION_INPUT}" NAME)
+    if (NOT NXBOX_JIT_INPUT_NAME STREQUAL "CMakeLists.txt")
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${NXBOX_JIT_VERSION_INPUT}")
+    endif()
 endforeach()
 string(SHA256 NXBOX_JIT_EMITTER_ID "${NXBOX_JIT_VERSION_MANIFEST}")
 target_compile_definitions(dynarmic PRIVATE
