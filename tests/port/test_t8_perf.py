@@ -72,6 +72,7 @@ int main(int argc, char** argv) {
         auto gate = release.get_future().share();
         std::atomic<unsigned> compiled{};
         AsyncPsoCache<int, int> cache{true, [](auto) { assert(false); }};
+        assert(!cache.HasRequest(1));
         assert(!cache.Request(1, [&] {
             ++compiled;
             started.set_value();
@@ -81,6 +82,7 @@ int main(int argc, char** argv) {
         assert(started.get_future().wait_for(5s) == std::future_status::ready);
         for (int i = 0; i < 100; ++i)
             assert(!cache.Request(1, [] { assert(false); return std::shared_ptr<int>{}; }));
+        assert(cache.HasRequest(1));
         release.set_value();
         std::shared_ptr<int> result;
         until([&] { result = cache.Request(1, [] { assert(false); return std::shared_ptr<int>{}; }); return bool(result); });
@@ -115,6 +117,7 @@ int main(int argc, char** argv) {
         for (size_t i = 1; i < cache.MaxPending; ++i)
             cache.Request(static_cast<int>(i), [&] { ++completed; return std::make_shared<int>(1); });
         cache.Request(999, [] { assert(false); return std::shared_ptr<int>{}; });
+        assert(!cache.HasRequest(999));
         release.set_value();
         until([&] { return completed == cache.MaxPending; });
         std::shared_ptr<int> result;

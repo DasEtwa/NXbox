@@ -116,6 +116,10 @@ public:
         wake.notify_one();
         return {};
     }
+    bool HasRequest(const Key& key) {
+        const std::lock_guard lock{mutex};
+        return entries.contains(key);
+    }
     // Call before destroying any captured compiler/device dependencies.
     void Stop() {
         {
