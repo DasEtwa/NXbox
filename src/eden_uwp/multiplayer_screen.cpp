@@ -29,8 +29,7 @@
 
 namespace EdenXbox::Ui {
 namespace {
-using Multiplayer::Text;
-using Multiplayer::Tr;
+using MultiplayerText = Multiplayer::Text;
 using winrt::Windows::Data::Json::JsonObject;
 using winrt::Windows::UI::Core::CoreProcessEventsOption;
 using namespace std::chrono_literals;
@@ -184,8 +183,9 @@ bool RunMultiplayerScreen(Renderer& renderer, const winrt::Windows::UI::Core::Co
                                        : selected == 1 ? address
                                        : selected == 2 ? password
                                                        : room_name;
-                    entry.emplace(
-                        Tr(static_cast<Text>(static_cast<int>(Text::Nickname) + selected)), field);
+                    entry.emplace(Multiplayer::Tr(static_cast<MultiplayerText>(
+                                      static_cast<int>(MultiplayerText::Nickname) + selected)),
+                                  field);
                     input.ConsumeUntilRelease();
                 } else if (selected == 6)
                     refresh();
@@ -231,22 +231,23 @@ bool RunMultiplayerScreen(Renderer& renderer, const winrt::Windows::UI::Core::Co
         const auto palette = Multiplayer::SystemPalette();
         renderer.BeginFrame();
         renderer.FillRounded(D2D1::RectF(0, 0, kCanvasWidth, kCanvasHeight), 0, palette.background);
-        renderer.DrawString(Tr(Text::Title), Font::ModsTitle, D2D1::RectF(96, 130, 1800, 220),
-                            palette.text);
-        const auto status = busy               ? Text::Working
-                            : failed || *error ? Text::Failed
-                            : hosting          ? Text::Hosting
-                                               : Text::Empty;
-        renderer.DrawString(Tr(status), Font::Body, D2D1::RectF(96, 225, 1800, 315),
+        renderer.DrawString(Multiplayer::Tr(MultiplayerText::Title), Font::ModsTitle,
+                            D2D1::RectF(96, 130, 1800, 220), palette.text);
+        const auto status = busy               ? MultiplayerText::Working
+                            : failed || *error ? MultiplayerText::Failed
+                            : hosting          ? MultiplayerText::Hosting
+                                               : MultiplayerText::Empty;
+        renderer.DrawString(Multiplayer::Tr(status), Font::Body, D2D1::RectF(96, 225, 1800, 315),
                             palette.secondary);
-        const std::wstring rows[] = {std::wstring(Tr(Text::Nickname)) + L": " + nickname,
-                                     std::wstring(Tr(Text::Address)) + L": " + address,
-                                     std::wstring(Tr(Text::Password)) +
-                                         (password.empty() ? L"" : L": ••••"),
-                                     std::wstring(Tr(Text::RoomName)) + L": " + room_name,
-                                     Tr(Text::Join),
-                                     Tr(Text::Create),
-                                     Tr(Text::Refresh)};
+        const std::wstring rows[] = {
+            std::wstring(Multiplayer::Tr(MultiplayerText::Nickname)) + L": " + nickname,
+            std::wstring(Multiplayer::Tr(MultiplayerText::Address)) + L": " + address,
+            std::wstring(Multiplayer::Tr(MultiplayerText::Password)) +
+                (password.empty() ? L"" : L": ••••"),
+            std::wstring(Multiplayer::Tr(MultiplayerText::RoomName)) + L": " + room_name,
+            Multiplayer::Tr(MultiplayerText::Join),
+            Multiplayer::Tr(MultiplayerText::Create),
+            Multiplayer::Tr(MultiplayerText::Refresh)};
         const int first = std::max(0, selected - 6);
         for (int i = first; i <= first + 6 && i <= 6 + static_cast<int>(lobbies.size()); ++i) {
             const float y = 330.0f + (i - first) * 80.0f;
@@ -257,7 +258,7 @@ bool RunMultiplayerScreen(Renderer& renderer, const winrt::Windows::UI::Core::Co
                                 Font::RowTitle, D2D1::RectF(120, y + 8, 1160, y + 64),
                                 palette.text);
         }
-        renderer.DrawString(std::wstring(Tr(Text::Players)) + L" · " +
+        renderer.DrawString(std::wstring(Multiplayer::Tr(MultiplayerText::Players)) + L" · " +
                                 std::to_wstring(member->GetPingMs()) + L" ms",
                             Font::MetaMono, D2D1::RectF(1270, 330, 1820, 380), palette.secondary);
         int row = 0;
@@ -269,8 +270,8 @@ bool RunMultiplayerScreen(Renderer& renderer, const winrt::Windows::UI::Core::Co
                                 palette.text);
             ++row;
         }
-        renderer.DrawString(Tr(Text::Hints), Font::Hint, D2D1::RectF(96, 970, 1820, 1040),
-                            palette.secondary);
+        renderer.DrawString(Multiplayer::Tr(MultiplayerText::Hints), Font::Hint,
+                            D2D1::RectF(96, 970, 1820, 1040), palette.secondary);
         if (entry)
             entry->Draw(renderer, Clock::now());
         renderer.EndFrame();
