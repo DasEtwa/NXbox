@@ -83,7 +83,9 @@ ResourcePtr MakeTexture(Context& context, const VideoCommon::ImageInfo& info, Fo
     if (info.num_samples == 0 || (info.num_samples & (info.num_samples - 1)) ||
         info.num_samples > 16)
         return skip("sample count is not 1/2/4/8/16");
-    if (info.num_samples > 1 && VideoCore::Surface::DefaultBlockWidth(info.format) != 1)
+    if (info.num_samples > 1 &&
+        (format.converted_astc || format.conversion == FormatConversion::Etc2 ||
+         format.conversion == FormatConversion::Eac || format.conversion == FormatConversion::Bcn))
         return skip("guest block-compressed formats cannot be multisampled");
     if (info.num_samples > 1 &&
         (info.type != VideoCommon::ImageType::e2D || format.block_width != 1 ||
