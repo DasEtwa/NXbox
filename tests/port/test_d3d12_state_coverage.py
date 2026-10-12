@@ -135,6 +135,40 @@ transform_feedback transform_feedback_enabled stream_out_layout
 register("fallback", "d3d12_pipeline_cache.cpp", "tessellation.params", "tessellation")
 
 
+# Non-register Maxwell draw-manager state and tessellation parameter fields read
+# by the same reference files. Keep unsupported DrawTexture visible in coverage.
+WORKFLOW_POLICY = {
+    **{
+        f"draw_state.{field}": ("emulated", "Draw")
+        for field in "topology base_index base_instance index_buffer vertex_buffer".split()
+    },
+    **{
+        f"draw_texture_state.{field}": ("fallback", "draw_texture_state requires")
+        for field in "dst_x0 dst_x1 dst_y0 dst_y1 src_x0 src_x1 src_y0 src_y1 src_sampler src_texture".split()
+    },
+    **{
+        f"params.{field}": ("fallback", "tessellation.params require")
+        for field in "domain_type output_primitives spacing".split()
+    },
+    **{
+        f"params.{field}": ("emulated", "IndirectCount")
+        for field in "include_count is_indexed max_draw_counts stride".split()
+    },
+    "params.is_byte_count": ("fallback", "draw_auto_stride byte-count draw"),
+    "params.base_vertex": ("native", "DrawIndexedInstanced"),
+    "params.num_vertices": ("native", "DrawInstanced"),
+}
+
+
+def reference_workflow_fields():
+    source = "\n".join(
+        (VULKAN / filename).read_text()
+        for filename in ("fixed_pipeline_state.cpp", "vk_rasterizer.cpp")
+    )
+    source = re.sub(r"//[^\n]*|/\*.*?\*/", "", source, flags=re.S)
+    return set(re.findall(r"\b(?:draw_state|draw_texture_state|params)\.[A-Za-z_]\w*", source))
+
+
 def reference_fields():
     fields = set()
     for filename in ("fixed_pipeline_state.cpp", "vk_rasterizer.cpp", "vk_state_tracker.cpp"):
@@ -259,6 +293,14 @@ class D3D12StateCoverageTests(unittest.TestCase):
                 )
         # Inventory coverage includes explicit skips; never equate it with semantic coverage.
         self.assertEqual(len(STATE_POLICY), 74)
+        self.assertEqual(reference_workflow_fields(), set(WORKFLOW_POLICY))
+        self.assertEqual(len(WORKFLOW_POLICY), 25)
+        source = (NATIVE / "d3d12_pipeline_cache.cpp").read_text() + (
+            NATIVE / "d3d12_rasterizer.cpp"
+        ).read_text()
+        for field, (policy, evidence) in WORKFLOW_POLICY.items():
+            with self.subTest(field=field, policy=policy):
+                self.assertTrue(evidence in source, f"Missing workflow handling: {field}")
 
     def test_fixed_state_and_conversion_semantics(self):
         with tempfile.TemporaryDirectory(prefix="nxbox-state-") as temp:

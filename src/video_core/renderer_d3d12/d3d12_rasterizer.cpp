@@ -1075,7 +1075,10 @@ bool RasterizerD3D12::AccelerateConditionalRendering() {
 void RasterizerD3D12::PreparePresentation() {
     query_runtime.PauseHostConditionalRendering();
 }
-void RasterizerD3D12::DrawTexture() {}
+void RasterizerD3D12::DrawTexture() {
+    SkipDraw("draw_texture_state requires sampler/rectangle/blend/scissor blit linkage");
+    m_gpu.TickWork();
+}
 void RasterizerD3D12::Clear(u32 layer_count) try {
     gpu_memory->FlushCaching();
     query_runtime.PauseHostConditionalRendering();
