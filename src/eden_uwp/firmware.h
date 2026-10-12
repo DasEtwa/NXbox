@@ -1,0 +1,15 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+#pragma once
+
+#include <filesystem>
+#include <string>
+
+namespace EdenXbox {
+struct FirmwareStatus {
+    std::string version;
+    bool install_failed = false;
+};
+// Run on an MTA worker before the library, direct launch, or emulation starts.
+void PrepareFirmware(const std::filesystem::path& local_state);
+FirmwareStatus GetFirmwareStatus();
+} // namespace EdenXbox

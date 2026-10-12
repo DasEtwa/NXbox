@@ -72,11 +72,13 @@ A64EmitX64::A64EmitX64(BlockOfCode& code, A64::UserConfig conf, A64::Jit* jit_in
 
 A64EmitX64::~A64EmitX64() = default;
 
-A64EmitX64::BlockDescriptor A64EmitX64::Emit(IR::Block& block) noexcept {
+A64EmitX64::BlockDescriptor A64EmitX64::Emit(IR::Block& block,
+                                             NxboxJitCache::Record* capture) noexcept {
     if (conf.very_verbose_debugging_output) [[unlikely]] {
         std::puts(IR::DumpBlock(block).c_str());
     }
 
+    const auto constant_references = code.ConstantReferences();
     code.EnableWriting();
     new (&this->reg_alloc) RegAlloc{[this] {
         std::bitset<32> gprs = any_gpr;
@@ -154,6 +156,29 @@ finish_this_inst:
     if (conf.enable_cycle_counting)
         EmitAddCycles(block.CycleCount());
     code.mov(rbp, code.qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, abi_base_pointer)]);
+    if (capture && DiskCacheEligible(block) && ctx.deferred_emits.empty() &&
+        code.ConstantReferences() == constant_references) {
+        // Snapshot only the audited body, before any mutable terminal links are emitted.
+        try {
+            capture->host.assign(entrypoint, code.getCurr());
+        } catch (...) {
+            capture->host.clear();
+        }
+        capture->relocation.offset = capture->host.size();
+        const auto& leaf = std::get<IR::Term::LeafTerminal>(block.terminal);
+        using Terminal = NxboxJitCache::Terminal;
+        if (const auto* link = std::get_if<IR::Term::LinkBlock>(&leaf)) {
+            capture->relocation.terminal = Terminal::Link;
+            capture->relocation.target = link->next.Value();
+        } else if (const auto* fast_link = std::get_if<IR::Term::LinkBlockFast>(&leaf)) {
+            capture->relocation.terminal = Terminal::LinkFast;
+            capture->relocation.target = fast_link->next.Value();
+        } else if (std::holds_alternative<IR::Term::PopRSBHint>(leaf)) {
+            capture->relocation.terminal = Terminal::PopRSB;
+        } else if (std::holds_alternative<IR::Term::FastDispatchHint>(leaf)) {
+            capture->relocation.terminal = Terminal::FastDispatch;
+        }
+    }
     EmitTerminal(block.terminal, ctx.Location().SetSingleStepping(false), ctx.IsSingleStep());
     code.int3();
     for (auto& deferred_emit : ctx.deferred_emits)
@@ -172,6 +197,111 @@ finish_this_inst:
     code.DisableWriting();
     shared_labels.clear();
     return bdesc;
+}
+
+bool A64EmitX64::DiskCacheEligible(const IR::Block& block) {
+    if (A64::LocationDescriptor{block.Location()}.SingleStepping() ||
+        block.GetCondition() != IR::Cond::AL) {
+        return false;
+    }
+    const auto* leaf = std::get_if<IR::Term::LeafTerminal>(&block.terminal);
+    if (!leaf || std::holds_alternative<std::monostate>(*leaf)) {
+        return false;
+    }
+    // Fail closed for every unaudited opcode, including memory reads before constant folding.
+    for (const auto& inst : block.instructions) {
+        switch (inst.GetOpcode()) {
+        case IR::Opcode::Void:
+        case IR::Opcode::Identity:
+        case IR::Opcode::A64GetW:
+        case IR::Opcode::A64GetX:
+        case IR::Opcode::A64SetW:
+        case IR::Opcode::A64SetX:
+        case IR::Opcode::A64GetSP:
+        case IR::Opcode::A64SetSP:
+        case IR::Opcode::A64SetPC:
+        case IR::Opcode::And32:
+        case IR::Opcode::And64:
+        case IR::Opcode::Eor32:
+        case IR::Opcode::Eor64:
+        case IR::Opcode::Or32:
+        case IR::Opcode::Or64:
+        case IR::Opcode::Not32:
+        case IR::Opcode::Not64:
+        case IR::Opcode::Add32:
+        case IR::Opcode::Add64:
+        case IR::Opcode::Sub32:
+        case IR::Opcode::Sub64:
+        case IR::Opcode::GetCarryFromOp:
+        case IR::Opcode::GetOverflowFromOp:
+        case IR::Opcode::GetNZCVFromOp:
+        case IR::Opcode::A64SetNZCV:
+            break;
+        default:
+            return false;
+        }
+    }
+    return true;
+}
+
+std::optional<A64EmitX64::BlockDescriptor> A64EmitX64::Restore(
+    const NxboxJitCache::Record& record, bool (*guard)(void*, const NxboxJitCache::Record*),
+    void* guard_context) noexcept {
+    const A64::LocationDescriptor descriptor{IR::LocationDescriptor{record.descriptor}};
+    if (!guard || !guard_context || !record.Valid() || descriptor.SingleStepping() ||
+        descriptor.PC() != record.pc) {
+        return std::nullopt;
+    }
+    IR::Term::LeafTerminal terminal;
+    using Terminal = NxboxJitCache::Terminal;
+    switch (record.relocation.terminal) {
+    case Terminal::Dispatch:
+        terminal = IR::Term::ReturnToDispatch{};
+        break;
+    case Terminal::Link:
+        terminal = IR::Term::LinkBlock{IR::LocationDescriptor{record.relocation.target}};
+        break;
+    case Terminal::LinkFast:
+        terminal = IR::Term::LinkBlockFast{IR::LocationDescriptor{record.relocation.target}};
+        break;
+    case Terminal::PopRSB:
+        terminal = IR::Term::PopRSBHint{};
+        break;
+    case Terminal::FastDispatch:
+        terminal = IR::Term::FastDispatchHint{};
+        break;
+    default:
+        return std::nullopt;
+    }
+    code.EnableWriting();
+    code.align();
+    const auto* entrypoint = code.getCurr();
+    // All block-entry paths target this fresh guard, including direct links and RSB hits.
+    // At a block boundary guest state is in A64JitState; no caller-save values are live.
+    code.SwitchMxcsrOnExit();
+    code.mov(code.ABI_PARAM1, reinterpret_cast<u64>(guard_context));
+    code.mov(code.ABI_PARAM2, reinterpret_cast<u64>(&record));
+    code.CallFunction(guard);
+    Xbyak::Label valid;
+    code.test(code.ABI_RETURN.cvt8(), code.ABI_RETURN.cvt8());
+    code.jnz(valid);
+    code.ForceReturnFromRunCode(true);
+    code.L(valid);
+    code.SwitchMxcsrOnEntry();
+    NxboxJitCache::Relocate(
+        record, [&](const auto& body) { code.db(body.data(), body.size()); },
+        [&](const auto&) {
+            // Re-emission resolves local handlers and registers fresh incoming patch sites.
+            EmitLeafTerminal(terminal, descriptor.SetSingleStepping(false), false);
+        });
+    code.int3();
+    code.int3();
+    block_ranges.AddRange(
+        boost::icl::discrete_interval<u64>::closed(record.pc, record.pc + record.guest.size() - 1),
+        descriptor);
+    auto result = RegisterBlock(descriptor, entrypoint, code.getCurr() - entrypoint);
+    code.DisableWriting();
+    return result;
 }
 
 void A64EmitX64::ClearCache() {

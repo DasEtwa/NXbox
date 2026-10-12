@@ -1,0 +1,62 @@
+name: Build NXbox Pack
+on:
+  push:
+    branches: [main, codex/packer]
+    paths:
+      - tools/nxbox-pack/**
+      - dist/nxbox/AppxManifest.xml
+      - .github/workflows/nxbox-pack.yml
+  pull_request:
+    paths:
+      - tools/nxbox-pack/**
+      - dist/nxbox/AppxManifest.xml
+      - .github/workflows/nxbox-pack.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  binaries:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2025
+            script: build:windows
+            binary: nxbox-pack-windows-x64.exe
+          - os: macos-15
+            script: build:macos
+            binary: nxbox-pack-macos-arm64
+          - os: ubuntu-24.04
+            script: build:linux
+            binary: nxbox-pack-linux-x64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: tools/nxbox-pack
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - run: bun install --frozen-lockfile
+      - run: bun run check
+      - run: bun test
+      - run: bun run ${{ matrix.script }}
+      - name: Smoke test compiled binary in both languages
+        shell: bash
+        run: |
+          NXBOX_PACK_LANG=en ./dist/${{ matrix.binary }} --help
+          NXBOX_PACK_LANG=pt ./dist/${{ matrix.binary }} --help
+      - name: Record binary checksum
+        env:
+          NXBOX_PACK_BINARY: ${{ matrix.binary }}
+        run: |
+          bun -e "const name=process.env.NXBOX_PACK_BINARY; const path='dist/'+name; await Bun.write(path+'.sha256',new Bun.CryptoHasher('sha256').update(await Bun.file(path).arrayBuffer()).digest('hex')+'  '+name+'\n')"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.binary }}
+          if-no-files-found: error
+          path: |
+            tools/nxbox-pack/dist/${{ matrix.binary }}
+            tools/nxbox-pack/dist/${{ matrix.binary }}.sha256

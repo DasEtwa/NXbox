@@ -26,6 +26,9 @@ Eden. Each entry below describes one file; generated caches are identified separ
 - `src/eden_uwp/diagnostic.h` — Writes the LocalState diagnostic log and rotates it past 4 MiB.
 - `src/eden_uwp/diagnostic_report.h` — Collects chunked Mesa reports and prefixes every physical log
   line.
+- `src/eden_uwp/firmware.cpp` / `firmware.h` — Imports user-dumped firmware at boot and exposes
+  the installed NAND version to the library; shares the desktop installer in
+  `src/frontend_common/firmware_install.cpp`.
 - `src/eden_uwp/game_download.cpp` — Implements resumable downloads and storage-aware destination
   selection.
 - `src/eden_uwp/game_download.h` — Declares the worker-thread download interface and progress
@@ -206,7 +209,24 @@ Eden. Each entry below describes one file; generated caches are identified separ
 - `tools/nxbox/mesa_view_cast_copy.h` — Owns SRV shadows and copies raw texels through a GPU buffer.
 - `tools/nxbox/README.md` — Script usage and helper ownership index.
 
+### Per-game host CLI: tools/nxbox-pack
+
+- `tools/nxbox-pack/src/cli.ts` — Runs the localized interactive setup and coordinates deployment.
+- `tools/nxbox-pack/src/runtime.ts` / `manifest.ts` — Verify/stage published runtime artifacts and
+  generate independent game package identities from the embedded manifest template.
+- `tools/nxbox-pack/src/portal.ts` / `deploy.ts` — Register loose Xbox apps, stream content into
+  private LocalState and activate the existing direct-boot markers after verified uploads.
+- `tools/nxbox-pack/src/credentials.ts` / `prompt.ts` — Handle optional OS-protected credential
+  persistence and hidden terminal password entry.
+- `tools/nxbox-pack/src/files.ts` / `content.ts` / `discovery.ts` / `i18n.ts` — Validate local
+  inputs, invoke optional NSZ/XCZ decompression, discover LAN consoles and select PT/EN strings.
+- `tools/nxbox-pack/tests/` — Bun unit tests and synthetic HTTP deployment integration checks.
+- `tools/nxbox-pack/README.md` / `docs/nxbox-pack.md` — Usage, deployment design and console checks.
+
 ### CI: .github/workflows
+
+- `.github/workflows/nxbox-pack.yml` — Tests and compiles the Bun 1.3.14 per-game packer for
+  Windows x64, macOS ARM64 and Linux x64; uploads executable/checksum artifacts.
 
 - `.github/workflows/build-nxbox.yml` — Windows 2025 UWP build and C++ port checks; uploads
   nxbox-uwp-build (binaries, configuration and build logs).
@@ -263,6 +283,8 @@ Eden. Each entry below describes one file; generated caches are identified separ
   inspection.
 - `tests/port/test_image_slot_patch.py` — Checks shader-image format-emulation indexing at nonzero
   start slots.
+- `tests/port/test_jit_disk_cache.py` — Executes std-only JIT cache serialization, symbolic terminal
+  relocation, fresh guest-byte guards, admission, corruption recovery and bounded storage.
 - `tests/port/test_jit_hot_paths.py` — Checks JIT assertion/hot-path source invariants.
 - `tests/port/test_mesa_api_ring.py` — Checks process-wide API-ring generation and reporting with
   host mocks.
@@ -322,6 +344,8 @@ and YUZU_UWP_APPCONTAINER are compile definitions, not environment switches.
 - `src/common/host_memory.cpp` — Implements AppContainer memory/protection handling, demand
   commitment and decommit attribution.
 - `src/common/host_memory.h` — Exposes committed guest-backing byte diagnostics.
+- `src/common/nxbox_jit_cache.h` — Owns the opt-in per-title host-code cache codec, bounded store
+  and portable relocation/guest checks; see [the cache design](jit-disk-cache.md).
 - `src/common/nxbox_stall.h` — Owns shared stall/JIT counters and sampler thread IDs.
 - `src/common/nxbox_geometry_diag.h` — Owns opt-in geometry/UBO counters; copied into Mesa as
   nxbox_geometry_diag.h by patch_geometry_diag.
@@ -494,6 +518,7 @@ identifies the generator function and names the generated Mesa reader where usef
 
 | Switch                         | Default                                               | Effect / accepted value                                                                                                                                  | Diagnostic? | Where read                                                                                                  |
 | ------------------------------ | ----------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- | ----------------------------------------------------------------------------------------------------------- |
+| `NXBOX_JIT_CACHE` | Off | Exact `1` enables the experimental A64/x64 disk cache for audited integer blocks, with fresh byte guards; 16 MiB/title, 128 MiB directory. See [design and limits](jit-disk-cache.md). | Yes | src/eden_uwp/game_session.cpp:RunGame |
 | `NXBOX_ALLOC_TRACK`            | Off                                                   | Leading `1` enables allocation call-site tracking; periodic ALLOCS output also needs VMMAP.                                                              | Yes         | src/eden_uwp/game_session.cpp:RunGame                                                                       |
 | `NXBOX_API_RING`               | Off in NXbox                                          | `1` requests per-call history; helper disables on exact `0` or SYNC_BATCH=0 (otherwise standalone helper defaults on).                                   | Yes         | tools/nxbox/mesa_api_ring.h:nxbox_api_enabled; frontend default in mesa_window.cpp                          |
 | `NXBOX_ASTC_CHECK`             | Off                                                   | Presence, including `0`, requests bounded GPU-versus-CPU ASTC comparisons.                                                                               | Yes         | src/video_core/renderer_opengl/gl_texture_cache.cpp:NxboxAstcCheckWanted                                    |
@@ -742,6 +767,10 @@ patch/source/policy behavior; Xbox GPU behavior still needs console validation.
 
 ### Console test loop
 
+The tracked [compatibility runner](../tools/nxbox/compat/README.md) automates the
+probe-style loop, preserves evidence, and writes per-game Markdown/JSON reports
+with PNG contact sheets using Python 3 standard-library Device Portal calls.
+
 1. Install a signed candidate Appx through Xbox Device Portal; record emulator revision, Mesa run,
    package version, game version and content configuration.
 2. Edit `LocalState\nxbox_env.txt` for environment overrides and `LocalState\eden_settings.txt` for
@@ -946,3 +975,31 @@ use a larger interval to reduce console I/O. Settings are cached for the process
 Host selection/accounting regressions are in `tests/port/test_shader_probe.py`; run
 `cd tests/port && python3 -m unittest discover -s . -p 'test_*.py'`. Xbox screenshot
 comparison and a Windows UWP build are still required for end-to-end validation.
+
+## Installing user-dumped firmware on Xbox
+
+Copy a flat TegraExplorer firmware dump (`.nca` files, with their original hash names) to
+`LocalState\firmware\`, or `NXbox\firmware\` on a removable drive. Install the matching
+owner-supplied `prod.keys` in `LocalState\eden\keys\` before restarting NXbox. The package
+manifest declares `.nca` access with `uap:Capability` removable storage and a file association,
+as required by [Microsoft's file access permissions](https://learn.microsoft.com/en-us/windows/uwp/files/file-access-permissions).
+No firmware
+is downloaded. LocalState takes priority when both sources are present.
+
+Before the library or a direct game launch, an MTA worker reloads keys and uses the shared desktop
+installer: decrypt and verify each source, require real SystemVersion and MiiModel archives,
+replace the system NAND registered contents with raw NCAs, recreate filesystem factories, and
+verify installed contents. `FIRMWARE install version=<version> count=<count>` records success in
+`eden_uwp_diag.txt`. The library status reads the real installed SystemVersion, never the core's
+synthetic fallback. Missing firmware and installation failures have Portuguese/English text.
+
+Only after success is the source renamed beside its original location to `firmware_installed`;
+existing archives are preserved as `firmware_installed_1`, `_2`, etc. Failures retain the source
+for retry on the next boot, including an archive rename failure. As on desktop, an I/O failure
+while replacing NAND contents can leave an incomplete installation; check keys, files and free
+space and restart with the dump still present. Boot discovery does not scan archived folders.
+
+`tests/port/test_firmware.py` compiles a std-only host test for source paths, flat NCA discovery,
+invalid entries, bounded version parsing and collision-safe archival. A Windows UWP build and
+an Xbox run with the owner's firmware/keys are required to validate installation and MK8DX's Mii
+selection end to end.

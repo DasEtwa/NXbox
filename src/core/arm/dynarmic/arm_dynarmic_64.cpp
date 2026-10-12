@@ -4,6 +4,7 @@
 // SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "common/nxbox_jit_cache.h"
 #include "common/nxbox_stall.h"
 #include "common/scope_exit.h"
 #include "common/settings.h"
@@ -57,6 +58,13 @@ std::optional<u32> DynarmicCallbacks64::MemoryReadCode(u64 vaddr) {
         last_code_addr = aligned_vaddr;
     }
     return cached_code_page.inst[(vaddr & Core::Memory::YUZU_PAGEMASK) / sizeof(u32)];
+}
+
+std::optional<u32> DynarmicCallbacks64::MemoryReadCodeFresh(u64 vaddr) {
+    if (!m_memory.IsValidVirtualAddressRange(vaddr, sizeof(u32))) {
+        return std::nullopt;
+    }
+    return m_memory.Read32(vaddr);
 }
 
 void DynarmicCallbacks64::MemoryWrite(Dynarmic::A64::VAddr vaddr, u64 value, std::size_t size) {
@@ -404,6 +412,12 @@ void ArmDynarmic64::MakeJit(Common::PageTable* page_table, std::size_t address_s
              config.detect_misaligned_access_via_page_table,
              config.only_detect_misalignment_via_page_table_on_page_boundary,
              config.collect_memory_access_context);
+#endif
+#ifdef NXBOX_UWP
+    if (page_table && !m_system.DebuggerEnabled() && NxboxJitCache::session &&
+        m_cb->m_process->GetProgramId() == NxboxJitCache::session->Title()) {
+        config.disk_cache = NxboxJitCache::session;
+    }
 #endif
     m_jit.emplace(config);
 }

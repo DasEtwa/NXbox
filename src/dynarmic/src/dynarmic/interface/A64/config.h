@@ -16,6 +16,10 @@
 
 #include "dynarmic/interface/optimization_flags.h"
 
+namespace NxboxJitCache {
+class Store;
+}
+
 namespace Dynarmic {
 class ExclusiveMonitor;
 }  // namespace Dynarmic
@@ -91,6 +95,11 @@ struct UserCallbacks {
     // Memory must be interpreted as little endian.
     virtual std::optional<std::uint32_t> MemoryReadCode(VAddr vaddr) {
         return std::uint32_t(MemoryRead(vaddr, sizeof(std::uint32_t)));
+    }
+
+    // Disk-cache validation must bypass frontend instruction-page snapshots.
+    virtual std::optional<std::uint32_t> MemoryReadCodeFresh(VAddr vaddr) {
+        return MemoryReadCode(vaddr);
     }
 
     // Reads through these callbacks may not be aligned.
@@ -304,6 +313,9 @@ struct UserConfig {
     /// This option allows you to disable cycle counting. If this is set to false,
     /// AddTicks and GetTicksRemaining are never called, and no cycle counting is done.
     bool enable_cycle_counting = true;
+
+    // Optional frontend-owned persistent cache; absent by default.
+    std::shared_ptr<NxboxJitCache::Store> disk_cache;
 
     /// Internal use only
     bool very_verbose_debugging_output = false;

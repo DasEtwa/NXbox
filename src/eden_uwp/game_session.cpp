@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "eden_uwp/firmware.h"
 #include "eden_uwp/game_session.h"
 #include "eden_uwp/shader_share.h"
 
@@ -30,6 +31,7 @@
 #include <winrt/Windows.System.h>
 
 #include <fmt/format.h>
+#include "common/nxbox_jit_cache.h"
 #include "common/fs/fs.h"
 #include "common/nxbox_stall.h"
 #include "common/logging.h"
@@ -795,6 +797,14 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
             Diagnostic(fmt::format("CONTENT_DLC_DISABLED {:016X}", title));
         }
     }
+    // The session outlives all CPU interfaces and is flushed only after they stop.
+    NxboxJitCache::session.reset();
+    SCOPE_EXIT {
+        if (NxboxJitCache::session) {
+            NxboxJitCache::session->Flush();
+            NxboxJitCache::session.reset();
+        }
+    };
     system.GetFileSystemController().CreateFactories(*system.GetFilesystem());
     {
         // Read the actual boot package for library, game.txt and protocol launches. Release this
@@ -808,6 +818,15 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
                 winrt::Windows::Storage::ApplicationData::Current().LocalFolder().Path()));
             const auto title = fmt::format("{:016X}", title_id);
             ApplyEdenSettingsFile(TitleSettings::File(local_state, title));
+            const char* jit_cache = std::getenv("NXBOX_JIT_CACHE");
+            if (jit_cache && std::string_view{jit_cache} == "1") {
+                try {
+                    NxboxJitCache::session = std::make_shared<NxboxJitCache::Store>(
+                        local_state / "jitcache" / (title + ".bin"), title_id, Diagnostic);
+                } catch (...) {
+                    Diagnostic("JIT_CACHE phase=unavailable hits=0 misses=0 bytes=0");
+                }
+            }
             Diagnostic(fmt::format("RESOLUTION title={} resolution_setup={}", title,
                                    static_cast<int>(Settings::values.resolution_setup.GetValue())));
         } else {
@@ -844,12 +863,29 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
         .applet_type = Service::AM::AppletType::Application,
     };
     memory_stage("before_load");
+    if (NxboxJitCache::session) {
+        // A loader without an NSO ID must not inherit the previous game's metadata.
+        system.SetApplicationProcessBuildID({});
+    }
     const auto result = system.Load(window, path, parameters);
     memory_stage("after_load");
     if (result != Core::SystemResultStatus::Success) {
         launch_status.phase.store(Ui::LaunchPhase::Failed);
         Diagnostic("GAME_LOAD_FAILED status=" + std::to_string(static_cast<int>(result)));
         return;
+    }
+    if (NxboxJitCache::session) {
+        const auto& build = system.GetApplicationProcessBuildID();
+        try {
+            NxboxJitCache::Bytes identity;
+            if (std::any_of(build.begin(), build.end(), [](auto byte) { return byte != 0; })) {
+                NxboxJitCache::Put(identity, system.GetApplicationProcessProgramID());
+                identity.insert(identity.end(), build.begin(), build.end());
+            }
+            NxboxJitCache::session->Open(std::move(identity));
+        } catch (...) {
+            NxboxJitCache::session->Open({});
+        }
     }
     SCOPE_EXIT {
         FlushDeviceApiRing();
@@ -1457,6 +1493,18 @@ void RunGameView(const winrt::Windows::UI::Core::CoreWindow& window, const std::
     Ui::SyncGame sync_game;
     const std::filesystem::path local_state(
         winrt::to_string(winrt::Windows::Storage::ApplicationData::Current().LocalFolder().Path()));
+    auto firmware_worker = std::async(std::launch::async, [&local_state] {
+        winrt::init_apartment(winrt::apartment_type::multi_threaded);
+        SCOPE_EXIT {
+            winrt::uninit_apartment();
+        };
+        PrepareFirmware(local_state);
+    });
+    while (firmware_worker.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready) {
+        window.Dispatcher().ProcessEvents(CoreProcessEventsOption::ProcessAllIfPresent);
+        Sleep(16);
+    }
+    firmware_worker.get();
     const auto show_failure = [&](Ui::Text message) {
         // Called only after all GL objects have gone away, or before Mesa was constructed.
         splash.reset();

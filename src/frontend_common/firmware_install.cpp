@@ -1,0 +1,107 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+#include "frontend_common/firmware_install.h"
+
+#include "core/core.h"
+#include "core/file_sys/romfs.h"
+#include "core/hle/service/set/settings_types.h"
+#include "frontend_common/content_manager.h"
+#include "frontend_common/firmware_files.h"
+
+namespace FirmwareManager {
+namespace {
+std::string ArchiveVersion(const FileSys::NCA& nca) {
+    if (nca.GetStatus() != Loader::ResultStatus::Success || !nca.GetRomFS()) {
+        return {};
+    }
+    const auto romfs = FileSys::ExtractRomFS(nca.GetRomFS());
+    const auto file = romfs ? romfs->GetFile("file") : nullptr;
+    if (!file || file->GetSize() != sizeof(Service::Set::FirmwareVersionFormat)) {
+        return {};
+    }
+    Service::Set::FirmwareVersionFormat version{};
+    if (file->Read(reinterpret_cast<u8*>(&version), sizeof(version), 0) != sizeof(version)) {
+        return {};
+    }
+    return DisplayVersion({version.display_version.data(), version.display_version.size()});
+}
+} // namespace
+
+std::string InstalledVersion(Core::System& system) {
+    const auto cache = system.GetFileSystemController().GetSystemNANDContents();
+    const auto nca =
+        cache ? cache->GetEntry(0x0100000000000809ULL, FileSys::ContentRecordType::Data) : nullptr;
+    return nca ? ArchiveVersion(*nca) : std::string{};
+}
+
+InstallResult InstallFirmware(Core::System& system, const std::vector<std::filesystem::path>& files,
+                              const std::function<bool(size_t, size_t)>& callback) {
+    if (files.empty()) {
+        return InstallResult::NoNCAs;
+    }
+    auto& vfs = *system.GetFilesystem();
+    // Decrypt headers with the user's loaded keys and verify each source before deleting anything.
+    bool has_version = false;
+    bool has_mii_model = false;
+    for (size_t i = 0; i < files.size(); ++i) {
+        const auto file = vfs.OpenFile(files[i].generic_string(), FileSys::OpenMode::Read);
+        if (!file || !file->GetSize()) {
+            return InstallResult::FailedCorrupted;
+        }
+        const FileSys::NCA nca(file);
+        if (nca.GetStatus() != Loader::ResultStatus::Success) {
+            return InstallResult::FailedCorrupted;
+        }
+        if (nca.GetTitleId() == 0x0100000000000809ULL &&
+            nca.GetType() == FileSys::NCAContentType::Data) {
+            has_version = has_version || !ArchiveVersion(nca).empty();
+        }
+        if (nca.GetTitleId() == 0x0100000000000802ULL &&
+            nca.GetType() == FileSys::NCAContentType::Data && nca.GetRomFS()) {
+            has_mii_model = true;
+        }
+        Loader::AppLoader_NCA loader(file);
+        bool cancelled = false;
+        const auto status = loader.VerifyIntegrity([&](size_t processed, size_t total) {
+            cancelled = callback(total, processed);
+            return !cancelled;
+        });
+        if (cancelled || status != Loader::ResultStatus::Success) {
+            return InstallResult::FailedCorrupted;
+        }
+    }
+    if (!has_version || !has_mii_model) {
+        return InstallResult::FailedCorrupted;
+    }
+    auto& controller = system.GetFileSystemController();
+    const auto content = controller.GetSystemNANDContentDirectory();
+    if (!content || !content->IsWritable() || !content->CleanSubdirectoryRecursive("registered")) {
+        return InstallResult::FailedDelete;
+    }
+    const auto registered = content->GetDirectoryRelative("registered");
+    if (!registered) {
+        return InstallResult::FailedCopy;
+    }
+    // Keep the desktop layout and raw copy semantics, including metadata NCAs.
+    for (size_t i = 0; i < files.size(); ++i) {
+        const auto source = vfs.OpenFile(files[i].generic_string(), FileSys::OpenMode::Read);
+        const auto destination = registered->CreateFileRelative(files[i].filename().string());
+        if (!FileSys::VfsRawCopy(source, destination) || callback(files.size(), i + 1)) {
+            controller.CreateFactories(vfs);
+            return InstallResult::FailedCopy;
+        }
+    }
+    controller.CreateFactories(vfs);
+    FileSys::ManualContentProvider provider;
+    bool cancelled = false;
+    const auto verify_callback = [&](size_t total, size_t processed) {
+        cancelled = callback(total, processed);
+        return cancelled;
+    };
+    const auto failures =
+        ContentManager::VerifyInstalledContents(system, provider, verify_callback, true);
+    if (cancelled || !failures.empty() || InstalledVersion(system).empty()) {
+        return InstallResult::FailedCorrupted;
+    }
+    return InstallResult::Success;
+}
+} // namespace FirmwareManager

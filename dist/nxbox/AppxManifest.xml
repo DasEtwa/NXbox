@@ -30,6 +30,14 @@
             <uap:DisplayName>NXbox</uap:DisplayName>
           </uap:Protocol>
         </uap:Extension>
+        <!-- Removable storage filters files by the associations declared here. -->
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="nxboxfirmware">
+            <uap:SupportedFileTypes>
+              <uap:FileType>.nca</uap:FileType>
+            </uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
       </Extensions>
     </Application>
   </Applications>
@@ -39,6 +47,6 @@
     <rescap:Capability Name="codeGeneration" />
     <!-- Reads game/key files from a USB drive (KnownFolders.RemovableDevices), so a player can set
          up NXbox without a PC and the Device Portal. -->
-    <DeviceCapability Name="removableStorage" />
+    <uap:Capability Name="removableStorage" />
   </Capabilities>
 </Package>

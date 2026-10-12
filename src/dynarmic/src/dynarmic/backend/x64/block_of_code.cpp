@@ -612,6 +612,7 @@ void BlockOfCode::LoadRequiredFlagsForCondFromRax(IR::Cond cond) {
 }
 
 Xbyak::Address BlockOfCode::Const(const Xbyak::AddressFrame& frame, u64 lower, u64 upper) {
+    ++constant_references;
     return constant_pool.GetConstant(*this, frame, lower, upper);
 }
 
