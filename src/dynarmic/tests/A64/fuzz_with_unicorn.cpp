@@ -743,16 +743,14 @@ TEST_CASE("A64: Complex floating point differential", "[a64][unicorn][conformanc
                                     part = (static_cast<u64>(random()) << 32) | random();
                                 }
                             }
-                            u32 instruction = bases[variant] | (q << 30) | (size << 22) |
-                                              (2U << 16) | (1U << 5) |
-                                              static_cast<u32>(iteration % 3);
-                            instruction |= rotation << (variant == 0 ? 12 : variant == 1 ? 11 : 13);
+                            u32 instruction = bases[variant] | (q << 30) | (size << 22) | (2U << 16) | (1U << 5) | static_cast<u32>(iteration % 3);
+                            instruction |= rotation << (variant == 0 ? 12 : variant == 1 ? 11
+                                                                                         : 13);
                             if (variant == 2) {
                                 instruction |= size == 1 ? ((index & 1) << 21) | ((index >> 1) << 11)
                                                          : index << 11;
                             }
-                            const u32 fpcr = (static_cast<u32>(iteration % 4) << 22) |
-                                             ((random() & 1) << 25) | ((random() & 1) << 19);
+                            const u32 fpcr = (static_cast<u32>(iteration % 4) << 22) | ((random() & 1) << 25) | ((random() & 1) << 19);
                             INFO("variant=" << variant << " size=" << size << " instruction=" << instruction);
                             RunTestInstance(jit, uni, jit_env, uni_env, conf, regs, vecs, 0,
                                             {instruction}, 0, fpcr);
