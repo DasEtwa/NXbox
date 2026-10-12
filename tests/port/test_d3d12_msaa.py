@@ -106,16 +106,8 @@ struct ImageInfo {
     struct { int levels=1, layers=1; } resources;
     u32 num_samples=4;
 };
-std::pair<u32,u32> SamplesLog2(u32 count) {
-    switch (count) {
-    case 2: return {1,0};
-    case 4: return {1,1};
-    case 8: return {2,1};
-    case 16: return {2,2};
-    default: return {0,0};
-    }
 }
-}
+#include "video_core/texture_cache/samples_helper.h"
 namespace fmt {
 template <typename... Args> std::string format(std::string_view text, const Args&...) {
     return std::string{text};
@@ -286,7 +278,14 @@ class D3D12MsaaTests(unittest.TestCase):
         # Close the anonymous namespace containing MakeTexture.
         creation += "\n}\n"
         with tempfile.TemporaryDirectory(prefix="nxbox-msaa-resource-") as directory:
-            cpp = Path(directory) / "creation.cpp"
+            folder = Path(directory)
+            common = folder / "common"
+            common.mkdir()
+            (common / "assert.h").write_text(
+                "#pragma once\n#include <cassert>\n"
+                "#define ASSERT(x) assert(x)\n#define ASSERT_MSG(x, ...) assert(x)\n"
+            )
+            cpp = folder / "creation.cpp"
             binary = Path(directory) / "creation"
             cpp.write_text(RESOURCE_DRIVER.replace("__CREATION__", creation))
             subprocess.run(
@@ -296,6 +295,8 @@ class D3D12MsaaTests(unittest.TestCase):
                     "-Wall",
                     "-Wextra",
                     "-Werror",
+                    "-I",
+                    str(folder),
                     "-I",
                     str(ROOT / "src"),
                     str(cpp),

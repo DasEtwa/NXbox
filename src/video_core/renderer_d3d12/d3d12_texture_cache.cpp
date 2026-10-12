@@ -17,6 +17,7 @@
 #include "video_core/renderer_d3d12/d3d12_footprint.h"
 #include "video_core/texture_cache/accelerated_swizzle.h"
 #include "video_core/texture_cache/image_view_info.h"
+#include "video_core/texture_cache/samples_helper.h"
 #include "video_core/texture_cache/util.h"
 #include "video_core/textures/decoders.h"
 
