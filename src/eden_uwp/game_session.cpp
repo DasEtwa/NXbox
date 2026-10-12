@@ -1582,6 +1582,7 @@ void RunGameView(const winrt::Windows::UI::Core::CoreWindow& window, const std::
                 sync_game.display_name = choice.display_name;
                 ApplyEdenSettingsFile();
                 ApplyEdenSettingsFile(TitleSettings::File(local_state, choice.title_id));
+                sync_game.profile_uuid = SaveSync::ActiveProfileUuid();
                 if (Ui::RunBootSync(window, local_state, sync_game)) {
                     return; // the window was closed
                 }

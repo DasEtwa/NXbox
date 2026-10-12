@@ -4,10 +4,12 @@ NXbox uses `Nintendo Switch Saves/<game>/<account>/`, with loose, unchanged save
 files. The game name is the first nonempty NACP language entry; invalid filename
 characters become `_`, and trailing spaces/dots are removed, as in SwitchSaveSync.
 The first sync asks which Switch account folder to use. That choice survives
-nickname changes. Device saves use `console`.
+nickname changes. Device saves use `console`. System-save calls supply Eden's independent save ID
+and save space explicitly and also map to `console`; no OS-save identity is guessed
+from a game's application ID. Pending jobs remember the profile UUID.
 
 Before boot, the full-screen message is “Syncing save with the cloud, please wait”.
-The percentage counts completed files in the displayed transfer stage; connecting
+The percentage counts transferred bytes in the displayed transfer stage; connecting
 and scanning have no invented percentage. B / Skip cancels HTTP and waits for the
 worker to stop before the emulator opens any save. An interrupted sync keeps its
 pending marker. Both sides changing, or different saves without a prior marker,

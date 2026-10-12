@@ -426,8 +426,9 @@ public:
                    (mode_ == FlowMode::BeforeBoot ? "before-boot " : "after-exit ") +
                    game_.title_id + " begin");
         runner_.Start([title, name, this](const SaveSync::ProgressCallback& progress) {
-            return mode_ == FlowMode::BeforeBoot ? SaveSync::SyncBeforeBoot(title, progress, name)
-                                                 : SaveSync::SyncAfterExit(title, progress, name);
+            return mode_ == FlowMode::BeforeBoot
+                       ? SaveSync::SyncBeforeBoot(title, progress, name, {}, game_.profile_uuid)
+                       : SaveSync::SyncAfterExit(title, progress, name, {}, game_.profile_uuid);
         });
         Outcome outcome;
         outcome.window_closed = RunFrames(renderer_, window_, input_, [&](Clock::time_point now) {
@@ -557,10 +558,10 @@ private:
             focus_ = std::min(static_cast<int>(accounts_.size()) - 1, focus_ + 1);
         if (input_.Pressed(Button::A) && !accounts_.empty()) {
             const auto owner = accounts_[focus_];
-            runner_.Start([title, name, owner](const SaveSync::ProgressCallback& progress) {
-                if (!SaveSync::SelectAccount(title, name, owner))
+            runner_.Start([title, name, owner, this](const SaveSync::ProgressCallback& progress) {
+                if (!SaveSync::SelectAccount(title, name, owner, game_.profile_uuid))
                     return SaveSync::SyncResult{};
-                return SaveSync::SyncBeforeBoot(title, progress, name);
+                return SaveSync::SyncBeforeBoot(title, progress, name, {}, game_.profile_uuid);
             });
             phase_ = Phase::Syncing;
             return true;
@@ -609,8 +610,9 @@ private:
                                            : SaveSync::ConflictChoice::KeepBoth);
             Diagnostic(std::string("UI savesync conflict answer ") +
                        (focus_ == 0 ? "keep-xbox" : "keep-cloud"));
-            runner_.Start([title, name, choice](const SaveSync::ProgressCallback& progress) {
-                return SaveSync::ResolveConflict(title, choice, progress, name);
+            runner_.Start([title, name, choice, this](const SaveSync::ProgressCallback& progress) {
+                return SaveSync::ResolveConflict(title, choice, progress, name, {},
+                                                 game_.profile_uuid);
             });
             phase_ = Phase::Syncing;
             return true;
@@ -682,7 +684,7 @@ bool WithOwnRenderer(const CoreWindow& window, const char* what,
 
 void WritePending(const fs::path& local_state, const SyncGame& game) {
     std::ofstream out(PendingFile(local_state), std::ios::trunc);
-    out << game.title_id << '\n' << game.name << '\n';
+    out << game.title_id << '\n' << game.name << '\n' << game.profile_uuid << '\n';
 }
 
 void ClearPending(const fs::path& local_state) {
@@ -704,6 +706,9 @@ bool ReadPending(const fs::path& local_state, SyncGame& game) {
     while (!name.empty() && (name.back() == '\r')) {
         name.pop_back();
     }
+    std::getline(in, game.profile_uuid);
+    if (game.profile_uuid.size() != 32)
+        game.profile_uuid = SaveSync::ActiveProfileUuid();
     game.title_id = title;
     game.name = name;
     game.display_name = Widen(name);
@@ -1018,8 +1023,8 @@ void SyncAfterExitHeadless(const fs::path& local_state, const SyncGame& game,
     }
     Diagnostic("UI savesync after-exit " + game.title_id + " begin");
     SaveSync::ResetSyncCancellation();
-    const SaveSync::SyncResult result =
-        SaveSync::SyncAfterExit(ParseTitleId(game.title_id), progress, game.name);
+    const SaveSync::SyncResult result = SaveSync::SyncAfterExit(
+        ParseTitleId(game.title_id), progress, game.name, {}, game.profile_uuid);
     Diagnostic(fmt::format("UI savesync after-exit {} -> {} {}", game.title_id,
                            StatusName(result.status), result.message));
     // A conflict or a failure keeps the debt: the next launch finishes it with a screen.

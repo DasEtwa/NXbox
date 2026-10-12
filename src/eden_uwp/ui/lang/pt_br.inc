@@ -121,7 +121,7 @@
     {Text::SyncSideCloud, L"Nuvem"},
     {Text::SyncFilesSuffix, L"arquivos"},
     {Text::SyncResultUploaded, L"Save enviado para a nuvem."},
-    {Text::SyncResultDownloaded, L"Save da nuvem aplicado."},
+    {Text::SyncResultDownloaded, L"Save da nuvem aplicado. Save anterior do Xbox guardado."},
     {Text::SyncResultUpToDate, L"Os saves já estão iguais."},
     {Text::SyncResultNothing, L"Ainda não há save deste jogo."},
     {Text::SyncResultNotSignedIn, L"A conta saiu. Entre de novo em Configurações."},

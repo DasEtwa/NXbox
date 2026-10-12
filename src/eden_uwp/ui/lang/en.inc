@@ -119,7 +119,7 @@
     {Text::SyncSideCloud, L"Cloud"},
     {Text::SyncFilesSuffix, L"files"},
     {Text::SyncResultUploaded, L"Save uploaded to the cloud."},
-    {Text::SyncResultDownloaded, L"Cloud save applied."},
+    {Text::SyncResultDownloaded, L"Cloud save applied. Previous Xbox save backed up."},
     {Text::SyncResultUpToDate, L"The saves already match."},
     {Text::SyncResultNothing, L"There is no save for this game yet."},
     {Text::SyncResultNotSignedIn, L"The account signed out. Sign in again in Settings."},

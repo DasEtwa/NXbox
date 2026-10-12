@@ -21,13 +21,14 @@ namespace EdenXbox::Ui {
 
 // The game a sync is about.
 struct SyncGame {
+    std::string profile_uuid;  // stable identity for pending jobs and conflict retries
     std::string title_id;      // 16 hex digits, the id Eden names the save folder with
     std::string name;          // GameNameFromNames over the NACP names, UTF-8
     std::wstring display_name; // what the screen shows
 };
 
 enum class SyncAccount {
-    NotConfigured, // LocalState\savesync.json is missing: sign-in cannot work
+    NotConfigured, // Google credentials absent; WebDAV can still be configured
     SignedOut,
     SignedIn,
 };
@@ -48,8 +49,8 @@ bool RunFirstRunSetup(Renderer& renderer, const winrt::Windows::UI::Core::CoreWi
 enum class SignInOutcome { SignedIn, Denied, Expired, Cancelled, Failed, NotConfigured };
 
 // The device-flow sign-in: the user code large, the address to open on the phone, and the result.
-// `window_closed` is set when the window closed meanwhile. Without a savesync.json it explains the
-// missing file and returns NotConfigured.
+// `window_closed` is set when the window closed meanwhile. A build without Google credentials
+// explains the missing build configuration and returns NotConfigured for Google sign-in.
 SignInOutcome RunSignIn(Renderer& renderer, const winrt::Windows::UI::Core::CoreWindow& window,
                         Input& input, bool& window_closed);
 
@@ -69,8 +70,8 @@ bool RunPendingSync(const winrt::Windows::UI::Core::CoreWindow& window,
 // True when LocalState\savesync_pending.txt names a game.
 bool HasPendingSync(const std::filesystem::path& local_state);
 
-// After the game closed and Eden released the save files: uploads the Xbox save, with no screen
-// (nothing owns the window at that point). Blocks; call it on the game's worker thread, which has a
+// After the game closed and Eden released the save files: syncs on the worker while the dispatcher
+// draws a progress toast. Blocks; call it on the game's worker thread, which has a
 // WinRT apartment. The debt noted by RunBootSync is cleared when it succeeds.
 void SyncAfterExitHeadless(const std::filesystem::path& local_state, const SyncGame& game,
                            const SaveSync::ProgressCallback& progress = {});
