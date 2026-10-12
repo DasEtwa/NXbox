@@ -8,9 +8,9 @@
 
 #include "core/core.h"
 #include "core/hle/result.h"
-#include "core/hle/service/nextendo/runtime.h"
 #include "core/hle/service/cmif_serialization.h"
 #include "core/hle/service/ipc_helpers.h"
+#include "core/hle/service/nextendo/runtime.h"
 #include "core/hle/service/server_manager.h"
 #include "core/hle/service/service.h"
 #include "core/hle/service/sm/sm.h"
@@ -569,7 +569,8 @@ private:
     }
 
     Result RegisterInternalPki() {
-        if (Nextendo::IsEnabled()) return ResultInternalError;
+        if (Nextendo::IsEnabled())
+            return ResultInternalError;
         LOG_WARNING(Service_SSL, "(STUBBED) called");
         R_SUCCEED();
     }

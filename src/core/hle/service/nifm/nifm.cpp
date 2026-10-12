@@ -8,9 +8,9 @@
 #include <fstream>
 #include "core/core.h"
 #include "core/hle/kernel/k_event.h"
-#include "core/hle/service/nextendo/runtime.h"
 #include "core/hle/service/ipc_helpers.h"
 #include "core/hle/service/kernel_helpers.h"
+#include "core/hle/service/nextendo/runtime.h"
 #include "core/hle/service/nifm/nifm.h"
 #include "core/hle/service/server_manager.h"
 #include "core/internal_network/emu_net_state.h"
@@ -431,8 +431,9 @@ private:
         LOG_DEBUG(Service_NIFM, "(STUBBED) called");
 
         const auto result = [this] {
-            const auto has_connection = (Nextendo::IsEnabled() || Network::GetHostIPv4Address().has_value()) &&
-                                        !Settings::values.airplane_mode.GetValue();
+            const auto has_connection =
+                (Nextendo::IsEnabled() || Network::GetHostIPv4Address().has_value()) &&
+                !Settings::values.airplane_mode.GetValue();
             switch (state) {
             case RequestState::NotSubmitted:
                 return has_connection ? ResultSuccess : ResultNetworkCommunicationDisabled;

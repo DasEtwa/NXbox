@@ -25,16 +25,16 @@
 #include "common/scope_exit.h"
 #include "eden_uwp/diagnostic.h"
 #include "eden_uwp/firmware.h"
-#include "eden_uwp/save_sync.h"
 #include "eden_uwp/nextendo_online.h"
-#include "eden_uwp/ui/nextendo_screen.h"
+#include "eden_uwp/save_sync.h"
 #include "eden_uwp/title_settings.h"
 #include "eden_uwp/ui/anim.h"
 #include "eden_uwp/ui/art.h"
+#include "eden_uwp/ui/cheats_screen.h"
 #include "eden_uwp/ui/input.h"
 #include "eden_uwp/ui/library.h"
-#include "eden_uwp/ui/cheats_screen.h"
 #include "eden_uwp/ui/mods_screen.h"
+#include "eden_uwp/ui/nextendo_screen.h"
 #include "eden_uwp/ui/renderer.h"
 #include "eden_uwp/ui/savesync_ui.h"
 #include "eden_uwp/ui/sources_screen.h"
@@ -1419,7 +1419,8 @@ private:
                              Tr(Text::UsbSettingHint)};
         const Row credits_row = {Tr(Text::CreditsRowTitle), Tr(Text::CreditsRowState),
                                  Theme::kTextSecondary, Tr(Text::CreditsRowHint)};
-        const Row nextendo_row = {Tr(Text::NextendoTitle),
+        const Row nextendo_row = {
+            Tr(Text::NextendoTitle),
             Tr(Service::Nextendo::IsEnabled() ? Text::NextendoOn : Text::NextendoOff),
             Theme::kTextSecondary, Tr(Text::NextendoRowHint)};
         const std::array<Row, kSettingsRowCount> rows = {

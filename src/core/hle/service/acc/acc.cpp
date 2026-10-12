@@ -7,11 +7,11 @@
 #include <algorithm>
 #include <array>
 
+#include <ranges>
 #include "common/common_types.h"
 #include "common/fs/file.h"
 #include "common/fs/path_util.h"
 #include "common/logging.h"
-#include <ranges>
 #include "common/stb.h"
 #include "common/string_util.h"
 #include "common/swap.h"
@@ -27,8 +27,8 @@
 #include "core/hle/service/acc/profile_manager.h"
 #include "core/hle/service/cmif_serialization.h"
 #include "core/hle/service/glue/glue_manager.h"
-#include "core/hle/service/server_manager.h"
 #include "core/hle/service/nextendo/runtime.h"
+#include "core/hle/service/server_manager.h"
 #include "core/loader/loader.h"
 
 namespace Service::Account {
@@ -132,7 +132,8 @@ private:
 // Nextendo's network identity is bound to one local profile, separately from offline linking.
 static bool LoadNextendoIdTokenCache(Core::System& system, HLERequestContext& ctx,
                                      const Common::UUID& user_id) {
-    if (!Nextendo::IsEnabled()) return false;
+    if (!Nextendo::IsEnabled())
+        return false;
     const auto program_id = system.GetApplicationProcessProgramID();
     std::string version;
     const FileSys::PatchManager patches{program_id, system.GetFileSystemController(),
@@ -141,7 +142,8 @@ static bool LoadNextendoIdTokenCache(Core::System& system, HLERequestContext& ct
         version = control->GetVersionString();
     } else {
         FileSys::NACP fallback_control;
-        if (system.GetAppLoader().ReadControlData(fallback_control) == Loader::ResultStatus::Success) {
+        if (system.GetAppLoader().ReadControlData(fallback_control) ==
+            Loader::ResultStatus::Success) {
             version = fallback_control.GetVersionString();
         }
     }
@@ -920,7 +922,8 @@ private:
     }
 
     void LoadIdTokenCacheDeprecated(HLERequestContext& ctx) {
-        if (LoadNextendoIdTokenCache(system, ctx, user_id)) return;
+        if (LoadNextendoIdTokenCache(system, ctx, user_id))
+            return;
         if (Offline::IsFakeLinkEnabled()) {
             LoadOfflineIdTokenCache(ctx);
             return;
@@ -931,7 +934,8 @@ private:
     }
 
     void LoadIdTokenCache(HLERequestContext& ctx) {
-        if (LoadNextendoIdTokenCache(system, ctx, user_id)) return;
+        if (LoadNextendoIdTokenCache(system, ctx, user_id))
+            return;
         if (Offline::IsFakeLinkEnabled()) {
             LoadOfflineIdTokenCache(ctx);
             return;

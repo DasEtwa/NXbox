@@ -14,8 +14,8 @@
 #include "core/hle/service/friend/friend_interface.h"
 #include "core/hle/service/ipc_helpers.h"
 #include "core/hle/service/kernel_helpers.h"
-#include "core/hle/service/server_manager.h"
 #include "core/hle/service/nextendo/friends.h"
+#include "core/hle/service/server_manager.h"
 
 namespace Service::Friend {
 
@@ -197,11 +197,15 @@ private:
         rb.Push(ResultSuccess);
     }
 
-    void GetFriendList(HLERequestContext& ctx) { GetFriendListData(ctx, false); }
-    void GetFriendListIds(HLERequestContext& ctx) { GetFriendListData(ctx, true); }
+    void GetFriendList(HLERequestContext& ctx) {
+        GetFriendListData(ctx, false);
+    }
+    void GetFriendListIds(HLERequestContext& ctx) {
+        GetFriendListData(ctx, true);
+    }
 
     std::vector<Nextendo::FriendEntry> FilterNextendoFriends(const Common::UUID& uuid,
-                                                           const SizedFriendFilter& filter) {
+                                                             const SizedFriendFilter& filter) {
         auto friends = Nextendo::GetFriends(uuid.RawString());
         const auto program_id = system.GetApplicationProcessProgramID();
         std::erase_if(friends, [&](const auto& entry) {
@@ -228,18 +232,21 @@ private:
             const auto program_id = system.GetApplicationProcessProgramID();
             const std::size_t stride = ids_only ? 8 : 0x200;
             const auto offset = (std::min)(static_cast<std::size_t>(friend_offset), friends.size());
-            const auto count = ctx.CanWriteBuffer()
-                ? (std::min)(friends.size() - offset, ctx.GetWriteBufferSize() / stride) : 0;
+            const auto count = ctx.CanWriteBuffer() ? (std::min)(friends.size() - offset,
+                                                                 ctx.GetWriteBufferSize() / stride)
+                                                    : 0;
             std::vector<u8> data(count * stride);
             for (std::size_t i = 0; i < count; ++i) {
                 if (ids_only) {
-                    Nextendo::WriteLittleEndian(data.data() + i * stride, friends[offset + i].pid, 8);
+                    Nextendo::WriteLittleEndian(data.data() + i * stride, friends[offset + i].pid,
+                                                8);
                 } else {
                     const auto entry = Nextendo::SerializeFriend(friends[offset + i], program_id);
                     std::copy(entry.begin(), entry.end(), data.begin() + i * stride);
                 }
             }
-            if (ctx.CanWriteBuffer()) ctx.WriteBuffer(data);
+            if (ctx.CanWriteBuffer())
+                ctx.WriteBuffer(data);
             IPC::ResponseBuilder rb{ctx, 3};
             rb.Push(ResultSuccess);
             rb.Push(static_cast<u32>(count));
@@ -299,9 +306,9 @@ private:
             const auto buffer = ctx.ReadBuffer(0);
             if (buffer.size() == 0xe0) {
                 presence.status = static_cast<unsigned>(buffer[0x18]) |
-                    (static_cast<unsigned>(buffer[0x19]) << 8) |
-                    (static_cast<unsigned>(buffer[0x1a]) << 16) |
-                    (static_cast<unsigned>(buffer[0x1b]) << 24);
+                                  (static_cast<unsigned>(buffer[0x19]) << 8) |
+                                  (static_cast<unsigned>(buffer[0x1a]) << 16) |
+                                  (static_cast<unsigned>(buffer[0x1b]) << 24);
                 std::copy_n(buffer.begin() + 0x20, 0xc0, presence.app_field.begin());
                 Nextendo::QueuePresence(std::move(presence));
             }
