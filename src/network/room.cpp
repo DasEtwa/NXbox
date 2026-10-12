@@ -16,8 +16,8 @@
 #include "common/polyfill_thread.h"
 #include "enet/enet.h"
 #include "network/ldn_packet.h"
-#include "network/proxy_packet.h"
 #include "network/packet.h"
+#include "network/proxy_packet.h"
 #include "network/room.h"
 #include "network/verify_user.h"
 
@@ -830,12 +830,15 @@ void Room::RoomImpl::HandleProxyPacket(const ENetEvent* event) {
     Packet in_packet;
     in_packet.Append(event->packet->data, event->packet->dataLength);
     ProxyPacket proxy{};
-    if (!DeserializeProxyPacket(in_packet, proxy)) return;
+    if (!DeserializeProxyPacket(in_packet, proxy))
+        return;
     {
         std::lock_guard lock(member_mutex);
-        const auto sender = std::find_if(members.begin(), members.end(),
-                                        [&](const Member& member) { return member.peer == event->peer; });
-        if (sender == members.end()) return;
+        const auto sender = std::find_if(members.begin(), members.end(), [&](const Member& member) {
+            return member.peer == event->peer;
+        });
+        if (sender == members.end())
+            return;
         proxy.local_endpoint.ip = sender->fake_ip;
     }
     const auto remote_ip = proxy.remote_endpoint.ip;

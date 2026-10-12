@@ -13,8 +13,8 @@
 #include "common/socket_types.h"
 #include "enet/enet.h"
 #include "network/ldn_packet.h"
-#include "network/proxy_packet.h"
 #include "network/packet.h"
+#include "network/proxy_packet.h"
 #include "network/room_member.h"
 
 namespace Network {
