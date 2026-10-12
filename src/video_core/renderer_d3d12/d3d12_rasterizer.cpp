@@ -770,40 +770,11 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     // vertex. Use the original vertex range for generated fans/strips/quads.
     u64 last_vertex =
         Pso::VertexLastNonIndexed(submitted.base_vertex, guest_draw.vertex_buffer.count);
-    if (is_indexed) {
-        if (static_cast<u32>(guest_draw.index_buffer.format) > 2) {
-            SkipDraw("invalid index width for vertex sizing");
-            return;
-        }
-        const u32 index_bytes = guest_draw.inline_index_draw_indexes.empty()
-                                    ? 1u << static_cast<u32>(guest_draw.index_buffer.format)
-                                    : 4u;
-        if (u64{guest_draw.index_buffer.count} * index_bytes > 64 * 1024 * 1024) {
-            SkipDraw("index buffer exceeds vertex sizing budget");
-            return;
-        }
-        std::vector<u8> indices(size_t{guest_draw.index_buffer.count} * index_bytes);
-        if (guest_draw.inline_index_draw_indexes.empty())
-            gpu_memory->ReadBlock(guest_draw.index_buffer.StartAddress() +
-                                      u64{guest_draw.index_buffer.first} * index_bytes,
-                                  indices.data(), indices.size());
-        else
-            std::memcpy(indices.data(), guest_draw.inline_index_draw_indexes.data(),
-                        indices.size());
-        last_vertex = 0;
-        for (size_t offset = 0; offset < indices.size(); offset += index_bytes) {
-            u32 index = 0;
-            std::memcpy(&index, indices.data() + offset, index_bytes);
-            if (regs.primitive_restart.enabled && index == regs.primitive_restart.index)
-                continue;
-            const s64 vertex = s64{index} + static_cast<s32>(submitted.base_vertex);
-            if (vertex < 0) {
-                SkipDraw("negative indexed vertex address");
-                return;
-            }
-            last_vertex = std::max(last_vertex, static_cast<u64>(vertex));
-        }
-    }
+    // Indexed draws can reference any vertex in the bound stream. Reading and scanning the
+    // guest index buffer on the CPU per draw stalled the GPU thread for seconds (it forces
+    // GPU memory reads), so bind the whole stream range the guest declared instead, like the
+    // Vulkan backend does.
+    const bool whole_stream = is_indexed;
     for (u32 i = 0; i < Pso::kNumVertexAttributes; ++i) {
         const auto& attribute = native_pipeline->State().attributes[i];
         vertex_views[i] = {zero_vertex_buffer->handle->GetGPUVirtualAddress(), 65536, 0};
@@ -817,12 +788,18 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         const u32 bytes = Pso::VertexByteSize(vertex_size);
         const u32 storage_bytes = Pso::VertexStorageByteSize(vertex_size, attribute.swap_rb != 0);
         const u32 alignment = Pso::VertexAlignment(static_cast<u32>(input.size.Value()));
-        const u64 last = attribute.instanced
+        u64 last = attribute.instanced
                              ? (attribute.divisor == 0 ? 0
                                                        : u64{submitted.base_instance} +
                                                              (submitted.num_instances - 1) /
                                                                  std::max(attribute.divisor, 1u))
                              : last_vertex;
+        const u64 stream_available =
+            slot.size > attribute.offset ? slot.size - attribute.offset : 0;
+        if (whole_stream && !attribute.instanced)
+            last = slot.stride && stream_available >= bytes
+                       ? (stream_available - bytes) / slot.stride
+                       : 0;
         const u64 required = Pso::VertexRequiredBytes(last, slot.stride, bytes);
         constexpr u64 MaxVertexUpload = 64 * 1024 * 1024;
         if (required > MaxVertexUpload) {
