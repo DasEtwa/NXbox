@@ -200,7 +200,7 @@ static void RunTestInstance(Dynarmic::A64::Jit& jit, A64Unicorn& uni, A64TestEnv
     jit_env.ticks_left = instructions.size();
     CheckedRun([&]() { jit.Run(); });
 
-    uni_env.ticks_left = instructions.size() * 4;
+    uni_env.ticks_left = instructions.size();
     uni.Run();
 
     // SCOPE_FAIL {
@@ -285,7 +285,7 @@ static void RunTestInstance(Dynarmic::A64::Jit& jit, A64Unicorn& uni, A64TestEnv
         return;
     }
 
-    REQUIRE(uni.GetPC() + 4 == jit.GetPC());
+    REQUIRE(uni.GetPC() == jit.GetPC());
     REQUIRE(uni.GetRegisters() == jit.GetRegisters());
     REQUIRE(uni.GetVectors() == jit.GetVectors());
     REQUIRE(uni.GetSP() == jit.GetSP());

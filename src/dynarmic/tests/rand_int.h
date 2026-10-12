@@ -8,11 +8,15 @@
 
 #pragma once
 
+#include <cstdlib>
 #include <random>
 #include <type_traits>
 
 namespace detail {
 inline std::mt19937 g_rand_int_generator = [] {
+    if (const char* seed = std::getenv("DYNARMIC_FUZZ_SEED")) {
+        return std::mt19937{static_cast<std::mt19937::result_type>(std::strtoul(seed, nullptr, 0))};
+    }
     std::random_device rd;
     std::mt19937 mt{rd()};
     return mt;
