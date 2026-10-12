@@ -450,7 +450,32 @@ static void RunTestInstance(Dynarmic::A32::Jit& jit,
     REQUIRE(uni.GetExtRegs() == jit.ExtRegs());
     REQUIRE((uni.GetCpsr() & 0xFFFFFDDF) == (jit.Cpsr() & 0xFFFFFDDF));
     REQUIRE((uni.GetFpscr() & 0xF8000000) == (jit.Fpscr() & 0xF8000000));
-    REQUIRE(uni_env.modified_memory == jit_env.modified_memory);
+    bool memory_equal = true;
+    std::string memory_difference;
+    if (uni_env.modified_memory != jit_env.modified_memory) {
+        // Unaligned Unicorn write hooks can include unchanged adjacent bytes.
+        // Compare architectural RAM contents across the union of touched addresses.
+        const auto compare_byte = [&](u32 address) {
+            const auto reference = uni_env.MemoryRead(address, sizeof(u8));
+            const auto actual = jit_env.MemoryRead(address, sizeof(u8));
+            if (reference != actual) {
+                memory_equal = false;
+                memory_difference += fmt::format("{:08x}: reference={:02x} jit={:02x}\n", address, reference, actual);
+            }
+        };
+        for (const auto& [address, value] : uni_env.modified_memory) {
+            (void)value;
+            compare_byte(address);
+        }
+        for (const auto& [address, value] : jit_env.modified_memory) {
+            (void)value;
+            if (!uni_env.modified_memory.contains(address)) {
+                compare_byte(address);
+            }
+        }
+    }
+    INFO("RAM differences=" << memory_difference);
+    REQUIRE(memory_equal);
     REQUIRE(uni_env.interrupts.empty());
 }
 }  // Anonymous namespace
@@ -830,5 +855,21 @@ TEST_CASE("A32: User-mode CPS differential", "[arm][unicorn][conformance]") {
             const u32 cpsr = (random() & 0xf8000000) | ((random() & 7) << 6) | 0x10;
             RunTestInstance(jit, uni, jit_env, uni_env, regs, vecs, {instruction}, cpsr, 0, 1, {}, true);
         }
+    }
+}
+
+TEST_CASE("A32: Unaligned word stores differential", "[arm][unicorn][conformance]") {
+    ArmTestEnv jit_env{};
+    ArmTestEnv uni_env{};
+    A32::Jit jit{GetUserConfig(jit_env)};
+    A32Unicorn<ArmTestEnv> uni{uni_env};
+    std::mt19937 random{0x19a1};
+    for (size_t iteration = 0; iteration < 512; ++iteration) {
+        A32Unicorn<ArmTestEnv>::RegisterArray regs{};
+        A32Unicorn<ArmTestEnv>::ExtRegArray vecs{};
+        regs[0] = random();
+        regs[1] = 0x10000 + (random() & 0xffc) + 1 + iteration % 3;
+        const u32 cpsr = (random() & 0xf8000000) | 0x10;
+        RunTestInstance(jit, uni, jit_env, uni_env, regs, vecs, {0xe5810000}, cpsr, 0, 1, {}, true);
     }
 }
