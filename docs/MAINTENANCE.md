@@ -209,7 +209,24 @@ Eden. Each entry below describes one file; generated caches are identified separ
 - `tools/nxbox/mesa_view_cast_copy.h` — Owns SRV shadows and copies raw texels through a GPU buffer.
 - `tools/nxbox/README.md` — Script usage and helper ownership index.
 
+### Per-game host CLI: tools/nxbox-pack
+
+- `tools/nxbox-pack/src/cli.ts` — Runs the localized interactive setup and coordinates deployment.
+- `tools/nxbox-pack/src/runtime.ts` / `manifest.ts` — Verify/stage published runtime artifacts and
+  generate independent game package identities from the embedded manifest template.
+- `tools/nxbox-pack/src/portal.ts` / `deploy.ts` — Register loose Xbox apps, stream content into
+  private LocalState and activate the existing direct-boot markers after verified uploads.
+- `tools/nxbox-pack/src/credentials.ts` / `prompt.ts` — Handle optional OS-protected credential
+  persistence and hidden terminal password entry.
+- `tools/nxbox-pack/src/files.ts` / `content.ts` / `discovery.ts` / `i18n.ts` — Validate local
+  inputs, invoke optional NSZ/XCZ decompression, discover LAN consoles and select PT/EN strings.
+- `tools/nxbox-pack/tests/` — Bun unit tests and synthetic HTTP deployment integration checks.
+- `tools/nxbox-pack/README.md` / `docs/nxbox-pack.md` — Usage, deployment design and console checks.
+
 ### CI: .github/workflows
+
+- `.github/workflows/nxbox-pack.yml` — Tests and compiles the Bun 1.3.14 per-game packer for
+  Windows x64, macOS ARM64 and Linux x64; uploads executable/checksum artifacts.
 
 - `.github/workflows/build-nxbox.yml` — Windows 2025 UWP build and C++ port checks; uploads
   nxbox-uwp-build (binaries, configuration and build logs).
