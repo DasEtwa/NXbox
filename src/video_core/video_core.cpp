@@ -4,6 +4,7 @@
 // SPDX-FileCopyrightText: 2014 Citra Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <exception>
 #include <memory>
 
 #include "common/logging.h"
@@ -24,10 +25,16 @@
 #include "video_core/renderer_vulkan/renderer_vulkan.h"
 #include "video_core/video_core.h"
 
+#ifdef NXBOX_UWP
+#include "eden_uwp/crash_logger.h"
+#endif
+
 namespace {
 
-std::unique_ptr<VideoCore::RendererBase> CreateRenderer(Core::System& system, Core::Frontend::EmuWindow& emu_window, Tegra::GPU& gpu, std::unique_ptr<Core::Frontend::GraphicsContext> context) {
+std::unique_ptr<VideoCore::RendererBase> CreateRenderer(Core::System& system, Core::Frontend::EmuWindow& emu_window, Tegra::GPU& gpu, Core::Frontend::GraphicsContext::Scoped& scope,
+                                                       std::unique_ptr<Core::Frontend::GraphicsContext> context) {
     [[maybe_unused]] auto& device_memory = system.Host1x().MemoryManager();
+    (void)scope;
     switch (Settings::values.renderer_backend.GetValue()) {
 #ifdef HAS_OPENGL
     case Settings::RendererBackend::OpenGL_GLSL:
@@ -38,8 +45,52 @@ std::unique_ptr<VideoCore::RendererBase> CreateRenderer(Core::System& system, Co
     case Settings::RendererBackend::Vulkan:
         return std::make_unique<Vulkan::RendererVulkan>(emu_window, device_memory, gpu, std::move(context));
 #ifdef HAS_D3D12
-    case Settings::RendererBackend::D3D12:
-        return std::make_unique<D3D12::RendererD3D12>(emu_window, device_memory, gpu, std::move(context));
+    case Settings::RendererBackend::D3D12: {
+        try {
+            return std::make_unique<D3D12::RendererD3D12>(emu_window, device_memory, gpu,
+                                                        std::move(context));
+        } catch (const std::exception& error) {
+            scope.Cancel();
+#ifdef NXBOX_UWP
+            EdenXbox::CrashRendererException("D3D12 initialization fallback", error.what());
+#endif
+            try {
+                LOG_CRITICAL(HW_GPU, "D3D12 initialization failed: {}; falling back to OpenGL",
+                             error.what());
+            } catch (...) {
+            }
+#ifndef HAS_OPENGL
+            throw;
+#endif
+        } catch (...) {
+            scope.Cancel();
+#ifdef NXBOX_UWP
+            EdenXbox::CrashRendererException("D3D12 initialization fallback",
+                                            "non-standard exception");
+#endif
+            try {
+                LOG_CRITICAL(HW_GPU,
+                             "D3D12 initialization failed: non-standard exception; falling back to OpenGL");
+            } catch (...) {
+            }
+#ifndef HAS_OPENGL
+            throw;
+#endif
+        }
+#ifdef HAS_OPENGL
+        // Construction may have consumed and destroyed the original context. Its scope
+        // is canceled above before acquiring an independent OpenGL context.
+        Settings::values.renderer_backend.SetValue(Settings::RendererBackend::OpenGL_GLSL);
+        context = emu_window.CreateSharedContext();
+        auto fallback_scope = context->Acquire();
+        // Release explicitly: Scoped's destructor is noexcept but DoneCurrent can throw.
+        fallback_scope.Cancel();
+        auto renderer = std::make_unique<OpenGL::RendererOpenGL>(emu_window, device_memory, gpu,
+                                                                std::move(context));
+        renderer->Context().DoneCurrent();
+        return renderer;
+#endif
+    }
 #endif
     case Settings::RendererBackend::Null:
         return std::make_unique<Null::RendererNull>(emu_window, gpu, std::move(context));
@@ -63,7 +114,7 @@ void CreateGPU(std::optional<Tegra::GPU>& gpu, Core::Frontend::EmuWindow& emu_wi
     auto context = emu_window.CreateSharedContext();
     auto scope = context->Acquire();
     try {
-        auto renderer = CreateRenderer(system, emu_window, *gpu, std::move(context));
+        auto renderer = CreateRenderer(system, emu_window, *gpu, scope, std::move(context));
         gpu->BindRenderer(std::move(renderer));
     } catch (const std::runtime_error& exception) {
         scope.Cancel();

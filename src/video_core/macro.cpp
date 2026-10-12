@@ -8,6 +8,7 @@
 #include <fstream>
 #include <optional>
 #include <span>
+#include <stdexcept>
 
 #include <fstream>
 #include <variant>
@@ -408,7 +409,7 @@ void HLE_TransformFeedbackSetup::Execute(Core::System& system, Engines::Maxwell3
     HLE_MACRO_ELEM(0xB5F74EDB717278ECULL, HLE_DrawIndirectByteCount, ()) \
 
 // Allocates and returns a cached macro if the hash matches a known function.
-[[nodiscard]] inline AnyCachedMacro GetHLEProgram(u64 hash) noexcept {
+[[nodiscard]] inline AnyCachedMacro GetHLEProgram(u64 hash) {
     // Compiler will make you a GREAT job at making an ad-hoc hash table :)
     switch (hash) {
 #define HLE_MACRO_ELEM(HASH, TY, VAL) case HASH: return TY VAL;
@@ -1232,8 +1233,12 @@ bool MacroJITx64Impl::Compile_NextInstruction(Core::System& system) {
     return true;
 }
 
-static void MacroJIT_ErrorThunk(uintptr_t parameter, uintptr_t max_parameter) {
-    LOG_CRITICAL(HW_GPU, "Macro JIT: invalid parameter access {:#x} ({:#x} is the last parameter)", parameter, max_parameter - sizeof(u32));
+static void MacroJIT_ErrorThunk(MacroJITx64Impl::JITState* state, uintptr_t parameter,
+                                uintptr_t max_parameter) noexcept {
+    state->failure.Invoke([&] {
+        throw std::out_of_range(fmt::format(
+            "Macro JIT: invalid parameter access {:#x} (end {:#x})", parameter, max_parameter));
+    });
 }
 
 Xbyak::Reg32 MacroJITx64Impl::Compile_FetchParameter() {
@@ -1241,10 +1246,12 @@ Xbyak::Reg32 MacroJITx64Impl::Compile_FetchParameter() {
     cmp(PARAMETERS, MAX_PARAMETER);
     jb(parameter_ok, T_NEAR);
     Common::X64::ABI_PushRegistersAndAdjustStack(*this, PersistentCallerSavedRegs(), 0);
-    mov(Common::X64::ABI_PARAM1, PARAMETERS);
-    mov(Common::X64::ABI_PARAM2, MAX_PARAMETER);
+    mov(Common::X64::ABI_PARAM1, STATE);
+    mov(Common::X64::ABI_PARAM2, PARAMETERS);
+    mov(Common::X64::ABI_PARAM3, MAX_PARAMETER);
     Common::X64::CallFarFunction(*this, &MacroJIT_ErrorThunk);
     Common::X64::ABI_PopRegistersAndAdjustStack(*this, PersistentCallerSavedRegs(), 0);
+    jmp(end_of_code, T_NEAR);
     L(parameter_ok);
     mov(eax, dword[PARAMETERS]);
     add(PARAMETERS, sizeof(u32));

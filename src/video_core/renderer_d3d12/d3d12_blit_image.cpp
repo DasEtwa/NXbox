@@ -155,7 +155,7 @@ void Validate(const BlitSurface& surface) {
     const auto desc = surface.resource->handle->GetDesc();
     if (desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER || surface.level >= desc.MipLevels ||
         surface.layer >=
-            (desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D ? 1 : desc.DepthOrArraySize))
+            (desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D ? 1u : static_cast<u32>(desc.DepthOrArraySize)))
         throw std::out_of_range("D3D12 blit subresource");
 }
 void ValidateRegion(const BlitSurface& surface, const VideoCommon::Region2D& region) {

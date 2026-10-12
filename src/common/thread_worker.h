@@ -8,17 +8,24 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <exception>
 #include <functional>
 #include <mutex>
+#include <memory>
 #include <string>
 #include <thread>
 #include <type_traits>
 #include <vector>
 #include <queue>
 
+#include "common/logging.h"
 #include "common/polyfill_thread.h"
 #include "common/thread.h"
 #include "common/unique_function.h"
+
+#ifdef NXBOX_UWP
+#include "eden_uwp/crash_logger.h"
+#endif
 
 namespace Common {
 
@@ -41,6 +48,7 @@ public:
                                   ThreadPlacement placement = ThreadPlacement::Default)
         : workers_queued{num_workers}, thread_name{std::move(name)} {
         const auto lambda = [this, func, placement](std::stop_token stop_token) {
+            try {
             Common::SetCurrentThreadName(thread_name.c_str());
             if (placement != ThreadPlacement::Default) {
                 Common::SetCurrentThreadPriority(ThreadPriority::Low);
@@ -56,8 +64,26 @@ public:
                 Common::SetCurrentThreadToAllCores();
                 break;
             }
+            } catch (const std::exception& error) {
+                ReportException("Worker setup", error.what());
+            } catch (...) {
+                ReportException("Worker setup", "non-standard exception");
+            }
             {
-                [[maybe_unused]] std::conditional_t<with_state, StateType, int> state{func()};
+                using WorkerState = std::conditional_t<with_state, StateType, int>;
+                std::unique_ptr<WorkerState> state;
+                const auto initialize = [&] {
+                    // Direct initialization preserves copy elision for thread-bound
+                    // OpenGL contexts and states that cannot be moved.
+                    state.reset(new WorkerState(func()));
+                };
+                try {
+                    initialize();
+                } catch (const std::exception& error) {
+                    ReportException("Worker initialization", error.what());
+                } catch (...) {
+                    ReportException("Worker initialization", "non-standard exception");
+                }
                 while (!stop_token.stop_requested()) {
                     Task task;
                     {
@@ -73,12 +99,25 @@ public:
                         task = std::move(requests.front());
                         requests.pop();
                     }
-                    if constexpr (with_state) {
-                        task(&state);
-                    } else {
-                        task();
+                    try {
+                        // Retry failed initialization on demand, without spinning or passing
+                        // an invalid state to a task. A failed attempt consumes this task.
+                        if (!state) {
+                            initialize();
+                        }
+                        if constexpr (with_state) {
+                            task(state.get());
+                        } else {
+                            task();
+                        }
+                    } catch (const std::exception& error) {
+                        ReportException(state ? "Worker task" : "Worker initialization", error.what());
+                    } catch (...) {
+                        ReportException(state ? "Worker task" : "Worker initialization",
+                                        "non-standard exception");
                     }
                     ++work_done;
+                    wait_condition.notify_all();
                 }
             }
             ++workers_stopped;
@@ -118,6 +157,18 @@ public:
     }
 
 private:
+    void ReportException(const char* stage, const char* reason) const noexcept {
+#ifdef NXBOX_UWP
+        EdenXbox::CrashRendererException(stage, reason);
+        EdenXbox::CrashRendererException("Worker name", thread_name);
+#endif
+        try {
+            LOG_CRITICAL(Common, "{} [{}]: {}", stage, thread_name, reason);
+        } catch (...) {
+            // Logging may allocate; it must not replace the original worker failure.
+        }
+    }
+
     std::queue<Task> requests;
     std::mutex queue_mutex;
     std::condition_variable_any condition;
