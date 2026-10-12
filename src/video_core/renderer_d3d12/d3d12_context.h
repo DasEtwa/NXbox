@@ -78,11 +78,9 @@ public:
     Result Request(const Key& key, Compile compile) {
         if (!enabled)
             return compile();
-        if (worker_failed.load(std::memory_order_acquire)) {
-            if (!worker_failure_reported.test_and_set())
-                ReportFailure(worker_error);
-            return {};
-        }
+        const bool failed = worker_failed.load(std::memory_order_acquire);
+        if (failed && !worker_failure_reported.test_and_set())
+            ReportFailure(worker_error);
         std::unique_lock lock{mutex};
         if (stopping)
             return {};
@@ -98,6 +96,10 @@ public:
             }
             return entry.result;
         }
+        // Completed results remain usable after a worker infrastructure failure.
+        // Never enqueue new work onto that stopped worker.
+        if (failed)
+            return {};
         // Bounded outstanding jobs: never turn a shader burst into unbounded RAM.
         if (pending >= MaxPending)
             return {};
