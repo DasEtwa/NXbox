@@ -9,73 +9,40 @@
 namespace Service::Mii {
 
 void StoreData::BuildDefault(u32 mii_index) {
-    const auto& default_mii = RawData::DefaultMii[mii_index];
+    // Original NXbox defaults, expressed in the public CharInfo/CoreData format.
+    // Keep the six advertised defaults independent of firmware resource tables.
+    mii_index %= 6;
     core_data.SetDefault();
-
-    core_data.SetFacelineType(static_cast<FacelineType>(default_mii.face_type));
-    core_data.SetFacelineColor(
-        RawData::GetFacelineColorFromVer3(static_cast<u8>(default_mii.face_color)));
-    core_data.SetFacelineWrinkle(static_cast<FacelineWrinkle>(default_mii.face_wrinkle));
-    core_data.SetFacelineMake(static_cast<FacelineMake>(default_mii.face_makeup));
-
-    core_data.SetHairType(static_cast<HairType>(default_mii.hair_type));
-    core_data.SetHairColor(RawData::GetHairColorFromVer3(static_cast<u8>(default_mii.hair_color)));
-    core_data.SetHairFlip(static_cast<HairFlip>(default_mii.hair_flip));
-    core_data.SetEyeType(static_cast<EyeType>(default_mii.eye_type));
-    core_data.SetEyeColor(RawData::GetEyeColorFromVer3(static_cast<u8>(default_mii.eye_color)));
-    core_data.SetEyeScale(static_cast<u8>(default_mii.eye_scale));
-    core_data.SetEyeAspect(static_cast<u8>(default_mii.eye_aspect));
-    core_data.SetEyeRotate(static_cast<u8>(default_mii.eye_rotate));
-    core_data.SetEyeX(static_cast<u8>(default_mii.eye_x));
-    core_data.SetEyeY(static_cast<u8>(default_mii.eye_y));
-
-    core_data.SetEyebrowType(static_cast<EyebrowType>(default_mii.eyebrow_type));
-    core_data.SetEyebrowColor(
-        RawData::GetHairColorFromVer3(static_cast<u8>(default_mii.eyebrow_color)));
-    core_data.SetEyebrowScale(static_cast<u8>(default_mii.eyebrow_scale));
-    core_data.SetEyebrowAspect(static_cast<u8>(default_mii.eyebrow_aspect));
-    core_data.SetEyebrowRotate(static_cast<u8>(default_mii.eyebrow_rotate));
-    core_data.SetEyebrowX(static_cast<u8>(default_mii.eyebrow_x));
-    core_data.SetEyebrowY(static_cast<u8>(default_mii.eyebrow_y - 3));
-
-    core_data.SetNoseType(static_cast<NoseType>(default_mii.nose_type));
-    core_data.SetNoseScale(static_cast<u8>(default_mii.nose_scale));
-    core_data.SetNoseY(static_cast<u8>(default_mii.nose_y));
-
-    core_data.SetMouthType(static_cast<MouthType>(default_mii.mouth_type));
-    core_data.SetMouthColor(
-        RawData::GetMouthColorFromVer3(static_cast<u8>(default_mii.mouth_color)));
-    core_data.SetMouthScale(static_cast<u8>(default_mii.mouth_scale));
-    core_data.SetMouthAspect(static_cast<u8>(default_mii.mouth_aspect));
-    core_data.SetMouthY(static_cast<u8>(default_mii.mouth_y));
-
-    core_data.SetMustacheType(static_cast<MustacheType>(default_mii.mustache_type));
-    core_data.SetBeardType(static_cast<BeardType>(default_mii.beard_type));
-    core_data.SetBeardColor(
-        RawData::GetHairColorFromVer3(static_cast<u8>(default_mii.beard_color)));
-    core_data.SetMustacheScale(static_cast<u8>(default_mii.mustache_scale));
-    core_data.SetMustacheY(static_cast<u8>(default_mii.mustache_y));
-
-    core_data.SetGlassType(static_cast<GlassType>(default_mii.glasses_type));
-    core_data.SetGlassColor(
-        RawData::GetGlassColorFromVer3(static_cast<u8>(default_mii.glasses_color)));
-    core_data.SetGlassScale(static_cast<u8>(default_mii.glasses_scale));
-    core_data.SetGlassY(static_cast<u8>(default_mii.glasses_y));
-
-    core_data.SetMoleType(static_cast<MoleType>(default_mii.mole_type));
-    core_data.SetMoleScale(static_cast<u8>(default_mii.mole_scale));
-    core_data.SetMoleX(static_cast<u8>(default_mii.mole_x));
-    core_data.SetMoleY(static_cast<u8>(default_mii.mole_y));
-
-    core_data.SetHeight(static_cast<u8>(default_mii.height));
-    core_data.SetBuild(static_cast<u8>(default_mii.weight));
-    core_data.SetGender(static_cast<Gender>(default_mii.gender));
-    core_data.SetFavoriteColor(static_cast<FavoriteColor>(default_mii.favorite_color));
-    core_data.SetRegionMove(static_cast<u8>(default_mii.region_move));
-    core_data.SetFontRegion(static_cast<FontRegion>(default_mii.font_region));
-    core_data.SetType(static_cast<u8>(default_mii.type));
-    core_data.SetNickname(default_mii.nickname);
-
+    core_data.SetHeight(64);
+    core_data.SetBuild(64);
+    core_data.SetGender(static_cast<Gender>(mii_index % 2));
+    core_data.SetFavoriteColor(static_cast<FavoriteColor>(mii_index));
+    core_data.SetHairType(static_cast<HairType>(mii_index));
+    core_data.SetHairColor(static_cast<CommonColor>(8 + mii_index));
+    core_data.SetFacelineColor(static_cast<FacelineColor>(mii_index));
+    core_data.SetEyeScale(4);
+    core_data.SetEyeAspect(3);
+    core_data.SetEyeX(2);
+    core_data.SetEyeY(12);
+    core_data.SetEyebrowScale(4);
+    core_data.SetEyebrowAspect(3);
+    core_data.SetEyebrowX(2);
+    core_data.SetEyebrowY(8);
+    core_data.SetNoseScale(4);
+    core_data.SetNoseY(9);
+    core_data.SetMouthScale(4);
+    core_data.SetMouthAspect(3);
+    core_data.SetMouthY(13);
+    core_data.SetGlassScale(4);
+    core_data.SetGlassY(10);
+    core_data.SetMustacheScale(4);
+    core_data.SetMustacheY(10);
+    core_data.SetMoleScale(4);
+    core_data.SetMoleX(2);
+    core_data.SetMoleY(20);
+    Nickname nickname{u'P', u'l', u'a', u'y',
+                      u'e', u'r', u' ', static_cast<char16_t>(u'1' + mii_index)};
+    core_data.SetNickname(nickname);
     create_id = MiiUtil::MakeCreateId();
     SetChecksum();
 }

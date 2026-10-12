@@ -26,17 +26,22 @@ Result MiiManager::Initialize(DatabaseSessionMetadata& metadata) {
         return mount_result;
     }
     const auto load_result = database_manager.Initialize(metadata, is_broken_with_clear_flag);
-#ifdef NXBOX_UWP
-    // Database-only selectors do not include RawData::DefaultMii. Persist a regular Mii,
-    // including its creator UUID and checksums, without changing an existing database.
-    if (!is_broken_with_clear_flag && database_manager.IsEmptyDatabase()) {
-        StoreData store_data{};
-        store_data.BuildDefault(0);
-        store_data.SetNickname({u'P', u'l', u'a', u'y', u'e', u'r'});
-        store_data.SetChecksum();
-        return AddOrReplace(metadata, store_data);
+    if (load_result.IsError()) {
+        return load_result;
     }
-#endif
+    // Seed an empty database once for database-only selectors. Existing user Miis and
+    // corrupt databases are preserved; explicit Format/Delete operations still work.
+    if (!is_broken_with_clear_flag && database_manager.IsEmptyDatabase()) {
+        for (u32 index = 0; index < DefaultMiiCount; ++index) {
+            StoreData store_data{};
+            store_data.BuildDefault(index);
+            const auto result = database_manager.AddOrReplace(metadata, store_data);
+            if (result.IsError()) {
+                return result;
+            }
+        }
+        return database_manager.SaveDatabase();
+    }
     return load_result;
 }
 
