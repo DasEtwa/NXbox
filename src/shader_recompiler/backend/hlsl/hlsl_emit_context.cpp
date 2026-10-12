@@ -241,36 +241,36 @@ EmitContext::EmitContext(IR::Program& program, Bindings& bindings, const Profile
     if (stage == Stage::Compute)
         return;
     header += "struct Input {\n";
-    if (stage == Stage::Fragment) {
+    std::string system_inputs;
+    if (stage == Stage::Fragment || stage == Stage::Geometry) {
         header += "float4 position : SV_Position;\n";
-        if (info.loads[IR::Attribute::FrontFace])
-            header += "bool front_face : SV_IsFrontFace;\n";
-        if (info.uses_sample_id)
-            header += "uint sample_id : SV_SampleIndex;\n";
-        if (info.loads[IR::Attribute::PrimitiveId])
-            header += "uint primitive_id : SV_PrimitiveID;\n";
-        if (info.loads[IR::Attribute::Layer])
-            header += "uint layer : SV_RenderTargetArrayIndex;\n";
-    } else if (stage == Stage::Geometry) {
-        header += "float4 position : SV_Position;\n";
-        if (info.loads[IR::Attribute::Layer])
-            header += "uint layer : SV_RenderTargetArrayIndex;\n";
-        if (info.loads[IR::Attribute::ViewportIndex])
-            header += "uint viewport : SV_ViewportArrayIndex;\n";
+        if (runtime_info.previous_stage_stores[IR::Attribute::Layer])
+            system_inputs += "uint layer : SV_RenderTargetArrayIndex;\n";
+        if (runtime_info.previous_stage_stores[IR::Attribute::ViewportIndex])
+            system_inputs += "uint viewport : SV_ViewportArrayIndex;\n";
         for (u32 group = 0; group < 2; ++group) {
             bool used = false;
             for (u32 element = 0; element < 4; ++element)
-                used |= info.loads[static_cast<IR::Attribute>(
+                used |= runtime_info.previous_stage_stores[static_cast<IR::Attribute>(
                     static_cast<u32>(IR::Attribute::ClipDistance0) + group * 4 + element)];
             if (used)
-                header += fmt::format("float4 clip{} : SV_ClipDistance{};\n", group, group);
+                system_inputs += fmt::format("float4 clip{} : SV_ClipDistance{};\n", group, group);
+        }
+        if (stage == Stage::Fragment) {
+            if (info.loads[IR::Attribute::FrontFace])
+                system_inputs += "bool front_face : SV_IsFrontFace;\n";
+            if (info.uses_sample_id)
+                system_inputs += "uint sample_id : SV_SampleIndex;\n";
+            if (info.loads[IR::Attribute::PrimitiveId])
+                system_inputs += "uint primitive_id : SV_PrimitiveID;\n";
         }
     } else {
         header += "uint vertex_id : SV_VertexID; uint instance_id : SV_InstanceID;\n";
     }
     for (size_t i = 0; i < 32; ++i) {
-        if (!info.loads.Generic(i) ||
-            (stage == Stage::Fragment && !runtime_info.previous_stage_stores.Generic(i)))
+        if ((stage == Stage::Fragment || stage == Stage::Geometry)
+                ? !runtime_info.previous_stage_stores.Generic(i)
+                : !info.loads.Generic(i))
             continue;
         std::string interpolation;
         if (stage == Stage::Fragment) {
@@ -279,12 +279,14 @@ EmitContext::EmitContext(IR::Program& program, Bindings& bindings, const Profile
                                 ? "noperspective "
                                 : "";
         }
-        const auto type =
-            stage == Stage::Fragment ? "float4" : VectorType(runtime_info.generic_input_types[i]);
+        const auto type = (stage == Stage::Fragment || stage == Stage::Geometry)
+                              ? "float4"
+                              : VectorType(runtime_info.generic_input_types[i]);
         const auto semantic = GenericSemantic(static_cast<std::uint32_t>(i));
         header += fmt::format("{}{} attr{} : {}{};\n", interpolation, type, i, semantic.name,
                               semantic.index);
     }
+    header += system_inputs;
     header += "};\nstruct Output {\n";
     if (stage != Stage::Fragment) {
         header += "float4 position : SV_Position;\n";

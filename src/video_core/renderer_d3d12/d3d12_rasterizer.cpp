@@ -98,6 +98,22 @@ DrawParams MakeDrawParams(const Tegra::Engines::Maxwell3D::DrawManager::State& d
     return params;
 }
 
+// Keep the submitted draw parameters available when sizing vertex bindings.
+struct DrawCommand {
+    DrawParams params;
+    void operator()(ID3D12GraphicsCommandList* commands) const {
+        if (!params.num_vertices || !params.num_instances)
+            return;
+        if (params.is_indexed)
+            commands->DrawIndexedInstanced(params.num_vertices, params.num_instances,
+                                           params.first_index, static_cast<INT>(params.base_vertex),
+                                           params.base_instance);
+        else
+            commands->DrawInstanced(params.num_vertices, params.num_instances, params.base_vertex,
+                                    params.base_instance);
+    }
+};
+
 // Maxwell maps ndc to window space as y_win = translate_y + ndc_y * scale_y. D3D12 viewports
 // cannot have a negative height, so a positive Maxwell height (the Vulkan convention) needs the
 // vertex shader to negate Y (y_flip), while a negative one maps directly.
@@ -348,8 +364,16 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
             return;
         }
         if (view && view->ImageHandle()) {
-            color_views[slot] = view;
-            formats.colors[slot] = static_cast<u32>(view->Description().Format);
+            // Conservative alias handling: one writable RTV per resource. A null
+            // duplicate discards that output without binding overlapping subresources.
+            bool duplicate = false;
+            for (u32 previous = 0; previous < slot; ++previous)
+                duplicate |= color_views[previous] &&
+                             color_views[previous]->ImageHandle() == view->ImageHandle();
+            if (!duplicate) {
+                color_views[slot] = view;
+                formats.colors[slot] = static_cast<u32>(view->Description().Format);
+            }
         }
     }
     ImageView* const depth_view = framebuffer->Depth();
@@ -394,7 +418,9 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         uniform_sizes[stage].fill(0);
         if (const Shader::Info* info = pipeline->StageInfo(stage)) {
             uniform_masks[stage] = info->constant_buffer_mask;
-            std::ranges::copy(info->constant_buffer_used_sizes, uniform_sizes[stage].begin());
+            // The HLSL byte-addressed cbuffer can read dynamic offsets. Bind the
+            // full guest range (the shared cache clamps this to the guest size).
+            uniform_sizes[stage].fill(65536);
             const auto counts = CountStageTables(*info);
             totals.cbv += counts.cbv;
             totals.srv += counts.srv;
@@ -718,25 +744,123 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     }
     context.Retain(zero_vertex_buffer);
     u32 num_vertex_views = static_cast<u32>(vertex_views.size());
-    for (u32 i = 0; i < GeometryBindings::MaxVertexBuffers; ++i) {
-        const auto& slot = geometry.vertex[i];
-        // Disabled/unmapped guest streams still satisfy the shader signature with zeros.
-        if (!regs.vertex_streams[i].enable || !slot.resource || !slot.size) {
-            vertex_views[i] = {zero_vertex_buffer->handle->GetGPUVirtualAddress(), 65536, 0};
-            continue;
-        }
-        if (!IsValidBufferView(slot.resource->handle->GetGPUVirtualAddress(),
-                               slot.resource->handle->GetDesc().Width, slot.offset, slot.size)) {
-            SkipDraw("invalid vertex buffer view");
+    const auto* native_pipeline = dynamic_cast<const GraphicsPipeline*>(pipeline);
+    if (!native_pipeline) {
+        SkipDraw("vertex layout unavailable for native pipeline");
+        return;
+    }
+    const auto& submitted = draw.params;
+    if (!submitted.num_vertices || !submitted.num_instances)
+        return;
+    u64 last_vertex = u64{submitted.base_vertex} + submitted.num_vertices - 1;
+    if (is_indexed) {
+        const auto& guest_draw = maxwell3d->draw_manager.draw_state;
+        if (static_cast<u32>(guest_draw.index_buffer.format) > 2) {
+            SkipDraw("invalid index width for vertex sizing");
             return;
         }
-        vertex_views[i] = {slot.resource->handle->GetGPUVirtualAddress() + slot.offset,
-                           static_cast<UINT>(slot.size), slot.stride};
-        need(slot.resource, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
+        const u32 index_bytes = guest_draw.inline_index_draw_indexes.empty()
+                                    ? 1u << static_cast<u32>(guest_draw.index_buffer.format)
+                                    : 4u;
+        if (u64{guest_draw.index_buffer.count} * index_bytes > 64 * 1024 * 1024) {
+            SkipDraw("index buffer exceeds vertex sizing budget");
+            return;
+        }
+        std::vector<u8> indices(size_t{guest_draw.index_buffer.count} * index_bytes);
+        if (guest_draw.inline_index_draw_indexes.empty())
+            gpu_memory->ReadBlock(guest_draw.index_buffer.StartAddress() +
+                                      u64{guest_draw.index_buffer.first} * index_bytes,
+                                  indices.data(), indices.size());
+        else
+            std::memcpy(indices.data(), guest_draw.inline_index_draw_indexes.data(),
+                        indices.size());
+        last_vertex = 0;
+        for (size_t offset = 0; offset < indices.size(); offset += index_bytes) {
+            u32 index = 0;
+            std::memcpy(&index, indices.data() + offset, index_bytes);
+            if (regs.primitive_restart.enabled && index == regs.primitive_restart.index)
+                continue;
+            const s64 vertex = s64{index} + static_cast<s32>(submitted.base_vertex);
+            if (vertex < 0) {
+                SkipDraw("negative indexed vertex address");
+                return;
+            }
+            last_vertex = std::max(last_vertex, static_cast<u64>(vertex));
+        }
     }
-    const u32 zero_slot = pipeline->ZeroVertexSlot();
-    if (zero_slot < vertex_views.size()) {
-        vertex_views[zero_slot] = {zero_vertex_buffer->handle->GetGPUVirtualAddress(), 16, 0};
+    for (u32 i = 0; i < Pso::kNumVertexAttributes; ++i) {
+        const auto& attribute = native_pipeline->State().attributes[i];
+        vertex_views[i] = {zero_vertex_buffer->handle->GetGPUVirtualAddress(), 65536, 0};
+        if (!attribute.enabled || attribute.enabled == 2)
+            continue;
+        const auto& slot = geometry.vertex[attribute.slot];
+        if (!regs.vertex_streams[attribute.slot].enable || !slot.resource || !slot.size)
+            continue;
+        const auto& input = regs.vertex_attrib_format[i];
+        const u32 bytes = Pso::VertexByteSize(static_cast<u32>(input.size.Value()));
+        const u32 alignment = Pso::VertexAlignment(static_cast<u32>(input.size.Value()));
+        const u64 last = attribute.instanced
+                             ? (attribute.divisor == 0 ? 0
+                                                       : u64{submitted.base_instance} +
+                                                             (submitted.num_instances - 1) /
+                                                                 std::max(attribute.divisor, 1u))
+                             : last_vertex;
+        const u64 required = Pso::VertexRequiredBytes(last, slot.stride, bytes);
+        constexpr u64 MaxVertexUpload = 64 * 1024 * 1024;
+        if (required > MaxVertexUpload) {
+            SkipDraw("vertex binding exceeds 64 MiB draw budget");
+            return;
+        }
+        const u64 available = slot.size > attribute.offset ? slot.size - attribute.offset : 0;
+        const u64 source_offset = u64{slot.offset} + attribute.offset;
+        const bool realign = (source_offset % alignment) || (slot.stride % alignment);
+        if (!realign && required <= available) {
+            vertex_views[i] = {slot.resource->handle->GetGPUVirtualAddress() + source_offset,
+                               static_cast<UINT>(available), slot.stride};
+            need(slot.resource, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
+            continue;
+        }
+        if (!realign) {
+            // Preserve hardware zero reads beyond the inclusive Maxwell limit.
+            auto zero = context.CreateBuffer(required, D3D12_HEAP_TYPE_UPLOAD);
+            std::fill(zero->mapped.begin(), zero->mapped.end(), u8{0});
+            auto padded = context.CreateBuffer(required, D3D12_HEAP_TYPE_DEFAULT);
+            context.MarkWork("vertex binding padding");
+            context.Transition(padded, D3D12_RESOURCE_STATE_COPY_DEST);
+            context.Commands()->CopyBufferRegion(padded->handle.Get(), 0, zero->handle.Get(), 0,
+                                                 required);
+            if (available) {
+                context.Transition(slot.resource, D3D12_RESOURCE_STATE_COPY_SOURCE);
+                context.Commands()->CopyBufferRegion(padded->handle.Get(), 0,
+                                                     slot.resource->handle.Get(), source_offset,
+                                                     std::min(available, required));
+            }
+            context.Retain(zero);
+            context.Retain(padded);
+            vertex_views[i] = {padded->handle->GetGPUVirtualAddress(), static_cast<UINT>(required),
+                               slot.stride};
+            need(padded, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
+            continue;
+        }
+        // Repack only misaligned streams. Each attribute owns one IA slot with
+        // offset zero, so shared streams cannot impose conflicting alignments.
+        const u64 elements = slot.stride ? last + 1 : 1;
+        if (elements * bytes > MaxVertexUpload) {
+            SkipDraw("realigned vertex binding exceeds 64 MiB draw budget");
+            return;
+        }
+        auto packed = context.CreateBuffer(elements * bytes, D3D12_HEAP_TYPE_UPLOAD);
+        std::fill(packed->mapped.begin(), packed->mapped.end(), u8{0});
+        const u64 read_bytes = std::min(available, required);
+        std::vector<u8> source(static_cast<size_t>(read_bytes));
+        const auto guest_address = regs.vertex_streams[attribute.slot].Address() + attribute.offset;
+        if (const auto cpu = gpu_memory->GpuToCpuAddress(guest_address))
+            buffer_cache.DownloadMemory(*cpu, read_bytes);
+        gpu_memory->ReadBlock(guest_address, source.data(), source.size());
+        Pso::RepackVertexAttribute(packed->mapped, source, slot.stride, bytes);
+        context.Retain(packed);
+        vertex_views[i] = {packed->handle->GetGPUVirtualAddress(),
+                           static_cast<UINT>(elements * bytes), slot.stride ? bytes : 0};
     }
     const auto& draw_state = maxwell3d->draw_manager.draw_state;
     const bool quads = draw_state.topology == Maxwell::PrimitiveTopology::Quads ||
@@ -910,6 +1034,10 @@ void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) try {
             return;
         }
         const size_t width = size_t{1} << static_cast<u32>(format);
+        if (u64{state.index_buffer.count} * width > 64 * 1024 * 1024) {
+            SkipDraw("index conversion exceeds 64 MiB draw budget");
+            return;
+        }
         std::vector<std::byte> input(size_t{state.index_buffer.count} * width);
         const auto address =
             state.index_buffer.StartAddress() + size_t{state.index_buffer.first} * width;
@@ -944,27 +1072,14 @@ void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) try {
         m_gpu.TickWork();
         return;
     }
-    PrepareDraw(is_indexed, [&](ID3D12GraphicsCommandList* commands) {
-        const auto& draw_state = maxwell3d->draw_manager.draw_state;
-        DrawParams params = MakeDrawParams(draw_state, instance_count, is_indexed);
-        if (converted_indices) {
-            params.num_vertices = converted_indices->count;
-            params.first_index = 0;
-            params.base_vertex =
-                is_indexed ? draw_state.base_index : draw_state.vertex_buffer.first;
-            params.is_indexed = true;
-        }
-        if (!params.num_vertices || !params.num_instances)
-            return;
-        if (params.is_indexed) {
-            commands->DrawIndexedInstanced(params.num_vertices, params.num_instances,
-                                           params.first_index, static_cast<INT>(params.base_vertex),
-                                           params.base_instance);
-        } else {
-            commands->DrawInstanced(params.num_vertices, params.num_instances, params.base_vertex,
-                                    params.base_instance);
-        }
-    });
+    DrawParams params = MakeDrawParams(state, instance_count, is_indexed);
+    if (converted_indices) {
+        params.num_vertices = converted_indices->count;
+        params.first_index = 0;
+        params.base_vertex = is_indexed ? state.base_index : state.vertex_buffer.first;
+        params.is_indexed = true;
+    }
+    PrepareDraw(is_indexed, DrawCommand{params});
     converted_indices.reset();
     m_gpu.TickWork();
 } catch (const std::exception& error) {

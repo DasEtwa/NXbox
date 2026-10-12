@@ -5,6 +5,7 @@
 #include <map>
 #include <memory>
 #include <span>
+#include <string>
 #include <string_view>
 #include <tuple>
 #include <type_traits>
@@ -93,6 +94,7 @@ private:
     std::unordered_map<GraphicsPipelineKey, std::unique_ptr<GraphicsPipeline>,
                        GraphicsPipelineKeyHash>
         graphics;
+    std::unordered_map<GraphicsPipelineKey, std::string, GraphicsPipelineKeyHash> failed_graphics;
     std::unordered_map<u64, std::unique_ptr<ComputePipeline>> compute;
     std::unordered_map<GraphicsPipelineKey, GraphicsPipeline*, GraphicsPipelineKeyHash>
         guest_graphics;

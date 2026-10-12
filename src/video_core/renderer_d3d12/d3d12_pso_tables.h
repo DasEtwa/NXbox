@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <span>
 #include <type_traits>
 
 namespace D3D12::Pso {
@@ -281,6 +282,58 @@ inline constexpr std::uint32_t R32G32B32A32 = 0x01, R32G32B32 = 0x02, R16G16B16A
 namespace VType {
 inline constexpr std::uint32_t SNorm = 1, UNorm = 2, SInt = 3, UInt = 4, UScaled = 5, SScaled = 6,
                                Float = 7;
+}
+
+constexpr std::uint32_t VertexByteSize(std::uint32_t size) {
+    using namespace VSize;
+    switch (size) {
+    case R32G32B32A32:
+        return 16;
+    case R32G32B32:
+        return 12;
+    case R16G16B16A16:
+    case R32G32:
+        return 8;
+    case R16G16B16:
+        return 6;
+    case R8G8B8:
+        return 3;
+    case R16:
+    case R8G8:
+    case G8R8:
+        return 2;
+    case R8:
+    case A8:
+        return 1;
+    default:
+        return 4;
+    }
+}
+constexpr std::uint32_t VertexAlignment(std::uint32_t size) {
+    // D3D12 input elements require min(format width, 4) byte alignment,
+    // including four-byte alignment for R8G8B8A8.
+    const auto bytes = VertexByteSize(size);
+    return bytes >= 4 ? 4 : bytes == 3 ? 1 : bytes;
+}
+constexpr std::uint64_t VertexRequiredBytes(std::uint64_t last, std::uint32_t stride,
+                                            std::uint32_t bytes) {
+    return last * stride + bytes;
+}
+
+inline void RepackVertexAttribute(std::span<std::uint8_t> destination,
+                                  std::span<const std::uint8_t> source, std::uint32_t stride,
+                                  std::uint32_t bytes) {
+    std::fill(destination.begin(), destination.end(), std::uint8_t{0});
+    if (!bytes)
+        return;
+    for (std::size_t element = 0; element < destination.size() / bytes; ++element) {
+        const std::uint64_t offset = std::uint64_t{element} * stride;
+        if (offset >= source.size())
+            break;
+        const auto count = std::min<std::uint64_t>(bytes, source.size() - offset);
+        std::copy_n(source.data() + offset, static_cast<std::size_t>(count),
+                    destination.data() + element * bytes);
+    }
 }
 
 struct VertexFormat {

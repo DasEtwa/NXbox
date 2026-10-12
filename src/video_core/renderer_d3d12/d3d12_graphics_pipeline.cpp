@@ -168,8 +168,8 @@ GraphicsPipeline::GraphicsPipeline(ID3D12Device* device, ComPtr<ID3D12RootSignat
         elements[element_count++] = {semantic.name,
                                      semantic.index,
                                      static_cast<DXGI_FORMAT>(a.dxgi),
-                                     a.slot,
-                                     a.offset,
+                                     i,
+                                     0,
                                      a.instanced ? D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA
                                                  : D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
                                      a.instanced ? static_cast<UINT>(a.divisor) : 0u};

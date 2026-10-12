@@ -7,6 +7,7 @@
 #include <exception>
 #include <limits>
 #include <set>
+#include <stdexcept>
 #include <tuple>
 #include <vector>
 #include <fmt/format.h>
@@ -314,16 +315,25 @@ GraphicsPipeline& PipelineCache::GetGraphics(const Pso::GraphicsPsoState& state,
     if (const auto it = graphics.find(key); it != graphics.end()) {
         return *it->second;
     }
-    std::vector<StageProgram> programs;
-    for (const auto& stage : stages) {
-        programs.push_back(
-            {stage.stage, dxc.Compile(stage.hlsl, stage.stage, Pso::HashBytes(&key, sizeof(key)))});
+    if (const auto failed = failed_graphics.find(key); failed != failed_graphics.end())
+        throw std::runtime_error(failed->second);
+    try {
+        std::vector<StageProgram> programs;
+        for (const auto& stage : stages) {
+            programs.push_back({stage.stage, dxc.Compile(stage.hlsl, stage.stage,
+                                                         Pso::HashBytes(&key, sizeof(key)))});
+        }
+        ID3D12RootSignature* signature = GetRootSignature(total);
+        auto pipeline = std::make_unique<GraphicsPipeline>(
+            context.Device(), signature, state, d3d_topology, programs, disk.get(),
+            Pso::HashBytes(&key, sizeof(key)), Recipe(&state, d3d_topology, stages));
+        return *graphics.emplace(key, std::move(pipeline)).first->second;
+    } catch (const std::exception& error) {
+        failed_graphics.emplace(key, error.what());
+        Diagnostic(fmt::format("D3D12 failed PSO hash={:016x} cached reason={}",
+                               Pso::HashBytes(&key, sizeof(key)), error.what()));
+        throw;
     }
-    ID3D12RootSignature* signature = GetRootSignature(total);
-    auto pipeline = std::make_unique<GraphicsPipeline>(
-        context.Device(), signature, state, d3d_topology, programs, disk.get(),
-        Pso::HashBytes(&key, sizeof(key)), Recipe(&state, d3d_topology, stages));
-    return *graphics.emplace(key, std::move(pipeline)).first->second;
 }
 
 ComputePipeline& PipelineCache::GetCompute(const StageInput& stage) {
