@@ -33,7 +33,10 @@ jobs:
         run: python -m pip install cmake==3.31.6 ninja
       - name: Install Linux prerequisites
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libboost-all-dev libssl-dev libasound2-dev libx11-dev libxext-dev libva-dev libvdpau-dev libdrm-dev libudev-dev libxcursor-dev libxrandr-dev libxfixes-dev libxi-dev libxss-dev libxtst-dev nasm glslang-tools
+        run: sudo apt-get update && sudo apt-get install -y libboost-all-dev libssl-dev libasound2-dev libx11-dev libxext-dev libva-dev libvdpau-dev libdrm-dev libavcodec-dev libavfilter-dev libavutil-dev libswscale-dev libudev-dev libxcursor-dev libxrandr-dev libxfixes-dev libxi-dev libxss-dev libxtst-dev nasm glslang-tools
+      - name: Prepare Windows host tools
+        if: runner.os == 'Windows'
+        run: python tools/nxbox/prepare_host_tools.py
       - name: Build reference interpreter
         shell: bash
         run: |
