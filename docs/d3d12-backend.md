@@ -353,7 +353,9 @@ the 64 MiB ring cap, filters informational resource-creation traffic, samples
 submission/presentation diagnostics, and emits one marker per work label per batch.
 Fragment export metadata and HLSL stores are masked by the bound attachment formats;
 the existing framebuffer PSO key keeps each signature paired with its RTV layout.
-Fatal diagnostics now capture 96 frames and any active C++ exception.
+Fatal diagnostics now capture 96 frames and any active C++ exception. The GPU and
+fencing threads install their own MSVC terminate handlers, which were previously
+installed only on the main thread.
 
 Host tests cover asynchronous callback ordering without another guest command,
 completion failure waking a forced drain, staging pressure with live CPU leases,

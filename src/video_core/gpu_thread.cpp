@@ -22,6 +22,7 @@
 #endif
 
 #ifdef NXBOX_UWP
+#include "eden_uwp/crash_logger.h"
 // Declared directly: windows.h in the video core clashes with glad.
 extern "C" __declspec(dllimport) unsigned long __stdcall GetCurrentThreadId();
 namespace {
@@ -44,6 +45,7 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer,
     thread = std::jthread([&](std::stop_token stop_token) {
         Common::SetCurrentThreadName("GPU");
 #ifdef NXBOX_UWP
+        EdenXbox::InstallThreadCrashHandlers();
         NxboxStall::gpu_thread_id.store(NxboxCurrentThreadId());
 #endif
         Common::SetCurrentThreadPriority(Common::ThreadPriority::Critical);

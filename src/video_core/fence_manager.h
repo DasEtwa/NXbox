@@ -26,6 +26,10 @@
 #include "video_core/host1x/syncpoint_manager.h"
 #include "video_core/rasterizer_interface.h"
 
+#ifdef NXBOX_UWP
+#include "eden_uwp/crash_logger.h"
+#endif
+
 namespace VideoCommon {
 
 class FenceBase {
@@ -214,6 +218,9 @@ private:
     }
 
     void ReleaseThreadFunc(std::stop_token stop_token) {
+#ifdef NXBOX_UWP
+        EdenXbox::InstallThreadCrashHandlers();
+#endif
         Common::SetCurrentThreadName("GPUFencingThread");
         Common::SetCurrentThreadPriority(Common::ThreadPriority::High);
         Common::SetCurrentThreadToPerformanceCores();

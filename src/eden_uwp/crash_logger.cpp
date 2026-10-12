@@ -237,6 +237,11 @@ void HeartbeatLine(const char* event, std::uint64_t gap_ms) noexcept {
 }
 } // namespace
 
+void InstallThreadCrashHandlers() noexcept {
+    // MSVC maintains terminate handlers per thread, including threads created later.
+    std::set_terminate([] { FatalRuntime("terminate", 0); });
+}
+
 void InstallCrashHandlers() noexcept {
     main_thread_id = GetCurrentThreadId();
 #if WINAPI_FAMILY_PARTITION(WINAPI_PARTITION_DESKTOP)
@@ -245,7 +250,7 @@ void InstallCrashHandlers() noexcept {
     SetThreadStackGuarantee(&reserve);
 #endif
     SetUnhandledExceptionFilter(Unhandled);
-    std::set_terminate([] { FatalRuntime("terminate", 0); });
+    InstallThreadCrashHandlers();
     _set_invalid_parameter_handler(InvalidParameter);
     _set_purecall_handler([] { FatalRuntime("purecall", 0xc0000025); });
     std::signal(SIGABRT, [](int) { FatalRuntime("SIGABRT", SIGABRT); });
