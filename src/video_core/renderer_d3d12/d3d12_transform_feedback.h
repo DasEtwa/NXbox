@@ -39,6 +39,7 @@ public:
     u64 ReadFilledSize(u32 stream);
 
 private:
+    void EnsureCounters();
     Context& context;
     StreamOutputLayout layout;
     std::deque<std::string> semantics;

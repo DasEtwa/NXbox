@@ -10,6 +10,7 @@
 #include <wrl/client.h>
 
 #include "shader_recompiler/backend/hlsl/hlsl_root_constants.h"
+#include "shader_recompiler/runtime_info.h"
 #include "shader_recompiler/stage.h"
 #include "video_core/renderer_d3d12/d3d12_disk_pipeline_cache.h"
 #include "video_core/renderer_d3d12/d3d12_dxc.h"
@@ -31,7 +32,8 @@ public:
                      Microsoft::WRL::ComPtr<ID3D12RootSignature> root_signature,
                      const Pso::GraphicsPsoState& state, u32 d3d_topology,
                      std::span<const StageProgram> programs, DiskPipelineCache* disk = nullptr,
-                     u64 key = 0, std::span<const u8> recipe = {});
+                     u64 key = 0, std::span<const u8> recipe = {},
+                     const D3D12_STREAM_OUTPUT_DESC& stream_output = {});
 
     // IGraphicsPipeline. A front-and-back cull draws nothing and D3D12 cannot express it, so
     // the descriptor/draw path sees "no PSO" and skips the draw.
@@ -66,17 +68,24 @@ public:
         std::memcpy(words.data(), &constants, sizeof(words));
         return words;
     }
+    void SetTransformFeedback(const Shader::RuntimeInfo& runtime) {
+        transform_feedback = runtime;
+    }
+    const Shader::RuntimeInfo* TransformFeedbackInfo() const {
+        return transform_feedback ? &*transform_feedback : nullptr;
+    }
     const Pso::GraphicsPsoState& State() const {
         return state;
     }
     // Cull mode FrontAndBack: D3D12 cannot express it, the rasterizer must skip the draw.
     bool CullsEverything() const {
-        return state.cull_all != 0;
+        return (state.cull_all & 1) != 0;
     }
 
 private:
     Pso::GraphicsPsoState state;
     u32 topology{};
+    std::optional<Shader::RuntimeInfo> transform_feedback;
     std::array<std::optional<Shader::Info>, NUM_GRAPHICS_STAGES> stage_infos{};
     Microsoft::WRL::ComPtr<ID3D12RootSignature> root_signature;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> pso;

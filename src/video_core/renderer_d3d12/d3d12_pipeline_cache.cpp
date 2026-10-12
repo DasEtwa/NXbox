@@ -24,7 +24,9 @@
 #include "video_core/memory_manager.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_cache.h"
 #include "video_core/renderer_d3d12/d3d12_texture_cache.h"
+#include "video_core/renderer_d3d12/d3d12_transform_feedback.h"
 #include "video_core/surface.h"
+#include "video_core/transform_feedback.h"
 
 namespace D3D12 {
 namespace {
@@ -47,18 +49,26 @@ const char* UnsupportedState(const Maxwell& regs, u32 topology) {
         return "invalid Maxwell PrimitiveTopology";
     if (Pso::CullMode(regs.gl_cull_test_enabled != 0, static_cast<u32>(regs.gl_cull_face))
             .cull_all &&
+        !regs.transform_feedback_enabled &&
         (Pso::TopologyType(topology) == Pso::kTopologyTypeTriangle ||
          Pso::TopologyType(topology) == Pso::kTopologyTypePatch))
         return "gl_cull_face=FrontAndBack requires rasterizer discard preserving vertex/query "
                "effects";
-    if (!regs.rasterize_enable)
+    if (!regs.rasterize_enable && !regs.transform_feedback_enabled)
         return "rasterize_enable=0 requires discard with vertex/query side effects";
+    if (!regs.rasterize_enable && regs.transform_feedback_enabled &&
+        std::none_of(regs.transform_feedback.controls.begin(),
+                     regs.transform_feedback.controls.end(),
+                     [](const auto& control) { return control.varying_count != 0; }))
+        return "rasterize_enable=0 requires a non-empty stream-output layout";
     if (regs.IsShaderConfigEnabled(Maxwell::ShaderType::TessellationInit) ||
         regs.IsShaderConfigEnabled(Maxwell::ShaderType::Tessellation))
         return "tessellation.params require HLSL hull/domain stage linkage";
-    if (regs.transform_feedback_enabled)
-        return "transform_feedback/stream_out_layout require HLSL linkage and stream-output root "
-               "signature";
+    if (regs.transform_feedback_enabled) {
+        for (const auto& control : regs.transform_feedback.controls)
+            if (control.varying_count && control.stream != 0)
+                return "transform_feedback/stream_out_layout require multi-stream geometry linkage";
+    }
     if (regs.depth_bounds_enable &&
         (!std::isfinite(regs.depth_bounds[0]) || !std::isfinite(regs.depth_bounds[1]) ||
          regs.depth_bounds[0] > regs.depth_bounds[1]))
@@ -201,6 +211,9 @@ void FillGraphicsState(Tegra::Engines::Maxwell3D& maxwell3d, Pso::GraphicsPsoSta
     s.cull_mode = static_cast<u8>(cull.mode);
     s.cull_all = cull.cull_all && (s.topology_type == Pso::kTopologyTypeTriangle ||
                                    s.topology_type == Pso::kTopologyTypePatch);
+    // Bit 1 requests SO rasterizer discard while preserving shader/query effects.
+    if (regs.transform_feedback_enabled && (!regs.rasterize_enable || s.cull_all))
+        s.cull_all = 2;
     bool ccw = regs.gl_front_face == Maxwell::FrontFace::CounterClockWise;
     if (regs.window_origin.flip_y != 0) {
         ccw = !ccw;
@@ -287,6 +300,21 @@ void FillGraphicsState(Tegra::Engines::Maxwell3D& maxwell3d, Pso::GraphicsPsoSta
         out.divisor = regs.vertex_streams[in.buffer].frequency;
         out.swap_rb = format.swap_rb;
         out.scaled = format.scaled;
+        // BGRA texture formats and A8 are not portable IA formats. Repack to RGBA.
+        if (out.dxgi == 87) {
+            out.dxgi = 28;
+            out.swap_rb = true;
+        }
+        if (out.swap_rb && static_cast<u32>(in.size.Value()) != Pso::VSize::A2B10G10R10 &&
+            static_cast<u32>(in.size.Value()) != Pso::VSize::B10G11R11) {
+            const u32 width = Pso::VertexComponentBytes(static_cast<u32>(in.size.Value()));
+            const u32 expanded = width == 4   ? Pso::VSize::R32G32B32A32
+                                 : width == 2 ? Pso::VSize::R16G16B16A16
+                                              : Pso::VSize::R8G8B8A8;
+            out.dxgi = Pso::VertexFormatFor(expanded, static_cast<u32>(in.type.Value())).dxgi;
+        }
+        if (in.size == Maxwell::VertexAttribute::Size::Size_A8)
+            out.dxgi = in.type == Maxwell::VertexAttribute::Type::UNorm ? 28 : 30;
     }
 }
 
@@ -308,7 +336,16 @@ GraphicsPipeline& PipelineCache::GetGraphics(const Pso::GraphicsPsoState& state,
         key.stage_hashes[static_cast<size_t>(stage.stage)] =
             Pso::HashBytes(stage.hlsl.data(), stage.hlsl.size(), stage.hash);
         total += stage.counts;
+        if (stage.runtime && stage.runtime->xfb_count) {
+            key.stage_hashes[static_cast<size_t>(stage.stage)] = Pso::HashBytes(
+                stage.runtime->xfb_varyings.data(), sizeof(stage.runtime->xfb_varyings),
+                key.stage_hashes[static_cast<size_t>(stage.stage)]);
+        }
     }
+    // Root/input binding ABI salt invalidates old disk PSOs without changing cache files.
+    constexpr u32 StageBindingAbi = 9;
+    key.stage_hashes[0] =
+        Pso::HashBytes(&StageBindingAbi, sizeof(StageBindingAbi), key.stage_hashes[0]);
     // Fragment occupies slot 5: folding topology after stage hashes prevents
     // its shader hash from overwriting the wrapper's IA topology identity.
     key.stage_hashes[5] = Pso::HashBytes(&d3d_topology, sizeof(d3d_topology), key.stage_hashes[5]);
@@ -324,9 +361,22 @@ GraphicsPipeline& PipelineCache::GetGraphics(const Pso::GraphicsPsoState& state,
                                                          Pso::HashBytes(&key, sizeof(key)))});
         }
         ID3D12RootSignature* signature = GetRootSignature(total);
+        const Shader::RuntimeInfo* feedback_info = nullptr;
+        for (const auto& stage : stages)
+            if (stage.runtime && stage.runtime->xfb_count)
+                feedback_info = stage.runtime;
+        std::unique_ptr<TransformFeedback> feedback;
+        D3D12_STREAM_OUTPUT_DESC stream_output{};
+        if (feedback_info) {
+            feedback = std::make_unique<TransformFeedback>(context);
+            feedback->Configure(*feedback_info);
+            stream_output = feedback->Declaration((state.cull_all & 2) == 0);
+        }
         auto pipeline = std::make_unique<GraphicsPipeline>(
             context.Device(), signature, state, d3d_topology, programs, disk.get(),
-            Pso::HashBytes(&key, sizeof(key)), Recipe(&state, d3d_topology, stages));
+            Pso::HashBytes(&key, sizeof(key)), Recipe(&state, d3d_topology, stages), stream_output);
+        if (feedback_info)
+            pipeline->SetTransformFeedback(*feedback_info);
         return *graphics.emplace(key, std::move(pipeline)).first->second;
     } catch (const std::exception& error) {
         failed_graphics.emplace(key, error.what());
@@ -387,9 +437,14 @@ struct TranslationState {
 };
 
 Shader::RuntimeInfo GraphicsRuntime(const Maxwell& regs, const Shader::IR::Program& program,
-                                    const Shader::IR::Program* previous) {
+                                    const Shader::IR::Program* previous, u32 topology) {
     Shader::RuntimeInfo runtime;
     runtime.force_early_z = regs.mandated_early_z != 0;
+    runtime.input_topology = topology == 0    ? Shader::InputTopology::Points
+                             : topology <= 3  ? Shader::InputTopology::Lines
+                             : topology <= 9  ? Shader::InputTopology::Triangles
+                             : topology <= 11 ? Shader::InputTopology::LinesAdjacency
+                                              : Shader::InputTopology::TrianglesAdjacency;
     if (program.stage == Shader::Stage::Fragment && regs.alpha_test_enabled &&
         Pso::ComparisonFunc(static_cast<u32>(regs.alpha_test_func)) != 8) {
         runtime.alpha_test_func = static_cast<Shader::CompareFunction>(
@@ -424,9 +479,23 @@ Shader::RuntimeInfo GraphicsRuntime(const Maxwell& regs, const Shader::IR::Progr
     if (regs.viewport_scale_offset_enabled &&
         viewport.swizzle.y == Maxwell::ViewportSwizzle::NegativeY)
         positive_height = !positive_height;
-    runtime.y_negate = program.stage == Shader::Stage::VertexB && positive_height;
-    runtime.convert_depth_mode = program.stage == Shader::Stage::VertexB &&
-                                 regs.depth_mode == Maxwell::DepthMode::MinusOneToOne;
+    const auto final_vertex_stage = regs.IsShaderConfigEnabled(Maxwell::ShaderType::Geometry)
+                                        ? Shader::Stage::Geometry
+                                        : Shader::Stage::VertexB;
+    runtime.y_negate = program.stage == final_vertex_stage && positive_height;
+    runtime.convert_depth_mode =
+        program.stage == final_vertex_stage && regs.depth_mode == Maxwell::DepthMode::MinusOneToOne;
+    if (regs.transform_feedback_enabled && program.stage == final_vertex_stage) {
+        VideoCommon::TransformFeedbackState feedback{};
+        for (size_t i = 0; i < feedback.layouts.size(); ++i) {
+            const auto& control = regs.transform_feedback.controls[i];
+            feedback.layouts[i] = {control.stream, control.varying_count, control.stride};
+        }
+        feedback.varyings = regs.stream_out_layout;
+        auto [varyings, count] = VideoCommon::MakeTransformFeedbackVaryings(feedback);
+        runtime.xfb_varyings = varyings;
+        runtime.xfb_count = count;
+    }
     for (size_t i = 0; i < runtime.generic_input_types.size(); ++i) {
         const auto& attribute = regs.vertex_attrib_format[i];
         if (attribute.constant) {
@@ -584,6 +653,12 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(
         Pso::HashBytes(&regs.alpha_test_ref, sizeof(regs.alpha_test_ref), specialization);
     specialization = Pso::HashBytes(&regs.transform_feedback_enabled,
                                     sizeof(regs.transform_feedback_enabled), specialization);
+    if (regs.transform_feedback_enabled) {
+        specialization = Pso::HashBytes(regs.transform_feedback.controls.data(),
+                                        sizeof(regs.transform_feedback.controls), specialization);
+        specialization = Pso::HashBytes(regs.stream_out_layout.data(),
+                                        sizeof(regs.stream_out_layout), specialization);
+    }
     request.stage_hashes[0] =
         Pso::HashBytes(&specialization, sizeof(specialization), request.stage_hashes[0]);
     if (const auto found = guest_graphics.find(request); found != guest_graphics.end())
@@ -594,6 +669,7 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(
         TranslationState translation{context.Device()};
         std::array<Shader::IR::Program, 6> programs;
         std::array<std::string, 6> sources;
+        std::array<Shader::RuntimeInfo, 6> runtimes;
         std::vector<StageInput> stages;
         for (size_t index = 0; index < programs.size(); ++index) {
             if (!guest_hashes[index])
@@ -623,7 +699,9 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(
                 for (size_t slot = 0; slot < formats.colors.size(); ++slot)
                     program.info.stores_frag_color[slot] &= formats.colors[slot] != 0;
             }
-            const auto runtime = GraphicsRuntime(maxwell3d->regs, program, previous);
+            const auto& runtime = runtimes[index] =
+                GraphicsRuntime(maxwell3d->regs, program, previous,
+                                static_cast<u32>(maxwell3d->draw_manager.draw_state.topology));
             Shader::Maxwell::ConvertLegacyToGeneric(program, runtime);
             if (program.stage == Shader::Stage::Fragment &&
                 maxwell3d->draw_manager.draw_state.topology == Maxwell::PrimitiveTopology::Quads &&
@@ -645,7 +723,8 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(
             stages.push_back({program.stage,
                               guest_hashes[index],
                               sources[index],
-                              {counts.cbv, counts.srv, counts.uav, counts.sampler}});
+                              {counts.cbv, counts.srv, counts.uav, counts.sampler},
+                              &runtime});
             previous = &program;
         }
         std::uint32_t vertex_reads = 0;
@@ -659,12 +738,13 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(
             const auto& input = regs.vertex_attrib_format[index];
             const auto& attribute = state.attributes[index];
             const u32 size = static_cast<u32>(input.size.Value());
-            if (!attribute.dxgi || attribute.swap_rb || attribute.scaled ||
-                size == Pso::VSize::R16G16B16 || size == Pso::VSize::R8G8B8) {
-                ReportUnsupported(fmt::format("vertex_attrib_format[{}] size={:x} type={} bgra={} "
-                                              "requires vertex pulling/component conversion",
-                                              index, size, static_cast<u32>(input.type.Value()),
-                                              input.bgra != 0));
+            const bool component_conversion = attribute.swap_rb || attribute.scaled;
+            if (!attribute.dxgi || (attribute.swap_rb && size == Pso::VSize::B10G11R11)) {
+                ReportUnsupported(
+                    fmt::format("vertex_attrib_format[{}] size={:x} type={} bgra={} "
+                                "requires vertex pulling/component conversion native_conversion={}",
+                                index, size, static_cast<u32>(input.type.Value()), input.bgra != 0,
+                                component_conversion));
                 guest_graphics.emplace(request, nullptr);
                 return nullptr;
             }

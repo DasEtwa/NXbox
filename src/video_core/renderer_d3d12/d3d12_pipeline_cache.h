@@ -34,6 +34,7 @@ struct StageInput {
     u64 hash;
     std::string_view hlsl;
     DescriptorCounts counts; // CountDescriptors(program.info)
+    const Shader::RuntimeInfo* runtime{};
 };
 
 struct GraphicsPipelineKey {

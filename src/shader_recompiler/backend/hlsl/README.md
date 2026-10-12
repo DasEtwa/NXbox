@@ -195,3 +195,36 @@ Notes for pipeline/robustness integration:
 - Full software FP64, exact FP16 FMA/rounding modes, hull/domain stages, and
   remaining texture variants are not provided by this change. The default
   renderer remains unchanged.
+
+
+## T9 native stage integration
+
+The native pipeline now declares fragment/geometry inputs from the producer's entire
+varying layout, including unused float4 components. Generic semantics appear in the
+same order on both sides of a stage boundary; rasterizer-generated pixel system
+values follow that layout. Vertex and instance IDs include the guest base offsets
+passed through root constants. Coordinate conversion runs only at the final vertex
+stage when a geometry shader is active.
+
+Stream-zero transform feedback is connected to native stream output: the root
+signature allows it, both legacy and advanced depth-stencil PSOs receive its
+declaration, guest buffers are synchronized and marked written, and filled-size
+counters are retained across draws. A separate `NX_XFB_POSITION` export captures
+position before host coordinate conversion. Rasterizer discard works for non-empty
+stream-output layouts. Multi-stream geometry and legacy stream-output semantics
+still fail explicitly.
+
+The native input assembler receives a separate slot per attribute. Misaligned or
+expanded inputs are repacked, three-component 8/16-bit values receive the correct
+fourth component, BGRA/GR byte ordering is converted, and scaled integers use typed
+integer signatures followed by numeric conversion. Unsupported format combinations
+(including BGRA R11G11B10) are skipped with their format/type reason.
+
+DrawTexture has a real rectangle/sampler blit for normalized/float, single-sample
+2D and 2D-array sources. Source/destination aliasing uses a feedback snapshot.
+Integer and multisample blits remain explicit fallbacks. Hull/domain stages,
+GetPatch/SetPatch, geometry passthrough, wide-line/point expansion and SM 6.6
+renderer target selection remain unfinished. The 4511-shader corpus tests emission
+and DXIL validation; it does not exercise runtime stream-output cursors or Xbox
+pixel correctness. `tests/port/test_t9_stages.py` adds executable fetch/conversion
+regressions and optional actual-emitter VS/GS/PS and DXC validation.

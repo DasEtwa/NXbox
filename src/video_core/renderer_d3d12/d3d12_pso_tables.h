@@ -9,6 +9,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <span>
 #include <type_traits>
@@ -333,6 +334,64 @@ inline void RepackVertexAttribute(std::span<std::uint8_t> destination,
         const auto count = std::min<std::uint64_t>(bytes, source.size() - offset);
         std::copy_n(source.data() + offset, static_cast<std::size_t>(count),
                     destination.data() + element * bytes);
+    }
+}
+
+constexpr std::uint32_t VertexComponentBytes(std::uint32_t size) {
+    using namespace VSize;
+    if (size == R32 || size == R32G32 || size == R32G32B32 || size == R32G32B32A32)
+        return 4;
+    if (size == R16 || size == R16G16 || size == R16G16B16 || size == R16G16B16A16)
+        return 2;
+    return 1;
+}
+constexpr std::uint32_t VertexStorageByteSize(std::uint32_t size, bool swap_rb = false) {
+    if (swap_rb && size != VSize::A2B10G10R10 && size != VSize::B10G11R11)
+        return VertexComponentBytes(size) * 4;
+    if (size == VSize::R16G16B16)
+        return 8;
+    if (size == VSize::R8G8B8 || size == VSize::A8)
+        return 4;
+    return VertexByteSize(size);
+}
+inline void RepackVertexFormat(std::span<std::uint8_t> destination,
+                               std::span<const std::uint8_t> source, std::uint32_t stride,
+                               std::uint32_t size, std::uint32_t type, bool swap_rb) {
+    const auto guest_bytes = VertexByteSize(size);
+    const auto storage_bytes = VertexStorageByteSize(size, swap_rb);
+    std::fill(destination.begin(), destination.end(), std::uint8_t{0});
+    for (std::size_t element = 0; element < destination.size() / storage_bytes; ++element) {
+        const std::uint64_t offset = std::uint64_t{element} * stride;
+        auto* target = destination.data() + element * storage_bytes;
+        if (offset < source.size())
+            std::copy_n(source.data() + offset,
+                        static_cast<std::size_t>(
+                            std::min<std::uint64_t>(guest_bytes, source.size() - offset)),
+                        target);
+        const auto component_bytes = VertexComponentBytes(size);
+        if (storage_bytes > guest_bytes || size == VSize::X8B8G8R8) {
+            const std::uint32_t one =
+                type == VType::Float   ? (component_bytes == 2 ? 0x3c00u : 0x3f800000u)
+                : type == VType::UNorm ? (component_bytes == 2 ? 0xffffu : 0xffu)
+                : type == VType::SNorm ? (component_bytes == 2 ? 0x7fffu : 0x7fu)
+                                       : 1u;
+            std::memcpy(target + storage_bytes - component_bytes, &one, component_bytes);
+        }
+        if (size == VSize::A8) {
+            target[3] = target[0];
+            target[0] = 0;
+        }
+        if (size == VSize::G8R8) {
+            std::swap(target[0], target[1]);
+        } else if (swap_rb && size == VSize::A2B10G10R10) {
+            std::uint32_t packed{};
+            std::memcpy(&packed, target, sizeof(packed));
+            packed = (packed & 0xc00ffc00u) | ((packed & 0x3ffu) << 20) | ((packed >> 20) & 0x3ffu);
+            std::memcpy(target, &packed, sizeof(packed));
+        } else if (swap_rb && storage_bytes >= 3 && size != VSize::A8) {
+            for (std::uint32_t byte = 0; byte < component_bytes; ++byte)
+                std::swap(target[byte], target[component_bytes * 2 + byte]);
+        }
     }
 }
 

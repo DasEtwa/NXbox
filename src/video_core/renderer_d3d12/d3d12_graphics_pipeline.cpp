@@ -25,6 +25,7 @@ struct DepthStencilStream {
     StreamObject<D3D12_SHADER_BYTECODE, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_HS> hs;
     StreamObject<D3D12_SHADER_BYTECODE, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DS> ds;
     StreamObject<D3D12_SHADER_BYTECODE, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_GS> gs;
+    StreamObject<D3D12_STREAM_OUTPUT_DESC, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_STREAM_OUTPUT> so;
     StreamObject<D3D12_BLEND_DESC, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_BLEND> blend;
     StreamObject<UINT, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_MASK> mask;
     StreamObject<D3D12_RASTERIZER_DESC, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RASTERIZER> raster;
@@ -54,6 +55,7 @@ void CreateDepthStencilPipeline(ID3D12Device* device,
     stream.hs.value = desc.HS;
     stream.ds.value = desc.DS;
     stream.gs.value = desc.GS;
+    stream.so.value = desc.StreamOutput;
     stream.blend.value = desc.BlendState;
     stream.mask.value = desc.SampleMask;
     stream.raster.value = desc.RasterizerState;
@@ -84,12 +86,14 @@ D3D12_SHADER_BYTECODE Bytecode(const StageProgram& program) {
 GraphicsPipeline::GraphicsPipeline(ID3D12Device* device, ComPtr<ID3D12RootSignature> signature,
                                    const Pso::GraphicsPsoState& state_, u32 d3d_topology,
                                    std::span<const StageProgram> programs, DiskPipelineCache* disk,
-                                   u64 key, std::span<const u8> recipe)
+                                   u64 key, std::span<const u8> recipe,
+                                   const D3D12_STREAM_OUTPUT_DESC& stream_output)
     : state{state_}, topology{d3d_topology}, root_signature{std::move(signature)} {
     if (!Pso::DsvHasStencil(state.dsv_format))
         state.stencil_enable = 0;
     D3D12_GRAPHICS_PIPELINE_STATE_DESC desc{};
     desc.pRootSignature = root_signature.Get();
+    desc.StreamOutput = stream_output;
     for (const auto& program : programs) {
         switch (program.stage) {
         case Shader::Stage::VertexA:

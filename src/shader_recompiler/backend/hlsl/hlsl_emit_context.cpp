@@ -41,8 +41,10 @@ std::string TextureClass(TextureType type, bool writable, bool multisample = fal
 std::string VectorType(AttributeType type) {
     switch (type) {
     case AttributeType::SignedInt:
+    case AttributeType::SignedScaled:
         return "int4";
     case AttributeType::UnsignedInt:
+    case AttributeType::UnsignedScaled:
         return "uint4";
     default:
         return "float4";
@@ -300,6 +302,8 @@ EmitContext::EmitContext(IR::Program& program, Bindings& bindings, const Profile
         for (size_t i = 0; i < 2; ++i)
             if (info.used_clip_distances & (0xfu << (i * 4)))
                 header += fmt::format("float4 clip{} : SV_ClipDistance{};\n", i, i);
+        if (runtime_info.xfb_count)
+            header += "float4 nx_xfb_position : NX_XFB_POSITION;\n";
     } else {
         bool has_output = info.stores_frag_depth || info.stores_sample_mask;
         for (size_t i = 0; i < 8; ++i) {
@@ -349,9 +353,9 @@ std::string EmitContext::Attribute(IR::Attribute attribute, bool output) {
     }
     switch (attribute) {
     case IR::Attribute::VertexId:
-        return "input.vertex_id";
+        return "(input.vertex_id + nx_base_vertex)";
     case IR::Attribute::InstanceId:
-        return "input.instance_id";
+        return "(input.instance_id + nx_base_instance)";
     case IR::Attribute::PrimitiveId:
         return stage == Stage::Geometry ? "nx_primitive_id" : "input.primitive_id";
     case IR::Attribute::FrontFace:
@@ -427,6 +431,8 @@ void EmitContext::FinishOutput(std::string_view output) {
     }
     if (stage != Stage::VertexA && stage != Stage::VertexB && stage != Stage::Geometry)
         return;
+    if (runtime_info.xfb_count)
+        Add("{0}.nx_xfb_position = {0}.position;", output);
     if (runtime_info.y_negate)
         Add("{0}.position.y = -{0}.position.y;", output);
     if (runtime_info.convert_depth_mode)

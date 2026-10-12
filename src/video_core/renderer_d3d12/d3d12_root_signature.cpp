@@ -45,7 +45,8 @@ ComPtr<ID3D12RootSignature> CreateRootSignature(ID3D12Device* device, Descriptor
     D3D12_ROOT_SIGNATURE_DESC desc{};
     desc.NumParameters = static_cast<UINT>(params.size());
     desc.pParameters = params.data();
-    desc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+    desc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT |
+                 D3D12_ROOT_SIGNATURE_FLAG_ALLOW_STREAM_OUTPUT;
 
     ComPtr<ID3DBlob> blob, error;
     const HRESULT hr =
