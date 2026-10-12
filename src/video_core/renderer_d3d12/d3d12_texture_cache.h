@@ -137,6 +137,8 @@ public:
     u64 allocation_tick{};
 
 private:
+    void TransferConverted(const StagingBufferRef&, std::span<const VideoCommon::BufferImageCopy>,
+                           bool download);
     void Transfer(const StagingBufferRef&, std::span<const VideoCommon::BufferImageCopy>,
                   bool download, const ResourcePtr& gpu_destination = {}, size_t gpu_offset = 0);
     TextureCacheRuntime* runtime{};

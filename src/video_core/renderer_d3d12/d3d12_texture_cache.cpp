@@ -7,6 +7,7 @@
 #include <mutex>
 #include <set>
 #include <stdexcept>
+#include <string>
 #include <tuple>
 #include <fmt/format.h>
 #include "common/logging.h"
@@ -37,11 +38,11 @@ namespace {
 void UnsupportedImage(const VideoCommon::ImageInfo& info, FormatInfo format,
                       std::string_view condition) {
     static std::mutex mutex;
-    static std::set<std::tuple<u32, u32, u32, u32>> logged;
+    static std::set<std::tuple<u32, u32, u32, u32, std::string>> logged;
     std::scoped_lock lock{mutex};
     if (!logged
              .emplace(static_cast<u32>(info.format), format.planes, info.num_samples,
-                      static_cast<u32>(info.type))
+                      static_cast<u32>(info.type), std::string{condition})
              .second)
         return;
     std::string_view name = "Unknown";
@@ -220,6 +221,22 @@ Image::Image(TextureCacheRuntime& runtime, const VideoCommon::ImageInfo& info, G
         }
     }
     resource = MakeTexture(runtime.context, info, host_format);
+    if (!resource && VideoCore::Surface::IsPixelFormatBCn(info.format)) {
+        // The shared cache already owns BCn decoding and converted-size accounting.
+        const auto name = host_format.name;
+        host_format = name.starts_with("BC4")
+                          ? LookupFormat(name.ends_with("SNORM") ? "R8_SNORM" : "R8_UNORM")
+                      : name.starts_with("BC5")
+                          ? LookupFormat(name.ends_with("SNORM") ? "R8G8_SNORM" : "R8G8_UNORM")
+                      : name.starts_with("BC6")
+                          ? LookupFormat("R16G16B16A16_FLOAT")
+                          : LookupFormat(VideoCore::Surface::IsPixelFormatSRGB(info.format)
+                                             ? "A8B8G8R8_SRGB"
+                                             : "A8B8G8R8_UNORM");
+        flags |= VideoCommon::ImageFlagBits::Converted;
+        flags |= VideoCommon::ImageFlagBits::CostlyLoad;
+        resource = MakeTexture(runtime.context, info, host_format);
+    }
     if (resource && !BisectEnabled("NXBOX_D3D12_NO_GPU_ASTC") &&
         VideoCore::Surface::IsPixelFormatASTC(info.format) &&
         info.type == VideoCommon::ImageType::e2D && info.num_samples == 1 &&
@@ -234,6 +251,12 @@ void Image::UploadMemory(const StagingBufferRef& map,
 }
 void Image::DownloadMemory(const StagingBufferRef& map,
                            std::span<const VideoCommon::BufferImageCopy> copies) {
+    if (VideoCore::Surface::IsPixelFormatBCn(info.format) && host_format.block_width == 1) {
+        UnsupportedImage(
+            info, host_format,
+            "decoded BCn readback needs a lossy encoder; original guest blocks retained");
+        return;
+    }
     if (host_format.converted_astc || VideoCore::Surface::IsPixelFormatASTC(info.format)) {
         UnsupportedImage(info, host_format, "converted ASTC readback is not reversible");
         return;
@@ -257,6 +280,12 @@ void Image::DownloadMemory(std::span<const ResourcePtr> buffers, std::span<const
     if (buffers.size() != 2 || offsets.size() != 2 || !buffers[0] || !buffers[1] ||
         buffers[0]->heap != D3D12_HEAP_TYPE_DEFAULT || offsets[1] > buffers[1]->mapped.size())
         throw std::invalid_argument("D3D12 invalid DMA download destinations");
+    if (VideoCore::Surface::IsPixelFormatBCn(info.format) && host_format.block_width == 1) {
+        UnsupportedImage(
+            info, host_format,
+            "decoded BCn readback needs a lossy encoder; original guest blocks retained");
+        return;
+    }
     if (host_format.converted_astc || VideoCore::Surface::IsPixelFormatASTC(info.format)) {
         UnsupportedImage(info, host_format, "converted ASTC readback is not reversible");
         return;
@@ -269,11 +298,6 @@ void Image::Transfer(const StagingBufferRef& input,
                      const ResourcePtr& gpu_destination, size_t gpu_offset) {
     if (!resource)
         return;
-    if (host_format.planes != 1) {
-        UnsupportedImage(info, host_format,
-                         "packed depth/stencil staging transfer not implemented");
-        return;
-    }
     if (resource->handle->GetDesc().SampleDesc.Count > 1) {
         // Guest memory stores every sample as a texel in an expanded grid. Keep
         // staging on a single-sample image and scatter/gather with shader loads.
@@ -316,6 +340,15 @@ void Image::Transfer(const StagingBufferRef& input,
             single.Transfer(input, copies, false);
             runtime->CopyImageMSAA(*this, single, image_copies);
         }
+        return;
+    }
+    if (host_format.conversion != FormatConversion::None) {
+        if (gpu_destination) {
+            UnsupportedImage(info, host_format,
+                             "converted DMA download requires CPU packing; use CPU readback");
+            return;
+        }
+        TransferConverted(input, copies, download);
         return;
     }
     auto map = input;
@@ -458,13 +491,198 @@ void Image::Transfer(const StagingBufferRef& input,
         }
     }
 }
+// Packed and ETC/EAC conversions consume the original unswizzled guest layout.
+// ASTC and optional BCn decompression instead use the shared Converted upload path.
+void Image::TransferConverted(const StagingBufferRef& input,
+                              std::span<const VideoCommon::BufferImageCopy> copies, bool download) {
+    const auto conversion = host_format.conversion;
+    const bool compressed =
+        conversion == FormatConversion::Etc2 || conversion == FormatConversion::Eac;
+    if (download && compressed) {
+        UnsupportedImage(info, host_format,
+                         "ETC2/EAC readback needs a lossy encoder; original guest blocks retained");
+        return;
+    }
+    auto map = input;
+    if (!map.buffer || map.mapped_span.empty()) {
+        UnsupportedImage(info, host_format, "converted transfer missing mapped staging");
+        return;
+    }
+    const auto origin = static_cast<size_t>(map.mapped_span.data() - map.buffer->mapped.data());
+    if (map.offset < origin || map.offset - origin > map.mapped_span.size()) {
+        UnsupportedImage(info, host_format, "converted staging offset outside mapped range");
+        return;
+    }
+    map.mapped_span = map.mapped_span.subspan(map.offset - origin);
+    auto& context = runtime->context;
+    const u32 guest_bytes = VideoCore::Surface::BytesPerBlock(info.format);
+    const u32 block_width = VideoCore::Surface::DefaultBlockWidth(info.format);
+    const u32 block_height = VideoCore::Surface::DefaultBlockHeight(info.format);
+    const auto resource_desc = resource->handle->GetDesc();
+    context.Transition(resource, download ? D3D12_RESOURCE_STATE_COPY_SOURCE
+                                          : D3D12_RESOURCE_STATE_COPY_DEST);
+    for (const auto& copy : copies) {
+        const auto& extent = copy.image_extent;
+        const auto& offset = copy.image_offset;
+        const auto level = copy.image_subresource.base_level;
+        if (level < 0 || level >= info.resources.levels || !extent.width || !extent.height ||
+            !extent.depth || copy.image_subresource.num_layers <= 0 ||
+            copy.image_subresource.base_layer < 0 ||
+            copy.image_subresource.base_layer + copy.image_subresource.num_layers >
+                info.resources.layers ||
+            offset.x < 0 || offset.y < 0 || offset.z < 0 ||
+            u64{static_cast<u32>(offset.x)} + extent.width >
+                std::max(1u, info.size.width >> level) ||
+            u64{static_cast<u32>(offset.y)} + extent.height >
+                std::max(1u, info.size.height >> level) ||
+            u64{static_cast<u32>(offset.z)} + extent.depth >
+                (info.type == VideoCommon::ImageType::e3D ? std::max(1u, info.size.depth >> level)
+                                                          : 1u)) {
+            UnsupportedImage(info, host_format, "converted copy outside image subresources");
+            return;
+        }
+        const u32 row_length = copy.buffer_row_length ? copy.buffer_row_length : extent.width;
+        const u32 image_height =
+            copy.buffer_image_height ? copy.buffer_image_height : extent.height;
+        if (row_length < extent.width || image_height < extent.height) {
+            UnsupportedImage(info, host_format, "converted copy stride smaller than extent");
+            return;
+        }
+        // Depth resources require a whole-subresource CopyTextureRegion, with no box.
+        if (host_format.depth && (offset.x || offset.y || offset.z ||
+                                  extent.width != std::max(1u, info.size.width >> level) ||
+                                  extent.height != std::max(1u, info.size.height >> level))) {
+            UnsupportedImage(info, host_format,
+                             "partial depth/stencil copy requires shader conversion");
+            return;
+        }
+        const u64 row_stride = ((u64{row_length} + block_width - 1) / block_width) * guest_bytes;
+        const u64 slice_stride =
+            row_stride * ((u64{image_height} + block_height - 1) / block_height);
+        const u64 guest_row_bytes =
+            ((u64{extent.width} + block_width - 1) / block_width) * guest_bytes;
+        const u64 guest_rows = (u64{extent.height} + block_height - 1) / block_height;
+        for (s32 layer = 0; layer < copy.image_subresource.num_layers; ++layer) {
+            const u64 base =
+                copy.buffer_offset + slice_stride * extent.depth * static_cast<u32>(layer);
+            const u64 size =
+                slice_stride * (extent.depth - 1) + row_stride * (guest_rows - 1) + guest_row_bytes;
+            if (base > map.mapped_span.size() || size > map.mapped_span.size() - base) {
+                UnsupportedImage(info, host_format, "converted copy outside guest staging");
+                return;
+            }
+            for (u32 plane = 0; plane < host_format.planes; ++plane) {
+                auto desc = resource_desc;
+                desc.Width = extent.width;
+                desc.Height = extent.height;
+                desc.DepthOrArraySize = static_cast<UINT16>(
+                    info.type == VideoCommon::ImageType::e3D ? extent.depth : 1);
+                desc.MipLevels = 1;
+                D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
+                UINT rows{};
+                UINT64 row_bytes{}, total{};
+                context.Device()->GetCopyableFootprints(&desc, plane, 1, 0, &footprint, &rows,
+                                                        &row_bytes, &total);
+                if (total == UINT64_MAX || rows != extent.height || !row_bytes) {
+                    UnsupportedImage(info, host_format, "invalid converted SDK footprint");
+                    return;
+                }
+                const u64 padded_slice = u64{footprint.Footprint.RowPitch} * rows;
+                auto aligned = download
+                                   ? runtime->DownloadStagingBuffer(padded_slice * extent.depth)
+                                   : runtime->UploadStagingBuffer(padded_slice * extent.depth);
+                // Conversion has no allocation and all byte ranges have been checked above.
+                const auto convert = [map, aligned, base, row_stride, slice_stride, padded_slice,
+                                      pitch = footprint.Footprint.RowPitch, extent, plane,
+                                      format = host_format, download] {
+                    auto* guest = map.mapped_span.data() + base;
+                    auto* host = aligned.mapped_span.data();
+                    for (u32 z = 0; z < extent.depth; ++z) {
+                        if (format.conversion == FormatConversion::Etc2 ||
+                            format.conversion == FormatConversion::Eac) {
+                            const u32 block_bytes =
+                                format.conversion == FormatConversion::Etc2
+                                    ? (format.name.find("RGBA") != std::string_view::npos ? 16u
+                                                                                          : 8u)
+                                    : format.bytes_per_block * 4;
+                            for (u32 by = 0; by < (extent.height + 3) / 4; ++by)
+                                for (u32 bx = 0; bx < (extent.width + 3) / 4; ++bx) {
+                                    std::array<u8, 64> decoded{};
+                                    DecodeEtcBlock(format,
+                                                   guest + z * slice_stride + by * row_stride +
+                                                       bx * block_bytes,
+                                                   decoded.data());
+                                    for (u32 y = 0; y < std::min(4u, extent.height - by * 4); ++y)
+                                        std::memcpy(host + z * padded_slice + (by * 4 + y) * pitch +
+                                                        bx * 4 * format.bytes_per_block,
+                                                    decoded.data() + y * 4 * format.bytes_per_block,
+                                                    std::min(4u, extent.width - bx * 4) *
+                                                        format.bytes_per_block);
+                                }
+                        } else
+                            for (u32 y = 0; y < extent.height; ++y) {
+                                auto* host_row = host + z * padded_slice + y * pitch;
+                                auto* guest_row = guest + z * slice_stride + y * row_stride;
+                                if (format.depth)
+                                    ConvertDepthRow(format.name, host_row, guest_row, extent.width,
+                                                    plane, download);
+                                else
+                                    ConvertPackedRow(format.name, host_row, guest_row, extent.width,
+                                                     download);
+                            }
+                    }
+                };
+                footprint.Offset = aligned.offset;
+                D3D12_TEXTURE_COPY_LOCATION linear{}, texture{};
+                linear.pResource = aligned.buffer->handle.Get();
+                linear.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+                linear.PlacedFootprint = footprint;
+                texture.pResource = resource->handle.Get();
+                texture.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+                texture.SubresourceIndex =
+                    Subresource(info, level, copy.image_subresource.base_layer + layer) +
+                    plane * static_cast<UINT>(info.resources.levels * info.resources.layers);
+                context.Retain(resource);
+                context.Retain(aligned.buffer);
+                context.MarkWork("upload/copy");
+                if (download) {
+                    D3D12_BOX box{static_cast<UINT>(offset.x),
+                                  static_cast<UINT>(offset.y),
+                                  static_cast<UINT>(offset.z),
+                                  static_cast<UINT>(offset.x) + extent.width,
+                                  static_cast<UINT>(offset.y) + extent.height,
+                                  static_cast<UINT>(offset.z) + extent.depth};
+                    context.Commands()->CopyTextureRegion(&linear, 0, 0, 0, &texture,
+                                                          host_format.depth ? nullptr : &box);
+                    context.AfterCompletion(convert);
+                } else {
+                    convert();
+                    context.Commands()->CopyTextureRegion(&texture, offset.x, offset.y, offset.z,
+                                                          &linear, nullptr);
+                }
+            }
+        }
+    }
+}
 ImageView::ImageView(TextureCacheRuntime&, const VideoCommon::ImageViewInfo& info,
                      VideoCommon::ImageId id, Image& image)
     : ImageViewBase{info, image.info, id, image.gpu_addr}, sample_count{image.info.num_samples},
       image_type{image.info.type}, host_format{image.HostFormat()}, resource{image.Handle()} {
     if (!resource)
         return;
-    const auto view_info = MaxwellFormat(info.format);
+    auto view_info = MaxwellFormat(info.format);
+    const bool decoded_bcn = VideoCore::Surface::IsPixelFormatBCn(image.info.format) &&
+                             image.HostFormat().block_width == 1;
+    if (decoded_bcn && info.format == image.info.format)
+        view_info = image.HostFormat();
+    if (image.HostFormat().conversion != FormatConversion::None &&
+        info.format != image.info.format) {
+        UnsupportedImage(
+            image.info, image.HostFormat(),
+            "converted storage cannot alias a different guest format without repacking");
+        resource.reset();
+        return;
+    }
     if (!view_info.Supported() ||
         (!VideoCore::Surface::IsPixelFormatASTC(info.format) &&
          view_info.resource_format != image.HostFormat().resource_format)) {
@@ -483,10 +701,31 @@ ImageView::ImageView(TextureCacheRuntime&, const VideoCommon::ImageViewInfo& inf
                      : source == Tegra::Texture::SwizzleSource::OneFloat ||
                              source == Tegra::Texture::SwizzleSource::OneInt
                          ? 5
-                         : static_cast<UINT>(source) - 2;
+                         : view_info.components[static_cast<UINT>(source) - 2];
     }
     description.Shader4ComponentMapping =
         D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(mapping[0], mapping[1], mapping[2], mapping[3]);
+    UINT view_plane{};
+    if (host_format.planes == 2) {
+        const bool stencil_first =
+            info.format == VideoCore::Surface::PixelFormat::S8_UINT_D24_UNORM;
+        const bool stencil_only = info.format == VideoCore::Surface::PixelFormat::S8_UINT;
+        const auto depth_source =
+            stencil_first ? Tegra::Texture::SwizzleSource::G : Tegra::Texture::SwizzleSource::R;
+        const bool depth_selected =
+            !stencil_only && std::ranges::find(sources, depth_source) != sources.end();
+        view_plane = depth_selected ? 0u : 1u;
+        if (view_plane)
+            description.Format = host_format.resource_format == 19
+                                     ? DXGI_FORMAT_X32_TYPELESS_G8X24_UINT
+                                     : DXGI_FORMAT_X24_TYPELESS_G8_UINT;
+        for (size_t i = 0; i < 4; ++i) {
+            if (mapping[i] < 4)
+                mapping[i] = view_plane ? 1u : 0u;
+        }
+        description.Shader4ComponentMapping =
+            D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(mapping[0], mapping[1], mapping[2], mapping[3]);
+    }
     const auto desc = resource->handle->GetDesc();
     if (range.base.level < 0 || range.extent.levels <= 0 ||
         range.base.level + range.extent.levels > desc.MipLevels || range.base.layer < 0 ||
@@ -531,13 +770,13 @@ ImageView::ImageView(TextureCacheRuntime&, const VideoCommon::ImageViewInfo& inf
     case VideoCommon::ImageViewType::Rect:
         if (resource->handle->GetDesc().DepthOrArraySize == 1) {
             description.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-            description.Texture2D = {level, levels, 0, 0};
+            description.Texture2D = {level, levels, view_plane, 0};
             break;
         }
         [[fallthrough]];
     case VideoCommon::ImageViewType::e2DArray:
         description.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
-        description.Texture2DArray = {level, levels, first_layer, layers, 0, 0};
+        description.Texture2DArray = {level, levels, first_layer, layers, view_plane, 0};
         break;
     case VideoCommon::ImageViewType::Cube:
         description.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
@@ -613,7 +852,10 @@ ResourcePtr TextureCacheRuntime::ResolveFramebuffer(ImageView& view) {
 }
 bool TextureCacheRuntime::CanDownloadImage(const Image& image) const {
     const auto format = image.HostFormat();
-    return image.Handle() && format.planes == 1 && !format.converted_astc &&
+    return image.Handle() && !format.converted_astc &&
+           !(VideoCore::Surface::IsPixelFormatBCn(image.info.format) && format.block_width == 1) &&
+           format.conversion != FormatConversion::Etc2 &&
+           format.conversion != FormatConversion::Eac &&
            !VideoCore::Surface::IsPixelFormatASTC(image.info.format);
 }
 ComputePasses& TextureCacheRuntime::ComputeHelpers() {
@@ -791,22 +1033,27 @@ ResourcePtr TextureCacheRuntime::UploadFramebuffer(Tegra::MaxwellDeviceMemoryMan
         return {};
     // NVFlinger framebuffer block height matches the existing GL/Vulkan fallback.
     constexpr u32 block_height = 4;
-    const auto tiled_size = Tegra::Texture::CalculateSize(
-        true, format.bytes_per_block, config.stride, config.height, 1, block_height, 0);
+    const u32 guest_bytes = VideoCore::Surface::BytesPerBlock(info.format);
+    const auto tiled_size = Tegra::Texture::CalculateSize(true, guest_bytes, config.stride,
+                                                          config.height, 1, block_height, 0);
     if (tiled_size > (64ULL << 20))
         throw std::runtime_error("D3D12 framebuffer exceeds staging limit");
     framebuffer_tiled.resize(tiled_size);
     framebuffer_linear.resize(
-        CheckedMultiply(CheckedMultiply(config.stride, config.height), format.bytes_per_block));
+        CheckedMultiply(CheckedMultiply(config.stride, config.height), guest_bytes));
     memory.ReadBlockUnsafe(address, framebuffer_tiled.data(), tiled_size);
-    Tegra::Texture::UnswizzleTexture(framebuffer_linear, framebuffer_tiled, format.bytes_per_block,
+    Tegra::Texture::UnswizzleTexture(framebuffer_linear, framebuffer_tiled, guest_bytes,
                                      config.stride, config.height, 1, block_height, 0);
     const auto footprint = MakeFootprint(format, config.width, config.height);
     auto staging = upload.Request(footprint.size);
-    for (u32 y = 0; y < config.height; ++y)
-        std::memcpy(staging.mapped_span.data() + y * footprint.row_pitch,
-                    framebuffer_linear.data() + u64{y} * config.stride * format.bytes_per_block,
-                    footprint.row_bytes);
+    for (u32 y = 0; y < config.height; ++y) {
+        auto* host_row = staging.mapped_span.data() + y * footprint.row_pitch;
+        auto* guest_row = framebuffer_linear.data() + u64{y} * config.stride * guest_bytes;
+        if (format.conversion == FormatConversion::PackedColor)
+            ConvertPackedRow(format.name, host_row, guest_row, config.width, false);
+        else
+            std::memcpy(host_row, guest_row, footprint.row_bytes);
+    }
     context.Transition(framebuffer, D3D12_RESOURCE_STATE_COPY_DEST);
     context.Retain(staging.buffer);
     D3D12_TEXTURE_COPY_LOCATION source{}, target{};
