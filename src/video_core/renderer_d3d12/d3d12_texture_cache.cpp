@@ -9,6 +9,7 @@
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/renderer_d3d12/d3d12_descriptor.h"
 #include "video_core/renderer_d3d12/d3d12_footprint.h"
+#include "video_core/texture_cache/accelerated_swizzle.h"
 #include "video_core/texture_cache/image_view_info.h"
 #include "video_core/texture_cache/util.h"
 #include "video_core/textures/decoders.h"
@@ -75,6 +76,16 @@ ResourcePtr MakeTexture(Context& context, const VideoCommon::ImageInfo& info, Fo
                desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE1D) {
         desc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
     }
+    if (!format.depth && format.block_width == 1 && format.block_height == 1) {
+        D3D12_FEATURE_DATA_FORMAT_SUPPORT uav_support{
+            format.converted_astc ? DXGI_FORMAT_R8G8B8A8_UNORM
+                                  : static_cast<DXGI_FORMAT>(format.view_format)};
+        Check(context.Device()->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &uav_support,
+                                                    sizeof(uav_support)),
+              "texture UAV support");
+        if (uav_support.Support2 & D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE)
+            desc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    }
     return context.CreateResource(desc, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_COMMON);
 }
 UINT Subresource(const VideoCommon::ImageInfo& info, s32 level, s32 layer) {
@@ -109,6 +120,12 @@ Image::Image(TextureCacheRuntime& runtime, const VideoCommon::ImageInfo& info, G
         }
     }
     resource = MakeTexture(runtime.context, info, host_format);
+    if (VideoCore::Surface::IsPixelFormatASTC(info.format) &&
+        info.type == VideoCommon::ImageType::e2D && info.num_samples == 1 &&
+        host_format.block_width == 1 &&
+        (resource->handle->GetDesc().Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS)) {
+        flags |= VideoCommon::ImageFlagBits::AcceleratedUpload;
+    }
 }
 void Image::UploadMemory(const StagingBufferRef& map,
                          std::span<const VideoCommon::BufferImageCopy> copies) {
@@ -331,10 +348,42 @@ ImageView::ImageView(TextureCacheRuntime&, const VideoCommon::ImageInfo& info,
 void TextureCacheRuntime::TransitionImageLayout(Image& image) {
     context.Transition(image.Handle(), D3D12_RESOURCE_STATE_COMMON);
 }
-void TextureCacheRuntime::AccelerateImageUpload(Image&, const StagingBufferRef&,
-                                                std::span<const VideoCommon::SwizzleParameters>,
-                                                u32, u32) {
-    throw std::runtime_error("D3D12 GPU unswizzle is unavailable");
+ComputePasses& TextureCacheRuntime::ComputeHelpers() {
+    if (!compute_passes)
+        compute_passes = std::make_unique<ComputePasses>(context);
+    return *compute_passes;
+}
+void TextureCacheRuntime::AccelerateImageUpload(
+    Image& image, const StagingBufferRef& map,
+    std::span<const VideoCommon::SwizzleParameters> swizzles, u32, u32) {
+    if (!VideoCore::Surface::IsPixelFormatASTC(image.info.format))
+        throw std::runtime_error("D3D12 accelerated upload currently requires ASTC");
+    auto& helpers = ComputeHelpers();
+    for (const auto& swizzle : swizzles) {
+        const auto params =
+            VideoCommon::Accelerated::MakeBlockLinearSwizzle2DParams(swizzle, image.info);
+        const u64 size = image.guest_size_bytes - swizzle.buffer_offset;
+        auto input = helpers.UploadInput(map.buffer, map.offset + swizzle.buffer_offset, size);
+        const std::array buffers{ComputeBufferView{input, 0, size}};
+        ComputeTextureView output;
+        output.resource = image.Handle();
+        output.descriptor.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        output.descriptor.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
+        output.descriptor.Texture2DArray = {static_cast<UINT>(swizzle.level), 0,
+                                            static_cast<UINT>(image.info.resources.layers), 0};
+        const AstcDecodeParameters constants{
+            VideoCore::Surface::DefaultBlockWidth(image.info.format),
+            VideoCore::Surface::DefaultBlockHeight(image.info.format),
+            params.layer_stride,
+            params.block_size,
+            params.x_shift,
+            params.block_height,
+            params.block_height_mask};
+        helpers.Run(HelperComputePass::DecodeAstc, constants.Constants(),
+                    {swizzle.num_tiles.width, swizzle.num_tiles.height,
+                     static_cast<u32>(image.info.resources.layers)},
+                    buffers, output);
+    }
 }
 void TextureCacheRuntime::BlitImage(Framebuffer*, ImageView&, ImageView&,
                                     const VideoCommon::Region2D&, const VideoCommon::Region2D&,

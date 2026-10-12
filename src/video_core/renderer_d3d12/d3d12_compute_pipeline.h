@@ -4,14 +4,18 @@
 #include <d3d12.h>
 #include <wrl/client.h>
 
+#include "shader_recompiler/shader_info.h"
+#include "video_core/renderer_d3d12/d3d12_disk_pipeline_cache.h"
 #include "video_core/renderer_d3d12/d3d12_dxc.h"
 
 namespace D3D12 {
 
 class ComputePipeline {
 public:
-    ComputePipeline(ID3D12Device* device, Microsoft::WRL::ComPtr<ID3D12RootSignature> root_signature,
-                    const DxilBlob& dxil);
+    ComputePipeline(ID3D12Device* device,
+                    Microsoft::WRL::ComPtr<ID3D12RootSignature> root_signature,
+                    const DxilBlob& dxil, DiskPipelineCache* disk = nullptr, u64 key = 0,
+                    std::span<const u8> recipe = {});
 
     ID3D12PipelineState* PipelineState() const {
         return pso.Get();
@@ -19,6 +23,8 @@ public:
     ID3D12RootSignature* RootSignature() const {
         return root_signature.Get();
     }
+
+    Shader::Info info;
 
 private:
     Microsoft::WRL::ComPtr<ID3D12RootSignature> root_signature;

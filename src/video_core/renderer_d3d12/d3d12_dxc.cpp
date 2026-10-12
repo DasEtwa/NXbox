@@ -26,7 +26,8 @@ const wchar_t* StageTarget(Shader::Stage stage) {
 DxilBlob DxcCache::Compile(std::string_view hlsl, Shader::Stage stage) {
     const wchar_t* target = StageTarget(stage);
     u64 hash = Pso::HashBytes(hlsl.data(), hlsl.size());
-    hash = Pso::HashBytes(&target, sizeof(target), hash);
+    const auto stage_value = static_cast<u32>(stage);
+    hash = Pso::HashBytes(&stage_value, sizeof(stage_value), hash);
     const auto [begin, end] = entries.equal_range(hash);
     for (auto it = begin; it != end; ++it) {
         if (it->second.target == target && it->second.source == hlsl) {

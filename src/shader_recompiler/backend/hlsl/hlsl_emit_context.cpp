@@ -90,8 +90,10 @@ EmitContext::EmitContext(IR::Program& program, Bindings& bindings, const Profile
                                       fmt::format("tex{}", binding), 't', binding, desc.count);
         if (!desc.is_multisample)
             header += RegisterDeclaration(desc.is_depth ? "SamplerComparisonState" : "SamplerState",
-                                          fmt::format("samp{}", binding), 's', binding, desc.count);
+                                          fmt::format("samp{}", binding), 's',
+                                          bindings.hlsl_sampler, desc.count);
         bindings.texture += desc.count;
+        bindings.hlsl_sampler += desc.count;
     }
     for (const auto& desc : info.texture_buffer_descriptors) {
         const auto binding = bindings.texture;

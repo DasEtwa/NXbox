@@ -108,6 +108,15 @@ public:
                        D3D12_SRV_DIMENSION fallback_dimension);
     void WriteSampler(const DescriptorTable& table, u32 slot, const Sampler& sampler);
 
+    bool WriteImageUav(const DescriptorTable& table, u32 slot, const ImageView& view,
+                       DXGI_FORMAT format);
+    ID3D12DescriptorHeap* ResourceHeap() const {
+        return views.heap.Get();
+    }
+    ID3D12DescriptorHeap* SamplerHeap() const {
+        return samplers.heap.Get();
+    }
+
     // Render target views derived from an image view's subresource range.
     // nullptr (or a view without image) creates a null RTV that discards writes.
     void CreateRtv(D3D12_CPU_DESCRIPTOR_HANDLE handle, const ImageView* view);

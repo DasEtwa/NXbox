@@ -3,14 +3,20 @@
 
 #pragma once
 
+#include <optional>
 #include "common/common_types.h"
 #include "video_core/control/channel_state_cache.h"
 #include "video_core/engines/maxwell_dma.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/renderer_d3d12/d3d12_buffer_cache.h"
+#include "video_core/renderer_d3d12/d3d12_clear.h"
 #include "video_core/renderer_d3d12/d3d12_descriptor.h"
+#include "video_core/renderer_d3d12/d3d12_dispatch.h"
+#include "video_core/renderer_d3d12/d3d12_index_converter.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_iface.h"
+#include "video_core/renderer_d3d12/d3d12_query_cache.h"
 #include "video_core/renderer_d3d12/d3d12_texture_cache.h"
+#include "video_core/renderer_d3d12/d3d12_transform_feedback.h"
 
 namespace Core {
 class System;
@@ -113,11 +119,19 @@ private:
     TextureCacheRuntime texture_runtime;
     BufferCache buffer_cache;
     TextureCache texture_cache;
+    IndexConverter index_converter;
+    std::optional<ConvertedIndexBuffer> converted_indices;
+    ClearRenderer clear_renderer;
+    ComputeDispatch compute_dispatch;
+    TransformFeedback transform_feedback;
+    QueryCacheRuntime query_runtime;
+    QueryCache query_cache;
     template <typename Func>
     void PrepareDraw(bool is_indexed, Func&& draw);
     ID3D12CommandSignature* IndirectSignature(bool indexed);
     std::array<u32, NUM_GRAPHICS_STAGES> uniform_masks{};
     VideoCommon::UniformBufferSizes uniform_sizes{};
+    VideoCommon::ComputeUniformBufferSizes compute_uniform_sizes{};
     std::vector<VideoCommon::ImageViewInOut> view_scratch;
     std::vector<VideoCommon::SamplerId> sampler_scratch;
     std::vector<std::pair<ResourcePtr, D3D12_RESOURCE_STATES>> state_scratch;

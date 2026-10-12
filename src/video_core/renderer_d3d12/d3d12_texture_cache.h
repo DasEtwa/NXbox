@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include "video_core/renderer_d3d12/d3d12_compute_pass.h"
 #include "video_core/renderer_d3d12/d3d12_context.h"
 #include "video_core/renderer_d3d12/d3d12_formats.h"
 #include "video_core/texture_cache/image_view_base.h"
@@ -76,9 +77,11 @@ public:
     // Raw framebuffer fallback lives here alongside the shared guest image cache.
     ResourcePtr UploadFramebuffer(Tegra::MaxwellDeviceMemoryManager&,
                                   const Tegra::FramebufferConfig&);
+    ComputePasses& ComputeHelpers();
     Context& context;
 
 private:
+    std::unique_ptr<ComputePasses> compute_passes;
     StagingRing upload;
     StagingRing readback;
     struct FramebufferEntry {

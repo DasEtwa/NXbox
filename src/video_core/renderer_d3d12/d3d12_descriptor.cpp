@@ -348,4 +348,45 @@ void D3D12DescriptorAllocator::CreateDsv(D3D12_CPU_DESCRIPTOR_HANDLE handle,
                           static_cast<UINT>(view.range.extent.layers)};
     context.Device()->CreateDepthStencilView(resource->handle.Get(), &dsv, handle);
 }
+bool D3D12DescriptorAllocator::WriteImageUav(const DescriptorTable& table, u32 slot,
+                                             const ImageView& view, DXGI_FORMAT format) {
+    if (!view.ImageHandle()) {
+        WriteNullUav(table, slot);
+        return false;
+    }
+    if (!(view.ImageHandle()->handle->GetDesc().Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS))
+        throw std::runtime_error("D3D12 image does not support UAV access");
+    const auto& srv = view.Description();
+    D3D12_UNORDERED_ACCESS_VIEW_DESC desc{};
+    desc.Format = format;
+    switch (srv.ViewDimension) {
+    case D3D12_SRV_DIMENSION_TEXTURE1D:
+        desc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE1D;
+        desc.Texture1D.MipSlice = srv.Texture1D.MostDetailedMip;
+        break;
+    case D3D12_SRV_DIMENSION_TEXTURE1DARRAY:
+        desc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE1DARRAY;
+        desc.Texture1DArray = {srv.Texture1DArray.MostDetailedMip,
+                               srv.Texture1DArray.FirstArraySlice, srv.Texture1DArray.ArraySize};
+        break;
+    case D3D12_SRV_DIMENSION_TEXTURE2D:
+        desc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+        desc.Texture2D = {srv.Texture2D.MostDetailedMip, 0};
+        break;
+    case D3D12_SRV_DIMENSION_TEXTURE2DARRAY:
+        desc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
+        desc.Texture2DArray = {srv.Texture2DArray.MostDetailedMip,
+                               srv.Texture2DArray.FirstArraySlice, srv.Texture2DArray.ArraySize, 0};
+        break;
+    case D3D12_SRV_DIMENSION_TEXTURE3D:
+        desc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE3D;
+        desc.Texture3D = {srv.Texture3D.MostDetailedMip, 0, static_cast<UINT>(-1)};
+        break;
+    default:
+        throw std::runtime_error("D3D12 unsupported storage image dimension");
+    }
+    context.Device()->CreateUnorderedAccessView(view.ImageHandle()->handle.Get(), nullptr, &desc,
+                                                table.Slot(slot));
+    return true;
+}
 } // namespace D3D12

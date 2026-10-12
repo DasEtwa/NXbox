@@ -3,6 +3,7 @@
 
 #include <array>
 #include <cstring>
+#include <optional>
 #include <span>
 
 #include <d3d12.h>
@@ -10,6 +11,7 @@
 
 #include "shader_recompiler/backend/hlsl/hlsl_root_constants.h"
 #include "shader_recompiler/stage.h"
+#include "video_core/renderer_d3d12/d3d12_disk_pipeline_cache.h"
 #include "video_core/renderer_d3d12/d3d12_dxc.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_iface.h"
 #include "video_core/renderer_d3d12/d3d12_pso_tables.h"
@@ -28,7 +30,8 @@ public:
     GraphicsPipeline(ID3D12Device* device,
                      Microsoft::WRL::ComPtr<ID3D12RootSignature> root_signature,
                      const Pso::GraphicsPsoState& state, u32 d3d_topology,
-                     std::span<const StageProgram> programs);
+                     std::span<const StageProgram> programs, DiskPipelineCache* disk = nullptr,
+                     u64 key = 0, std::span<const u8> recipe = {});
 
     // IGraphicsPipeline. A front-and-back cull draws nothing and D3D12 cannot express it, so
     // the descriptor/draw path sees "no PSO" and skips the draw.
@@ -42,11 +45,11 @@ public:
         return static_cast<D3D_PRIMITIVE_TOPOLOGY>(topology);
     }
     const Shader::Info* StageInfo(size_t stage) const override {
-        return stage_infos[stage];
+        return stage_infos[stage] ? &*stage_infos[stage] : nullptr;
     }
     // The Info must outlive the pipeline (it lives with the translated program).
     void SetStageInfo(size_t stage, const Shader::Info* info) {
-        stage_infos[stage] = info;
+        stage_infos[stage] = *info;
     }
     std::array<u32, 16> RootConstants(const DrawInputs& inputs) const override {
         Shader::Backend::HLSL::RootConstants constants;
@@ -68,7 +71,7 @@ public:
 private:
     Pso::GraphicsPsoState state;
     u32 topology{};
-    std::array<const Shader::Info*, NUM_GRAPHICS_STAGES> stage_infos{};
+    std::array<std::optional<Shader::Info>, NUM_GRAPHICS_STAGES> stage_infos{};
     Microsoft::WRL::ComPtr<ID3D12RootSignature> root_signature;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> pso;
 };

@@ -18,6 +18,7 @@
 #include "video_core/renderer_d3d12/d3d12_pipeline_iface.h"
 #include "video_core/renderer_d3d12/d3d12_pso_tables.h"
 #include "video_core/renderer_d3d12/d3d12_root_signature.h"
+#include "video_core/shader_cache.h"
 
 namespace Tegra::Engines {
 class Maxwell3D;
@@ -52,15 +53,17 @@ struct GraphicsPipelineKeyHash {
 void FillGraphicsState(Tegra::Engines::Maxwell3D& maxwell3d, Pso::GraphicsPsoState& state);
 
 // Pipelines are built synchronously on first use and live as long as the cache.
-class PipelineCache final : public IPipelineCache {
+class PipelineCache final : public IPipelineCache, public VideoCommon::ShaderCache {
 public:
-    // `maxwell3d` is the rasterizer's current-channel pointer (it changes on channel switch).
-    PipelineCache(Context& context_, Tegra::Engines::Maxwell3D*& maxwell3d_)
-        : context{context_}, maxwell3d{maxwell3d_} {}
-
-    // IPipelineCache. Until guest shader translation is wired (see TODO in the .cpp) every draw
-    // uses the stub VS/PS from stub_hlsl_emit.
+    PipelineCache(Context& context_, Tegra::MaxwellDeviceMemoryManager& memory)
+        : VideoCommon::ShaderCache{memory}, context{context_} {}
+    ~PipelineCache() override;
+    void BindToChannel(s32 id) override;
     IGraphicsPipeline* CurrentGraphicsPipeline() override;
+    ComputePipeline* CurrentComputePipeline();
+    void LoadDiskResources(u64 title_id, std::stop_token stop_loading,
+                           const VideoCore::DiskResourceLoadCallback& callback);
+    void FlushDiskCache();
 
     // Returns the pipeline for (state, stages), compiling HLSL->DXIL and creating the PSO on a
     // miss. `stages` must hold one entry per active stage.
@@ -80,15 +83,20 @@ private:
         }
     };
 
+    std::recursive_mutex pipeline_mutex;
     Context& context;
-    Tegra::Engines::Maxwell3D*& maxwell3d;
+    std::array<u64, 6> guest_hashes{};
     DxcCache dxc;
+    std::unique_ptr<DiskPipelineCache> disk;
     std::map<DescriptorCounts, Microsoft::WRL::ComPtr<ID3D12RootSignature>, CountsLess>
         root_signatures;
     std::unordered_map<GraphicsPipelineKey, std::unique_ptr<GraphicsPipeline>,
                        GraphicsPipelineKeyHash>
         graphics;
     std::unordered_map<u64, std::unique_ptr<ComputePipeline>> compute;
+    std::unordered_map<GraphicsPipelineKey, GraphicsPipeline*, GraphicsPipelineKeyHash>
+        guest_graphics;
+    std::unordered_map<u64, ComputePipeline*> guest_compute;
 };
 
 } // namespace D3D12

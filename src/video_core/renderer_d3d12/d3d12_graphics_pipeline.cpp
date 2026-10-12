@@ -21,7 +21,8 @@ D3D12_SHADER_BYTECODE Bytecode(const StageProgram& program) {
 
 GraphicsPipeline::GraphicsPipeline(ID3D12Device* device, ComPtr<ID3D12RootSignature> signature,
                                    const Pso::GraphicsPsoState& state_, u32 d3d_topology,
-                                   std::span<const StageProgram> programs)
+                                   std::span<const StageProgram> programs, DiskPipelineCache* disk,
+                                   u64 key, std::span<const u8> recipe)
     : state{state_}, topology{d3d_topology}, root_signature{std::move(signature)} {
     D3D12_GRAPHICS_PIPELINE_STATE_DESC desc{};
     desc.pRootSignature = root_signature.Get();
@@ -93,7 +94,7 @@ GraphicsPipeline::GraphicsPipeline(ID3D12Device* device, ComPtr<ID3D12RootSignat
         if (!a.enabled || a.dxgi == 0) {
             continue;
         }
-        elements[element_count++] = {"ATTRIB",
+        elements[element_count++] = {"TEXCOORD",
                                      i,
                                      static_cast<DXGI_FORMAT>(a.dxgi),
                                      a.slot,
@@ -111,6 +112,12 @@ GraphicsPipeline::GraphicsPipeline(ID3D12Device* device, ComPtr<ID3D12RootSignat
     desc.DSVFormat = static_cast<DXGI_FORMAT>(state.dsv_format);
     desc.SampleDesc = {state.sample_count ? state.sample_count : 1u, 0};
 
+    if (disk) {
+        pso = disk->LoadOrCreateGraphics(key, desc, recipe);
+        if (!pso)
+            throw std::runtime_error("D3D12 disk graphics PSO creation failed");
+        return;
+    }
     Check(device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&pso)),
           "CreateGraphicsPipelineState");
 }
