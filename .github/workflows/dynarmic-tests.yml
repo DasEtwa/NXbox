@@ -20,6 +20,8 @@ jobs:
         os: [windows-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
+    env:
+      SCCACHE_GHA_ENABLED: "true"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -29,6 +31,7 @@ jobs:
         if: runner.os == 'Windows'
         with:
           arch: x64
+      - uses: Mozilla-Actions/sccache-action@v0.0.11
       - name: Install build tools
         run: python -m pip install cmake==3.31.6 ninja
       - name: Install Linux prerequisites
@@ -53,7 +56,7 @@ jobs:
         env:
           UNICORNDIR: ${{ runner.temp }}/unicorn-install
         run: |
-          cmake -S . -B "$RUNNER_TEMP/cpu-build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DENABLE_QT=OFF -DYUZU_CMD=OFF -DYUZU_ROOM=OFF -DENABLE_CUBEB=OFF -DENABLE_LIBUSB=OFF -DENABLE_WEB_SERVICE=OFF -DUSE_DISCORD_PRESENCE=OFF -DYUZU_TESTS=OFF -DDYNARMIC_TESTS=ON -DDYNARMIC_TESTS_USE_UNICORN=ON -DDYNARMIC_IGNORE_ASSERTS=OFF -DCMAKE_PROJECT_TOP_LEVEL_INCLUDES="$GITHUB_WORKSPACE/src/dynarmic/tests/cpu_test_profile.cmake" -DCPMUTIL_FORCE_BUNDLED=ON -DSDL_WAYLAND=OFF
+          cmake -S . -B "$RUNNER_TEMP/cpu-build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache -DENABLE_QT=OFF -DYUZU_CMD=OFF -DYUZU_ROOM=OFF -DENABLE_CUBEB=OFF -DENABLE_LIBUSB=OFF -DENABLE_WEB_SERVICE=OFF -DUSE_DISCORD_PRESENCE=OFF -DYUZU_TESTS=OFF -DDYNARMIC_TESTS=ON -DDYNARMIC_TESTS_USE_UNICORN=ON -DDYNARMIC_IGNORE_ASSERTS=OFF -DCMAKE_PROJECT_TOP_LEVEL_INCLUDES="$GITHUB_WORKSPACE/src/dynarmic/tests/cpu_test_profile.cmake" -DCPMUTIL_FORCE_BUNDLED=ON -DSDL_WAYLAND=OFF
       - name: Build CPU tests
         shell: bash
         run: cmake --build "$RUNNER_TEMP/cpu-build" --target dynarmic_tests --parallel 2
