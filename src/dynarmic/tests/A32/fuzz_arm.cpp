@@ -7,6 +7,7 @@
  */
 
 #include <algorithm>
+#include <cstdio>
 #include <array>
 #include <cstdio>
 #include <functional>
@@ -471,6 +472,18 @@ static void RunTestInstance(Dynarmic::A32::Jit& jit,
         if (!uni_env.modified_memory.contains(address)) {
             compare_byte(address);
         }
+    }
+    if (!memory_equal) {
+        std::fprintf(stderr, "Initial A32 registers:");
+        for (const auto value : regs) {
+            std::fprintf(stderr, " %08x", value);
+        }
+        std::fprintf(stderr, "\nInitial A32 extended registers:");
+        for (const auto value : vecs) {
+            std::fprintf(stderr, " %08x", value);
+        }
+        std::fprintf(stderr, "\n");
+        std::fflush(stderr);
     }
     INFO("RAM differences=" << memory_difference);
     REQUIRE(memory_equal);
