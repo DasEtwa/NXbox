@@ -116,6 +116,8 @@ int main() {
 
 
 RUNTIME_DRIVER = r"""
+#include <cstddef>
+#include "bc_decoder.h"
 #include <algorithm>
 #include <array>
 #include <cassert>
@@ -152,7 +154,7 @@ u32 BytesPerBlock(std::string_view name) {
     if(f.conversion==D3D12::FormatConversion::Eac) return f.bytes_per_block*4;
     return f.bytes_per_block;
 }
-u32 DefaultBlockWidth(std::string_view name) { const auto f=D3D12::LookupFormat(name); return f.conversion==D3D12::FormatConversion::Etc2 || f.conversion==D3D12::FormatConversion::Eac ? 4 : 1; }
+u32 DefaultBlockWidth(std::string_view name) { const auto f=D3D12::LookupFormat(name); return name.starts_with("BC") || f.conversion==D3D12::FormatConversion::Etc2 || f.conversion==D3D12::FormatConversion::Eac ? 4 : 1; }
 u32 DefaultBlockHeight(std::string_view name) { return DefaultBlockWidth(name); }
 }
 struct D3D12_RESOURCE_DESC { u64 Width{}; UINT Height{},Format{}; UINT16 DepthOrArraySize{},MipLevels{}; };
@@ -180,6 +182,7 @@ struct D3D12_TEXTURE_COPY_LOCATION {
 };
 struct D3D12_BOX { UINT left{},top{},front{},right{},bottom{},back{}; };
 namespace D3D12 {
+FormatInfo MaxwellFormat(std::string_view name) { return LookupFormat(name); }
 unsigned warnings{};
 void UnsupportedImage(const VideoCommon::ImageInfo&,FormatInfo,std::string_view) { ++warnings; }
 UINT Subresource(const VideoCommon::ImageInfo& info,s32 level,s32 layer) { return static_cast<UINT>(level+layer*info.resources.levels); }
@@ -187,7 +190,7 @@ struct FakeDevice {
     void GetCopyableFootprints(const D3D12_RESOURCE_DESC* desc, UINT plane, UINT, UINT64,
                               D3D12_PLACED_SUBRESOURCE_FOOTPRINT* out, UINT* rows, UINT64* row_bytes, UINT64* total) {
         const bool depth=desc->Format==44 || desc->Format==19;
-        const UINT bytes=depth ? (plane ? 1 : 4) : desc->Format==9 ? 8 : desc->Format==53 ? 2 : 4;
+        const UINT bytes=depth ? (plane ? 1 : 4) : desc->Format==9 ? 8 : desc->Format==53 || desc->Format==48 ? 2 : desc->Format==60 ? 1 : 4;
         *row_bytes=desc->Width*bytes;
         const UINT pitch=(static_cast<UINT>(*row_bytes)+255)&~255u;
         *rows=desc->Height; *total=u64{pitch}*desc->Height*desc->DepthOrArraySize;
@@ -202,7 +205,7 @@ struct FakeCommands {
         const auto& texture=download ? *source : *target;
         const auto& fp=linear.PlacedFootprint.Footprint;
         const UINT plane=texture.SubresourceIndex/(texture.pResource->desc.MipLevels*texture.pResource->desc.DepthOrArraySize);
-        const UINT bytes=fp.Format==44 || fp.Format==19 ? (plane ? 1 : 4) : fp.Format==9 ? 8 : fp.Format==53 ? 2 : 4;
+        const UINT bytes=fp.Format==44 || fp.Format==19 ? (plane ? 1 : 4) : fp.Format==9 ? 8 : fp.Format==53 || fp.Format==48 ? 2 : fp.Format==60 ? 1 : 4;
         auto& resident=texture.pResource->planes.at(texture.SubresourceIndex);
         const UINT sx=download && box ? box->left : x;
         const UINT sy=download && box ? box->top : y;
@@ -238,7 +241,9 @@ __CONVERTED__
 } // namespace D3D12
 int main() {
     using namespace D3D12;
-    for(const auto& format:FormatTable) {
+    auto formats=std::vector<FormatInfo>(FormatTable.begin(),FormatTable.end());
+    for(const auto& native:FormatTable) if(native.name.starts_with("BC")) formats.push_back(BcnFallbackFormat(native));
+    for(const auto& format:formats) {
         if(format.conversion==FormatConversion::None) continue;
         TextureCacheRuntime runtime;
         Image image;
@@ -269,6 +274,16 @@ int main() {
                     assert(map.mapped_span[position]==original[position]);
                 }
         }
+        if(format.name=="BC1_RGBA_UNORM") {
+            for(unsigned layer=0;layer<2;++layer) {
+                alignas(16) std::array<u8,16> block{};
+                alignas(16) std::array<u8,64> expected{};
+                std::memcpy(block.data(),original.data()+19+layer*pitch*rows+bytes,bytes);
+                bcn::DecodeBc1(block.data(),expected.data(),0,0,4,4);
+                for(unsigned y=0;y<3;++y)
+                    assert(std::memcmp(image.resource->planes[layer].data()+(y*5+4)*4,expected.data()+y*16,4)==0);
+            }
+        }
         const auto before=warnings;
         copy.buffer_offset=map.mapped_span.size();
         assert(!image.TransferConverted(map,std::span{&copy,1},false));
@@ -282,25 +297,27 @@ ALIAS_SUPPORT = r"""
 void Image::UploadMemory(const StagingBufferRef& map,std::span<const VideoCommon::BufferImageCopy> copies) {
     if(host_format.conversion!=FormatConversion::None) { assert(TransferConverted(map,copies,false)); return; }
     const auto bytes=VideoCore::Surface::BytesPerBlock(info.format);
+    const auto block=VideoCore::Surface::DefaultBlockWidth(info.format);
     for(const auto& copy:copies) for(s32 layer=0;layer<copy.image_subresource.num_layers;++layer)
-        for(u32 y=0;y<copy.image_extent.height;++y) {
+        for(u32 y=0;y<(copy.image_extent.height+block-1)/block;++y) {
             auto* destination=resource->planes.at(copy.image_subresource.base_layer+layer).data()+
-                ((copy.image_offset.y+y)*info.size.width+copy.image_offset.x)*bytes;
+                ((copy.image_offset.y/block+y)*((info.size.width+block-1)/block)+copy.image_offset.x/block)*bytes;
             const auto* source=map.mapped_span.data()+copy.buffer_offset+
-                (u64{static_cast<u32>(layer)}*copy.buffer_image_height+y)*copy.buffer_row_length*bytes;
-            std::memcpy(destination,source,copy.image_extent.width*bytes);
+                (u64{static_cast<u32>(layer)}*((copy.buffer_image_height+block-1)/block)+y)*((copy.buffer_row_length+block-1)/block)*bytes;
+            std::memcpy(destination,source,((copy.image_extent.width+block-1)/block)*bytes);
         }
 }
 void Image::DownloadMemory(const StagingBufferRef& map,std::span<const VideoCommon::BufferImageCopy> copies) {
     if(host_format.conversion!=FormatConversion::None) { assert(TransferConverted(map,copies,true)); return; }
     const auto bytes=VideoCore::Surface::BytesPerBlock(info.format);
+    const auto block=VideoCore::Surface::DefaultBlockWidth(info.format);
     for(const auto& copy:copies) for(s32 layer=0;layer<copy.image_subresource.num_layers;++layer)
-        for(u32 y=0;y<copy.image_extent.height;++y) {
+        for(u32 y=0;y<(copy.image_extent.height+block-1)/block;++y) {
             const auto* source=resource->planes.at(copy.image_subresource.base_layer+layer).data()+
-                ((copy.image_offset.y+y)*info.size.width+copy.image_offset.x)*bytes;
+                ((copy.image_offset.y/block+y)*((info.size.width+block-1)/block)+copy.image_offset.x/block)*bytes;
             auto* destination=map.mapped_span.data()+copy.buffer_offset+
-                (u64{static_cast<u32>(layer)}*copy.buffer_image_height+y)*copy.buffer_row_length*bytes;
-            std::memcpy(destination,source,copy.image_extent.width*bytes);
+                (u64{static_cast<u32>(layer)}*((copy.buffer_image_height+block-1)/block)+y)*((copy.buffer_row_length+block-1)/block)*bytes;
+            std::memcpy(destination,source,((copy.image_extent.width+block-1)/block)*bytes);
         }
 }
 """
@@ -325,21 +342,26 @@ ALIAS_CHECK = r"""
 
 NATIVE_ALIAS_CHECK = r"""
     for(const auto pair : {std::pair{"R32_UINT","R16G16_UNORM"},
-                           std::pair{"R16G16B16A16_UINT","R32G32_FLOAT"}}) {
+                           std::pair{"R16G16B16A16_UINT","R32G32_FLOAT"},
+                           std::pair{"BC1_RGBA_UNORM","R16G16B16A16_UINT"},
+                           std::pair{"R16G16B16A16_UINT","BC1_RGBA_UNORM"}}) {
         TextureCacheRuntime runtime;
         Image source, destination;
         source.info.format=pair.first; destination.info.format=pair.second;
-        source.info.size=destination.info.size={5,3,1};
+        const auto src_block=VideoCore::Surface::DefaultBlockWidth(pair.first);
+        const auto dst_block=VideoCore::Surface::DefaultBlockWidth(pair.second);
+        source.info.size=src_block==4 || dst_block==1 ? VideoCommon::Extent3D{5,3,1} : VideoCommon::Extent3D{2,1,1};
+        destination.info.size=dst_block==4 || src_block==1 ? VideoCommon::Extent3D{5,3,1} : VideoCommon::Extent3D{2,1,1};
         source.host_format=LookupFormat(pair.first); destination.host_format=LookupFormat(pair.second);
         source.runtime=destination.runtime=&runtime;
         source.resource=std::make_shared<Resource>(); destination.resource=std::make_shared<Resource>();
         source.resource->desc={5,3,source.host_format.resource_format,2,1};
         destination.resource->desc={5,3,destination.host_format.resource_format,2,1};
-        source.resource->planes.resize(2,std::vector<u8>(5*3*source.host_format.bytes_per_block));
+        source.resource->planes.resize(2,std::vector<u8>(((source.info.size.width+src_block-1)/src_block)*((source.info.size.height+src_block-1)/src_block)*source.host_format.bytes_per_block));
         for(unsigned layer=0;layer<2;++layer) for(size_t i=0;i<source.resource->planes[layer].size();++i)
             source.resource->planes[layer][i]=static_cast<u8>(i*37+layer*13);
-        destination.resource->planes.resize(2,std::vector<u8>(5*3*destination.host_format.bytes_per_block));
-        VideoCommon::ImageCopy region{{0,0,2},{0,0,2},{0,0,0},{0,0,0},{5,3,1}};
+        destination.resource->planes.resize(2,std::vector<u8>(((destination.info.size.width+dst_block-1)/dst_block)*((destination.info.size.height+dst_block-1)/dst_block)*destination.host_format.bytes_per_block));
+        VideoCommon::ImageCopy region{{0,0,2},{0,0,2},{0,0,0},{0,0,0},source.info.size};
         runtime.CopyImage(destination,source,std::span{&region,1});
         assert(source.resource->planes==destination.resource->planes);
     }
@@ -396,6 +418,23 @@ class D3D12FormatCoverageTests(unittest.TestCase):
         ]:
             self.assertIn(token, source)
 
+    def compile_block_decoder(self, directory):
+        output = Path(directory) / "bc_decoder.o"
+        subprocess.run(
+            [
+                "clang++",
+                "-std=c++20",
+                "-w",
+                "-fsanitize=address",
+                "-c",
+                str(ROOT / "externals/bc_decoder/bc_decoder.cpp"),
+                "-o",
+                str(output),
+            ],
+            check=True,
+        )
+        return output
+
     def test_runtime_conversion_transfers(self):
         source = (ROOT / "src/video_core/renderer_d3d12/d3d12_texture_cache.cpp").read_text()
         start = source.index("bool Image::TransferConverted(")
@@ -404,6 +443,7 @@ class D3D12FormatCoverageTests(unittest.TestCase):
             cpp = Path(temp) / "runtime.cpp"
             binary = Path(temp) / "runtime"
             cpp.write_text(RUNTIME_DRIVER.replace("__CONVERTED__", source[start:end]))
+            decoder = self.compile_block_decoder(temp)
             subprocess.run(
                 [
                     "clang++",
@@ -415,7 +455,10 @@ class D3D12FormatCoverageTests(unittest.TestCase):
                     "-fno-sanitize-recover=all",
                     "-I",
                     str(ROOT / "src"),
+                    "-I",
+                    str(ROOT / "externals/bc_decoder"),
                     str(cpp),
+                    str(decoder),
                     "-o",
                     str(binary),
                 ],
@@ -465,6 +508,7 @@ class D3D12FormatCoverageTests(unittest.TestCase):
             cpp = Path(temp) / "alias.cpp"
             binary = Path(temp) / "alias"
             cpp.write_text(driver)
+            decoder = self.compile_block_decoder(temp)
             subprocess.run(
                 [
                     "clang++",
@@ -476,7 +520,10 @@ class D3D12FormatCoverageTests(unittest.TestCase):
                     "-fno-sanitize-recover=all",
                     "-I",
                     str(ROOT / "src"),
+                    "-I",
+                    str(ROOT / "externals/bc_decoder"),
                     str(cpp),
+                    str(decoder),
                     "-o",
                     str(binary),
                 ],

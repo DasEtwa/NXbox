@@ -9,6 +9,7 @@
 #include <stdexcept>
 #include <string>
 #include <tuple>
+#include <bc_decoder.h>
 #include <fmt/format.h>
 #include "common/logging.h"
 #include "common/settings.h"
@@ -82,6 +83,8 @@ ResourcePtr MakeTexture(Context& context, const VideoCommon::ImageInfo& info, Fo
     if (info.num_samples == 0 || (info.num_samples & (info.num_samples - 1)) ||
         info.num_samples > 16)
         return skip("sample count is not 1/2/4/8/16");
+    if (info.num_samples > 1 && VideoCore::Surface::DefaultBlockWidth(info.format) != 1)
+        return skip("guest block-compressed formats cannot be multisampled");
     if (info.num_samples > 1 &&
         (info.type != VideoCommon::ImageType::e2D || format.block_width != 1 ||
          format.block_height != 1 || info.resources.levels != 1))
@@ -225,19 +228,12 @@ Image::Image(TextureCacheRuntime& runtime, const VideoCommon::ImageInfo& info, G
         }
     }
     resource = MakeTexture(runtime.context, info, host_format);
-    if (!resource && VideoCore::Surface::IsPixelFormatBCn(info.format)) {
-        // The shared cache already owns BCn decoding and converted-size accounting.
-        const auto name = host_format.name;
-        host_format = name.starts_with("BC4")
-                          ? LookupFormat(name.ends_with("SNORM") ? "R8_SNORM" : "R8_UNORM")
-                      : name.starts_with("BC5")
-                          ? LookupFormat(name.ends_with("SNORM") ? "R8G8_SNORM" : "R8G8_UNORM")
-                      : name.starts_with("BC6")
-                          ? LookupFormat("R16G16B16A16_FLOAT")
-                          : LookupFormat(VideoCore::Surface::IsPixelFormatSRGB(info.format)
-                                             ? "A8B8G8R8_SRGB"
-                                             : "A8B8G8R8_UNORM");
-        flags |= VideoCommon::ImageFlagBits::Converted;
+    if (!resource && host_format.block_width == 4 &&
+        (VideoCore::Surface::IsPixelFormatBCn(info.format) ||
+         VideoCore::Surface::IsPixelFormatASTC(info.format))) {
+        // Native BCn upload still consumes original encoded guest blocks. ASTC
+        // recompression already produces BC1/BC3 blocks through Converted.
+        host_format = BcnFallbackFormat(host_format);
         flags |= VideoCommon::ImageFlagBits::CostlyLoad;
         resource = MakeTexture(runtime.context, info, host_format);
     }
@@ -529,15 +525,19 @@ void Image::Transfer(const StagingBufferRef& input,
     }
 }
 // Packed and ETC/EAC conversions consume the original unswizzled guest layout.
-// ASTC and optional BCn decompression instead use the shared Converted upload path.
+// ASTC decompression/recompression uses the shared Converted upload path.
 bool Image::TransferConverted(const StagingBufferRef& input,
                               std::span<const VideoCommon::BufferImageCopy> copies, bool download) {
     const auto conversion = host_format.conversion;
-    const bool compressed =
-        conversion == FormatConversion::Etc2 || conversion == FormatConversion::Eac;
+    const bool compressed = conversion == FormatConversion::Etc2 ||
+                            conversion == FormatConversion::Eac ||
+                            conversion == FormatConversion::Bcn;
     if (download && compressed) {
-        UnsupportedImage(info, host_format,
-                         "ETC2/EAC readback needs a lossy encoder; original guest blocks retained");
+        UnsupportedImage(
+            info, host_format,
+            conversion == FormatConversion::Bcn
+                ? "decoded BCn readback needs a lossy encoder; original guest blocks retained"
+                : "ETC2/EAC readback needs a lossy encoder; original guest blocks retained");
         return false;
     }
     auto map = input;
@@ -552,9 +552,17 @@ bool Image::TransferConverted(const StagingBufferRef& input,
     }
     map.mapped_span = map.mapped_span.subspan(map.offset - origin);
     auto& context = runtime->context;
-    const u32 guest_bytes = VideoCore::Surface::BytesPerBlock(info.format);
-    const u32 block_width = VideoCore::Surface::DefaultBlockWidth(info.format);
-    const u32 block_height = VideoCore::Surface::DefaultBlockHeight(info.format);
+    const auto encoded = conversion == FormatConversion::Bcn ? LookupFormat(host_format.name)
+                                                             : MaxwellFormat(info.format);
+    const u32 guest_bytes = conversion == FormatConversion::Bcn
+                                ? encoded.bytes_per_block
+                                : VideoCore::Surface::BytesPerBlock(info.format);
+    const u32 block_width = conversion == FormatConversion::Bcn
+                                ? encoded.block_width
+                                : VideoCore::Surface::DefaultBlockWidth(info.format);
+    const u32 block_height = conversion == FormatConversion::Bcn
+                                 ? encoded.block_height
+                                 : VideoCore::Surface::DefaultBlockHeight(info.format);
     const auto resource_desc = resource->handle->GetDesc();
     context.Transition(resource, download ? D3D12_RESOURCE_STATE_COPY_SOURCE
                                           : D3D12_RESOURCE_STATE_COPY_DEST);
@@ -636,19 +644,44 @@ bool Image::TransferConverted(const StagingBufferRef& input,
                     auto* host = aligned.mapped_span.data();
                     for (u32 z = 0; z < extent.depth; ++z) {
                         if (format.conversion == FormatConversion::Etc2 ||
-                            format.conversion == FormatConversion::Eac) {
+                            format.conversion == FormatConversion::Eac ||
+                            format.conversion == FormatConversion::Bcn) {
                             const u32 block_bytes =
-                                format.conversion == FormatConversion::Etc2
+                                format.conversion == FormatConversion::Bcn
+                                    ? LookupFormat(format.name).bytes_per_block
+                                : format.conversion == FormatConversion::Etc2
                                     ? (format.name.find("RGBA") != std::string_view::npos ? 16u
                                                                                           : 8u)
                                     : format.bytes_per_block * 4;
                             for (u32 by = 0; by < (extent.height + 3) / 4; ++by)
                                 for (u32 bx = 0; bx < (extent.width + 3) / 4; ++bx) {
-                                    std::array<u8, 64> decoded{};
-                                    DecodeEtcBlock(format,
-                                                   guest + z * slice_stride + by * row_stride +
-                                                       bx * block_bytes,
-                                                   decoded.data());
+                                    alignas(16) std::array<u8, 128> decoded{};
+                                    const auto* block = guest + z * slice_stride + by * row_stride +
+                                                        bx * block_bytes;
+                                    if (format.conversion == FormatConversion::Bcn) {
+                                        alignas(16) std::array<u8, 16> aligned_block{};
+                                        std::memcpy(aligned_block.data(), block, block_bytes);
+                                        const auto* block_input = aligned_block.data();
+                                        auto* block_output = decoded.data();
+                                        if (format.name.starts_with("BC1"))
+                                            bcn::DecodeBc1(block_input, block_output, 0, 0, 4, 4);
+                                        else if (format.name.starts_with("BC2"))
+                                            bcn::DecodeBc2(block_input, block_output, 0, 0, 4, 4);
+                                        else if (format.name.starts_with("BC3"))
+                                            bcn::DecodeBc3(block_input, block_output, 0, 0, 4, 4);
+                                        else if (format.name.starts_with("BC4"))
+                                            bcn::DecodeBc4(block_input, block_output, 0, 0, 4, 4,
+                                                           format.name.ends_with("SNORM"));
+                                        else if (format.name.starts_with("BC5"))
+                                            bcn::DecodeBc5(block_input, block_output, 0, 0, 4, 4,
+                                                           format.name.ends_with("SNORM"));
+                                        else if (format.name.starts_with("BC6"))
+                                            bcn::DecodeBc6(block_input, block_output, 0, 0, 4, 4,
+                                                           format.name.ends_with("SFLOAT"));
+                                        else
+                                            bcn::DecodeBc7(block_input, block_output, 0, 0, 4, 4);
+                                    } else
+                                        DecodeEtcBlock(format, block, decoded.data());
                                     for (u32 y = 0; y < std::min(4u, extent.height - by * 4); ++y)
                                         std::memcpy(host + z * padded_slice + (by * 4 + y) * pitch +
                                                         bx * 4 * format.bytes_per_block,
@@ -1028,8 +1061,6 @@ void TextureCacheRuntime::ReinterpretImage(Image& dst, Image& src,
         return;
     }
     const bool native_raw_alias = src.info.num_samples == 1 && dst.info.num_samples == 1 &&
-                                  VideoCore::Surface::DefaultBlockWidth(src.info.format) == 1 &&
-                                  VideoCore::Surface::DefaultBlockWidth(dst.info.format) == 1 &&
                                   VideoCore::Surface::BytesPerBlock(src.info.format) ==
                                       VideoCore::Surface::BytesPerBlock(dst.info.format);
     if (native_raw_alias || dst.HostFormat().conversion != FormatConversion::None ||
@@ -1040,12 +1071,10 @@ void TextureCacheRuntime::ReinterpretImage(Image& dst, Image& src,
             UnsupportedImage(src.info, src.HostFormat(), reason);
         };
         const u32 bytes = VideoCore::Surface::BytesPerBlock(src.info.format);
-        if (!CanDownloadImage(src) || VideoCore::Surface::DefaultBlockWidth(src.info.format) != 1 ||
-            VideoCore::Surface::DefaultBlockWidth(dst.info.format) != 1 ||
-            bytes != VideoCore::Surface::BytesPerBlock(dst.info.format) ||
+        if (!CanDownloadImage(src) || bytes != VideoCore::Surface::BytesPerBlock(dst.info.format) ||
             src.info.num_samples != 1 || dst.info.num_samples != 1) {
-            reject("converted reinterpretation requires reversible, equal-size uncompressed guest "
-                   "pixels and one sample");
+            reject("converted reinterpretation requires reversible, equal-size guest blocks and "
+                   "one sample");
             return;
         }
         try {
@@ -1076,8 +1105,37 @@ void TextureCacheRuntime::ReinterpretImage(Image& dst, Image& src,
                     reject("partial converted depth reinterpretation requires shader conversion");
                     return;
                 }
+                const u32 src_bw = VideoCore::Surface::DefaultBlockWidth(src.info.format);
+                const u32 src_bh = VideoCore::Surface::DefaultBlockHeight(src.info.format);
+                const u32 dst_bw = VideoCore::Surface::DefaultBlockWidth(dst.info.format);
+                const u32 dst_bh = VideoCore::Surface::DefaultBlockHeight(dst.info.format);
+                const u64 columns = (u64{copy.extent.width} + src_bw - 1) / src_bw;
+                const u64 rows = (u64{copy.extent.height} + src_bh - 1) / src_bh;
+                const auto dst_level = copy.dst_subresource.base_level;
+                if (dst_level < 0 || dst_level >= dst.info.resources.levels ||
+                    copy.dst_offset.x < 0 || copy.dst_offset.y < 0) {
+                    reject("invalid raw alias destination mip/offset");
+                    return;
+                }
+                const u32 mip_width = std::max(1u, dst.info.size.width >> dst_level);
+                const u32 mip_height = std::max(1u, dst.info.size.height >> dst_level);
+                if (static_cast<u32>(copy.dst_offset.x) >= mip_width ||
+                    static_cast<u32>(copy.dst_offset.y) >= mip_height) {
+                    reject("raw alias destination offset outside mip");
+                    return;
+                }
+                auto dst_extent = copy.extent;
+                dst_extent.width = static_cast<u32>(std::min(
+                    columns * dst_bw, u64{mip_width - static_cast<u32>(copy.dst_offset.x)}));
+                dst_extent.height = static_cast<u32>(
+                    std::min(rows * dst_bh, u64{mip_height - static_cast<u32>(copy.dst_offset.y)}));
+                if ((u64{dst_extent.width} + dst_bw - 1) / dst_bw != columns ||
+                    (u64{dst_extent.height} + dst_bh - 1) / dst_bh != rows) {
+                    reject("raw alias guest block counts differ");
+                    return;
+                }
                 const u64 size = CheckedMultiply(
-                    CheckedMultiply(copy.extent.width, copy.extent.height),
+                    CheckedMultiply(columns, rows),
                     CheckedMultiply(
                         CheckedMultiply(copy.extent.depth,
                                         static_cast<u32>(copy.src_subresource.num_layers)),
@@ -1090,18 +1148,21 @@ void TextureCacheRuntime::ReinterpretImage(Image& dst, Image& src,
                 download.image_subresource = copy.src_subresource;
                 download.image_offset = copy.src_offset;
                 download.image_extent = copy.extent;
-                auto upload = download;
-                upload.image_subresource = copy.dst_subresource;
-                upload.image_offset = copy.dst_offset;
+                auto upload_copy = download;
+                upload_copy.image_subresource = copy.dst_subresource;
+                upload_copy.image_offset = copy.dst_offset;
+                upload_copy.image_extent = dst_extent;
+                upload_copy.buffer_row_length = dst_extent.width;
+                upload_copy.buffer_image_height = dst_extent.height;
                 downloads.push_back(download);
-                uploads.push_back(upload);
+                uploads.push_back(upload_copy);
                 total = CheckedAdd(total, size);
             }
             if (!total)
                 return;
             auto staging = DownloadStagingBuffer(total);
             // Reserved guest X/padding bits have no host plane; initialize them.
-            std::fill(staging.mapped_span.begin(), staging.mapped_span.end(), 0);
+            std::fill(staging.mapped_span.begin(), staging.mapped_span.end(), u8{0});
             src.DownloadMemory(staging, downloads);
             context.Finish();
             dst.UploadMemory(staging, uploads);

@@ -11,7 +11,7 @@
 namespace D3D12 {
 // DXGI numeric values keep this contract executable without a Windows SDK.
 // Host storage geometry is independent of guest packed/block geometry.
-enum class FormatConversion { None, PackedColor, Etc2, Eac, DepthStencil };
+enum class FormatConversion { None, PackedColor, Etc2, Eac, Bcn, DepthStencil };
 struct FormatInfo {
     std::string_view name;
     std::uint32_t resource_format;
@@ -193,6 +193,22 @@ constexpr FormatInfo LookupFormat(std::string_view name) {
             return format;
     }
     return {name, 0, 0, 0, 0, 0, false, false, 0};
+}
+
+// Preserve the encoded format name so upload can decode each block independently,
+// including odd edge mips, array layers and 3D slices.
+constexpr FormatInfo BcnFallbackFormat(FormatInfo encoded) {
+    auto host =
+        encoded.name.starts_with("BC4")
+            ? LookupFormat(encoded.name.ends_with("SNORM") ? "R8_SNORM" : "R8_UNORM")
+        : encoded.name.starts_with("BC5")
+            ? LookupFormat(encoded.name.ends_with("SNORM") ? "R8G8_SNORM" : "R8G8_UNORM")
+        : encoded.name.starts_with("BC6")
+            ? LookupFormat("R16G16B16A16_FLOAT")
+            : LookupFormat(encoded.name.ends_with("SRGB") ? "A8B8G8R8_SRGB" : "A8B8G8R8_UNORM");
+    host.name = encoded.name;
+    host.conversion = FormatConversion::Bcn;
+    return host;
 }
 
 // Maxwell reserves selector 1; attachment views use a separate sentinel.
