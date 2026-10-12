@@ -9,8 +9,13 @@
 #include "core/arm/dynarmic/arm_dynarmic_32.h"
 #include "core/arm/dynarmic/dynarmic_cp15.h"
 #include "core/arm/dynarmic/dynarmic_exclusive_monitor.h"
+#include "core/arm/dynarmic/nxbox_jit_policy.h"
 #include "core/core_timing.h"
 #include "core/hle/kernel/k_process.h"
+
+#ifdef NXBOX_UWP
+#include "eden_uwp/diagnostic.h"
+#endif
 
 namespace Core {
 
@@ -34,10 +39,16 @@ u64 DynarmicCallbacks32::MemoryRead(u32 vaddr, size_t size) {
 }
 
 std::optional<u32> DynarmicCallbacks32::MemoryReadCode(u32 vaddr) {
+#ifdef NXBOX_UWP
+    m_profile.CodeRead(false);
+#endif
     if (!m_memory.IsValidVirtualAddressRange(vaddr, sizeof(u32)))
         return std::nullopt;
     auto const aligned_vaddr = vaddr & ~Core::Memory::YUZU_PAGEMASK;
     if (last_code_addr != aligned_vaddr) {
+#ifdef NXBOX_UWP
+        m_profile.PageFill();
+#endif
         m_memory.ReadBlock(aligned_vaddr, &cached_code_page, sizeof(cached_code_page));
         last_code_addr = aligned_vaddr;
     }
@@ -115,6 +126,9 @@ u64 DynarmicCallbacks32::GetTicksRemaining() {
 }
 
 bool DynarmicCallbacks32::CheckMemoryAccess(u64 addr, u64 size, Kernel::DebugWatchpointType type) {
+#ifdef NXBOX_UWP
+    m_profile.MemoryCallback();
+#endif
     if (!m_check_memory_access) {
         return true;
     }
@@ -295,6 +309,9 @@ void ArmDynarmic32::MakeJit(Common::PageTable* page_table) {
         config.fastmem_pointer = std::nullopt;
         config.fastmem_exclusive_access = false;
     }
+#ifdef NXBOX_UWP
+    NxboxJit::ApplyOptOuts(config);
+#endif
     m_jit.emplace(config);
 }
 
@@ -327,7 +344,21 @@ bool ArmDynarmic32::IsInThumbMode() const {
 
 HaltReason ArmDynarmic32::RunThread(Kernel::KThread* thread) {
     m_jit->ClearExclusiveState();
-    return TranslateHaltReason(m_jit->Run());
+    const auto result = m_jit->Run();
+#ifdef NXBOX_UWP
+    if (m_cb->m_profile.enabled) {
+        m_cb->m_profile.Poll(
+            [&](auto reads, auto fills, auto fresh, auto callbacks, auto interval) {
+                EdenXbox::Diagnostic(fmt::format(
+                    "THREAD_PROFILE jit_core={} guest_bits=32 code_reads={} code_page_fills={} "
+                    "fresh_code_reads={} page_table_fallback_callbacks={} interval_ms={} "
+                    "compiles=unavailable cache_misses=unavailable fastmem_faults=unavailable",
+                    m_core_index, reads, fills, fresh, callbacks, interval));
+            },
+            NxboxJit::Profile::Clock::now());
+    }
+#endif
+    return TranslateHaltReason(result);
 }
 
 HaltReason ArmDynarmic32::StepThread(Kernel::KThread* thread) {

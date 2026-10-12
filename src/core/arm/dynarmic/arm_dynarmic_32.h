@@ -6,6 +6,10 @@
 
 #pragma once
 
+#ifdef NXBOX_UWP
+#include "core/arm/dynarmic/nxbox_jit_profile.h"
+#endif
+
 #include <dynarmic/interface/A32/a32.h>
 #include <dynarmic/interface/code_page.h>
 
@@ -47,6 +51,9 @@ public:
     bool CheckMemoryAccess(u64 addr, u64 size, Kernel::DebugWatchpointType type);
     void ReturnException(u32 pc, Dynarmic::HaltReason hr);
     //
+#ifdef NXBOX_UWP
+    NxboxJit::Profile m_profile;
+#endif
     Dynarmic::CodePage cached_code_page;
     u64 last_code_addr = u64(-1);
     ArmDynarmic32& m_parent;
