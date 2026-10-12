@@ -7,6 +7,8 @@
 #include "video_core/control/channel_state_cache.h"
 #include "video_core/engines/maxwell_dma.h"
 #include "video_core/rasterizer_interface.h"
+#include "video_core/renderer_d3d12/d3d12_buffer_cache.h"
+#include "video_core/renderer_d3d12/d3d12_texture_cache.h"
 
 namespace Core {
 class System;
@@ -31,12 +33,18 @@ public:
     }
 };
 
-// P1 has no host caches or pipelines. TODO(P2-P5): replace these no-op guest operations
-// with VideoCommon cache runtimes and fence-backed submissions.
+// P2 owns shared VideoCommon caches. Guest pipelines remain P3-P5 stubs.
 class RasterizerD3D12 final : public VideoCore::RasterizerInterface,
                               protected VideoCommon::ChannelSetupCaches<VideoCommon::ChannelInfo> {
 public:
-    explicit RasterizerD3D12(Tegra::GPU& gpu);
+    explicit RasterizerD3D12(Tegra::GPU& gpu, Tegra::MaxwellDeviceMemoryManager& memory,
+                             Context& context);
+
+    struct DisplayTexture {
+        ResourcePtr resource;
+        D3D12_SHADER_RESOURCE_VIEW_DESC view;
+    };
+    DisplayTexture FramebufferTexture(const Tegra::FramebufferConfig& config);
     ~RasterizerD3D12() override;
 
     void Draw(bool is_indexed, u32 instance_count) override;
@@ -86,6 +94,12 @@ public:
     void ReleaseChannel(s32 channel_id) override;
 
 private:
+    Context& context;
+    Tegra::MaxwellDeviceMemoryManager& device_memory;
+    BufferCacheRuntime buffer_runtime;
+    TextureCacheRuntime texture_runtime;
+    BufferCache buffer_cache;
+    TextureCache texture_cache;
     bool draw_logged{};
     bool compute_logged{};
     Tegra::GPU& m_gpu;

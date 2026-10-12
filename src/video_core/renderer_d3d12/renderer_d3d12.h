@@ -8,7 +8,8 @@
 namespace D3D12 {
 class RendererD3D12 final : public VideoCore::RendererBase {
 public:
-    explicit RendererD3D12(Core::Frontend::EmuWindow& window, Tegra::GPU& gpu,
+    explicit RendererD3D12(Core::Frontend::EmuWindow& window,
+                           Tegra::MaxwellDeviceMemoryManager& memory, Tegra::GPU& gpu,
                            std::unique_ptr<Core::Frontend::GraphicsContext> context);
     ~RendererD3D12() override;
 
@@ -22,6 +23,5 @@ private:
     std::unique_ptr<Impl> impl;
     Tegra::GPU& gpu;
     RasterizerD3D12 rasterizer;
-    bool framebuffer_logged{};
 };
 } // namespace D3D12

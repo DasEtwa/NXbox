@@ -4,119 +4,154 @@
 #include <algorithm>
 #include <array>
 #include <stdexcept>
-#include <d3d12.h>
 #include <dxgi1_4.h>
 #include <windows.h>
-#include <wrl/client.h>
-
 #include "common/logging.h"
 #include "core/frontend/emu_window.h"
 #include "core/frontend/graphics_context.h"
 #include "video_core/capture.h"
+#include "video_core/renderer_d3d12/d3d12_shader.h"
 
 namespace D3D12 {
-using Microsoft::WRL::ComPtr;
 namespace {
-void Check(HRESULT result, const char* operation) {
-    if (FAILED(result)) {
-        LOG_ERROR(Render, "D3D12 {} failed: {:#x}", operation, static_cast<u32>(result));
-        throw std::runtime_error(std::string("D3D12 failure: ") + operation);
-    }
+constexpr std::string_view PresentShader = R"(
+cbuffer Parameters : register(b0) { float4 crop; uint transform; uint opaque; float2 unused; };
+Texture2DArray<float4> source : register(t0);
+SamplerState linear_sampler : register(s0);
+struct Vertex { float4 position : SV_Position; float2 uv : TEXCOORD0; };
+Vertex VS(uint id : SV_VertexID) {
+    Vertex result;
+    float2 uv = float2((id << 1) & 2, id & 2);
+    result.position = float4(uv.x * 2 - 1, 1 - uv.y * 2, 0, 1);
+    if (transform & 4) uv = float2(uv.y, 1 - uv.x);
+    if (transform & 1) uv.x = 1 - uv.x;
+    if (transform & 2) uv.y = 1 - uv.y;
+    result.uv = lerp(crop.xy, crop.zw, uv);
+    return result;
 }
+float4 PS(Vertex input) : SV_Target {
+    float4 color = source.Sample(linear_sampler, float3(input.uv, 0));
+    if (opaque) color.a = 1;
+    return color;
+}
+)";
+struct PresentParameters {
+    std::array<float, 4> crop;
+    u32 transform;
+    u32 opaque;
+    std::array<float, 2> unused{};
+};
+static_assert(sizeof(PresentParameters) == 32);
 } // namespace
-
 struct RendererD3D12::Impl {
     static constexpr UINT BufferCount = 2;
-    ComPtr<ID3D12Device> device;
-    ComPtr<ID3D12CommandQueue> queue;
-    ComPtr<ID3D12Fence> fence;
+    static constexpr UINT MaxLayers = 64;
+    D3D12::Context context;
     ComPtr<IDXGISwapChain3> swapchain;
     ComPtr<ID3D12DescriptorHeap> rtv_heap;
-    ComPtr<ID3D12CommandAllocator> allocator;
-    ComPtr<ID3D12GraphicsCommandList> commands;
-    std::array<ComPtr<ID3D12Resource>, BufferCount> buffers;
-    HANDLE fence_event{};
-    u64 fence_value{};
+    ComPtr<ID3D12DescriptorHeap> srv_heap;
+    ComPtr<ID3D12RootSignature> root;
+    std::array<ComPtr<ID3D12PipelineState>, 3> pipelines;
+    std::array<ResourcePtr, BufferCount> buffers;
     UINT rtv_stride{};
+    UINT srv_stride{};
     u32 width{};
     u32 height{};
     bool failed{};
 
     ~Impl() {
-        // Also covers partial renderer construction after a submission/presentation failure.
-        if (queue && fence && fence_event) {
-            try {
-                Drain();
-            } catch (const std::exception& error) {
-                LOG_ERROR(Render, "D3D12 teardown: {}", error.what());
-            }
-        }
-        if (fence_event) {
-            CloseHandle(fence_event);
+        // Drain before destroying swapchain buffers, descriptors or PSOs.
+        try {
+            context.Finish();
+        } catch (const std::exception& error) {
+            LOG_ERROR(Render, "D3D12 renderer teardown: {}", error.what());
         }
     }
-
-    void Wait() {
-        const auto completed = fence->GetCompletedValue();
-        if (completed == UINT64_MAX) {
-            Check(device->GetDeviceRemovedReason(), "device removed");
-            throw std::runtime_error("D3D12 fence reported device removal");
-        }
-        if (completed >= fence_value) {
-            return;
-        }
-        Check(fence->SetEventOnCompletion(fence_value, fence_event), "SetEventOnCompletion");
-        const DWORD result = WaitForSingleObjectEx(fence_event, 10000, FALSE);
-        if (result != WAIT_OBJECT_0) {
-            Check(device->GetDeviceRemovedReason(), "device removed while waiting");
-            LOG_ERROR(Render, "D3D12 fence wait failed/timed out: {}", result);
-            throw std::runtime_error("D3D12 fence wait failed/timed out");
-        }
-        Check(device->GetDeviceRemovedReason(), "device removed after waiting");
-    }
-
-    void Drain() {
-        Check(queue->Signal(fence.Get(), ++fence_value), "Signal");
-        Wait();
-    }
-
     D3D12_CPU_DESCRIPTOR_HANDLE Rtv(UINT index) const {
         auto handle = rtv_heap->GetCPUDescriptorHandleForHeapStart();
         handle.ptr += static_cast<SIZE_T>(index) * rtv_stride;
         return handle;
     }
-
     void AcquireBuffers() {
         for (UINT i = 0; i < BufferCount; ++i) {
-            Check(swapchain->GetBuffer(i, IID_PPV_ARGS(buffers[i].ReleaseAndGetAddressOf())),
-                  "GetBuffer");
-            device->CreateRenderTargetView(buffers[i].Get(), nullptr, Rtv(i));
+            buffers[i] = std::make_shared<Resource>();
+            buffers[i]->heap = D3D12_HEAP_TYPE_DEFAULT;
+            buffers[i]->state = D3D12_RESOURCE_STATE_PRESENT;
+            Check(swapchain->GetBuffer(i, IID_PPV_ARGS(&buffers[i]->handle)), "GetBuffer");
+            context.Device()->CreateRenderTargetView(buffers[i]->handle.Get(), nullptr, Rtv(i));
         }
     }
-
+    void InitializePipeline() {
+        D3D12_DESCRIPTOR_RANGE range{};
+        range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+        range.NumDescriptors = 1;
+        D3D12_ROOT_PARAMETER parameters[2]{};
+        parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        parameters[0].DescriptorTable = {1, &range};
+        parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+        parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        parameters[1].Constants = {0, 0, 8};
+        parameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        D3D12_STATIC_SAMPLER_DESC sampler{};
+        sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+        sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+        sampler.MaxAnisotropy = 1;
+        sampler.ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+        sampler.MaxLOD = D3D12_FLOAT32_MAX;
+        sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+        D3D12_ROOT_SIGNATURE_DESC root_desc{2, parameters, 1, &sampler,
+                                            D3D12_ROOT_SIGNATURE_FLAG_NONE};
+        ComPtr<ID3DBlob> serialized, errors;
+        Check(D3D12SerializeRootSignature(&root_desc, D3D_ROOT_SIGNATURE_VERSION_1, &serialized,
+                                          &errors),
+              "SerializeRootSignature");
+        Check(context.Device()->CreateRootSignature(0, serialized->GetBufferPointer(),
+                                                    serialized->GetBufferSize(),
+                                                    IID_PPV_ARGS(&root)),
+              "CreateRootSignature");
+        D3D12_FEATURE_DATA_SHADER_MODEL model{D3D_SHADER_MODEL_6_0};
+        Check(context.Device()->CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL, &model,
+                                                    sizeof(model)),
+              "shader model support");
+        if (model.HighestShaderModel < D3D_SHADER_MODEL_6_0)
+            throw std::runtime_error("D3D12 presentation requires shader model 6.0");
+        ShaderCompiler compiler;
+        const auto vertex = compiler.Compile(PresentShader, L"VS", L"vs_6_0");
+        const auto pixel = compiler.Compile(PresentShader, L"PS", L"ps_6_0");
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC desc{};
+        desc.pRootSignature = root.Get();
+        desc.VS = {vertex.data(), vertex.size()};
+        desc.PS = {pixel.data(), pixel.size()};
+        desc.SampleMask = UINT_MAX;
+        desc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+        desc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+        desc.RasterizerState.DepthClipEnable = TRUE;
+        desc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+        desc.DepthStencilState.StencilReadMask = desc.DepthStencilState.StencilWriteMask = 0xff;
+        desc.DepthStencilState.FrontFace =
+            desc.DepthStencilState.BackFace = {D3D12_STENCIL_OP_KEEP, D3D12_STENCIL_OP_KEEP,
+                                               D3D12_STENCIL_OP_KEEP, D3D12_COMPARISON_FUNC_ALWAYS};
+        desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+        desc.NumRenderTargets = 1;
+        desc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+        desc.SampleDesc.Count = 1;
+        auto& blend = desc.BlendState.RenderTarget[0];
+        blend.SrcBlend = blend.SrcBlendAlpha = D3D12_BLEND_ONE;
+        blend.DestBlend = blend.DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
+        blend.BlendOp = blend.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+        blend.LogicOp = D3D12_LOGIC_OP_NOOP;
+        blend.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+        for (UINT i = 0; i < pipelines.size(); ++i) {
+            blend.BlendEnable = i != 0;
+            blend.SrcBlend = i == 2 ? D3D12_BLEND_SRC_ALPHA : D3D12_BLEND_ONE;
+            Check(context.Device()->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&pipelines[i])),
+                  "Create present PSO");
+        }
+    }
     void Initialize(Core::Frontend::EmuWindow& window) {
         const auto& info = window.GetWindowInfo();
-        if (info.type != Core::Frontend::WindowSystemType::Windows || !info.render_surface) {
+        if (info.type != Core::Frontend::WindowSystemType::Windows || !info.render_surface)
             throw std::runtime_error("D3D12 requires a UWP CoreWindow ABI surface");
-        }
-        Check(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)),
-              "CreateDevice");
-        D3D12_COMMAND_QUEUE_DESC queue_desc{};
-        queue_desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
-        Check(device->CreateCommandQueue(&queue_desc, IID_PPV_ARGS(&queue)), "CreateCommandQueue");
-        Check(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence)), "CreateFence");
-        fence_event = CreateEventExW(nullptr, nullptr, 0, EVENT_ALL_ACCESS);
-        if (!fence_event) {
-            Check(HRESULT_FROM_WIN32(GetLastError()), "CreateEventExW");
-        }
-        Check(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
-                                             IID_PPV_ARGS(&allocator)),
-              "CreateCommandAllocator");
-        Check(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.Get(), nullptr,
-                                        IID_PPV_ARGS(&commands)),
-              "CreateCommandList");
-        Check(commands->Close(), "initial Close");
-
         ComPtr<IDXGIFactory2> factory;
         Check(CreateDXGIFactory2(0, IID_PPV_ARGS(&factory)), "CreateDXGIFactory2");
         width = std::max(1u, window.GetFramebufferLayout().width);
@@ -132,30 +167,37 @@ struct RendererD3D12::Impl {
         desc.Scaling = DXGI_SCALING_STRETCH;
         desc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
         ComPtr<IDXGISwapChain1> chain;
-        Check(factory->CreateSwapChainForCoreWindow(
-                  queue.Get(), static_cast<IUnknown*>(info.render_surface), &desc, nullptr, &chain),
+        Check(factory->CreateSwapChainForCoreWindow(context.Queue(),
+                                                    static_cast<IUnknown*>(info.render_surface),
+                                                    &desc, nullptr, &chain),
               "CreateSwapChainForCoreWindow");
         Check(chain.As(&swapchain), "Query IDXGISwapChain3");
-        D3D12_DESCRIPTOR_HEAP_DESC heap_desc{};
-        heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-        heap_desc.NumDescriptors = BufferCount;
-        Check(device->CreateDescriptorHeap(&heap_desc, IID_PPV_ARGS(&rtv_heap)),
-              "CreateDescriptorHeap RTV");
-        rtv_stride = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+        D3D12_DESCRIPTOR_HEAP_DESC heap{};
+        heap.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+        heap.NumDescriptors = BufferCount;
+        Check(context.Device()->CreateDescriptorHeap(&heap, IID_PPV_ARGS(&rtv_heap)),
+              "Create RTV heap");
+        rtv_stride = context.Device()->GetDescriptorHandleIncrementSize(heap.Type);
+        heap.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+        heap.NumDescriptors = MaxLayers;
+        heap.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+        Check(context.Device()->CreateDescriptorHeap(&heap, IID_PPV_ARGS(&srv_heap)),
+              "Create SRV heap");
+        srv_stride = context.Device()->GetDescriptorHandleIncrementSize(heap.Type);
         AcquireBuffers();
-        LOG_WARNING(Render, "D3D12 P1 initialized: native clear/present, no guest rendering");
+        InitializePipeline();
+        LOG_WARNING(Render, "D3D12 P2 initialized: native caches/framebuffer presentation; guest "
+                            "pipelines stubbed");
     }
-
-    void Present(u32 new_width, u32 new_height) {
-        // P1 deliberately serializes frames. TODO(P2): fence-retired per-frame allocators/staging.
-        Wait();
-        new_width = std::max(1u, new_width);
-        new_height = std::max(1u, new_height);
+    void Present(const Layout::FramebufferLayout& layout,
+                 std::span<const Tegra::FramebufferConfig> layers, RasterizerD3D12& rasterizer) {
+        // Completes transfers and CPU readback, and retires the previous descriptor use.
+        context.Finish();
+        const auto new_width = std::max(1u, layout.width);
+        const auto new_height = std::max(1u, layout.height);
         if (width != new_width || height != new_height) {
-            Drain();
-            for (auto& buffer : buffers) {
-                buffer.Reset();
-            }
+            for (auto& buffer : buffers)
+                buffer.reset();
             Check(swapchain->ResizeBuffers(BufferCount, new_width, new_height,
                                            DXGI_FORMAT_R8G8B8A8_UNORM, 0),
                   "ResizeBuffers");
@@ -163,86 +205,119 @@ struct RendererD3D12::Impl {
             height = new_height;
             AcquireBuffers();
         }
-        Check(allocator->Reset(), "allocator Reset");
-        Check(commands->Reset(allocator.Get(), nullptr), "command list Reset");
+        if (layers.size() > MaxLayers)
+            throw std::runtime_error("D3D12 presentation layer limit exceeded");
+        // Cache uploads/downloads may submit work. Resolve every source before binding
+        // compositor state so allocator resets cannot erase an in-progress layer draw.
+        std::vector<RasterizerD3D12::DisplayTexture> textures;
+        textures.reserve(layers.size());
+        for (const auto& layer : layers)
+            textures.push_back(rasterizer.FramebufferTexture(layer));
         const UINT index = swapchain->GetCurrentBackBufferIndex();
-        D3D12_RESOURCE_BARRIER barrier{};
-        barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        barrier.Transition.pResource = buffers[index].Get();
-        barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
-        barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-        commands->ResourceBarrier(1, &barrier);
+        auto* commands = context.Commands();
+        context.Transition(buffers[index], D3D12_RESOURCE_STATE_RENDER_TARGET);
         const auto target = Rtv(index);
         commands->OMSetRenderTargets(1, &target, FALSE, nullptr);
-        constexpr float TestColor[] = {0.08f, 0.25f, 0.5f, 1.0f};
-        commands->ClearRenderTargetView(target, TestColor, 0, nullptr);
-        // TODO(P2): look up/decode the guest framebuffer with VideoCommon::TextureCache.
-        // No cache resource exists in P1, so copying a guest texture is not yet possible.
-        std::swap(barrier.Transition.StateBefore, barrier.Transition.StateAfter);
-        commands->ResourceBarrier(1, &barrier);
-        Check(commands->Close(), "Close");
-        ID3D12CommandList* lists[] = {commands.Get()};
-        queue->ExecuteCommandLists(1, lists);
-        // Signal even if Present fails, so teardown can retire submitted work.
-        Check(queue->Signal(fence.Get(), ++fence_value), "frame Signal");
+        constexpr float TestColor[]{0.08f, 0.25f, 0.5f, 1.0f};
+        constexpr float Black[]{0, 0, 0, 1};
+        commands->ClearRenderTargetView(target, layers.empty() ? TestColor : Black, 0, nullptr);
+        commands->SetGraphicsRootSignature(root.Get());
+        ID3D12DescriptorHeap* heaps[]{srv_heap.Get()};
+        commands->SetDescriptorHeaps(1, heaps);
+        commands->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        const auto& screen = layout.screen;
+        D3D12_VIEWPORT viewport{static_cast<float>(screen.left),
+                                static_cast<float>(screen.top),
+                                static_cast<float>(screen.GetWidth()),
+                                static_cast<float>(screen.GetHeight()),
+                                0,
+                                1};
+        D3D12_RECT scissor{static_cast<LONG>(screen.left), static_cast<LONG>(screen.top),
+                           static_cast<LONG>(screen.right), static_cast<LONG>(screen.bottom)};
+        commands->RSSetViewports(1, &viewport);
+        commands->RSSetScissorRects(1, &scissor);
+        UINT slot{};
+        for (const auto& layer : layers) {
+            const auto& texture = textures[slot];
+            context.Transition(texture.resource, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+            auto cpu = srv_heap->GetCPUDescriptorHandleForHeapStart();
+            auto gpu = srv_heap->GetGPUDescriptorHandleForHeapStart();
+            cpu.ptr += static_cast<SIZE_T>(slot) * srv_stride;
+            gpu.ptr += static_cast<UINT64>(slot++) * srv_stride;
+            context.Device()->CreateShaderResourceView(texture.resource->handle.Get(),
+                                                       &texture.view, cpu);
+            const auto resource_desc = texture.resource->handle->GetDesc();
+            const auto crop = layer.crop_rect.IsEmpty()
+                                  ? Common::Rectangle<int>{0, 0, static_cast<int>(layer.width),
+                                                           static_cast<int>(layer.height)}
+                                  : layer.crop_rect;
+            const auto mip = texture.view.Texture2DArray.MostDetailedMip;
+            const float texture_width =
+                static_cast<float>(std::max(UINT64{1}, resource_desc.Width >> mip));
+            const float texture_height =
+                static_cast<float>(std::max(1u, resource_desc.Height >> mip));
+            const PresentParameters constants{{crop.left / texture_width, crop.top / texture_height,
+                                               crop.right / texture_width,
+                                               crop.bottom / texture_height},
+                                              static_cast<u32>(layer.transform_flags),
+                                              layer.blending == Tegra::BlendMode::Opaque ? 1u : 0u};
+            commands->SetPipelineState(
+                pipelines[layer.blending == Tegra::BlendMode::Opaque          ? 0
+                          : layer.blending == Tegra::BlendMode::Premultiplied ? 1
+                                                                              : 2]
+                    .Get());
+            commands->SetGraphicsRootDescriptorTable(0, gpu);
+            commands->SetGraphicsRoot32BitConstants(1, 8, &constants, 0);
+            commands->DrawInstanced(3, 1, 0, 0);
+        }
+        context.Transition(buffers[index], D3D12_RESOURCE_STATE_PRESENT);
+        context.Submit();
         Check(swapchain->Present(1, 0), "Present");
     }
 };
-
-RendererD3D12::RendererD3D12(Core::Frontend::EmuWindow& window, Tegra::GPU& gpu_,
+RendererD3D12::RendererD3D12(Core::Frontend::EmuWindow& window,
+                             Tegra::MaxwellDeviceMemoryManager& memory, Tegra::GPU& gpu_,
                              std::unique_ptr<Core::Frontend::GraphicsContext> context_)
     : RendererBase(window, std::move(context_)), impl(std::make_unique<Impl>()), gpu(gpu_),
-      rasterizer(gpu_) {
+      rasterizer(gpu_, memory, impl->context) {
     impl->Initialize(window);
-    // Show the probe even when the guest has not submitted a framebuffer yet.
-    impl->Present(window.GetFramebufferLayout().width, window.GetFramebufferLayout().height);
-    impl->Wait();
+    impl->Present(window.GetFramebufferLayout(), {}, rasterizer);
+    impl->context.Finish();
 }
-
 RendererD3D12::~RendererD3D12() = default;
-
 void RendererD3D12::Composite(std::span<const Tegra::FramebufferConfig> layers) {
-    if (!layers.empty() && !framebuffer_logged) {
-        LOG_WARNING(Render, "D3D12 P1: guest framebuffer ignored (TODO P2 texture cache)");
-        framebuffer_logged = true;
-    }
     if (IsScreenshotPending()) {
         renderer_settings.screenshot_requested = false;
-        // The callback bool describes row inversion, not success. Return a blank capture.
         const auto& size = renderer_settings.screenshot_framebuffer_layout;
         std::fill_n(static_cast<u8*>(renderer_settings.screenshot_bits),
                     static_cast<size_t>(size.width) * size.height * 4, u8{});
-        LOG_WARNING(Render, "D3D12 P1: screenshot readback is stubbed (TODO P2)");
+        LOG_WARNING(Render, "D3D12 screenshot capture is stubbed");
         renderer_settings.screenshot_complete_callback(false);
     }
     if (!impl->failed && render_window.IsShown()) {
-        const auto& layout = render_window.GetFramebufferLayout();
         try {
-            impl->Present(layout.width, layout.height);
+            std::vector<Tegra::FramebufferConfig> display_layers;
+            const auto selected = Tegra::FilterLayerStack(
+                layers, Service::Nvnflinger::LayerStackId::Default, display_layers);
+            impl->Present(render_window.GetFramebufferLayout(), selected, rasterizer);
             ++m_current_frame;
             render_window.OnFrameDisplayed();
         } catch (const std::exception& error) {
             impl->failed = true;
             LOG_ERROR(Render, "D3D12 presentation stopped: {}", error.what());
-            // The frontend observes this marker and shuts down the session on its worker thread.
             SetEnvironmentVariableA("NXBOX_D3D12_COMMAND_FAILURE", "1");
             SetEnvironmentVariableA("NXBOX_D3D12_FIRST_FAILURE", error.what());
         }
     }
     gpu.RendererFrameEndNotify();
 }
-
 std::vector<u8> RendererD3D12::GetAppletCaptureBuffer() {
-    // TODO(P2): capture guest layers instead of returning an empty, correctly sized buffer.
     return std::vector<u8>(VideoCore::Capture::TiledSize);
 }
-
 VideoCore::RasterizerInterface* RendererD3D12::ReadRasterizer() {
     return &rasterizer;
 }
-
 std::string RendererD3D12::GetDeviceVendor() const {
-    return "D3D12 (P1)";
+    return "D3D12 (P2)";
 }
 } // namespace D3D12

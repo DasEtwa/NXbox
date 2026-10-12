@@ -39,7 +39,7 @@ std::unique_ptr<VideoCore::RendererBase> CreateRenderer(Core::System& system, Co
         return std::make_unique<Vulkan::RendererVulkan>(emu_window, device_memory, gpu, std::move(context));
 #ifdef HAS_D3D12
     case Settings::RendererBackend::D3D12:
-        return std::make_unique<D3D12::RendererD3D12>(emu_window, gpu, std::move(context));
+        return std::make_unique<D3D12::RendererD3D12>(emu_window, device_memory, gpu, std::move(context));
 #endif
     case Settings::RendererBackend::Null:
         return std::make_unique<Null::RendererNull>(emu_window, gpu, std::move(context));
