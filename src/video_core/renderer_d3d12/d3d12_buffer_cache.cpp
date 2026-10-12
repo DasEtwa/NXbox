@@ -162,7 +162,7 @@ void BufferCacheRuntime::BindVertexBuffers(VideoCommon::HostBindings<Buffer>& ho
                          static_cast<u32>(host.strides[i]));
 }
 std::span<u8> BufferCacheRuntime::BindMappedUniformBuffer(size_t stage, u32, u32 size) {
-    // CBV views are 256-byte multiples: reserve the rounded size, expose the requested one.
+    // Reserve the entire legal CBV range and initialize every byte beyond the guest upload.
     if (size > 65536) {
         InvalidRange(4, "mapped uniform exceeds Maxwell 64 KiB limit", 0, size, 65536);
         // Keep the caller's memcpy in bounds while exposing only legal bytes to D3D12.
