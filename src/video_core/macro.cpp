@@ -1236,8 +1236,8 @@ bool MacroJITx64Impl::Compile_NextInstruction(Core::System& system) {
 static void MacroJIT_ErrorThunk(MacroJITx64Impl::JITState* state, uintptr_t parameter,
                                 uintptr_t max_parameter) noexcept {
     state->failure.Invoke([&] {
-        throw std::out_of_range(fmt::format(
-            "Macro JIT: invalid parameter access {:#x} (end {:#x})", parameter, max_parameter));
+        throw std::out_of_range(fmt::format("Macro JIT: invalid parameter access {:#x} (end {:#x})",
+                                            parameter, max_parameter));
     });
 }
 

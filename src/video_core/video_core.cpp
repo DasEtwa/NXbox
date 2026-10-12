@@ -31,8 +31,10 @@
 
 namespace {
 
-std::unique_ptr<VideoCore::RendererBase> CreateRenderer(Core::System& system, Core::Frontend::EmuWindow& emu_window, Tegra::GPU& gpu, Core::Frontend::GraphicsContext::Scoped& scope,
-                                                       std::unique_ptr<Core::Frontend::GraphicsContext> context) {
+std::unique_ptr<VideoCore::RendererBase> CreateRenderer(
+    Core::System& system, Core::Frontend::EmuWindow& emu_window, Tegra::GPU& gpu,
+    Core::Frontend::GraphicsContext::Scoped& scope,
+    std::unique_ptr<Core::Frontend::GraphicsContext> context) {
     [[maybe_unused]] auto& device_memory = system.Host1x().MemoryManager();
     (void)scope;
     switch (Settings::values.renderer_backend.GetValue()) {
@@ -48,7 +50,7 @@ std::unique_ptr<VideoCore::RendererBase> CreateRenderer(Core::System& system, Co
     case Settings::RendererBackend::D3D12: {
         try {
             return std::make_unique<D3D12::RendererD3D12>(emu_window, device_memory, gpu,
-                                                        std::move(context));
+                                                          std::move(context));
         } catch (const std::exception& error) {
             scope.Cancel();
 #ifdef NXBOX_UWP
@@ -66,11 +68,12 @@ std::unique_ptr<VideoCore::RendererBase> CreateRenderer(Core::System& system, Co
             scope.Cancel();
 #ifdef NXBOX_UWP
             EdenXbox::CrashRendererException("D3D12 initialization fallback",
-                                            "non-standard exception");
+                                             "non-standard exception");
 #endif
             try {
-                LOG_CRITICAL(HW_GPU,
-                             "D3D12 initialization failed: non-standard exception; falling back to OpenGL");
+                LOG_CRITICAL(
+                    HW_GPU,
+                    "D3D12 initialization failed: non-standard exception; falling back to OpenGL");
             } catch (...) {
             }
 #ifndef HAS_OPENGL
@@ -86,7 +89,7 @@ std::unique_ptr<VideoCore::RendererBase> CreateRenderer(Core::System& system, Co
         // Release explicitly: Scoped's destructor is noexcept but DoneCurrent can throw.
         fallback_scope.Cancel();
         auto renderer = std::make_unique<OpenGL::RendererOpenGL>(emu_window, device_memory, gpu,
-                                                                std::move(context));
+                                                                 std::move(context));
         renderer->Context().DoneCurrent();
         return renderer;
 #endif

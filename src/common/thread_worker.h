@@ -10,8 +10,8 @@
 #include <condition_variable>
 #include <exception>
 #include <functional>
-#include <mutex>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <type_traits>
@@ -49,21 +49,21 @@ public:
         : workers_queued{num_workers}, thread_name{std::move(name)} {
         const auto lambda = [this, func, placement](std::stop_token stop_token) {
             try {
-            Common::SetCurrentThreadName(thread_name.c_str());
-            if (placement != ThreadPlacement::Default) {
-                Common::SetCurrentThreadPriority(ThreadPriority::Low);
-            }
-            switch (placement) {
-            case ThreadPlacement::Efficiency:
-                Common::SetCurrentThreadToEfficiencyCores();
-                break;
-            case ThreadPlacement::Background:
-                Common::SetCurrentThreadToBackgroundWork();
-                break;
-            default:
-                Common::SetCurrentThreadToAllCores();
-                break;
-            }
+                Common::SetCurrentThreadName(thread_name.c_str());
+                if (placement != ThreadPlacement::Default) {
+                    Common::SetCurrentThreadPriority(ThreadPriority::Low);
+                }
+                switch (placement) {
+                case ThreadPlacement::Efficiency:
+                    Common::SetCurrentThreadToEfficiencyCores();
+                    break;
+                case ThreadPlacement::Background:
+                    Common::SetCurrentThreadToBackgroundWork();
+                    break;
+                default:
+                    Common::SetCurrentThreadToAllCores();
+                    break;
+                }
             } catch (const std::exception& error) {
                 ReportException("Worker setup", error.what());
             } catch (...) {
@@ -111,7 +111,8 @@ public:
                             task();
                         }
                     } catch (const std::exception& error) {
-                        ReportException(state ? "Worker task" : "Worker initialization", error.what());
+                        ReportException(state ? "Worker task" : "Worker initialization",
+                                        error.what());
                     } catch (...) {
                         ReportException(state ? "Worker task" : "Worker initialization",
                                         "non-standard exception");
