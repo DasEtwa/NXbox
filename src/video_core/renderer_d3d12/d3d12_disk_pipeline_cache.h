@@ -93,6 +93,8 @@ public:
     bool RememberPipeline(const DiskPipelineRecord& record);
     void StartWarmup(BuildCallback build, ProgressCallback progress,
                      std::stop_token stop_loading = {});
+    // Owner thread: join without cancelling; all progress callbacks finish before return.
+    void WaitWarmup();
     void StopWarmup();
     bool Flush();
 

@@ -116,8 +116,8 @@ int main(int argc, char** argv) {
             assert(cache.FindDxil(record.key)); // Callback may reenter the cache.
             return item.kind == DiskRecordKind::Graphics;
         }, [&](const auto& item) { progress.push_back(item); if (item.stage == DiskWarmupStage::Complete) finished = true; });
-        while (!finished) std::this_thread::yield();
-        cache.StopWarmup();
+        cache.WaitWarmup();
+        assert(finished);
         assert(progress.size() == 4 && progress.front().completed == 0);
         assert(progress.back().completed == 2 && progress.back().total == 2 && progress.back().failed == 1);
         assert(progress[1].completed == 1 && progress[2].completed == 2);

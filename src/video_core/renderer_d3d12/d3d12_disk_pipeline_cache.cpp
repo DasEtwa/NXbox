@@ -228,6 +228,10 @@ bool DiskPipelineCache::RememberPipeline(const DiskPipelineRecord& record) {
     std::scoped_lock lock{impl->mutex};
     return impl->Write(record);
 }
+void DiskPipelineCache::WaitWarmup() {
+    if (impl->worker.joinable())
+        impl->worker.join();
+}
 void DiskPipelineCache::StopWarmup() {
     if (impl->worker.joinable()) {
         impl->worker.request_stop();

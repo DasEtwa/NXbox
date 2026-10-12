@@ -531,7 +531,7 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
         disk->StopWarmup();
         disk->Flush();
     }
-    std::scoped_lock lock{pipeline_mutex};
+    std::unique_lock lock{pipeline_mutex};
     context.Finish(); // Retire PSOs referenced by the previous title before replacing the maps.
     guest_graphics.clear();
     guest_compute.clear();
@@ -606,7 +606,9 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
                          progress.completed, progress.total);
         },
         stop_loading);
-    // PSO maps and DXC are protected against foreground draws while warmup runs.
+    // The frontend callback captures loading-scope state. Join before that scope expires.
+    lock.unlock();
+    disk->WaitWarmup();
 }
 void PipelineCache::BindToChannel(s32 id) {
     VideoCommon::ShaderCache::BindToChannel(id);
