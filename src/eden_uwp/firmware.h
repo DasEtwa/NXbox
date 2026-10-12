@@ -8,6 +8,7 @@ namespace EdenXbox {
 struct FirmwareStatus {
     std::string version;
     bool install_failed = false;
+    bool home_available = false;
 };
 // Run on an MTA worker before the library, direct launch, or emulation starts.
 void PrepareFirmware(const std::filesystem::path& local_state);

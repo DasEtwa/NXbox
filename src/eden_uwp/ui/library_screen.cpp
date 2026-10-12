@@ -26,13 +26,14 @@
 #include "common/scope_exit.h"
 #include "eden_uwp/diagnostic.h"
 #include "eden_uwp/firmware.h"
+#include "eden_uwp/home_ui_settings.h"
 #include "eden_uwp/save_sync.h"
 #include "eden_uwp/title_settings.h"
 #include "eden_uwp/ui/anim.h"
 #include "eden_uwp/ui/art.h"
+#include "eden_uwp/ui/cheats_screen.h"
 #include "eden_uwp/ui/input.h"
 #include "eden_uwp/ui/library.h"
-#include "eden_uwp/ui/cheats_screen.h"
 #include "eden_uwp/ui/mods_screen.h"
 #include "eden_uwp/ui/renderer.h"
 #include "eden_uwp/ui/savesync_ui.h"
@@ -125,7 +126,9 @@ constexpr int kSettingSources = 1;
 constexpr int kSettingUsb = 2;
 constexpr int kSettingCredits = 3;
 constexpr int kSettingSystemMenu = 4;
-constexpr int kSettingsRowCount = 5;
+constexpr int kSettingOfficialInterface = 5;
+constexpr int kSettingBackToNXbox = 6;
+constexpr int kSettingsRowCount = 7;
 
 constexpr std::size_t Idx(int index) {
     return static_cast<std::size_t>(index);
@@ -279,22 +282,38 @@ std::wstring FormatName(const GameEntry& game) {
 class LibraryScreen {
 public:
     LibraryScreen(Renderer& renderer, const CoreWindow& window,
-                  const std::filesystem::path& local_state)
+                  const std::filesystem::path& local_state,
+                  std::atomic<bool>* return_home = nullptr,
+                  std::atomic<bool>* guest_home_request = nullptr)
         : renderer_(renderer), window_(window), input_(window), local_state_(local_state),
           banners_(local_state) {
+        return_home_ = return_home;
+        guest_home_request_ = guest_home_request;
+        input_.SetCancelFlag(return_home_);
+        official_interface_ = UseOfficialSwitchInterface(local_state_);
+        if (return_home_) {
+            tab_ = Tab::Settings;
+            layer_ = Layer::Rail;
+            Toast(Tr(Text::HomeComboPrompt), Clock::now());
+            input_.ConsumeUntilRelease();
+        }
         firmware_status_ = GetFirmwareStatus();
         sync_account_ = GetSyncAccount();
         sources_count_ = CountSources(local_state_);
         usb_mode_ = LoadUsbMode(local_state_);
         usb_detection_ = std::make_unique<UsbDetection>(local_state_);
-        StartScan();
+        if (!return_home_)
+            StartScan();
     }
 
     // Draws and handles input until the player launches a game or leaves. Returns the chosen
     // game's path (UTF-8), or an empty string.
     std::string Run() {
-        const auto closed_token =
-            window_.Closed([this](const auto&, const auto&) { closed_ = true; });
+        const auto closed_token = window_.Closed([this](const auto&, const auto&) {
+            closed_ = true;
+            if (return_home_)
+                return_home_->store(true);
+        });
         // The system wants the GPU memory trimmed when the app is suspended.
         const auto suspending_token =
             CoreApplication::Suspending([this](const auto&, const auto&) { renderer_.Trim(); });
@@ -303,7 +322,7 @@ public:
             CoreApplication::Suspending(suspending_token);
         };
         Diagnostic("UI library screen open");
-        while (!closed_ && !leaving_) {
+        while (!closed_ && !leaving_ && !(return_home_ && return_home_->load())) {
             const Clock::time_point frame_start = Clock::now();
             window_.Dispatcher().ProcessEvents(CoreProcessEventsOption::ProcessAllIfPresent);
             input_.Update();
@@ -590,6 +609,8 @@ private:
     }
 
     void SetTab(Tab tab) {
+        if (return_home_)
+            return;
         update_focused_ = false;
         tab_ = tab;
         if (tab_ == Tab::Settings) {
@@ -598,6 +619,8 @@ private:
     }
 
     void MoveHorizontal(int direction) {
+        if (return_home_)
+            return;
         switch (layer_) {
         case Layer::Rail:
             if (tab_ == Tab::Settings) {
@@ -634,11 +657,12 @@ private:
             if (direction < 0) {
                 if (settings_row_ > 0) {
                     --settings_row_;
-                } else {
+                } else if (!return_home_) {
                     layer_ = Layer::Nav;
                 }
             } else {
-                settings_row_ = std::min(settings_row_ + 1, kSettingsRowCount - 1);
+                settings_row_ =
+                    std::min(settings_row_ + 1, kSettingsRowCount - (return_home_ ? 1 : 2));
             }
             return;
         }
@@ -749,7 +773,8 @@ private:
             closed_ = true;
             return;
         }
-        StartScan();
+        if (!return_home_)
+            StartScan();
     }
 
     // The sources screen, on this window and this renderer. It runs its own loop and returns when
@@ -762,7 +787,8 @@ private:
             return;
         }
         sources_count_ = CountSources(local_state_);
-        StartScan();
+        if (!return_home_)
+            StartScan();
     }
 
     // Settings > Credits: who made what NXbox builds on (cheats_screen.cpp).
@@ -776,7 +802,31 @@ private:
 
     // A on a settings row.
     void ActivateSetting(Clock::time_point now) {
+        if (settings_row_ == kSettingBackToNXbox) {
+            if (SaveOfficialSwitchInterface(local_state_, false)) {
+                official_interface_ = false;
+                if (return_home_)
+                    return_home_->store(true);
+            } else
+                Toast(Tr(Text::ResolutionSaveFailed), now);
+            return;
+        }
+        if (settings_row_ == kSettingOfficialInterface) {
+            if (firmware_status_.home_available &&
+                SaveOfficialSwitchInterface(local_state_, !official_interface_)) {
+                official_interface_ = !official_interface_;
+            } else if (firmware_status_.home_available)
+                Toast(Tr(Text::ResolutionSaveFailed), now);
+            return;
+        }
         if (settings_row_ == kSettingSystemMenu) {
+            if (!firmware_status_.home_available)
+                return;
+            if (guest_home_request_) {
+                guest_home_request_->store(true);
+                leaving_ = true;
+                return;
+            }
             result_ = std::string(SwitchHomeBootTarget);
             launched_ = -1;
             launching_ = true;
@@ -897,6 +947,14 @@ private:
     // ---- Drawing ----
 
     void Draw(Clock::time_point now) {
+        if (return_home_) {
+            renderer_.FillRounded(RectF(kMargin, 180.0f, kCanvasWidth - kMargin, 1010.0f), 24.0f,
+                                  Theme::kSheet);
+            DrawSettings();
+            DrawToast(now);
+            DrawHints(renderer_, {{Theme::kButtonB, L"B", Tr(Text::HintBack)}});
+            return;
+        }
         DrawBackdrop(now);
         if (tab_ == Tab::Library) {
             DrawHeroBanner(now);
@@ -1382,7 +1440,9 @@ private:
 
     // The settings tab: a list of rows, each with a name, its state and one line of explanation.
     void DrawSettings() {
-        DrawTitle(Tr(Text::SettingsTitle));
+        renderer_.DrawString(Tr(Text::SettingsTitle), Font::Heading,
+                             RectF(kMargin + 28.0f, 210.0f, kCanvasWidth - kMargin, 310.0f),
+                             Theme::kText);
         struct Row {
             const wchar_t* name;
             const wchar_t* state;
@@ -1424,21 +1484,30 @@ private:
              usb_row,
              credits_row,
              {Tr(Text::SystemMenuTitle), Tr(Text::SystemMenuBoot), Theme::kTextSecondary,
-              Tr(Text::SystemMenuHint)}}};
-        constexpr float kRowTop = 500.0f;
+              Tr(Text::SystemMenuHint)},
+             {Tr(Text::OfficialSwitchInterface),
+              Tr(official_interface_ ? Text::SyncStateOn : Text::SyncStateOff),
+              Theme::kTextSecondary,
+              Tr(firmware_status_.home_available ? Text::SystemMenuHint : Text::RequiresFirmware)},
+             {Tr(Text::BackToNXboxInterface), L"", Theme::kTextSecondary, L""}}};
+        constexpr float kRowTop = 340.0f;
         constexpr float kRowHeight = 88.0f;
         constexpr float kRowPitch = 92.0f;
         constexpr float kRowRadius = 22.0f;
-        for (int i = 0; i < kSettingsRowCount; ++i) {
+        const int row_count = return_home_ ? kSettingsRowCount : kSettingsRowCount - 1;
+        for (int i = 0; i < row_count; ++i) {
             const float y = kRowTop + static_cast<float>(i) * kRowPitch;
             const D2D1_RECT_F row = RectF(kMargin, y, kCanvasWidth - kMargin, y + kRowHeight);
+            const bool disabled = (i == kSettingOfficialInterface || i == kSettingSystemMenu) &&
+                                  !firmware_status_.home_available;
             const bool focused = layer_ == Layer::Rail && settings_row_ == i;
             if (focused) {
                 renderer_.FillRounded(row, kRowRadius, Theme::kSurfaceStrong);
             }
             renderer_.DrawString(rows[Idx(i)].name, Font::RowTitle,
                                  RectF(kMargin + 28.0f, y + 12.0f, kMargin + 700.0f, y + 48.0f),
-                                 Theme::kText, HAlign::Left, VAlign::Middle);
+                                 disabled ? Theme::kTextTertiary : Theme::kText, HAlign::Left,
+                                 VAlign::Middle);
             renderer_.DrawString(
                 rows[Idx(i)].hint, Font::RowSub,
                 RectF(kMargin + 28.0f, y + 50.0f,
@@ -1448,7 +1517,8 @@ private:
                 rows[Idx(i)].state, Font::Button,
                 RectF(kCanvasWidth - kMargin - (i == kSettingUsb ? 770.0f : 340.0f), y,
                       kCanvasWidth - kMargin - 28.0f, y + kRowHeight),
-                rows[Idx(i)].state_color, HAlign::Right, VAlign::Middle);
+                disabled ? Theme::kTextTertiary : rows[Idx(i)].state_color, HAlign::Right,
+                VAlign::Middle);
             if (focused) {
                 DrawRing(renderer_, row, kRowRadius + kRingGap, 1.0f);
             }
@@ -1562,6 +1632,9 @@ private:
     Layer layer_ = Layer::Rail;
     int selected_ = 0; // rail index; GameCount() is the "add games" tile
     int action_ = kActionPlay;
+    std::atomic<bool>* return_home_ = nullptr;
+    std::atomic<bool>* guest_home_request_ = nullptr;
+    bool official_interface_ = false;
     int settings_row_ = 0;
     SyncAccount sync_account_ = SyncAccount::SignedOut;
     int launched_ = -1;
@@ -1586,6 +1659,16 @@ private:
 };
 
 } // namespace
+
+void RunSessionOverlay(const winrt::Windows::UI::Core::CoreWindow& window,
+                       std::atomic<bool>& return_home, std::atomic<bool>& guest_home_request) {
+    const std::filesystem::path local_state(std::wstring_view(
+        winrt::Windows::Storage::ApplicationData::Current().LocalFolder().Path()));
+    Renderer renderer;
+    renderer.Initialize(window, true);
+    LibraryScreen screen(renderer, window, local_state, &return_home, &guest_home_request);
+    screen.Run();
+}
 
 std::string RunLibrary(const winrt::Windows::UI::Core::CoreWindow& window, ChosenGame* chosen) {
     Diagnostic("UI library begin");

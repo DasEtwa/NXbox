@@ -7,6 +7,7 @@
 #include <thread>
 
 #include <fmt/format.h>
+#include <winrt/Windows.Graphics.Display.h>
 
 #include "eden_uwp/crash_logger.h"
 #include "eden_uwp/diagnostic.h"
@@ -106,7 +107,8 @@ Renderer::~Renderer() {
     Shutdown();
 }
 
-void Renderer::Initialize(const winrt::Windows::UI::Core::CoreWindow& window) {
+void Renderer::Initialize(const winrt::Windows::UI::Core::CoreWindow& window, bool overlay) {
+    overlay_ = overlay;
     const D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0};
     CheckHr(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
                               D3D11_CREATE_DEVICE_BGRA_SUPPORT, levels, ARRAYSIZE(levels),
@@ -138,6 +140,17 @@ void Renderer::Initialize(const winrt::Windows::UI::Core::CoreWindow& window) {
     desc.BufferCount = 2;
     desc.Scaling = DXGI_SCALING_STRETCH;
     desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
+    if (overlay && window) {
+        // A separate foreground layer leaves the guest swap chain (GL or D3D12) intact.
+        desc.Flags = DXGI_SWAP_CHAIN_FLAG_FOREGROUND_LAYER;
+        desc.AlphaMode = DXGI_ALPHA_MODE_PREMULTIPLIED;
+        desc.Scaling = DXGI_SCALING_NONE;
+        const auto scale =
+            winrt::Windows::Graphics::Display::DisplayInformation::GetForCurrentView()
+                .RawPixelsPerViewPixel();
+        desc.Width = static_cast<UINT>(window.Bounds().Width * scale);
+        desc.Height = static_cast<UINT>(window.Bounds().Height * scale);
+    }
     if (window) {
         CheckHr(dxgi_factory->CreateSwapChainForCoreWindow(
                     d3d_device_.Get(), winrt::get_unknown(window), &desc, nullptr, &swap_chain_),
@@ -147,14 +160,16 @@ void Renderer::Initialize(const winrt::Windows::UI::Core::CoreWindow& window) {
         CheckHr(swap_chain_->GetBuffer(0, IID_PPV_ARGS(&back_buffer)), "GetBuffer");
         const auto target_properties = D2D1::BitmapProperties1(
             D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
-            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE));
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,
+                              overlay ? D2D1_ALPHA_MODE_PREMULTIPLIED : D2D1_ALPHA_MODE_IGNORE));
         CheckHr(
             context_->CreateBitmapFromDxgiSurface(back_buffer.Get(), &target_properties, &target_),
             "CreateBitmapFromDxgiSurface");
     } else {
         const auto properties = D2D1::BitmapProperties1(
             D2D1_BITMAP_OPTIONS_TARGET,
-            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE));
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,
+                              overlay ? D2D1_ALPHA_MODE_PREMULTIPLIED : D2D1_ALPHA_MODE_IGNORE));
         CheckHr(context_->CreateBitmap(D2D1::SizeU(desc.Width, desc.Height), nullptr, 0,
                                        &properties, &target_),
                 "CreateBitmap offscreen");
@@ -285,7 +300,7 @@ void Renderer::BeginFrame() {
     context_->BeginDraw();
     drawing_ = true;
     context_->SetTransform(D2D1::Matrix3x2F::Identity());
-    context_->Clear(Theme::kBackground);
+    context_->Clear(overlay_ ? D2D1::ColorF(D2D1::ColorF::Black, 0.0f) : Theme::kBackground);
     context_->SetTransform(canvas_);
 }
 

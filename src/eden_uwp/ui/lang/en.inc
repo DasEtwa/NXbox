@@ -283,3 +283,7 @@
     {Text::SystemMenuTitle, L"System menu"},
     {Text::SystemMenuBoot, L"Boot to Switch HOME menu"},
     {Text::SystemMenuHint, L"Use your installed firmware. View + Menu opens HOME."},
+    {Text::HomeComboPrompt, L"Press again to go home"},
+    {Text::OfficialSwitchInterface, L"Use the official Switch interface"},
+    {Text::RequiresFirmware, L"Requires firmware"},
+    {Text::BackToNXboxInterface, L"Back to NXbox interface"},

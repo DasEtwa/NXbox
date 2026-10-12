@@ -87,7 +87,7 @@ public:
     Renderer(const Renderer&) = delete;
     Renderer& operator=(const Renderer&) = delete;
 
-    void Initialize(const winrt::Windows::UI::Core::CoreWindow& window);
+    void Initialize(const winrt::Windows::UI::Core::CoreWindow& window, bool overlay = false);
     // A null window creates a bitmap target, without taking ownership of a CoreWindow.
     void ReadFrame(Pixels& pixels);
     void Shutdown();
@@ -157,6 +157,7 @@ private:
         formats_;
     D2D1::Matrix3x2F canvas_ = D2D1::Matrix3x2F::Identity();
     bool drawing_ = false;
+    bool overlay_ = false;
 };
 
 } // namespace EdenXbox::Ui

@@ -15,6 +15,7 @@
 #include "common/settings.h"
 #include "eden_uwp/applet_boot.h"
 #include "eden_uwp/diagnostic.h"
+#include "eden_uwp/home_combo.h"
 #include "eden_uwp/input_script.h"
 #include "eden_uwp/pad_style.h"
 #include "hid_core/frontend/emulated_controller.h"
@@ -86,8 +87,8 @@ public:
         }
     }
 
-    void Poll(Core::HID::EmulatedController& controller,
-              Core::HID::NpadStyleTag supported = {}) {
+    void Poll(Core::HID::EmulatedController& controller, Core::HID::NpadStyleTag supported = {},
+              bool suppress_guest = false) {
         using namespace winrt::Windows::Gaming::Input;
         const auto devices = Gamepad::Gamepads();
         GamepadReading reading{};
@@ -100,6 +101,8 @@ public:
         const bool menu = (reading.Buttons & GamepadButtons::Menu) != GamepadButtons::None ||
                           (keys & (1u << Settings::NativeButton::Plus)) != 0;
         home_pressed = home_edge.Update(view, menu);
+        home_combo_action =
+            UpdateHomeCombo(home_combo, view, menu, std::chrono::steady_clock::now());
         // Player 1 stays connected, as the keyboard keeps it on desktop Eden. Disconnecting when
         // no Xbox pad was visible made games re-open the controller-support applet in a loop:
         // Persona 5 Royal every ~5 s, and Breath of the Wild 43 times in 13 s, leaking each
@@ -132,11 +135,16 @@ public:
             if (i == Settings::NativeButton::ZR)
                 pressed = reading.RightTrigger > 0.5;
             pressed = pressed || (keys & (1u << i)) != 0;
-            if (view && menu &&
+            if (((view && menu) || home_combo.held) &&
                 (i == Settings::NativeButton::Minus || i == Settings::NativeButton::Plus)) {
                 pressed = false;
             }
-            SetButton(pad, i, pressed);
+            SetButton(pad, i, pressed && !suppress_guest);
+        }
+        if (suppress_guest) {
+            for (int i = 0; i < 4; ++i)
+                SetAxis(pad, i, 0.0f);
+            return;
         }
         const auto key_axis = [keys](int positive, int negative, double value) {
             if (keys & (1u << positive))
@@ -165,15 +173,23 @@ public:
         return true;
     }
 
+    HomeComboAction HomeCombo() const {
+        return home_combo_action;
+    }
     bool HomePressed() const {
         return home_pressed;
     }
     void ResetHomeButton() {
         home_edge.Reset();
+        home_combo = {};
+        home_combo.held = true;
+        home_combo_action = HomeComboAction::None;
         home_pressed = false;
     }
 
 private:
+    HomeComboState home_combo;
+    HomeComboAction home_combo_action{};
     HomeButtonEdge home_edge;
     bool home_pressed{};
     /// NXBOX_PAD_AUTOSTYLE (default on): when the game changes its supported style set, present the

@@ -63,6 +63,7 @@
 #include "eden_uwp/diagnostic_report.h"
 #include "eden_uwp/game_download.h"
 #include "eden_uwp/gamepad.h"
+#include "eden_uwp/home_ui_settings.h"
 #include "eden_uwp/http_vfs_file.h"
 #include "eden_uwp/mesa_window.h"
 #include "eden_uwp/save_sync.h"
@@ -92,6 +93,13 @@ void FlushDeviceApiRing() {
             DiagnosticReportLines(name, value, Diagnostic);
         });
 }
+
+// Host UI requests are exchanged between the dispatcher and the session worker.
+struct SessionUi {
+    std::atomic<bool> overlay_open{false};
+    std::atomic<bool> guest_home_request{false};
+    std::atomic<bool> return_home{false};
+};
 
 // The system suspends the app when another app takes the foreground; pause emulation before the
 // process is frozen and resume it afterwards.
@@ -295,6 +303,9 @@ void ApplyEdenSettingsFile(const std::filesystem::path& settings_file) {
             continue;
         }
         const auto& [label, value] = *entry;
+        if (label == kOfficialSwitchInterfaceKey) {
+            continue; // Frontend preference, applied by the boot flow rather than Core::Settings.
+        }
         if (label == "resolution_setup" && !TitleSettings::ParseResolution(value)) {
             Diagnostic(fmt::format("SETTING {}={} invalid", label, value));
             continue;
@@ -635,7 +646,7 @@ void RunStackSampler(const std::atomic<bool>& closed) {
 void RunGame(MesaWindow& window, const std::string& bundled_path, const std::atomic<bool>& closed,
              const std::shared_ptr<XboxGamepad>& gamepad, Lifecycle& lifecycle,
              bool chosen_in_library, const std::string& protocol_path, Ui::LaunchScreen* splash,
-             Ui::LaunchStatus& launch_status) {
+             Ui::LaunchStatus& launch_status, SessionUi& session_ui) {
     Diagnostic("GAME_BEGIN");
     // The default timer tick is about 15.6 ms: every host sleep and timed wait rounds up to it. Ask
     // for 1 ms through ntdll (it may be refused inside the sandbox; the result is logged).
@@ -1050,7 +1061,8 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
         DiagnosticReportLines(name, value, Diagnostic);
     };
     while (!closed.load(std::memory_order_acquire) &&
-           !guest_exited.load(std::memory_order_acquire)) {
+           !guest_exited.load(std::memory_order_acquire) &&
+           !session_ui.return_home.load(std::memory_order_acquire)) {
         // Mesa cannot recover a removed device. Leave through the existing shutdown/error path
         // instead of keeping a live guest behind a permanently frozen presentation surface.
         char command_failure[2]{};
@@ -1103,8 +1115,20 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
             std::this_thread::sleep_for(std::chrono::milliseconds(8));
             continue;
         }
-        gamepad->Poll(*controller, system.HIDCore().GetSupportedStyleTag());
-        if (gamepad->HomePressed()) {
+        gamepad->Poll(*controller, system.HIDCore().GetSupportedStyleTag(),
+                      session_ui.overlay_open.load(std::memory_order_acquire));
+        switch (gamepad->HomeCombo()) {
+        case HomeComboAction::Prompt:
+            session_ui.overlay_open.store(true, std::memory_order_release);
+            break;
+        case HomeComboAction::GoHome:
+            session_ui.return_home.store(true, std::memory_order_release);
+            break;
+        case HomeComboAction::None:
+            break;
+        }
+        // HOME reaches the guest only when explicitly selected in the emulator overlay.
+        if (session_ui.guest_home_request.exchange(false, std::memory_order_acq_rel)) {
             system.GetAppletManager().HomeButtonPressed();
         }
         const auto now = std::chrono::steady_clock::now();
@@ -1459,7 +1483,9 @@ void SetProtocolPlayTitle(std::string title_id) {
     }
 }
 
-void RunGameView(const winrt::Windows::UI::Core::CoreWindow& window, const std::string& path) {
+static void RunGameViewSession(const winrt::Windows::UI::Core::CoreWindow& window,
+                               const std::string& path, bool allow_official_startup,
+                               bool& return_home) {
     using namespace winrt::Windows::UI::Core;
     // Prepare the NAND before the library or save sync runs, including on a fresh install.
     ApplyEdenSettingsFile();
@@ -1600,7 +1626,13 @@ void RunGameView(const winrt::Windows::UI::Core::CoreWindow& window, const std::
             Sleep(16);
         }
     }
-    if (!protocol_launch && !std::filesystem::exists(local_state / "skip_library.txt")) {
+    const bool official_startup = !protocol_launch && allow_official_startup &&
+                                  UseOfficialSwitchInterface(local_state) &&
+                                  GetFirmwareStatus().home_available;
+    if (official_startup)
+        protocol_path = std::string(SwitchHomeBootTarget);
+    if (!protocol_launch && !official_startup &&
+        (!allow_official_startup || !std::filesystem::exists(local_state / "skip_library.txt"))) {
         if (Ui::HasPendingSync(local_state)) {
             ApplyEdenSettingsFile(); // the active profile decides which save folder is synced
             if (Ui::RunPendingSync(window, local_state)) {
@@ -1633,6 +1665,7 @@ void RunGameView(const winrt::Windows::UI::Core::CoreWindow& window, const std::
         }
     }
     std::atomic<bool> done{false};
+    SessionUi session_ui;
     auto gamepad = std::make_shared<XboxGamepad>();
     // Handled so the system does not treat B or Menu as navigation while a game runs.
     const auto key_down_token = window.KeyDown([gamepad](const auto&, const KeyEventArgs& args) {
@@ -1724,11 +1757,13 @@ void RunGameView(const winrt::Windows::UI::Core::CoreWindow& window, const std::
             FlushDeviceApiRing();
             lifecycle.CompleteDeferral();
             winrt::uninit_apartment();
+            session_ui.return_home.store(true, std::memory_order_release);
             done.store(true, std::memory_order_release);
         };
         try {
             RunGame(*graphics, path, closed, gamepad, lifecycle, chosen_in_library, protocol_path,
-                    splash.get(), launch_status);
+                    splash.get(), launch_status, session_ui);
+            session_ui.return_home.store(true, std::memory_order_release);
             // The game is over and Eden released the save files: this is the safe point to upload.
             if (sync_after_exit) {
                 // Release Mesa before the dispatcher takes the window for the small upload toast.
@@ -1753,6 +1788,18 @@ void RunGameView(const winrt::Windows::UI::Core::CoreWindow& window, const std::
         window.Dispatcher().ProcessEvents(CoreProcessEventsOption::ProcessAllIfPresent);
         if (closed.load())
             SaveSync::CancelSync();
+        if (session_ui.overlay_open.load(std::memory_order_acquire) &&
+            !session_ui.return_home.load(std::memory_order_acquire) && !closed.load()) {
+            try {
+                Ui::RunSessionOverlay(window, session_ui.return_home,
+                                      session_ui.guest_home_request);
+            } catch (const winrt::hresult_error& error) {
+                Diagnostic("SESSION_OVERLAY_FAILED " + winrt::to_string(error.message()));
+            } catch (const std::exception& error) {
+                Diagnostic(std::string("SESSION_OVERLAY_FAILED ") + error.what());
+            }
+            session_ui.overlay_open.store(false, std::memory_order_release);
+        }
         if (exit_sync.load(std::memory_order_acquire) && !closed.load()) {
             try {
                 if (!exit_sync_renderer) {
@@ -1772,9 +1819,23 @@ void RunGameView(const winrt::Windows::UI::Core::CoreWindow& window, const std::
         Sleep(1);
     }
     worker.join();
+    return_home = session_ui.return_home.load() && !closed.load() &&
+                  launch_status.phase.load() != Ui::LaunchPhase::Failed;
     if (protocol_launch && !closed.load() &&
         launch_status.phase.load() == Ui::LaunchPhase::Failed) {
         show_failure(Ui::Text::LaunchFailed);
+    }
+}
+
+void RunGameView(const winrt::Windows::UI::Core::CoreWindow& window, const std::string& path) {
+    bool allow_official_startup = true;
+    for (;;) {
+        bool return_home = false;
+        RunGameViewSession(window, path, allow_official_startup, return_home);
+        if (!return_home)
+            return;
+        // All session resources and save uploads are finished before the library takes the window.
+        allow_official_startup = false;
     }
 }
 } // namespace EdenXbox

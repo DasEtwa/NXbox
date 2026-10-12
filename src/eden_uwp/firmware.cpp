@@ -14,6 +14,7 @@
 #include "core/crypto/key_manager.h"
 #include "core/file_sys/registered_cache.h"
 #include "core/file_sys/vfs/vfs_real.h"
+#include "core/hle/service/am/am_types.h"
 #include "core/hle/service/filesystem/filesystem.h"
 #include "eden_uwp/await_bounded.h"
 #include "eden_uwp/diagnostic.h"
@@ -123,6 +124,9 @@ void PrepareFirmware(const std::filesystem::path& local_state) {
                 break;
             }
         }
+        next.home_available = controller.GetSystemNANDContents()->GetEntryRaw(
+                                  static_cast<u64>(Service::AM::AppletProgramId::QLaunch),
+                                  FileSys::ContentRecordType::Program) != nullptr;
         Diagnostic("FIRMWARE installed version=" +
                    (next.version.empty() ? std::string("none") : next.version));
     } catch (const winrt::hresult_error& error) {

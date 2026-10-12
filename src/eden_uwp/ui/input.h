@@ -2,6 +2,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <cstddef>
 
 #include <windows.h>
@@ -32,6 +33,10 @@ public:
     // True on the frame the button went down and, for directions, on each auto-repeat.
     bool Pressed(Button button) const;
 
+    void SetCancelFlag(const std::atomic<bool>* flag) {
+        cancel_ = flag;
+    }
+
     // Clears this frame and suppresses each button until it has been sampled released.
     void ConsumeUntilRelease();
 
@@ -44,6 +49,7 @@ private:
     winrt::event_token activated_token_;
     std::array<bool, kButtonCount> keys_{};  // held, from the key events
     InputState state_;
+    const std::atomic<bool>* cancel_ = nullptr;
 };
 
 } // namespace EdenXbox::Ui

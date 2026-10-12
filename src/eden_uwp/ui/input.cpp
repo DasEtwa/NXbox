@@ -160,7 +160,7 @@ void Input::Update() {
 }
 
 bool Input::Pressed(Button button) const {
-    return state_.Pressed(button);
+    return (button == Button::B && cancel_ && cancel_->load()) || state_.Pressed(button);
 }
 
 void Input::ConsumeUntilRelease() {

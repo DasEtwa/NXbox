@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include <atomic>
 #include <string>
 
 #include <windows.h>
@@ -30,5 +31,9 @@ struct ChosenGame {
 
 std::string RunLibrary(const winrt::Windows::UI::Core::CoreWindow& window,
                        ChosenGame* chosen = nullptr);
+
+// Emulator-side foreground settings, with the same entries as the library.
+void RunSessionOverlay(const winrt::Windows::UI::Core::CoreWindow& window,
+                       std::atomic<bool>& return_home, std::atomic<bool>& guest_home_request);
 
 } // namespace EdenXbox::Ui
