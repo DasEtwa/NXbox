@@ -88,8 +88,7 @@ void A32Unicorn<TestEnvironment>::CodeHook(uc_engine* uc, u64 address, u32, void
     const u32 pc = static_cast<u32>(address);
     self->CommitWrites();
     self->CompleteInstruction(pc);
-    if (self->testenv.ticks_left == 0 || !self->testenv.IsInCodeMem(pc) ||
-        !self->testenv.interrupts.empty() || self->testenv.code_mem_modified_by_guest) {
+    if (self->testenv.ticks_left == 0 || !self->testenv.IsInCodeMem(pc) || !self->testenv.interrupts.empty() || self->testenv.code_mem_modified_by_guest) {
         CHECKED(uc_emu_stop(uc));
         return;
     }
