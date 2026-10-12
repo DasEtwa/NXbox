@@ -340,10 +340,13 @@ Result LANDiscovery::Reject(Ipv4Address address) {
     for (auto& station : stations) {
         if (station.status == NodeStatus::Connected && station.node_info->ipv4_address == address) {
             std::reverse(address.begin(), address.end());
-            SendPacket(Network::LDNPacketType::DestroyNetwork, address);
             std::erase(connected_clients, address);
             station.Reset();
             UpdateNodes();
+            // Existing desktop clients close on DestroyNetwork; newer clients can infer rejection
+            // from the preceding membership update without changing the version-1 wire format.
+            SendPacket(Network::LDNPacketType::SyncNetwork, network_info, address);
+            SendPacket(Network::LDNPacketType::DestroyNetwork, address);
             return ResultSuccess;
         }
     }
@@ -410,6 +413,7 @@ Result LANDiscovery::Connect(const NetworkInfo& network_info_, const UserConfig&
     Ipv4Address node_host = network_info_.ldn.nodes[0].ipv4_address;
     std::reverse(node_host.begin(), node_host.end());
     host_ip = node_host;
+    disconnect_reason = DisconnectReason::None;
     connecting = true;
     InitNodeStateChange();
     SendPacket(Network::LDNPacketType::Connect, node_info, *host_ip);
@@ -424,7 +428,9 @@ Result LANDiscovery::Connect(const NetworkInfo& network_info_, const UserConfig&
         SendPacket(Network::LDNPacketType::Disconnect, node_info, *host_ip);
     }
     host_ip.reset();
-    disconnect_reason = DisconnectReason::SignalLost;
+    if (disconnect_reason == DisconnectReason::None) {
+        disconnect_reason = DisconnectReason::SignalLost;
+    }
     return ResultConnectionFailed;
 }
 
@@ -437,6 +443,7 @@ Result LANDiscovery::Disconnect() {
 }
 
 Result LANDiscovery::DisconnectLocked() {
+    disconnect_reason = DisconnectReason::DisconnectedByUser;
     if (host_ip) {
         SendPacket(Network::LDNPacketType::Disconnect, node_info, *host_ip);
     }
@@ -725,6 +732,7 @@ void LANDiscovery::ReceivePacket(const Network::LDNPacket& packet) {
         break;
     }
     case Network::LDNPacketType::DestroyNetwork: {
+        disconnect_reason = connecting ? DisconnectReason::Rejected : DisconnectReason::DestroyedByUser;
         ResetStations();
         OnDisconnectFromHost();
         break;
@@ -747,6 +755,7 @@ void LANDiscovery::ReceivePacket(const Network::LDNPacket& packet) {
                              [&](const NodeInfo& node) {
                                  return node.is_connected && node.ipv4_address == switch_ip;
                              })) {
+                disconnect_reason = DisconnectReason::Rejected;
                 OnDisconnectFromHost();
                 break;
             }

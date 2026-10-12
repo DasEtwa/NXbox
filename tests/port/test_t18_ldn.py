@@ -142,11 +142,12 @@ int main() {
     LANDiscovery station; station.Initialize(); station.OpenStation();
     info.ldn.node_count = 1; info.ldn.node_count_max = 2;
     info.ldn.nodes[0].ipv4_address = {1,0,0,10};
-    info.ldn.nodes[1].ipv4_address = {2,0,0,10}; info.ldn.nodes[1].is_connected = 1;
+    info.ldn.nodes[1].ipv4_address = {2,0,0,10}; info.ldn.nodes[1].is_connected = 0;
     sent_connect = 0;
     auto future = std::async(std::launch::async, [&] { return station.Connect(info, user, 1); });
     while (!sent_connect) std::this_thread::yield();
-    auto sync = Wire(LDNPacketType::SyncNetwork, &info, sizeof(info));
+    auto synced_info = info; synced_info.ldn.node_count = 2; synced_info.ldn.nodes[1].is_connected = 1;
+    auto sync = Wire(LDNPacketType::SyncNetwork, &synced_info, sizeof(synced_info));
     sync.local_ip[3] = 3; station.ReceivePacket(sync);
     assert(station.GetState() == State::StationOpened); ++cases;
     sync.local_ip[3] = 1; station.ReceivePacket(sync);
@@ -156,7 +157,8 @@ int main() {
     destroy.local_ip[3] = 3; station.ReceivePacket(destroy);
     assert(station.GetState() == State::StationConnected); ++cases;
     destroy.local_ip[3] = 1; station.ReceivePacket(destroy);
-    assert(station.GetState() == State::StationOpened); ++cases;
+    assert(station.GetState() == State::StationOpened);
+    assert(station.GetDisconnectReason() == DisconnectReason::DestroyedByUser); ++cases;
     s16 empty_count = 99;
     assert(station.Scan({}, empty_count, {}).IsError() && empty_count == 0); ++cases;
     sent_scan = 0;
@@ -202,7 +204,7 @@ int main() {
     private_host.GetNetworkInfo(info);
     assert(info.network_id.session_id == parameter.session_id && info.ldn.security_parameter == parameter.data); ++cases;
     info.ldn.nodes[0].ipv4_address = {1,0,0,10};
-    info.ldn.nodes[1].ipv4_address = {2,0,0,10}; info.ldn.nodes[1].is_connected = 1;
+    info.ldn.nodes[1].ipv4_address = {2,0,0,10}; info.ldn.nodes[1].is_connected = 0;
     station.Initialize(); station.OpenStation();
     ConnectNetworkPrivateData private_data{};
     private_data.security_parameter = parameter; private_data.network_config = config;
@@ -211,12 +213,21 @@ int main() {
     while (!sent_scan) std::this_thread::yield();
     station.ReceivePacket(Wire(LDNPacketType::ScanResp, &info, sizeof(info)));
     while (!sent_connect) std::this_thread::yield();
-    station.ReceivePacket(Wire(LDNPacketType::SyncNetwork, &info, sizeof(info)));
+    synced_info = info; synced_info.ldn.node_count = 2; synced_info.ldn.nodes[1].is_connected = 1;
+    station.ReceivePacket(Wire(LDNPacketType::SyncNetwork, &synced_info, sizeof(synced_info)));
     assert(private_connection.get().IsSuccess()); ++cases;
     station.OnRoomDisconnected(); assert(station.GetState() == State::StationOpened); ++cases;
     private_data.local_communication_version = -1;
     assert(station.ConnectPrivate(private_data).IsError()); ++cases;
     station.Finalize(); private_host.Finalize();
+    station.Initialize(); station.OpenStation();
+    sent_connect = 0;
+    auto rejected = std::async(std::launch::async, [&] { return station.Connect(info, user, 1); });
+    while (!sent_connect) std::this_thread::yield();
+    station.ReceivePacket(Wire(LDNPacketType::DestroyNetwork));
+    assert(rejected.get().IsError());
+    assert(station.GetDisconnectReason() == DisconnectReason::Rejected); ++cases;
+    station.Finalize();
     std::cout << "T18: " << cases << " native cases passed; 6/6 LDN wire types exercised\n";
 }
 """
