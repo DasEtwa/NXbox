@@ -57,4 +57,13 @@ void ApplyOptOuts(Config& config) {
         config.only_detect_misalignment_via_page_table_on_page_boundary = false;
     }
 }
+// A64-only diagnostics and Auto's unchecked host address-space optimization.
+template <typename Config>
+void ApplyA64OptOuts(Config& config, std::uint32_t address_space_bits) {
+    ApplyOptOuts(config);
+    config.collect_memory_access_context = !Disabled("NXBOX_JIT_PRECISE_MEMORY");
+    if (Disabled("NXBOX_JIT_UNCHECKED_FASTMEM")) {
+        config.fastmem_address_space_bits = address_space_bits;
+    }
+}
 } // namespace Core::NxboxJit

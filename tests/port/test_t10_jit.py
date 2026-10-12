@@ -150,6 +150,28 @@ int main() { Check<Dynarmic::A32::UserConfig>(); Check<Dynarmic::A64::UserConfig
             },
         )
 
+    def test_a64_precise_context_and_fastmem_bounds_opt_outs(self):
+        self.run_cpp(
+            r"""
+#include <cassert>
+#include <cstdlib>
+#include "dynarmic/interface/A64/config.h"
+#include "core/arm/dynarmic/nxbox_jit_policy.h"
+int main() {
+    Dynarmic::A64::UserConfig config{};
+    config.fastmem_address_space_bits = 64;
+    Core::NxboxJit::ApplyA64OptOuts(config, 39);
+    assert(config.collect_memory_access_context && config.fastmem_address_space_bits == 64);
+    setenv("NXBOX_JIT_PRECISE_MEMORY", "0", 1);
+    setenv("NXBOX_JIT_UNCHECKED_FASTMEM", "0", 1);
+    Core::NxboxJit::ApplyA64OptOuts(config, 39);
+    assert(!config.collect_memory_access_context && config.fastmem_address_space_bits == 39);
+    // Opt-outs do not enable fastmem on the private UWP backing.
+    assert(!config.fastmem_pointer);
+}
+"""
+        )
+
     def test_profile_intervals_deltas_and_failure_isolation(self):
         self.run_cpp(
             r"""
