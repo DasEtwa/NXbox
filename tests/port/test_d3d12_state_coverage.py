@@ -85,7 +85,7 @@ register("partial", "d3d12_pipeline_cache.cpp", "polygon_mode_front=Point", "pol
 register(
     "partial",
     "d3d12_pipeline_cache.cpp",
-    "stencil_back_func_mask differ",
+    "IndependentFrontAndBackStencilRefMaskSupported",
     """
 stencil_back_ref stencil_back_mask stencil_back_func_mask
 """,
@@ -180,6 +180,13 @@ unsigned sdk_logic(unsigned op, unsigned s, unsigned d) {
     assert(false); return 0;
 }
 int main() {
+    static_assert(!Pso::IndependentStencil(false,1,1,2,255,0,255,0));
+    static_assert(!Pso::IndependentStencil(true,2,1,2,255,0,255,0));
+    static_assert(!Pso::IndependentStencil(true,3,1,2,255,0,255,0));
+    static_assert(!Pso::IndependentStencil(true,1,0x101,1,0x1ff,255,255,255));
+    static_assert(Pso::IndependentStencil(true,1,1,2,255,255,255,255));
+    static_assert(Pso::IndependentStencil(true,1,1,1,255,127,255,255));
+    static_assert(Pso::IndependentStencil(true,1,1,1,255,255,255,127));
     static_assert(Pso::kBlendAlphaFactor == 20 && Pso::kBlendInvAlphaFactor == 21);
     static_assert(Pso::AlphaBlendFactor(3) == 5 && Pso::AlphaBlendFactor(4) == 6);
     static_assert(Pso::AlphaBlendFactor(9) == 7 && Pso::AlphaBlendFactor(10) == 8);
@@ -215,6 +222,10 @@ int main() {
     assert((expand(LinesAdjacency,7,Provoking::Preserve)==std::vector<unsigned>{0,1,2,3}));
     assert((expand(LineStripAdjacency,5,Provoking::Preserve)==std::vector<unsigned>{0,1,2,3,1,2,3,4}));
     assert((expand(TrianglesAdjacency,8,Provoking::Preserve)==std::vector<unsigned>{0,1,2,3,4,5}));
+    assert((expand(TriangleStripAdjacency,6,Provoking::Preserve)==std::vector<unsigned>{0,1,2,5,4,3}));
+    assert((expand(TriangleStripAdjacency,8,Provoking::Preserve)==std::vector<unsigned>{0,1,2,6,4,3,2,5,6,7,4,0}));
+    assert((expand(TriangleStripAdjacency,10,Provoking::Preserve)==std::vector<unsigned>{0,1,2,6,4,3,2,5,6,8,4,0,4,2,6,9,8,7}));
+    assert((expand(TriangleStripAdjacency,12,Provoking::Preserve)==std::vector<unsigned>{0,1,2,6,4,3,2,5,6,8,4,0,4,2,6,10,8,7,6,9,10,11,8,4}));
     for (auto topology : {LinesAdjacency,LineStripAdjacency,TrianglesAdjacency,TriangleStripAdjacency}) {
         for (unsigned n=0;n<16;++n) for(unsigned marker=0;marker<n;++marker) {
             const auto all=expand(topology,n,Provoking::Preserve,{true,marker});

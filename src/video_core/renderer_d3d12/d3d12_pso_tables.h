@@ -192,6 +192,17 @@ constexpr CullInfo CullMode(bool enabled, std::uint32_t maxwell_face) {
     }
 }
 
+// The legacy API shares reference/compare/write masks between the two faces.
+// Single-face culling can select that face's shared state without new interfaces.
+constexpr bool IndependentStencil(bool two_sided, std::uint32_t cull_mode, std::uint32_t front_ref,
+                                  std::uint32_t back_ref, std::uint32_t front_read,
+                                  std::uint32_t back_read, std::uint32_t front_write,
+                                  std::uint32_t back_write) {
+    return two_sided && cull_mode == kCullNone &&
+           (((front_ref ^ back_ref) | (front_read ^ back_read) | (front_write ^ back_write)) &
+            255) != 0;
+}
+
 // ---- Topology ------------------------------------------------------------------------------
 // D3D12_PRIMITIVE_TOPOLOGY_TYPE for the PSO from Maxwell::PrimitiveTopology.
 constexpr std::uint32_t TopologyType(std::uint32_t t) {
@@ -412,7 +423,7 @@ struct GraphicsPsoState {
     std::uint8_t depth_func, stencil_enable, stencil_read_mask, stencil_write_mask;
     std::uint8_t independent_blend, num_render_targets, sample_count, patch_vertices;
     std::uint8_t logic_enable, logic_op, alpha_to_coverage, conservative_raster;
-    std::uint8_t smooth_lines, depth_bounds, reserved1, reserved2;
+    std::uint8_t smooth_lines, depth_bounds, stencil_back_read_mask, stencil_back_write_mask;
     std::int32_t depth_bias;
     std::uint32_t slope_scaled_bias_bits, bias_clamp_bits;
     std::uint32_t dsv_format;

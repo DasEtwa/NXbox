@@ -78,13 +78,6 @@ const char* UnsupportedState(const Maxwell& regs, u32 topology) {
         if (width != 1.0f)
             return "line_width_smooth/line_width_aliased require expanded line geometry";
     }
-    if (regs.stencil_enable && regs.stencil_two_side_enable &&
-        (!regs.gl_cull_test_enabled || regs.gl_cull_face == Maxwell::CullFace::FrontAndBack) &&
-        (((regs.stencil_front_ref ^ regs.stencil_back_ref) & 255) ||
-         ((regs.stencil_front_mask ^ regs.stencil_back_mask) & 255) ||
-         ((regs.stencil_front_func_mask ^ regs.stencil_back_func_mask) & 255)))
-        return "stencil_back_ref/stencil_back_mask/stencil_back_func_mask differ; requires "
-               "per-face stencil emulation";
     if (regs.viewport_scale_offset_enabled) {
         for (const auto& viewport : regs.viewport_transform) {
             if (viewport.swizzle.x != Maxwell::ViewportSwizzle::PositiveX ||
@@ -234,6 +227,18 @@ void FillGraphicsState(Tegra::Engines::Maxwell3D& maxwell3d, Pso::GraphicsPsoSta
         StencilFaceMask(back_only ? regs.stencil_back_mask : regs.stencil_front_mask);
     s.front = Face(regs.stencil_front_op);
     s.back = regs.stencil_two_side_enable ? Face(regs.stencil_back_op) : s.front;
+    s.stencil_back_read_mask = regs.stencil_two_side_enable
+                                   ? StencilFaceMask(regs.stencil_back_func_mask)
+                                   : s.stencil_read_mask;
+    s.stencil_back_write_mask = regs.stencil_two_side_enable
+                                    ? StencilFaceMask(regs.stencil_back_mask)
+                                    : s.stencil_write_mask;
+    if (s.stencil_enable &&
+        Pso::IndependentStencil(regs.stencil_two_side_enable != 0, cull.mode,
+                                regs.stencil_front_ref, regs.stencil_back_ref,
+                                regs.stencil_front_func_mask, regs.stencil_back_func_mask,
+                                regs.stencil_front_mask, regs.stencil_back_mask))
+        s.stencil_enable |= 2; // Bit 1 selects native independent face state.
 
     // Blend (independent per render target).
     s.logic_enable = regs.logic_op.enable != 0;
@@ -459,6 +464,16 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(
     Pso::GraphicsPsoState state;
     FillGraphicsState(*maxwell3d, state);
     Pso::ApplyFramebufferFormats(state, formats);
+    if (state.stencil_enable & 2) {
+        D3D12_FEATURE_DATA_D3D12_OPTIONS14 options{};
+        if (FAILED(context.Device()->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS14, &options,
+                                                         sizeof(options))) ||
+            !options.IndependentFrontAndBackStencilRefMaskSupported) {
+            ReportUnsupported("stencil_back_ref/stencil_back_mask/stencil_back_func_mask differ; "
+                              "host lacks IndependentFrontAndBackStencilRefMaskSupported");
+            return nullptr;
+        }
+    }
     if (state.depth_bounds) {
         D3D12_FEATURE_DATA_D3D12_OPTIONS2 options{};
         if (FAILED(context.Device()->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS2, &options,

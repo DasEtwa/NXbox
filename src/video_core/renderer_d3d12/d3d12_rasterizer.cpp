@@ -835,7 +835,20 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     words[9] = draw_state.base_instance;
     const bool back_only = regs.stencil_two_side_enable && regs.gl_cull_test_enabled &&
                            static_cast<u32>(regs.gl_cull_face) == 0x404;
-    commands->OMSetStencilRef(back_only ? regs.stencil_back_ref : regs.stencil_front_ref);
+    const auto cull =
+        Pso::CullMode(regs.gl_cull_test_enabled != 0, static_cast<u32>(regs.gl_cull_face));
+    if (regs.zeta_enable && regs.stencil_enable &&
+        Pso::IndependentStencil(regs.stencil_two_side_enable != 0, cull.mode,
+                                regs.stencil_front_ref, regs.stencil_back_ref,
+                                regs.stencil_front_func_mask, regs.stencil_back_func_mask,
+                                regs.stencil_front_mask, regs.stencil_back_mask)) {
+        ComPtr<ID3D12GraphicsCommandList8> commands8;
+        Check(commands->QueryInterface(IID_PPV_ARGS(&commands8)),
+              "D3D12 independent stencil command interface", context.Device());
+        commands8->OMSetFrontAndBackStencilRef(regs.stencil_front_ref, regs.stencil_back_ref);
+    } else {
+        commands->OMSetStencilRef(back_only ? regs.stencil_back_ref : regs.stencil_front_ref);
+    }
     const float blend[]{regs.blend_color.r, regs.blend_color.g, regs.blend_color.b,
                         regs.blend_color.a};
     commands->OMSetBlendFactor(blend);

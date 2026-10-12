@@ -169,18 +169,44 @@ void EmitSegment(Topology topology, std::size_t begin, std::size_t n, ReadIndex 
                 emit(at(i + j));
         break;
     case static_cast<std::uint32_t>(TrianglesAdjacency):
-    case static_cast<std::uint32_t>(TriangleStripAdjacency):
-        for (std::size_t i = 0; i + 5 < n; i += topology == TrianglesAdjacency ? 6 : 2) {
-            // Adjacency strips alternate winding, including the adjacent vertices.
-            if (topology == TriangleStripAdjacency && (i / 2) % 2) {
-                for (auto j : {2, 1, 0, 5, 4, 3})
-                    emit(at(i + j));
-            } else {
+        for (std::size_t i = 0; i + 5 < n; i += 6)
+            for (std::size_t j = 0; j < 6; ++j)
+                emit(at(i + j));
+        break;
+    case static_cast<std::uint32_t>(TriangleStripAdjacency): {
+        // Vulkan drawing-triangle-strips-with-adjacency: edge neighbors differ
+        // at the strip ends and on odd/even primitives. They are not a sliding
+        // window of six vertices (even a single triangle swaps neighbors 3/5).
+        const std::size_t count = n < 6 ? 0 : n / 2 - 2;
+        for (std::size_t primitive = 0; primitive < count; ++primitive) {
+            const auto base = primitive * 2;
+            std::size_t indices[6];
+            if (count == 1) {
+                const std::size_t single[]{0, 1, 2, 5, 4, 3};
                 for (std::size_t j = 0; j < 6; ++j)
-                    emit(at(i + j));
+                    indices[j] = single[j];
+            } else if (primitive == 0) {
+                const std::size_t first[]{0, 1, 2, 6, 4, 3};
+                for (std::size_t j = 0; j < 6; ++j)
+                    indices[j] = first[j];
+            } else if (primitive % 2) {
+                const std::size_t odd[]{base,     base + 3,
+                                        base + 4, base + (primitive + 1 == count ? 5 : 6),
+                                        base + 2, base - 2};
+                for (std::size_t j = 0; j < 6; ++j)
+                    indices[j] = odd[j];
+            } else {
+                const std::size_t even[]{base,     base - 2,
+                                         base + 2, base + (primitive + 1 == count ? 5 : 6),
+                                         base + 4, base + 3};
+                for (std::size_t j = 0; j < 6; ++j)
+                    indices[j] = even[j];
             }
+            for (const auto index : indices)
+                emit(at(index));
         }
         break;
+    }
     }
 }
 template <typename Visit>
