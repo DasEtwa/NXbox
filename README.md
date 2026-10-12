@@ -142,7 +142,7 @@ Estimates are the maintainer's guess, not a promise; they move as bugs are found
 | Super Mario 3D World + Bowser's Fury | **In-game** | 60 FPS on the OpenGL path: enters 3D World and reaches the hub with correct colours, but some camera angles draw black polygons and some text is missing. The native D3D12 renderer draws the menus correctly at 60 FPS and reaches level 1-1, with lit geometry still black | 2–4 weeks |
 | The Legend of Zelda: Breath of the Wild (1.0, 1.6 + DLC) | **In-game** | Loads a save and runs in the Shrine of Resurrection at about 12 FPS with Link drawn correctly; some terrain is still broken. Bound by the OpenGL translation on the GPU thread, so it moves to the native renderer next | 1–3 months |
 | Persona 5 Royal | **In-game** | Reaches the first playable area with audio; stutters on loads and has open bugs | 3–6 weeks |
-| Mario Kart 8 Deluxe | **Menus** | Reaches the menus; the Mii picker needs the console's own firmware (installer fixed for retail dumps, console test pending) | 4–8 weeks |
+| Mario Kart 8 Deluxe | **In-game** | With firmware dumped from the user's own console installed, it gets past the Mii picker and starts a Grand Prix race at up to 60 FPS on the OpenGL path; track geometry is still broken and fps drops during the race | 4–8 weeks |
 | Bayonetta | Not tested | Planned after Breath of the Wild | — |
 
 ## How it works
