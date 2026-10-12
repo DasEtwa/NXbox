@@ -7,8 +7,10 @@
 #include "common/settings.h"
 #include "video_core/framebuffer_config.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
+#include "video_core/renderer_d3d12/d3d12_descriptor.h"
 #include "video_core/renderer_d3d12/d3d12_footprint.h"
 #include "video_core/texture_cache/image_view_info.h"
+#include "video_core/texture_cache/util.h"
 #include "video_core/textures/decoders.h"
 
 namespace D3D12 {
@@ -60,6 +62,19 @@ ResourcePtr MakeTexture(Context& context, const VideoCommon::ImageInfo& info, Fo
                                                                : D3D12_FORMAT_SUPPORT1_TEXTURE2D;
     if (!(support.Support1 & required))
         throw std::runtime_error("D3D12 device does not support texture format");
+    // P3: guest draws render into cached images.
+    if (format.depth) {
+        D3D12_FEATURE_DATA_FORMAT_SUPPORT depth_support{
+            DsvFormat(static_cast<DXGI_FORMAT>(format.view_format))};
+        Check(context.Device()->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &depth_support,
+                                                    sizeof(depth_support)),
+              "depth format support");
+        if (depth_support.Support1 & D3D12_FORMAT_SUPPORT1_DEPTH_STENCIL)
+            desc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+    } else if ((support.Support1 & D3D12_FORMAT_SUPPORT1_RENDER_TARGET) &&
+               desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE1D) {
+        desc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+    }
     return context.CreateResource(desc, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_COMMON);
 }
 UINT Subresource(const VideoCommon::ImageInfo& info, s32 level, s32 layer) {
@@ -312,7 +327,7 @@ ImageView::ImageView(TextureCacheRuntime&, const VideoCommon::NullImageViewParam
 }
 ImageView::ImageView(TextureCacheRuntime&, const VideoCommon::ImageInfo& info,
                      const VideoCommon::ImageViewInfo& view, GPUVAddr addr)
-    : ImageViewBase{info, view, addr} {}
+    : ImageViewBase{info, view, addr}, buffer_size{VideoCommon::CalculateGuestSizeInBytes(info)} {}
 void TextureCacheRuntime::TransitionImageLayout(Image& image) {
     context.Transition(image.Handle(), D3D12_RESOURCE_STATE_COMMON);
 }

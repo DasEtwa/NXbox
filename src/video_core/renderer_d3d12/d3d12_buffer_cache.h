@@ -5,6 +5,7 @@
 #include "video_core/buffer_cache/memory_tracker_base.h"
 #include "video_core/buffer_cache/usage_tracker.h"
 #include "video_core/renderer_d3d12/d3d12_context.h"
+#include "video_core/renderer_d3d12/d3d12_descriptor.h"
 
 namespace D3D12 {
 class BufferCacheRuntime;
@@ -40,8 +41,8 @@ private:
 };
 class BufferCacheRuntime {
 public:
-    explicit BufferCacheRuntime(Context& context)
-        : context{context}, upload{context, D3D12_HEAP_TYPE_UPLOAD},
+    BufferCacheRuntime(Context& context, BindingState& bindings)
+        : context{context}, bindings{bindings}, upload{context, D3D12_HEAP_TYPE_UPLOAD},
           readback{context, D3D12_HEAP_TYPE_READBACK} {}
     void TickFrame(Common::SlotVector<Buffer>& buffers);
     u64 CurrentTick() {
@@ -88,24 +89,26 @@ public:
     void CopyBuffer(ResourcePtr dst, ResourcePtr src,
                     std::span<const VideoCommon::BufferCopy> copies, bool, bool = false);
     void ClearBuffer(ResourcePtr dst, u32 offset, size_t size, u32 value);
-    // P3/P5 binding hooks: no guest pipeline consumes descriptors yet.
-    void BindIndexBuffer(Tegra::Engines::Maxwell3D::Regs::PrimitiveTopology,
-                         Tegra::Engines::Maxwell3D::Regs::IndexFormat, u32, u32, ResourcePtr, u32,
-                         u32) {}
-    void BindQuadIndexBuffer(Tegra::Engines::Maxwell3D::Regs::PrimitiveTopology, u32, u32) {}
-    void BindVertexBuffer(u32, ResourcePtr, u32, u32, u32) {}
-    void BindVertexBuffers(VideoCommon::HostBindings<Buffer>&) {}
+    // P3 binding hooks: record into BindingState; the rasterizer builds the descriptor
+    // tables and vertex/index views from it at draw time.
+    void BindIndexBuffer(Tegra::Engines::Maxwell3D::Regs::PrimitiveTopology topology,
+                         Tegra::Engines::Maxwell3D::Regs::IndexFormat format, u32, u32,
+                         ResourcePtr buffer, u32 offset, u32 size);
+    void BindQuadIndexBuffer(Tegra::Engines::Maxwell3D::Regs::PrimitiveTopology topology,
+                             u32 first, u32 count);
+    void BindVertexBuffer(u32 index, ResourcePtr buffer, u32 offset, u32 size, u32 stride);
+    void BindVertexBuffers(VideoCommon::HostBindings<Buffer>& bindings);
     void BindTransformFeedbackBuffer(u32, ResourcePtr, u32, u32) {}
     void BindTransformFeedbackBuffers(VideoCommon::HostBindings<Buffer>&) {}
-    std::span<u8> BindMappedUniformBuffer(size_t, u32, u32 size) {
-        return upload.Request(size).mapped_span;
-    }
-    void BindUniformBuffer(const Buffer&, u32, u32) {}
-    void BindStorageBuffer(const Buffer&, u32, u32, bool) {}
-    void BindTextureBuffer(Buffer&, u32, u32, VideoCore::Surface::PixelFormat) {}
+    std::span<u8> BindMappedUniformBuffer(size_t stage, u32, u32 size);
+    void BindUniformBuffer(const Buffer& buffer, u32 offset, u32 size);
+    void BindStorageBuffer(const Buffer& buffer, u32 offset, u32 size, bool is_written);
+    void BindTextureBuffer(Buffer& buffer, u32 offset, u32 size,
+                           VideoCore::Surface::PixelFormat format);
     Context& context;
 
 private:
+    BindingState& bindings;
     StagingRing upload;
     StagingRing readback;
 };

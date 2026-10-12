@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include <algorithm>
+#include <array>
 #include "video_core/renderer_d3d12/d3d12_context.h"
 #include "video_core/renderer_d3d12/d3d12_formats.h"
 #include "video_core/texture_cache/image_view_base.h"
@@ -140,20 +142,58 @@ public:
     const D3D12_SHADER_RESOURCE_VIEW_DESC& Description() const {
         return description;
     }
+    // P3: texel-buffer views are bound by the buffer cache from these.
+    GPUVAddr GpuAddr() const noexcept {
+        return gpu_addr;
+    }
+    u32 BufferSize() const noexcept {
+        return buffer_size;
+    }
 
 private:
+    u32 buffer_size{};
     ResourcePtr resource;
     D3D12_SHADER_RESOURCE_VIEW_DESC description{};
 };
 class ImageAlloc : public VideoCommon::ImageAllocBase {};
 class Sampler {
 public:
-    Sampler(TextureCacheRuntime&, const Tegra::Texture::TSCEntry&) {}
+    Sampler(TextureCacheRuntime&, const Tegra::Texture::TSCEntry& entry) : entry{entry} {}
+    // P3: descriptors are built from the guest sampler (see MakeSamplerDesc).
+    const Tegra::Texture::TSCEntry& Entry() const {
+        return entry;
+    }
+
+private:
+    Tegra::Texture::TSCEntry entry;
 };
+// P3: records the attachment views; RTV/DSV descriptors are created per bind by the
+// descriptor allocator. Output slot i writes to Color(draw_buffers[i]).
 class Framebuffer {
 public:
-    Framebuffer(TextureCacheRuntime&, std::span<ImageView*, VideoCommon::NUM_RT>, ImageView*,
-                const VideoCommon::RenderTargets&) {}
+    Framebuffer(TextureCacheRuntime&, std::span<ImageView*, VideoCommon::NUM_RT> color,
+                ImageView* depth, const VideoCommon::RenderTargets& key)
+        : depth{depth}, draw_buffers{key.draw_buffers}, size{key.size} {
+        std::copy(color.begin(), color.end(), colors.begin());
+    }
+    ImageView* Color(size_t rt_index) const {
+        return colors[rt_index];
+    }
+    ImageView* Depth() const {
+        return depth;
+    }
+    u8 DrawBuffer(size_t slot) const {
+        return draw_buffers[slot];
+    }
+    VideoCommon::Extent2D Size() const {
+        return size;
+    }
+
+private:
+    std::array<ImageView*, VideoCommon::NUM_RT> colors{};
+    ImageView* depth{};
+    std::array<u8, VideoCommon::NUM_RT> draw_buffers{};
+    VideoCommon::Extent2D size{};
 };
 struct TextureCacheParams {
     static constexpr bool ENABLE_VALIDATION = true;
