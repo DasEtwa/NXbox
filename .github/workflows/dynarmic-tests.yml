@@ -70,10 +70,17 @@ jobs:
           test -n "$test_binary"
           "$test_binary" '[conformance]' --rng-seed 19
       - name: Run full CPU suite
+        id: full-cpu
         shell: bash
         run:
           ctest --test-dir "$RUNNER_TEMP/cpu-build" -R '^dynarmic_tests$' --output-on-failure
           --timeout 3600
+      - name: Capture Linux failure backtrace
+        if: failure() && runner.os == 'Linux' && steps.full-cpu.conclusion == 'failure'
+        shell: bash
+        run: |
+          test_binary=$(find "$RUNNER_TEMP/cpu-build" -type f -name dynarmic_tests | head -n 1)
+          gdb --batch -ex 'set pagination off' -ex run -ex 'thread apply all bt' --args "$test_binary" --rng-seed 19 --durations yes
       - name: Decoder coverage and port regressions
         run: python -m unittest discover -s tests/port -p "test_*.py"
       - name: Upload test evidence
