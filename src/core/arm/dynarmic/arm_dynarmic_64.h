@@ -122,6 +122,7 @@ private:
     std::optional<Dynarmic::A64::Jit> m_jit{};
 
 #ifdef NXBOX_UWP
+    bool m_aot_attempted{};
     Kernel::KThread* m_running_thread{};
 #endif
 

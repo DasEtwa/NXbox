@@ -18,6 +18,7 @@
 #include "dynarmic/interface/A64/config.h"
 
 #ifdef NXBOX_UWP
+#include "core/arm/dynarmic/nxbox_aot.h"
 #include "eden_uwp/diagnostic.h"
 #endif
 
@@ -443,6 +444,29 @@ void ArmDynarmic64::MakeJit(Common::PageTable* page_table, std::size_t address_s
 
 HaltReason ArmDynarmic64::RunThread(Kernel::KThread* thread) {
 #ifdef NXBOX_UWP
+    if (!m_aot_attempted && Aot::Enabled()) {
+        m_aot_attempted = true;
+        if (!m_system.DebuggerEnabled() && NxboxJitCache::session &&
+            m_cb->m_process->GetProgramId() == NxboxJitCache::session->Title()) {
+            try {
+                Aot::WarmMappedCode(
+                    *m_cb->m_process, *m_jit,
+                    [&](const auto& stats, const auto& discovery, auto bytes, auto elapsed) {
+                        LOG_INFO(Core_ARM,
+                                 "NXBOX_AOT core={} discovered={} compiled={} "
+                                 "restored={} unsupported={} instructions={} "
+                                 "indirect={} truncated={} snapshot_bytes={} "
+                                 "boot_us={} runtime_miss_rate=unavailable",
+                                 m_core_index, stats.discovered, stats.compiled, stats.restored,
+                                 stats.unsupported, discovery.instructions,
+                                 discovery.unresolved_indirect, discovery.truncated, bytes,
+                                 elapsed);
+                    });
+            } catch (...) {
+                LOG_WARNING(Core_ARM, "NXBOX_AOT preparation failed; continuing with runtime JIT");
+            }
+        }
+    }
     m_running_thread = thread;
     SCOPE_EXIT {
         m_running_thread = nullptr;
