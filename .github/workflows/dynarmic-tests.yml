@@ -7,6 +7,9 @@ on:
       - "src/dynarmic/**"
       - "tests/port/test_t19_*.py"
       - ".github/workflows/dynarmic-tests.yml"
+concurrency:
+  group: dynarmic-tests-${{ github.ref }}
+  cancel-in-progress: true
 permissions:
   contents: read
 jobs:
@@ -30,7 +33,7 @@ jobs:
         run: python -m pip install cmake==3.31.6 ninja
       - name: Install Linux prerequisites
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libboost-all-dev libssl-dev libasound2-dev libx11-dev libxext-dev libva-dev libvdpau-dev libdrm-dev libudev-dev nasm glslang-tools
+        run: sudo apt-get update && sudo apt-get install -y libboost-all-dev libssl-dev libasound2-dev libx11-dev libxext-dev libva-dev libvdpau-dev libdrm-dev libudev-dev libxcursor-dev libxrandr-dev libxfixes-dev libxi-dev libxss-dev libxtst-dev nasm glslang-tools
       - name: Build reference interpreter
         shell: bash
         run: |
@@ -43,7 +46,7 @@ jobs:
         env:
           UNICORNDIR: ${{ runner.temp }}/unicorn-install
         run: |
-          cmake -S . -B "$RUNNER_TEMP/cpu-build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DENABLE_QT=OFF -DYUZU_CMD=OFF -DYUZU_ROOM=OFF -DENABLE_CUBEB=OFF -DENABLE_LIBUSB=OFF -DENABLE_WEB_SERVICE=OFF -DUSE_DISCORD_PRESENCE=OFF -DYUZU_TESTS=OFF -DDYNARMIC_TESTS=ON -DDYNARMIC_TESTS_USE_UNICORN=ON -DDYNARMIC_IGNORE_ASSERTS=OFF -DCPMUTIL_FORCE_BUNDLED=ON
+          cmake -S . -B "$RUNNER_TEMP/cpu-build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DENABLE_QT=OFF -DYUZU_CMD=OFF -DYUZU_ROOM=OFF -DENABLE_CUBEB=OFF -DENABLE_LIBUSB=OFF -DENABLE_WEB_SERVICE=OFF -DUSE_DISCORD_PRESENCE=OFF -DYUZU_TESTS=OFF -DDYNARMIC_TESTS=ON -DDYNARMIC_TESTS_USE_UNICORN=ON -DDYNARMIC_IGNORE_ASSERTS=OFF -DCPMUTIL_FORCE_BUNDLED=ON -DSDL_WAYLAND=OFF
       - name: Build CPU tests
         shell: bash
         run: cmake --build "$RUNNER_TEMP/cpu-build" --target dynarmic_tests --parallel 2
