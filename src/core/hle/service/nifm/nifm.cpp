@@ -995,7 +995,7 @@ void IGeneralService::IsAnyInternetRequestAccepted(HLERequestContext& ctx) {
 }
 
 void IGeneralService::IsAnyForegroundRequestAccepted(HLERequestContext& ctx) {
-    const bool is_accepted{};
+    const bool is_accepted = Nextendo::IsEnabled() && !Settings::values.airplane_mode.GetValue();
 
     LOG_WARNING(Service_NIFM, "(STUBBED) called, is_accepted={}", is_accepted);
 
