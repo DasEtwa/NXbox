@@ -681,7 +681,17 @@ std::unique_ptr<GraphicsPipeline> ShaderCache::CreateGraphicsPipeline(
         previous_program = &program;
     }
 #ifdef NXBOX_UWP
-    auto artifacts = std::make_unique<NxboxShaderProbe::DumpArtifacts>();
+    // Keeping every pipeline's guest code and host source costs RAM the 5 GiB app limit cannot
+    // spare, and copying guest code here faulted on some environments; only build the dump
+    // artifacts when a dump is requested or NXBOX_SHADER_RETAIN=1.
+    static const bool retain_artifacts = [] {
+        const char* dump = std::getenv("NXBOX_DUMP_SHADERS");
+        const char* keep = std::getenv("NXBOX_SHADER_RETAIN");
+        return (dump && *dump) || (keep && *keep == '1');
+    }();
+    std::unique_ptr<NxboxShaderProbe::DumpArtifacts> artifacts;
+    if (retain_artifacts || dump_pipeline) {
+    artifacts = std::make_unique<NxboxShaderProbe::DumpArtifacts>();
     const auto prefix = NxboxShaderProbe::Hex(hash);
     artifacts->Add("pipeline.key.bin", &key, key.Size());
     std::string manifest = "pipeline=" + prefix + "\nstages=va,vb,tcs,tes,gs,fs\n";
@@ -743,13 +753,16 @@ std::unique_ptr<GraphicsPipeline> ShaderCache::CreateGraphicsPipeline(
     if (dump_pipeline) {
         NxboxShaderProbe::DumpPipeline(*artifacts, hash, key.unique_hashes);
     }
+    }
 #endif
     auto* const thread_worker{use_shader_workers ? workers.get() : nullptr};
     auto pipeline = std::make_unique<GraphicsPipeline>(
         device, texture_cache, buffer_cache, program_manager, state_tracker, thread_worker,
         &shader_notify, sources, sources_spirv, infos, key, force_context_flush);
 #ifdef NXBOX_UWP
-    pipeline->dump_artifacts = std::move(artifacts);
+    if (retain_artifacts) {
+        pipeline->dump_artifacts = std::move(artifacts);
+    }
 #endif
     return pipeline;
 
