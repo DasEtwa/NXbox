@@ -35,9 +35,9 @@ int main() {
     static_assert(LookupFormat("D16_UNORM").view_format == 56);
     static_assert(LookupFormat("D24_UNORM_S8_UINT").planes == 2);
     static_assert(LookupFormat("R5G6B5_UNORM").view_format == 85);
-    static_assert(!LookupFormat("B5G6R5_UNORM").Supported());
-    static_assert(!LookupFormat("S8_UINT_D24_UNORM").Supported());
-    static_assert(!LookupFormat("ETC2_RGBA_UNORM").Supported());
+    static_assert(LookupFormat("B5G6R5_UNORM").Supported());
+    static_assert(LookupFormat("S8_UINT_D24_UNORM").Supported());
+    static_assert(LookupFormat("ETC2_RGBA_UNORM").Supported());
     static_assert(!LookupFormat("Invalid").Supported());
     for (const auto& format : FormatTable) {
         assert(!format.name.empty());
