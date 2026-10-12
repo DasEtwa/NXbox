@@ -509,6 +509,40 @@ if (CMAKE_SYSTEM_NAME STREQUAL "WindowsStore")
             renderer_d3d12/d3d12_shader.cpp
             renderer_d3d12/d3d12_shader.h
         )
+        target_sources(video_core PRIVATE
+            renderer_d3d12/d3d12_compute_pass.cpp
+            renderer_d3d12/d3d12_compute_pass.h
+            renderer_d3d12/d3d12_dispatch.cpp
+            renderer_d3d12/d3d12_dispatch.h
+        )
+        # Embed HLSL sources; DXC compiles cs_6_0 at renderer startup.
+        set(D3D12_HELPER_SHADERS
+            astc_decoder
+            block_linear_unswizzle_2d
+            block_linear_unswizzle_3d
+            block_linear_unswizzle_3d_bcn
+            queries_prefix
+            uint8_to_uint16
+            quad_indexed
+        )
+        foreach(SHADER IN LISTS D3D12_HELPER_SHADERS)
+            set(HLSL_SOURCE ${CMAKE_CURRENT_SOURCE_DIR}/host_shaders/hlsl/${SHADER}.hlsl)
+            set(HLSL_HEADER ${CMAKE_CURRENT_BINARY_DIR}/d3d12_shaders/video_core/host_shaders/hlsl/${SHADER}_hlsl.h)
+            add_custom_command(
+                OUTPUT ${HLSL_HEADER}
+                COMMAND ${CMAKE_COMMAND} -P
+                    ${CMAKE_CURRENT_SOURCE_DIR}/host_shaders/StringShaderHeader.cmake
+                    ${HLSL_SOURCE} ${HLSL_HEADER}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/host_shaders/source_shader.h.in
+                DEPENDS ${HLSL_SOURCE}
+                    host_shaders/StringShaderHeader.cmake host_shaders/source_shader.h.in
+                VERBATIM
+            )
+            # HLSL is embedded source, never passed to MSBuild's FXC task.
+            set_source_files_properties(${HLSL_SOURCE} PROPERTIES HEADER_FILE_ONLY TRUE)
+            target_sources(video_core PRIVATE ${HLSL_HEADER} ${HLSL_SOURCE})
+        endforeach()
+        target_include_directories(video_core PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/d3d12_shaders)
         target_compile_definitions(video_core PRIVATE HAS_D3D12=1)
         target_link_libraries(video_core PRIVATE d3d12 dxgi)
     endif()
