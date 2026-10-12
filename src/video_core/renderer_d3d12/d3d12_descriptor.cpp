@@ -399,7 +399,8 @@ bool D3D12DescriptorAllocator::WriteImageUav(const DescriptorTable& table, u32 s
     }
     if (!(view.ImageHandle()->handle->GetDesc().Flags &
           D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS)) {
-        view.LogUnsupported("storage image lacks ALLOW_UNORDERED_ACCESS (MSAA UAVs are unsupported)");
+        view.LogUnsupported(
+            "storage image lacks ALLOW_UNORDERED_ACCESS (MSAA UAVs are unsupported)");
         WriteNullUav(table, slot);
         return false;
     }

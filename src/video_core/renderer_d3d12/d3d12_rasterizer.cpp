@@ -316,9 +316,9 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         }
         if (desc.SampleDesc.Quality != 0 ||
             (attachment_samples && attachment_samples != desc.SampleDesc.Count)) {
-            view.LogUnsupported(fmt::format("attachment sample mismatch: bound={} count={} quality={}",
-                                           attachment_samples, desc.SampleDesc.Count,
-                                           desc.SampleDesc.Quality));
+            view.LogUnsupported(
+                fmt::format("attachment sample mismatch: bound={} count={} quality={}",
+                            attachment_samples, desc.SampleDesc.Count, desc.SampleDesc.Quality));
             return false;
         }
         attachment_samples = desc.SampleDesc.Count;

@@ -596,12 +596,13 @@ ResourcePtr TextureCacheRuntime::ResolveFramebuffer(ImageView& view) {
     auto target = MakeTexture(context, info, format);
     if (!target)
         return {};
-    const VideoCommon::Region2D region{{0, 0},
-        {static_cast<s32>(info.size.width), static_cast<s32>(info.size.height)}};
+    const VideoCommon::Region2D region{
+        {0, 0}, {static_cast<s32>(info.size.width), static_cast<s32>(info.size.height)}};
     try {
         BlitHelpers().Resolve({target, format},
-            {source, format, static_cast<u32>(view.range.base.level),
-             static_cast<u32>(view.range.base.layer)}, region, region);
+                              {source, format, static_cast<u32>(view.range.base.level),
+                               static_cast<u32>(view.range.base.layer)},
+                              region, region);
     } catch (const std::logic_error& error) {
         view.LogUnsupported(error.what());
         return {};
