@@ -357,7 +357,12 @@ Fatal diagnostics now capture 96 frames and any active C++ exception. The GPU an
 fencing threads install their own MSVC terminate handlers, which were previously
 installed only on the main thread.
 
+Query reports register their cache entry before publishing an asynchronous callback.
+The native completion requirement also prevents low-accuracy settings from recycling
+a query slot while its callback still references it. Pending-list locks are released
+before D3D12 uploads to allow completion reentry.
+
 Host tests cover asynchronous callback ordering without another guest command,
 completion failure waking a forced drain, staging pressure with live CPU leases,
-and HLSL export/store masking. A new console run is still required to establish
+query publication/retirement at low accuracy, and HLSL export/store masking. A new console run is still required to establish
 whether these fixes remove the run-7 abort and to measure the resulting frame rate.

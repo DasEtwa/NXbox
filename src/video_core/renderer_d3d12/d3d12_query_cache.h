@@ -90,6 +90,7 @@ private:
 };
 struct QueryCacheParams {
     using RuntimeType = QueryCacheRuntime;
+    static constexpr bool REQUIRE_GPU_COMPLETION = true;
 };
 using QueryCache = VideoCommon::QueryCacheBase<QueryCacheParams>;
 } // namespace D3D12
