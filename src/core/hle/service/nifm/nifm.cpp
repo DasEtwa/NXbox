@@ -8,6 +8,7 @@
 #include <fstream>
 #include "core/core.h"
 #include "core/hle/kernel/k_event.h"
+#include "core/hle/service/nextendo/runtime.h"
 #include "core/hle/service/ipc_helpers.h"
 #include "core/hle/service/kernel_helpers.h"
 #include "core/hle/service/nifm/nifm.h"
@@ -430,7 +431,7 @@ private:
         LOG_DEBUG(Service_NIFM, "(STUBBED) called");
 
         const auto result = [this] {
-            const auto has_connection = Network::GetHostIPv4Address().has_value() &&
+            const auto has_connection = (Nextendo::IsEnabled() || Network::GetHostIPv4Address().has_value()) &&
                                         !Settings::values.airplane_mode.GetValue();
             switch (state) {
             case RequestState::NotSubmitted:
@@ -943,13 +944,13 @@ void IGeneralService::GetInternetConnectionStatus(HLERequestContext& ctx) {
     };
     Output out{};
 
-    if (!st.connected) {
+    if (Settings::values.airplane_mode.GetValue() || (!st.connected && !Nextendo::IsEnabled())) {
         out.type = 1;
         out.bars = 0;
         out.state = InternetConnectionStatus::ConnectingUnknown1;
     } else {
         out.type = st.via_wifi ? 1 : 2;
-        out.bars = st.bars;
+        out.bars = Nextendo::IsEnabled() ? 3 : st.bars;
         out.state = InternetConnectionStatus::Connected;
     }
 
@@ -972,7 +973,8 @@ void IGeneralService::IsEthernetCommunicationEnabled(HLERequestContext& ctx) {
 
     IPC::ResponseBuilder rb{ctx, 3};
     rb.Push(ResultSuccess);
-    if (Network::GetHostIPv4Address().has_value() && !Settings::values.airplane_mode.GetValue()) {
+    if ((Nextendo::IsEnabled() || Network::GetHostIPv4Address().has_value()) &&
+        !Settings::values.airplane_mode.GetValue()) {
         rb.Push<u8>(1);
     } else {
         rb.Push<u8>(0);
@@ -984,7 +986,8 @@ void IGeneralService::IsAnyInternetRequestAccepted(HLERequestContext& ctx) {
 
     IPC::ResponseBuilder rb{ctx, 3};
     rb.Push(ResultSuccess);
-    if (Network::GetHostIPv4Address().has_value() && !Settings::values.airplane_mode.GetValue()) {
+    if ((Nextendo::IsEnabled() || Network::GetHostIPv4Address().has_value()) &&
+        !Settings::values.airplane_mode.GetValue()) {
         rb.Push<u8>(1);
     } else {
         rb.Push<u8>(0);

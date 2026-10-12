@@ -28,6 +28,7 @@
 #include "core/hle/service/cmif_serialization.h"
 #include "core/hle/service/glue/glue_manager.h"
 #include "core/hle/service/server_manager.h"
+#include "core/hle/service/nextendo/runtime.h"
 #include "core/loader/loader.h"
 
 namespace Service::Account {
@@ -127,6 +128,35 @@ private:
         rb.Push<u32>(0); // No Nintendo Switch Online subscription on an offline account.
     }
 };
+
+// Nextendo's network identity is bound to one local profile, separately from offline linking.
+static bool LoadNextendoIdTokenCache(Core::System& system, HLERequestContext& ctx,
+                                     const Common::UUID& user_id) {
+    if (!Nextendo::IsEnabled()) return false;
+    const auto program_id = system.GetApplicationProcessProgramID();
+    std::string version;
+    const FileSys::PatchManager patches{program_id, system.GetFileSystemController(),
+                                        system.GetContentProvider()};
+    if (const auto control = patches.GetControlMetadata().first; control) {
+        version = control->GetVersionString();
+    } else {
+        FileSys::NACP fallback_control;
+        if (system.GetAppLoader().ReadControlData(fallback_control) == Loader::ResultStatus::Success) {
+            version = fallback_control.GetVersionString();
+        }
+    }
+    const auto token = Nextendo::GetIdToken(user_id.RawString(), program_id, version);
+    if (token.empty() || !ctx.CanWriteBuffer() || token.size() > ctx.GetWriteBufferSize()) {
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(ResultUnknown);
+        return true;
+    }
+    ctx.WriteBuffer(std::span<const u8>{reinterpret_cast<const u8*>(token.data()), token.size()});
+    IPC::ResponseBuilder rb{ctx, 3};
+    rb.Push(ResultSuccess);
+    rb.Push(static_cast<u32>(token.size()));
+    return true;
+}
 
 static void LoadOfflineIdTokenCache(HLERequestContext& ctx) {
     // Linking an offline account does not create a signed network authentication token.
@@ -839,7 +869,7 @@ public:
 
 private:
     void LoadNetworkServiceLicenseKindAsync(HLERequestContext& ctx) {
-        if (!Offline::IsFakeLinkEnabled()) {
+        if (!Offline::IsFakeLinkEnabled() && !Nextendo::GetIdentity(user_id.RawString()).pid) {
             IPC::ResponseBuilder rb{ctx, 2};
             rb.Push(ResultUnknown);
             return;
@@ -850,12 +880,24 @@ private:
     }
 
     void CheckAvailability(HLERequestContext& ctx) {
+        if (Nextendo::IsEnabled() && !Nextendo::GetIdentity(user_id.RawString()).pid) {
+            IPC::ResponseBuilder rb{ctx, 2};
+            rb.Push(ResultUnknown);
+            return;
+        }
         LOG_DEBUG(Service_ACC, "(STUBBED) called");
         IPC::ResponseBuilder rb{ctx, 2};
         rb.Push(ResultSuccess);
     }
 
     void GetAccountId(HLERequestContext& ctx) {
+        if (Nextendo::IsEnabled()) {
+            const auto identity = Nextendo::GetIdentity(user_id.RawString());
+            IPC::ResponseBuilder rb{ctx, 4};
+            rb.Push(identity.pid ? ResultSuccess : ResultUnknown);
+            rb.PushRaw<u64>(identity.pid);
+            return;
+        }
         LOG_DEBUG(Service_ACC, "called");
 
         IPC::ResponseBuilder rb{ctx, 4};
@@ -865,6 +907,11 @@ private:
     }
 
     void EnsureIdTokenCacheAsync(HLERequestContext& ctx) {
+        if (Nextendo::IsEnabled() && !Nextendo::GetIdentity(user_id.RawString()).pid) {
+            IPC::ResponseBuilder rb{ctx, 2};
+            rb.Push(ResultUnknown);
+            return;
+        }
         LOG_WARNING(Service_ACC, "(STUBBED) called");
 
         IPC::ResponseBuilder rb{ctx, 2, 0, 1};
@@ -873,6 +920,7 @@ private:
     }
 
     void LoadIdTokenCacheDeprecated(HLERequestContext& ctx) {
+        if (LoadNextendoIdTokenCache(system, ctx, user_id)) return;
         if (Offline::IsFakeLinkEnabled()) {
             LoadOfflineIdTokenCache(ctx);
             return;
@@ -883,6 +931,7 @@ private:
     }
 
     void LoadIdTokenCache(HLERequestContext& ctx) {
+        if (LoadNextendoIdTokenCache(system, ctx, user_id)) return;
         if (Offline::IsFakeLinkEnabled()) {
             LoadOfflineIdTokenCache(ctx);
             return;

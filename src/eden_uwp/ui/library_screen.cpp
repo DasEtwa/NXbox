@@ -26,6 +26,8 @@
 #include "eden_uwp/diagnostic.h"
 #include "eden_uwp/firmware.h"
 #include "eden_uwp/save_sync.h"
+#include "eden_uwp/nextendo_online.h"
+#include "eden_uwp/ui/nextendo_screen.h"
 #include "eden_uwp/title_settings.h"
 #include "eden_uwp/ui/anim.h"
 #include "eden_uwp/ui/art.h"
@@ -123,7 +125,8 @@ constexpr int kSettingSaveSync = 0;
 constexpr int kSettingSources = 1;
 constexpr int kSettingUsb = 2;
 constexpr int kSettingCredits = 3;
-constexpr int kSettingsRowCount = 4;
+constexpr int kSettingNextendo = 4;
+constexpr int kSettingsRowCount = 5;
 
 constexpr std::size_t Idx(int index) {
     return static_cast<std::size_t>(index);
@@ -280,6 +283,7 @@ public:
                   const std::filesystem::path& local_state)
         : renderer_(renderer), window_(window), input_(window), local_state_(local_state),
           banners_(local_state) {
+        NextendoOnline::Initialize(local_state_);
         firmware_status_ = GetFirmwareStatus();
         sync_account_ = GetSyncAccount();
         sources_count_ = CountSources(local_state_);
@@ -774,6 +778,11 @@ private:
 
     // A on a settings row.
     void ActivateSetting(Clock::time_point now) {
+        if (settings_row_ == kSettingNextendo) {
+            const InputTransition transition(input_);
+            closed_ = RunNextendoScreen(renderer_, window_, input_);
+            return;
+        }
         if (settings_row_ == kSettingCredits) {
             OpenCredits();
             return;
@@ -1354,7 +1363,7 @@ private:
             }
             if (layer_ == Layer::Rail &&
                 (settings_row_ == kSettingSources || settings_row_ == kSettingUsb ||
-                 settings_row_ == kSettingCredits)) {
+                 settings_row_ == kSettingCredits || settings_row_ == kSettingNextendo)) {
                 hints.push_back({Theme::kButtonA, L"A", Tr(Text::HintSelect)});
             }
         } else if (HasGame()) {
@@ -1410,9 +1419,12 @@ private:
                              Tr(Text::UsbSettingHint)};
         const Row credits_row = {Tr(Text::CreditsRowTitle), Tr(Text::CreditsRowState),
                                  Theme::kTextSecondary, Tr(Text::CreditsRowHint)};
+        const Row nextendo_row = {Tr(Text::NextendoTitle),
+            Tr(Service::Nextendo::IsEnabled() ? Text::NextendoOn : Text::NextendoOff),
+            Theme::kTextSecondary, Tr(Text::NextendoRowHint)};
         const std::array<Row, kSettingsRowCount> rows = {
-            {sync_row, sources_row, usb_row, credits_row}};
-        constexpr float kRowTop = 560.0f;
+            {sync_row, sources_row, usb_row, credits_row, nextendo_row}};
+        constexpr float kRowTop = 480.0f;
         constexpr float kRowHeight = 88.0f;
         constexpr float kRowPitch = 96.0f;
         constexpr float kRowRadius = 22.0f;

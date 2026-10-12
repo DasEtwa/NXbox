@@ -12,6 +12,7 @@
 #include "common/swap.h"
 #include "core/core.h"
 #include "core/hle/service/ipc_helpers.h"
+#include "core/hle/service/nextendo/runtime.h"
 #include "core/hle/service/sockets/sfdnsres.h"
 #include "core/hle/service/sockets/sockets.h"
 #include "core/hle/service/sockets/sockets_translate.h"
@@ -203,12 +204,14 @@ static std::pair<u32, GetAddrInfoError> GetHostByNameRequestImpl(HLERequestConte
     // For now, ignore options, which are in input buffer 1 for GetHostByNameRequestWithOptions.
 
     // Prevent resolution of Nintendo servers
-    if (IsBlockedHost(host)) {
+    const auto route = Nextendo::RouteHost(host);
+    if (route.destination == Nextendo::Destination::Blocked ||
+        (route.destination == Nextendo::Destination::Native && IsBlockedHost(host))) {
         LOG_WARNING(Network, "Resolution of hostname {} requested, returning EAI_AGAIN", host);
         return {0, GetAddrInfoError::AGAIN};
     }
 
-    auto res_v = Network::GetAddressInfo(host, /*service*/ std::nullopt);
+    auto res_v = Network::GetAddressInfo(route.address, /*service*/ std::nullopt);
     if (auto* res = std::get_if<std::vector<Network::AddrInfo>>(&res_v)) {
         const std::vector<u8> data = SerializeAddrInfoAsHostEnt(*res, host);
         const u32 data_size = u32(data.size());
@@ -319,7 +322,9 @@ static std::pair<u32, GetAddrInfoError> GetAddrInfoRequestImpl(HLERequestContext
     const std::string host = Common::StringFromBuffer(host_buffer);
 
     // Prevent resolution of Nintendo servers
-    if (IsBlockedHost(host)) {
+    const auto route = Nextendo::RouteHost(host);
+    if (route.destination == Nextendo::Destination::Blocked ||
+        (route.destination == Nextendo::Destination::Native && IsBlockedHost(host))) {
         LOG_WARNING(Network, "Resolution of hostname {} requested, returning EAI_AGAIN", host);
         return {0, GetAddrInfoError::AGAIN};
     }
@@ -332,7 +337,7 @@ static std::pair<u32, GetAddrInfoError> GetAddrInfoRequestImpl(HLERequestContext
 
     // Serialized hints are also passed in a buffer, but are ignored for now.
 
-    auto res_v = Network::GetAddressInfo(host, service);
+    auto res_v = Network::GetAddressInfo(route.address, service);
     if (auto* res = std::get_if<std::vector<Network::AddrInfo>>(&res_v)) {
         const std::vector<u8> data = SerializeAddrInfo(*res, host);
         const u32 data_size = u32(data.size());

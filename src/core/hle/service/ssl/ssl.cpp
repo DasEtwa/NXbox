@@ -8,6 +8,7 @@
 
 #include "core/core.h"
 #include "core/hle/result.h"
+#include "core/hle/service/nextendo/runtime.h"
 #include "core/hle/service/cmif_serialization.h"
 #include "core/hle/service/ipc_helpers.h"
 #include "core/hle/service/server_manager.h"
@@ -213,6 +214,11 @@ private:
         auto const hostname = Common::StringFromBuffer(buf);
         LOG_DEBUG(Service_SSL, "called. hostname={}", hostname);
         ASSERT(!did_handshake);
+        const auto route = Nextendo::RouteHost(hostname);
+        if (route.destination == Nextendo::Destination::Blocked) {
+            return ResultInternalError;
+        }
+        // Preserve the original SNI: Nextendo routes its TLS backends by game hostname.
         return backend->SetHostName(hostname.c_str());
     }
 
@@ -539,6 +545,11 @@ private:
     }
 
     void ImportClientPki(HLERequestContext& ctx) {
+        if (Nextendo::IsEnabled()) {
+            IPC::ResponseBuilder rb{ctx, 2};
+            rb.Push(ResultInternalError);
+            return;
+        }
         [[maybe_unused]] const auto pkcs_12_certificate = ctx.ReadBuffer(0);
         [[maybe_unused]] const auto ascii_password = [&ctx] {
             if (ctx.CanReadBuffer(1)) {
@@ -558,6 +569,7 @@ private:
     }
 
     Result RegisterInternalPki() {
+        if (Nextendo::IsEnabled()) return ResultInternalError;
         LOG_WARNING(Service_SSL, "(STUBBED) called");
         R_SUCCEED();
     }
