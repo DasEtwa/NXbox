@@ -480,19 +480,21 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(
             return nullptr;
         }
     }
-    const bool constant_alpha_rgb = std::ranges::any_of(state.blend, [](const auto& blend) {
-        return blend.enable &&
-               (blend.src == Pso::kBlendAlphaFactor || blend.dst == Pso::kBlendAlphaFactor ||
-                blend.src == Pso::kBlendInvAlphaFactor || blend.dst == Pso::kBlendInvAlphaFactor);
-    });
-    if (constant_alpha_rgb) {
+    const u32 constant_factors = Pso::ConstantBlendFactors(state);
+    if (constant_factors & 2) {
         D3D12_FEATURE_DATA_D3D12_OPTIONS13 options{};
         if (FAILED(context.Device()->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS13, &options,
                                                          sizeof(options))) ||
             !options.AlphaBlendFactorSupported) {
-            ReportUnsupported("blend constant-alpha RGB factor requires AlphaBlendFactorSupported "
-                              "or shader blend emulation");
-            return nullptr;
+            if (constant_factors & 1) {
+                ReportUnsupported(
+                    "blend mixes constant-color and constant-alpha RGB factors; host lacks "
+                    "AlphaBlendFactorSupported and needs shader blend emulation");
+                return nullptr;
+            }
+            // The draw path replicates blend_color.a into RGB. No shader change
+            // is needed when RGB never consumes the original constant color.
+            Pso::EmulateConstantAlpha(state);
         }
     }
     if (state.logic_enable || state.conservative_raster) {

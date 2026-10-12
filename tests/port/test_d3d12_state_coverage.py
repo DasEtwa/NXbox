@@ -268,6 +268,23 @@ int main() {
             for(auto value:all) assert(value!=marker);
         }
     }
+    // Constant alpha can use the legacy blend factor when RGB does not also
+    // need constant color. Unbound/disabled targets must not cause rejection.
+    Pso::GraphicsPsoState constant{};
+    constant.blend[7].src = Pso::kBlendAlphaFactor;
+    constant.blend[7].enable = 1;
+    assert(Pso::ConstantBlendFactors(constant) == 0);
+    constant.rtv_formats[7] = 28;
+    assert(Pso::ConstantBlendFactors(constant) == 2);
+    constant.blend[7].dst = Pso::kBlendFactor;
+    assert(Pso::ConstantBlendFactors(constant) == 3);
+    constant.blend[7].enable = 0;
+    assert(Pso::ConstantBlendFactors(constant) == 0);
+    constant.blend[7].enable = 1;
+    constant.blend[7].dst = Pso::kBlendInvAlphaFactor;
+    Pso::EmulateConstantAlpha(constant);
+    assert(constant.blend[7].src == 14 && constant.blend[7].dst == 15);
+    assert(Pso::ConstantBlendFactors(constant) == 1);
     // Every newly keyed native state changes the PSO hash; full-width divisors survive.
     Pso::GraphicsPsoState state{};
     auto hash=Pso::HashBytes(&state,sizeof(state));

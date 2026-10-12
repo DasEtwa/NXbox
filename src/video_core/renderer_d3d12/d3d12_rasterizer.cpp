@@ -371,6 +371,8 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     ID3D12RootSignature* const root_signature = pipeline->RootSignature();
     if (!pso || !root_signature)
         return;
+    FillGraphicsState(*maxwell3d, attachment_state);
+    Pso::ApplyFramebufferFormats(attachment_state, formats);
     if (attachment_diagnostics < 8) {
         ++attachment_diagnostics;
         std::string message = "D3D12_ATTACHMENTS count=" + std::to_string(guest_rts);
@@ -853,7 +855,10 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     } else {
         commands->OMSetStencilRef(back_only ? regs.stencil_back_ref : regs.stencil_front_ref);
     }
-    const float blend[]{regs.blend_color.r, regs.blend_color.g, regs.blend_color.b,
+    const bool replicate_alpha = Pso::ConstantBlendFactors(attachment_state) == 2;
+    const float blend[]{replicate_alpha ? regs.blend_color.a : regs.blend_color.r,
+                        replicate_alpha ? regs.blend_color.a : regs.blend_color.g,
+                        replicate_alpha ? regs.blend_color.a : regs.blend_color.b,
                         regs.blend_color.a};
     commands->OMSetBlendFactor(blend);
     if (regs.zeta_enable && regs.depth_bounds_enable) {

@@ -433,6 +433,34 @@ struct GraphicsPsoState {
     std::array<BlendTargetState, kNumRenderTargets> blend;
     std::array<VertexAttributeState, kNumVertexAttributes> attributes;
 };
+// Only bound, blending attachments consume the dynamic constant. Bit 0 means
+// RGB constant color; bit 1 means RGB constant alpha. Alpha equations always
+// use the A component and are unaffected by replicating A across RGB.
+constexpr std::uint32_t ConstantBlendFactors(const GraphicsPsoState& state) {
+    std::uint32_t factors{};
+    for (std::size_t i = 0; i < state.blend.size(); ++i) {
+        if (!state.rtv_formats[i] || !state.blend[i].enable)
+            continue;
+        for (const auto factor : {state.blend[i].src, state.blend[i].dst}) {
+            if (factor == kBlendFactor || factor == kBlendInvFactor)
+                factors |= 1;
+            if (factor == kBlendAlphaFactor || factor == kBlendInvAlphaFactor)
+                factors |= 2;
+        }
+    }
+    return factors;
+}
+constexpr void EmulateConstantAlpha(GraphicsPsoState& state) {
+    for (auto& blend : state.blend) {
+        for (auto* factor : {&blend.src, &blend.dst}) {
+            if (*factor == kBlendAlphaFactor)
+                *factor = kBlendFactor;
+            if (*factor == kBlendInvAlphaFactor)
+                *factor = kBlendInvFactor;
+        }
+    }
+}
+
 // Ignore trailing unbound slots, but preserve holes between fragment outputs.
 constexpr void ApplyFramebufferFormats(GraphicsPsoState& state, const FramebufferFormats& formats) {
     state.rtv_formats = formats.colors;
