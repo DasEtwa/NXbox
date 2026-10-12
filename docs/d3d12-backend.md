@@ -300,3 +300,32 @@ runtime caller, nor prove a failing guest import path. Xbox debug callbacks now
 capture the first such message's caller stack with module offsets. A new console
 run is needed to attribute it; no error message is suppressed or speculative
 allocation workaround enabled.
+
+### Render target tracking and syncpoint completion
+
+Console run 6 (`74b83c8c14`, SM3DW, `NXBOX_D3D12_DEBUG=1`) survived without
+removal but displayed black and stopped guest progress after about 100 seconds.
+PSO creation reported empty RTV/DSV formats. The draw/clear ordering already
+updated render targets before taking framebuffer snapshots; native channel
+initialization was missing the common Maxwell dirty tables. Each native channel
+now installs those tables and initially invalidates all tracked state, allowing
+RT address/format, draw-buffer control, surface size and zeta changes to reach the
+texture cache and the attachment-derived PSO key.
+
+`D3D12_ATTACHMENTS` records the first eight draw snapshots, including every output
+slot's view format, the depth format and any pixel shader output without an
+attachment. `D3D12_DISPLAY` records the first compositor source's display address,
+resource identity, format, dimensions, scaling and whether it came from the texture
+cache or guest-memory fallback. Presentation resolves `FramebufferConfig` through
+`TryFindFramebufferImageView`; it does not select the most recently bound RT.
+
+Native guest fences always submit and require GPU completion, including when no
+cache readbacks exist and fence settings are relaxed. The GPU thread drains each
+native signal before returning, so a final Host1x callback cannot depend on another
+guest command arriving. WFI also drains pending fences after finishing GPU work.
+`D3D12_SYNCPOINTS` reports pending and signaled counters for early signals and every
+120 completions. This synchronous policy preserves Context's thread ownership but
+may reduce CPU/GPU overlap; measure it in the next console run. Host regression
+tests cover dirty-table invalidation, no-readback fence ordering and the actual
+native manager's last-syncpoint completion. They do not establish console pixels
+or sustained guest progress; both require another hardware capture.

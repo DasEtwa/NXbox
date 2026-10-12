@@ -45,6 +45,13 @@ class FenceManager {
     using TBufferCache = typename Traits::BufferCacheType;
     using TQueryCache = typename Traits::QueryCacheType;
     static constexpr bool can_async_check = Traits::HAS_ASYNC_CHECK;
+    static constexpr bool require_gpu_completion = [] {
+        if constexpr (requires { Traits::REQUIRE_GPU_COMPLETION; }) {
+            return Traits::REQUIRE_GPU_COMPLETION;
+        } else {
+            return false;
+        }
+    }();
 
 public:
     /// Notify the fence manager about a new frame
@@ -72,8 +79,12 @@ public:
     }
 
     void SignalFence(std::function<void()>&& func) {
-        const bool delay_fence = Settings::IsGPUFenceBehaviorDefault() ? Settings::IsGPULevelHigh() : Settings::IsGPUFenceBehaviorBalanced() || Settings::IsGPUFenceBehaviorAccurate();
-        const bool should_flush = ShouldFlush();
+        const bool delay_fence =
+            require_gpu_completion ||
+            (Settings::IsGPUFenceBehaviorDefault() ? Settings::IsGPULevelHigh()
+                                                   : Settings::IsGPUFenceBehaviorBalanced() ||
+                                                         Settings::IsGPUFenceBehaviorAccurate());
+        const bool should_flush = require_gpu_completion || ShouldFlush();
         if constexpr (!can_async_check) {
             TryReleasePendingFences<false>();
         }
@@ -171,7 +182,7 @@ private:
     void TryReleasePendingFences() {
         while (!fences.empty()) {
             TFence& current_fence = fences.front();
-            if (ShouldWait() && !IsFenceSignaled(current_fence)) {
+            if ((require_gpu_completion || ShouldWait()) && !IsFenceSignaled(current_fence)) {
                 if constexpr (force_wait) {
                     WaitFence(current_fence);
                 } else {

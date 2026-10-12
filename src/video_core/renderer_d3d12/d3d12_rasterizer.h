@@ -151,6 +151,8 @@ private:
     u64 feedback_copies{};
     u64 feedback_readonly_depth{};
     u64 skipped_draws{};
+    u32 attachment_diagnostics{};
+    bool presentation_logged{};
     ResourcePtr zero_vertex_buffer;
     std::vector<std::pair<ResourcePtr, D3D12_RESOURCE_STATES>> state_scratch;
     ComPtr<ID3D12CommandSignature> draw_signature;

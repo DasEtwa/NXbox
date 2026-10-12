@@ -26,6 +26,7 @@ struct FenceManagerParams {
     using QueryCacheType = QueryCache;
     // Context's allocator, event and completion batches are GPU-thread owned.
     static constexpr bool HAS_ASYNC_CHECK = false;
+    static constexpr bool REQUIRE_GPU_COMPLETION = true;
 };
 using GenericFenceManager = VideoCommon::FenceManager<FenceManagerParams>;
 class FenceManager final : public GenericFenceManager {
@@ -33,6 +34,11 @@ public:
     FenceManager(VideoCore::RasterizerInterface& rasterizer, Tegra::GPU& gpu,
                  TextureCache& texture_cache, BufferCache& buffer_cache, QueryCache& query_cache,
                  Context& context);
+
+    void SignalFence(std::function<void()>&& func);
+    void SignalSyncPoint(u32 value);
+    void SignalReference();
+    void LogSyncpoints() const;
 
 protected:
     Fence CreateFence(bool is_stubbed) override;
@@ -42,5 +48,7 @@ protected:
 
 private:
     Context& context;
+    u64 pending_syncpoints{};
+    u64 signaled_syncpoints{};
 };
 } // namespace D3D12

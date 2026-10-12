@@ -10,6 +10,7 @@
 #include "common/alignment.h"
 #include "common/logging.h"
 #include "video_core/control/channel_state.h"
+#include "video_core/dirty_flags.h"
 #include "video_core/engines/kepler_compute.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/host1x/host1x.h"
@@ -320,6 +321,18 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     ID3D12RootSignature* const root_signature = pipeline->RootSignature();
     if (!pso || !root_signature)
         return;
+    if (attachment_diagnostics < 8) {
+        ++attachment_diagnostics;
+        std::string message = "D3D12_ATTACHMENTS count=" + std::to_string(guest_rts);
+        const auto* fragment = pipeline->StageInfo(4);
+        for (u32 slot = 0; slot < VideoCommon::NUM_RT; ++slot) {
+            message += " slot" + std::to_string(slot) + "=" + std::to_string(formats.colors[slot]);
+            if (fragment && fragment->stores_frag_color[slot] && !color_views[slot])
+                message += "(unbound_shader_output)";
+        }
+        message += " depth=" + std::to_string(formats.depth);
+        Diagnostic(message);
+    }
 
     // ---- 1. Gather views/samplers and tell the buffer cache what the shaders use ----
     StageTableCounts totals{};
@@ -1295,6 +1308,7 @@ void RasterizerD3D12::FlushAndInvalidateRegion(DAddr addr, u64 size, VideoCommon
 void RasterizerD3D12::WaitForIdle() {
     query_cache.NotifyWFI();
     context.Finish();
+    fence_manager.WaitPendingFences(true);
     fence_manager.SignalOrdering();
 }
 void RasterizerD3D12::FragmentBarrier() {
@@ -1345,6 +1359,10 @@ void RasterizerD3D12::LoadDiskResources(u64 title_id, std::stop_token stop_loadi
     default_pipeline_cache->LoadDiskResources(title_id, stop_loading, callback);
 }
 void RasterizerD3D12::InitializeChannel(Tegra::Control::ChannelState& channel) {
+    // The shared caches consume common dirty bits, even without a native state tracker.
+    auto& dirty = channel.payload->maxwell_3d.dirty;
+    VideoCommon::Dirty::SetupDirtyFlags(dirty.tables);
+    dirty.flags.set();
     CreateChannel(channel);
     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
     buffer_cache.CreateChannel(channel);
@@ -1375,6 +1393,18 @@ RasterizerD3D12::DisplayTexture RasterizerD3D12::FramebufferTexture(
     std::scoped_lock lock{texture_cache.mutex};
     const auto [view, scaled] =
         texture_cache.TryFindFramebufferImageView(config, config.address + config.offset);
+    const auto log_source = [&](const ResourcePtr& resource, DXGI_FORMAT format, bool cached) {
+        if (presentation_logged)
+            return;
+        presentation_logged = true;
+        const auto desc = resource->handle->GetDesc();
+        Diagnostic("D3D12_DISPLAY address=" + std::to_string(config.address + config.offset) +
+                   " source=" + (cached ? "texture_cache" : "guest_memory") + " image=" +
+                   std::to_string(reinterpret_cast<std::uintptr_t>(resource->handle.Get())) +
+                   " format=" + std::to_string(static_cast<u32>(format)) +
+                   " width=" + std::to_string(desc.Width) +
+                   " height=" + std::to_string(desc.Height) + " scaled=" + std::to_string(scaled));
+    };
     if (view && view->ImageHandle()) {
         texture_cache.PrepareImage(view->image_id, false, false);
         auto description = view->Description();
@@ -1388,6 +1418,7 @@ RasterizerD3D12::DisplayTexture RasterizerD3D12::FramebufferTexture(
         } else {
             throw std::runtime_error("D3D12 framebuffer must be a 2D texture view");
         }
+        log_source(view->ImageHandle(), description.Format, true);
         return {view->ImageHandle(), description};
     }
     auto resource = texture_runtime.UploadFramebuffer(device_memory, config);
@@ -1398,6 +1429,7 @@ RasterizerD3D12::DisplayTexture RasterizerD3D12::FramebufferTexture(
     description.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
     description.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     description.Texture2DArray = {0, 1, 0, 1, 0, 0};
+    log_source(resource, description.Format, false);
     return {resource, description};
 }
 } // namespace D3D12
