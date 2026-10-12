@@ -534,6 +534,8 @@ if (CMAKE_SYSTEM_NAME STREQUAL "WindowsStore")
             renderer_d3d12/d3d12_index_converter.h
             renderer_d3d12/d3d12_clear.cpp
             renderer_d3d12/d3d12_clear.h
+            renderer_d3d12/d3d12_disk_pipeline_cache.cpp
+            renderer_d3d12/d3d12_disk_pipeline_cache.h
         )
         target_sources(video_core PRIVATE
             renderer_d3d12/d3d12_compute_pass.cpp
