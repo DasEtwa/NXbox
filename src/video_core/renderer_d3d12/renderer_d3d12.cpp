@@ -241,9 +241,9 @@ struct RendererD3D12::Impl {
             const auto& texture = textures[slot];
             context.Transition(texture.resource, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
             auto cpu = srv_heap->GetCPUDescriptorHandleForHeapStart();
-            auto gpu = srv_heap->GetGPUDescriptorHandleForHeapStart();
+            auto gpu_handle = srv_heap->GetGPUDescriptorHandleForHeapStart();
             cpu.ptr += static_cast<SIZE_T>(slot) * srv_stride;
-            gpu.ptr += static_cast<UINT64>(slot++) * srv_stride;
+            gpu_handle.ptr += static_cast<UINT64>(slot++) * srv_stride;
             context.Device()->CreateShaderResourceView(texture.resource->handle.Get(),
                                                        &texture.view, cpu);
             const auto resource_desc = texture.resource->handle->GetDesc();
@@ -266,7 +266,7 @@ struct RendererD3D12::Impl {
                           : layer.blending == Tegra::BlendMode::Premultiplied ? 1
                                                                               : 2]
                     .Get());
-            commands->SetGraphicsRootDescriptorTable(0, gpu);
+            commands->SetGraphicsRootDescriptorTable(0, gpu_handle);
             commands->SetGraphicsRoot32BitConstants(1, 8, &constants, 0);
             commands->DrawInstanced(3, 1, 0, 0);
         }
