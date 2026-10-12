@@ -316,6 +316,9 @@ constexpr std::uint32_t VertexAlignment(std::uint32_t size) {
     const auto bytes = VertexByteSize(size);
     return bytes >= 4 ? 4 : bytes == 3 ? 1 : bytes;
 }
+constexpr std::uint64_t VertexLastNonIndexed(std::uint32_t first, std::uint32_t count) {
+    return std::uint64_t{first} + (count ? count - 1 : 0);
+}
 constexpr std::uint64_t VertexRequiredBytes(std::uint64_t last, std::uint32_t stride,
                                             std::uint32_t bytes) {
     return last * stride + bytes;

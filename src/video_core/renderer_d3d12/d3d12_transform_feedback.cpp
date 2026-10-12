@@ -102,7 +102,7 @@ void TransformFeedback::BindBuffer(u32 slot, ResourcePtr buffer, u64 offset, u64
     }
     EnsureCounters();
     if (!filled_size &&
-        (!bound || buffers[slot] != buffer ||
+        (reset_pending[slot] || buffers[slot] != buffer ||
          views[slot].BufferLocation != buffer->handle->GetGPUVirtualAddress() + offset))
         filled_size = 0;
     if (filled_size) {
@@ -115,6 +115,7 @@ void TransformFeedback::BindBuffer(u32 slot, ResourcePtr buffer, u64 offset, u64
         context.Commands()->CopyBufferRegion(counters->handle.Get(), slot * 8,
                                              reset.buffer->handle.Get(), reset.offset, 8);
     }
+    reset_pending[slot] = false;
     buffers[slot] = std::move(buffer);
     views[slot] = {buffers[slot]->handle->GetGPUVirtualAddress() + offset, size,
                    counters->handle->GetGPUVirtualAddress() + slot * 8};
@@ -137,10 +138,14 @@ void TransformFeedback::Bind() {
     context.Commands()->SOSetTargets(0, 4, active_views.data());
     bound = true;
 }
-void TransformFeedback::Unbind() {
+void TransformFeedback::Unbind(bool reset_cursor) {
     const std::array<D3D12_STREAM_OUTPUT_BUFFER_VIEW, 4> empty{};
     context.Commands()->SOSetTargets(0, 4, empty.data());
     bound = false;
+    // Keep the last filled-size counters readable after disabling capture.
+    // Clear/blit unbinding only pauses host SO; a new guest session resets on bind.
+    if (reset_cursor)
+        reset_pending.fill(true);
 }
 u32 TransformFeedback::StreamMask() const {
     u32 mask{};

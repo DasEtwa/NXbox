@@ -34,7 +34,7 @@ public:
     void BindBuffer(u32 slot, ResourcePtr buffer, u64 offset, u64 size,
                     std::optional<u64> filled_size = std::nullopt);
     void Bind();
-    void Unbind();
+    void Unbind(bool reset_cursor = false);
     u32 StreamMask() const;
     u64 ReadFilledSize(u32 stream);
 
@@ -49,6 +49,7 @@ private:
     ResourcePtr counters;
     StagingRing upload;
     StagingRing readback;
+    std::array<bool, 4> reset_pending{};
     bool bound{};
 };
 } // namespace D3D12

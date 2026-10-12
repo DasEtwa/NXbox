@@ -765,9 +765,12 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     const auto& submitted = draw.params;
     if (!submitted.num_vertices || !submitted.num_instances)
         return;
-    u64 last_vertex = u64{submitted.base_vertex} + submitted.num_vertices - 1;
+    const auto& guest_draw = maxwell3d->draw_manager.draw_state;
+    // Index expansion increases submitted index count, not the maximum guest
+    // vertex. Use the original vertex range for generated fans/strips/quads.
+    u64 last_vertex =
+        Pso::VertexLastNonIndexed(submitted.base_vertex, guest_draw.vertex_buffer.count);
     if (is_indexed) {
-        const auto& guest_draw = maxwell3d->draw_manager.draw_state;
         if (static_cast<u32>(guest_draw.index_buffer.format) > 2) {
             SkipDraw("invalid index width for vertex sizing");
             return;
@@ -1044,7 +1047,7 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     if (feedback_info)
         transform_feedback.Bind();
     else
-        transform_feedback.Unbind();
+        transform_feedback.Unbind(regs.transform_feedback_enabled == 0);
     query_runtime.BeginDraw(pipeline->StageInfo(3) != nullptr);
     context.MarkWork("guest draws");
     draw(commands);

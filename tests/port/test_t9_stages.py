@@ -30,6 +30,10 @@ int main() {
     static_assert(VertexByteSize(VSize::R8G8B8) == 3);
     static_assert(VertexAlignment(VSize::R8G8B8A8) == 4);
     static_assert(VertexRequiredBytes(101, 20, 4) == 2024);
+    // A 64-vertex fan expands to 186 indices, but still fetches vertices 11..74.
+    static_assert(VertexLastNonIndexed(11, 64) == 74);
+    static_assert(VertexRequiredBytes(VertexLastNonIndexed(11, 64), 16, 16) == 1200);
+    static_assert(VertexLastNonIndexed(0xffffffff, 2) == 0x100000000ull);
     static_assert(VertexRequiredBytes(400, 0, 16) == 16);
     static_assert(RenderTargetLayersOverlap(1, 2, 2, 3));
     static_assert(!RenderTargetLayersOverlap(1, 1, 2, 1));
@@ -185,6 +189,7 @@ int main() {
         rasterizer = (NATIVE / "d3d12_rasterizer.cpp").read_text()
         cache = (NATIVE / "d3d12_pipeline_cache.cpp").read_text()
         self.assertIn("draw.params", rasterizer)
+        self.assertIn("Pso::VertexLastNonIndexed", rasterizer)
         self.assertIn("Pso::RepackVertexFormat", rasterizer)
         self.assertIn("regs.primitive_restart.index", rasterizer)
         self.assertIn("submitted.num_instances - 1", rasterizer)

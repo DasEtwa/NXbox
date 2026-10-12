@@ -232,3 +232,11 @@ regressions and optional actual-emitter VS/GS/PS and DXC validation.
 Vertex aliases A8, G8_R8, and X8_B8_G8_R8 follow the Vulkan/GL raw-component
 interpretation (R, RG, and RGBA respectively), rather than inferring channel
 swizzles from their names. Only the explicit BGRA flag changes channel order.
+
+Stream-output unbinding for a clear/blit preserves filled-size counters; disabling
+feedback on a regular draw requests a reset on the next capture while keeping the
+last counters readable.
+Guest streaming-byte-count reset/resume still needs query-cache integration: the
+existing `QueryCacheRuntime::ResetCounter` baseline does not apply to its direct
+`ReadFilledSize` path. That file is outside T9 ownership. Runtime Xbox validation
+of cursor and overflow behavior remains required.
