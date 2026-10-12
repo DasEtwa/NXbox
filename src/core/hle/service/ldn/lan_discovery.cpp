@@ -732,7 +732,8 @@ void LANDiscovery::ReceivePacket(const Network::LDNPacket& packet) {
         break;
     }
     case Network::LDNPacketType::DestroyNetwork: {
-        disconnect_reason = connecting ? DisconnectReason::Rejected : DisconnectReason::DestroyedByUser;
+        disconnect_reason =
+            connecting ? DisconnectReason::Rejected : DisconnectReason::DestroyedByUser;
         ResetStations();
         OnDisconnectFromHost();
         break;
