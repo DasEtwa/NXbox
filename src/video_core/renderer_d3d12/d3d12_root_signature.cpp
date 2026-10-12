@@ -24,9 +24,9 @@ DescriptorCounts CountDescriptors(const Shader::Info& info) {
 ComPtr<ID3D12RootSignature> CreateRootSignature(ID3D12Device* device, DescriptorCounts counts) {
     const auto range = [](D3D12_DESCRIPTOR_RANGE_TYPE type, u32 count) {
         return D3D12_DESCRIPTOR_RANGE{type, std::max(count, 1u), 0, 0,
-                                      D3D12_DESCRIPTOR_RANGE_OFFSET_FROM_PREVIOUS_END};
+                                      D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND};
     };
-    const std::array ranges{
+    std::array ranges{
         range(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, counts.cbv),
         range(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, counts.srv),
         range(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, counts.uav),
