@@ -46,11 +46,13 @@ void ServiceFrameworkBase::TraceRequest(HLERequestContext& ctx, u32 command) {
         ctx.HasResponse() && !deferred
             ? std::optional{ctx.CommandBuffer()[ctx.GetDataPayloadOffset()]}
             : std::nullopt;
-    if (service_trace->RecordCall(service_name, ctx.IsTipc(), command, result, deferred, interface_name)) {
-        LOG_INFO(Service, "NXBOX_SERVICE_TRACE service={} protocol={} cmd={} result={} interface={}",
-                 service_name, ctx.IsTipc() ? "TIPC" : "CMIF", command,
-                 result ? fmt::format("{:#010x}", *result)
-                        : (deferred ? "deferred" : "no-response"), interface_name);
+    if (service_trace->RecordCall(service_name, ctx.IsTipc(), command, result, deferred,
+                                  interface_name)) {
+        LOG_INFO(
+            Service, "NXBOX_SERVICE_TRACE service={} protocol={} cmd={} result={} interface={}",
+            service_name, ctx.IsTipc() ? "TIPC" : "CMIF", command,
+            result ? fmt::format("{:#010x}", *result) : (deferred ? "deferred" : "no-response"),
+            interface_name);
     }
 }
 
@@ -66,10 +68,11 @@ void ServiceFrameworkBase::TraceRequest(HLERequestContext& ctx, u32 command) {
 }
 
 ServiceFrameworkBase::ServiceFrameworkBase(Core::System& system_, const char* service_name_,
-                                           u32 max_sessions_, InvokerFn* handler_invoker_, std::string_view interface_name_)
+                                           u32 max_sessions_, InvokerFn* handler_invoker_,
+                                           std::string_view interface_name_)
     : SessionRequestHandler(system_.Kernel(), service_name_),
-      service_trace{GetServiceTrace(system_)}, interface_name{interface_name_}, system{system_}, service_name{service_name_},
-      is_i_storage{std::string_view{service_name_} == "IStorage"},
+      service_trace{GetServiceTrace(system_)}, interface_name{interface_name_}, system{system_},
+      service_name{service_name_}, is_i_storage{std::string_view{service_name_} == "IStorage"},
       handler_invoker{handler_invoker_}, max_sessions{max_sessions_} {}
 
 ServiceFrameworkBase::~ServiceFrameworkBase() {
@@ -100,9 +103,11 @@ void ServiceFrameworkBase::ReportUnimplementedFunction(HLERequestContext& ctx,
         rb.Push(Settings::values.use_auto_stub ? ResultSuccess : IPC::ResultNotSupported);
         return;
     }
-    LOG_WARNING(Service, "NXBOX_SERVICE_MISSING service={} protocol={} cmd={} name={} auto_stub={} interface={}",
-                service_name, ctx.IsTipc() ? "TIPC" : "CMIF", u32{ctx.GetCommand()},
-                info ? info->name : "<unknown>", Settings::values.use_auto_stub.GetValue(), interface_name);
+    LOG_WARNING(
+        Service,
+        "NXBOX_SERVICE_MISSING service={} protocol={} cmd={} name={} auto_stub={} interface={}",
+        service_name, ctx.IsTipc() ? "TIPC" : "CMIF", u32{ctx.GetCommand()},
+        info ? info->name : "<unknown>", Settings::values.use_auto_stub.GetValue(), interface_name);
     auto cmd_buf = ctx.CommandBuffer();
     std::string function_name = info == nullptr ? "<unknown>" : info->name;
 

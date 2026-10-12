@@ -8,8 +8,8 @@
 
 #include <cstddef>
 #include <mutex>
-#include "common/container/unordered_map.h"
 #include "common/common_types.h"
+#include "common/container/unordered_map.h"
 #include "core/hle/service/hle_ipc.h"
 #include "core/hle/service/service_interface_name.h"
 
@@ -167,8 +167,10 @@ protected:
      * @param max_sessions_ Maximum number of sessions that can be connected to this service at the
      * same time.
      */
-    explicit ServiceFramework(Core::System& system_, const char* service_name_, u32 max_sessions_ = ServerSessionCountMax)
-        : ServiceFrameworkBase(system_, service_name_, max_sessions_, Invoker, ServiceInterfaceName<Self>()) {}
+    explicit ServiceFramework(Core::System& system_, const char* service_name_,
+                              u32 max_sessions_ = ServerSessionCountMax)
+        : ServiceFrameworkBase(system_, service_name_, max_sessions_, Invoker,
+                               ServiceInterfaceName<Self>()) {}
 
     /// Registers handlers in the service.
     template <typename T = Self, std::size_t N>
