@@ -69,6 +69,7 @@ translation profile follows the D3D12 baseline with int64/fp64 and viewport-laye
 support, SSBO alignment 16, and native fp16 lowering disabled. This is a compilation
 coverage tool, not a pixel-accuracy oracle or exact pipeline-state replay: generic
 inputs/color outputs are float, input topology/tessellation domain are triangles,
+fragment varying inputs are declared from the consumed IR attributes,
 and runtime linkage/transform-feedback/alpha-test state is not reconstructed from
 pipeline keys. Geometry/tessellation backend limitations remain reported failures.
 

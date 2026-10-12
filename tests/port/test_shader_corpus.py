@@ -28,10 +28,10 @@ spec.loader.exec_module(corpus)
 EXIT = 0xE30000000007000F
 
 
-def environment(stage=5, base=0, workgroup=(1, 1, 1), maps=None, code=None):
+def environment(stage=5, base=0, workgroup=(1, 1, 1), maps=None, code=None, sph=None):
     """Generate guest input, not prebuilt IR or copyrighted game data."""
     maps = maps or [[], [], [], []]
-    header = bytes(80)
+    header = sph if sph is not None else bytes(80)
     if code is None:
         code = struct.pack("<2Q", 0, EXIT) if stage == 5 else header + struct.pack("<2Q", EXIT, 0)
     data = corpus.HEADER.pack(
@@ -277,6 +277,23 @@ class ShaderCorpusCompilerTests(unittest.TestCase):
             self.assertEqual(report["counts"]["total"], 8)
             self.assertEqual(report["counts"]["emitted"], 8, json.dumps(report, indent=2))
             self.assertEqual(report["counts"]["failed"], 0, json.dumps(report, indent=2))
+
+    def test_fragment_varying_has_an_isolated_input_signature(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sph = bytearray(80)
+            sph[24] = 3  # Generic0X uses screen-linear interpolation.
+            struct.pack_into("<I", sph, 72, 1)  # Fragment R0 is a live color output.
+            ipa = 0xE000000000070000 | (255 << 8) | (32 << 30)
+            code = bytes(sph) + struct.pack("<2Q", ipa, EXIT)
+            cache(root / "varying.bin", 15, [[environment(4, code=code, sph=bytes(sph))]])
+            output = root / "output"
+            report = corpus.evaluate(root, self.emitter, output=output)
+            self.assertEqual(report["counts"]["emitted"], 1, report["rows"])
+            self.assertEqual(report["counts"]["failed"], 0, report["rows"])
+            source = Path(report["rows"][0]["source"]).read_text()
+            self.assertIn("float4 attr0 : TEXCOORD0", source)
+            self.assertIn("input.attr0.x", source)
 
     def test_all_guest_stages_and_real_dual_vertex_merge(self):
         with tempfile.TemporaryDirectory() as directory:

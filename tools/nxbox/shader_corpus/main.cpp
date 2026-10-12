@@ -78,6 +78,10 @@ int main(int argc, char **argv) {
     runtime.input_topology = Shader::InputTopology::Triangles;
     runtime.tess_primitive = Shader::TessPrimitive::Triangles;
     Shader::Maxwell::ConvertLegacyToGeneric(program, runtime);
+    // Isolated fragment validation needs an input signature for every consumed
+    // varying. This declares the interface; it does not reconstruct the
+    // preceding pipeline stage.
+    runtime.previous_stage_stores = program.info.loads;
     Shader::Profile profile{};
     profile.support_int64 = true;
     profile.support_vertex_instance_id = true;
