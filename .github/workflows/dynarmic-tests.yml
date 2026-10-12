@@ -64,6 +64,7 @@ jobs:
         shell: bash
         run: cmake --build "$RUNNER_TEMP/cpu-build" --target dynarmic_tests --parallel 2
       - name: Run targeted randomized regression
+        id: targeted-cpu
         shell: bash
         run: |
           test_binary=$(find "$RUNNER_TEMP/cpu-build" -type f \( -name dynarmic_tests -o -name dynarmic_tests.exe \) | head -n 1)
@@ -76,11 +77,15 @@ jobs:
           ctest --test-dir "$RUNNER_TEMP/cpu-build" -R '^dynarmic_tests$' --output-on-failure
           --timeout 3600
       - name: Capture Linux failure backtrace
-        if: failure() && runner.os == 'Linux' && steps.full-cpu.conclusion == 'failure'
+        if:
+          failure() && runner.os == 'Linux' && (steps.full-cpu.conclusion == 'failure' ||
+          steps.targeted-cpu.conclusion == 'failure')
         shell: bash
         run: |
           test_binary=$(find "$RUNNER_TEMP/cpu-build" -type f -name dynarmic_tests | head -n 1)
-          gdb --batch -ex 'set pagination off' -ex run -ex 'thread apply all bt' --args "$test_binary" --rng-seed 19 --durations yes
+          filter=()
+          if [[ '${{ steps.targeted-cpu.conclusion }}' == failure ]]; then filter=('[conformance]'); fi
+          gdb --batch -ex 'set pagination off' -ex run -ex 'thread apply all bt' --args "$test_binary" "${filter[@]}" --rng-seed 19 --durations yes
       - name: Decoder coverage and port regressions
         run: python -m unittest discover -s tests/port -p "test_*.py"
       - name: Upload test evidence
