@@ -84,13 +84,6 @@ constexpr const char* MultipartBoundary = "NXboxSaveSyncBoundary7f3a91";
 // deleted. Eden hides it from the guest as well (fs_i_directory.h).
 constexpr const char* SaveSizeFileName = ".yuzu_save_size";
 
-// Buffer sizes SwitchSaveSync sanitizes and truncates folder names with (core/syncjob.c).
-constexpr std::size_t GameNameBuffer = 0x201;   // the game-name buffer in cloud_folder_path()
-constexpr std::size_t OwnerNameBuffer = 0x41;   // CLOUD_OWNER_MAX
-constexpr std::size_t FolderPathBuffer = 0x220; // the path buffer cloud_title_folder() passes in
-constexpr std::size_t NacpLanguageCount = 16;   // NacpStruct.lang[16], what the Switch reads
-constexpr std::size_t NacpNameBytes = 0x200;
-
 // core/drive.c: above this size the multipart upload is not used.
 constexpr std::uint64_t MultipartMax = 4ull * 1024 * 1024;
 // Whole files are held in memory for HTTP; real saves are a few MB.
@@ -149,35 +142,6 @@ bool ParseHex64(const std::string& text, std::uint64_t& out) {
     }
     out = value;
     return true;
-}
-
-std::string LowerAscii(std::string text) {
-    for (char& c : text) {
-        if (c >= 'A' && c <= 'Z') {
-            c = static_cast<char>(c - 'A' + 'a');
-        }
-    }
-    return text;
-}
-
-bool EqualsIgnoreCase(const std::string& a, const std::string& b) {
-    return LowerAscii(a) == LowerAscii(b);
-}
-
-bool IsBlank(char c) {
-    return c == ' ' || c == '\t' || c == '\r' || c == '\n';
-}
-
-std::string Trim(const std::string& text) {
-    std::size_t first = 0;
-    while (first < text.size() && IsBlank(text[first])) {
-        ++first;
-    }
-    std::size_t last = text.size();
-    while (last > first && IsBlank(text[last - 1])) {
-        --last;
-    }
-    return text.substr(first, last - first);
 }
 
 // Paths: std::filesystem::path(std::string) reads the string in the ANSI code page on Windows, so
@@ -1779,38 +1743,6 @@ Target BuildTarget(const Env& env, std::uint64_t title_id, const ActiveUser& use
     target.staging_dir = env.local_state / "savesync_staging" / scratch;
     target.backup_dir = env.local_state / "savesync_backup" / scratch;
     return target;
-}
-
-// Does any OTHER Eden profile (or the device-save folder) hold a save of this title? The cloud
-// folder is found by the account name, and when that name is not there the single account folder
-// that exists is used (core/syncjob.c cloud_title_folder: the rescue for a renamed profile). That
-// guess is only honest while this is the only save of the game on this console; with two the name
-// is the identity, and guessing would hand one person's save to the other.
-bool OtherSavesExist(const Env& env, const Target& target) {
-    const fs::path users_dir = env.nand_dir / "user" / "save" / "0000000000000000";
-    std::error_code ec;
-    if (!fs::exists(users_dir, ec)) {
-        return static_cast<bool>(ec);
-    }
-    fs::directory_iterator it(users_dir, ec);
-    if (ec) {
-        return true;
-    }
-    const fs::directory_iterator end{};
-    for (; it != end; it.increment(ec)) {
-        const std::string folder_name = Utf8FromPath(it->path().filename());
-        if (EqualsIgnoreCase(folder_name, target.user.dir_name)) {
-            continue;
-        }
-        try {
-            if (ScanTree(it->path() / target.title_hex, false).files > 0) {
-                return true;
-            }
-        } catch (const SyncError&) {
-            return true;
-        }
-    }
-    return static_cast<bool>(ec);
 }
 
 struct CloudLocation {
