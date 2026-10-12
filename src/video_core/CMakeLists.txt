@@ -525,6 +525,11 @@ if (CMAKE_SYSTEM_NAME STREQUAL "WindowsStore")
             renderer_d3d12/d3d12_descriptor.h
             renderer_d3d12/d3d12_pipeline_iface.h
             renderer_d3d12/d3d12_ring_allocator.h
+            renderer_d3d12/d3d12_query_cache.cpp
+            renderer_d3d12/d3d12_query_cache.h
+            renderer_d3d12/d3d12_transform_feedback.cpp
+            renderer_d3d12/d3d12_transform_feedback.h
+            renderer_d3d12/d3d12_query_helpers.h
         )
         target_compile_definitions(video_core PRIVATE HAS_D3D12=1)
         target_link_libraries(video_core PRIVATE d3d12 dxgi)
