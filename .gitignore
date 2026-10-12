@@ -72,3 +72,18 @@ tools/shader-share/data/
 
 # Build-time generated external sources
 externals/generated
+
+# Never commit console keys, firmware or game dumps
+*.keys
+prod.keys
+title.keys
+*.nsp
+*.nsz
+*.xci
+*.xcz
+*.nca
+*.ncz
+*.nro
+firmware/
+keys/
+games/
