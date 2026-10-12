@@ -7,6 +7,7 @@
  */
 
 #include <type_traits>
+#include <algorithm>
 #include <fmt/format.h>
 #include "dynarmic/mcl/bit.hpp"
 #include "dynarmic/tests/unicorn_emu/a32_unicorn.h"
@@ -50,6 +51,7 @@ void A32Unicorn<TestEnvironment>::Run() {
         if (!testenv.IsInCodeMem(pc)) {
             return;
         }
+        const u32 initial_cpsr = GetCpsr();
         if (auto cerr_ = uc_emu_start(uc, pc, END_ADDRESS, 0, 1)) {
             fmt::print("uc_emu_start failed @ {:08x} (code = {:08x}) with error {} ({})", pc, *testenv.MemoryReadCode(pc), static_cast<size_t>(cerr_), uc_strerror(cerr_));
             throw "A32Unicorn::Run() failure";
@@ -65,7 +67,26 @@ void A32Unicorn<TestEnvironment>::Run() {
             }
         }
         pending_writes.clear();
-        testenv.ticks_left--;
+        size_t consumed = 1;
+        if constexpr (std::is_same_v<TestEnvironment, ThumbTestEnv>) {
+            const u32 cpsr_before = initial_cpsr;
+            const u16 first = static_cast<u16>(*testenv.MemoryReadCode(pc & ~1U));
+            const bool in_it = (cpsr_before & 0x0600fc00) != 0;
+            const bool starts_it = (first & 0xff00) == 0xbf00 && (first & 0xf) != 0;
+            const u32 next_pc = GetPC();
+            if ((in_it || starts_it) && next_pc > (pc & ~1U) && next_pc <= (pc & ~1U) + 18) {
+                // Unicorn counts executed instructions and absorbs skipped IT slots
+                // into the previous step. Dynarmic ticks count every guest slot.
+                consumed = 0;
+                u32 cursor = pc & ~1U;
+                while (cursor < next_pc) {
+                    const u16 instruction = static_cast<u16>(*testenv.MemoryReadCode(cursor));
+                    cursor += (instruction >> 11) >= 0b11101 ? 4 : 2;
+                    ++consumed;
+                }
+            }
+        }
+        testenv.ticks_left -= std::min<u64>(testenv.ticks_left, consumed);
         if (!testenv.interrupts.empty() || testenv.code_mem_modified_by_guest) {
             return;
         }

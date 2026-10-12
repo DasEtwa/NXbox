@@ -767,3 +767,25 @@ TEST_CASE("A32: Signed division boundaries differential", "[arm][thumb][unicorn]
     run.template operator()<ArmTestEnv>({0xe71af912});
     run.template operator()<ThumbTestEnv>({0xfb92, 0xfaf9});
 }
+
+TEST_CASE("A32: Thumb IT skipped-slot differential", "[thumb][unicorn][conformance]") {
+    ThumbTestEnv jit_env{};
+    ThumbTestEnv uni_env{};
+    A32::Jit jit{GetUserConfig(jit_env)};
+    A32Unicorn<ThumbTestEnv> uni{uni_env};
+    std::mt19937 random{0x1917};
+    for (const u16 instruction : {u16{0xbf08}, u16{0xbf18}}) {
+        for (size_t iteration = 0; iteration < 128; ++iteration) {
+            A32Unicorn<ThumbTestEnv>::RegisterArray regs{};
+            A32Unicorn<ThumbTestEnv>::ExtRegArray vecs{};
+            for (auto& reg : regs) {
+                reg = random();
+            }
+            regs[15] = 0;
+            const u32 cpsr = (static_cast<u32>(iteration % 2) << 30) | 0x1f0;
+            // End at the IT block boundary; the trailing MOV must remain unexecuted.
+            RunTestInstance(jit, uni, jit_env, uni_env, regs, vecs,
+                            {instruction, 0x2001, 0x2102}, cpsr, 0, 2, {}, true);
+        }
+    }
+}
