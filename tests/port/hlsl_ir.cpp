@@ -239,34 +239,30 @@ void ArithmeticAndPseudoResults() {
     std::ofstream("hlsl_arithmetic.hlsl") << text;
 }
 void ChainedResourceBindings() {
-  Fixture vertex{Stage::VertexB};
-  vertex.program.info.texture_descriptors.push_back(
-      {.type = TextureType::Color2D, .count = 1});
-  vertex.program.info.texture_buffer_descriptors.push_back({.count = 1});
-  vertex.program.info.storage_buffers_descriptors.push_back({.count = 1});
-  vertex.program.info.image_descriptors.push_back(
-      {.type = TextureType::Color2D,
-       .format = ImageFormat::R32_UINT,
-       .count = 1});
-  vertex.program.info.image_buffer_descriptors.push_back(
-      {.format = ImageFormat::R32_UINT, .count = 1});
-  Bindings bindings;
-  const auto first = vertex.Emit(bindings);
-  Contains(first, "samp0 : register(s0, space0)");
-  Contains(first, "ssbo0 : register(u0, space0)");
-  Contains(first, "img1 : register(u1, space0)");
-  Contains(first, "img2 : register(u2, space0)");
-  Fixture fragment{Stage::Fragment};
-  fragment.program.info.texture_descriptors.push_back(
-      {.type = TextureType::Color2D, .count = 1});
-  fragment.program.info.storage_buffers_descriptors.push_back({.count = 1});
-  const auto second = fragment.Emit(bindings);
-  Contains(second, "tex2 : register(t2, space0)");
-  Contains(second, "samp2 : register(s1, space0)");
-  Contains(second, "ssbo0 : register(u3, space0)");
-  Require(bindings.texture == 3 && bindings.hlsl_sampler == 2 &&
-              bindings.storage_buffer + bindings.image == 4,
-          "Stage append order must match native descriptor tables");
+    Fixture vertex{Stage::VertexB};
+    vertex.program.info.texture_descriptors.push_back({.type = TextureType::Color2D, .count = 1});
+    vertex.program.info.texture_buffer_descriptors.push_back({.count = 1});
+    vertex.program.info.storage_buffers_descriptors.push_back({.count = 1});
+    vertex.program.info.image_descriptors.push_back(
+        {.type = TextureType::Color2D, .format = ImageFormat::R32_UINT, .count = 1});
+    vertex.program.info.image_buffer_descriptors.push_back(
+        {.format = ImageFormat::R32_UINT, .count = 1});
+    Bindings bindings;
+    const auto first = vertex.Emit(bindings);
+    Contains(first, "samp0 : register(s0, space0)");
+    Contains(first, "ssbo0 : register(u0, space0)");
+    Contains(first, "img1 : register(u1, space0)");
+    Contains(first, "img2 : register(u2, space0)");
+    Fixture fragment{Stage::Fragment};
+    fragment.program.info.texture_descriptors.push_back({.type = TextureType::Color2D, .count = 1});
+    fragment.program.info.storage_buffers_descriptors.push_back({.count = 1});
+    const auto second = fragment.Emit(bindings);
+    Contains(second, "tex2 : register(t2, space0)");
+    Contains(second, "samp2 : register(s1, space0)");
+    Contains(second, "ssbo0 : register(u3, space0)");
+    Require(bindings.texture == 3 && bindings.hlsl_sampler == 2 &&
+                bindings.storage_buffer + bindings.image == 4,
+            "Stage append order must match native descriptor tables");
 }
 void UnsupportedRollback() {
     Fixture f{Stage::Compute};
