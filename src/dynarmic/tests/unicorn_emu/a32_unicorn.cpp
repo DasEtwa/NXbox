@@ -277,6 +277,8 @@ void A32Unicorn<TestEnvironment>::ClearPageCache() {
         CHECKED(uc_mem_unmap(uc, page->address, 4096));
     }
     pages.clear();
+    // Each case installs fresh guest code; release translations from prior cases.
+    CHECKED(uc_ctl_flush_tb(uc));
     pending_writes.clear();
 }
 
