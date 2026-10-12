@@ -403,6 +403,7 @@ IR::Value Argument(Fixture &f, IR::Type type) {
 }
 void NumericCoverage() {
   Fixture f{Stage::Compute};
+  f.Add(IR::Opcode::IsHelperInvocation);
   f.program.info.uses_int64 = true;
   f.program.info.uses_fp64 = true;
   size_t count = 0;
@@ -444,6 +445,8 @@ void NumericCoverage() {
   Bindings bindings;
   const auto text = f.Emit(bindings);
   Contains(text, "nx_half(");
+  Require(Backend::HLSL::RequiredShaderModel(f.program) == 60u,
+          "Non-fragment helper queries require no pixel intrinsic");
   Contains(text, "double4");
   Contains(text, "nx_rsqrt64(");
   Require(count == 189, "Numeric coverage unexpectedly decreased");

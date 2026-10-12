@@ -12,7 +12,7 @@ void EmitSetPatch(EmitContext&, IR::Patch, std::string_view) {
 }
 void EmitIsHelperInvocation(EmitContext& ctx, IR::Inst& inst) {
     // IsHelperLane is an SM 6.6 intrinsic; callers must select RequiredShaderModel.
-    ctx.AddU1("{} = IsHelperLane();", inst);
+    ctx.AddU1("{} = {};", inst, ctx.stage == Stage::Fragment ? "IsHelperLane()" : "false");
 }
 void EmitSR_WScaleFactorXY(EmitContext&, IR::Inst&) {
     throw NotImplementedException("HLSL SR_WScaleFactorXY has no defined Maxwell W-scale register "

@@ -141,7 +141,8 @@ u32 RequiredShaderModel(const IR::Program& program) {
     for (const auto* block : program.blocks) {
         for (const auto& inst : block->Instructions()) {
             const auto name = IR::NameOf(inst.GetOpcode());
-            if (inst.GetOpcode() == IR::Opcode::IsHelperInvocation ||
+            if ((inst.GetOpcode() == IR::Opcode::IsHelperInvocation &&
+                 program.stage == Stage::Fragment) ||
                 inst.GetOpcode() == IR::Opcode::SharedAtomicExchange32x2 ||
                 (name.find("Atomic") != name.npos && name.ends_with("64")))
                 return 66u;
