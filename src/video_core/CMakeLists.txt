@@ -508,6 +508,8 @@ if (CMAKE_SYSTEM_NAME STREQUAL "WindowsStore")
             renderer_d3d12/d3d12_texture_cache_base.cpp
             renderer_d3d12/d3d12_shader.cpp
             renderer_d3d12/d3d12_shader.h
+            renderer_d3d12/d3d12_blit_image.cpp
+            renderer_d3d12/d3d12_blit_image.h
         )
         target_compile_definitions(video_core PRIVATE HAS_D3D12=1)
         target_link_libraries(video_core PRIVATE d3d12 dxgi)
