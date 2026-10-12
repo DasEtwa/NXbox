@@ -83,6 +83,9 @@ int main() {
     assert(BufferMemoryTarget(5120*mib, 5100*mib, 512*mib)==512*mib);
     assert(BufferMemoryTarget(5120*mib, 6000*mib, 512*mib)==512*mib);
     assert(BufferMemoryTarget(16*mib, 16*mib, 0)==0);
+    assert(BufferMemoryPressure(512*mib,2560*mib,512*mib)==2560*mib);
+    assert(BufferMemoryPressure(512*mib,2560*mib,3000*mib)==512*mib);
+    assert(BufferMemoryPressure(UINT64_MAX,2560*mib,0)==UINT64_MAX);
     BufferHeapSlots slots(8);
     assert(!slots.Allocate(0) && !slots.Allocate(9));
     assert(slots.Allocate(3)==0 && slots.Allocate(2)==3 && slots.Allocate(3)==5);

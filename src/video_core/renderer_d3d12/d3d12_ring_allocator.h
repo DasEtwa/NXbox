@@ -17,6 +17,13 @@ constexpr std::uint64_t BufferMemoryTarget(std::uint64_t limit, std::uint64_t us
     const auto target = limit / 2;
     return std::min(target, cache + std::min(growth, UINT64_MAX - cache));
 }
+// The shared cache computes fixed GC watermarks once. Charge a shrinking target
+// as occupied memory so CPU/JIT growth also triggers its existing dirty-aware LRU.
+constexpr std::uint64_t BufferMemoryPressure(std::uint64_t usage, std::uint64_t initial_target,
+                                             std::uint64_t current_target) {
+    const auto lost = initial_target > current_target ? initial_target - current_target : 0;
+    return usage + std::min(lost, UINT64_MAX - usage);
+}
 std::uint64_t NativeBufferMemoryTarget(std::uint64_t cache) noexcept;
 
 // Heap placement slots. Release never allocates, so completion-thread deleters stay noexcept.

@@ -59,10 +59,11 @@ public:
         context.Finish();
     }
     u64 GetDeviceLocalMemory() const {
-        return NativeBufferMemoryTarget(context.MemoryUsage());
+        return memory_target;
     }
     u64 GetDeviceMemoryUsage() const {
-        return context.MemoryUsage();
+        const auto usage = context.MemoryUsage();
+        return BufferMemoryPressure(usage, memory_target, NativeBufferMemoryTarget(usage));
     }
     bool CanReportMemoryUsage() const {
         return true;
@@ -110,6 +111,7 @@ public:
 
 private:
     BindingState& bindings;
+    const u64 memory_target{NativeBufferMemoryTarget(context.MemoryUsage())};
     StagingRing upload;
     StagingRing readback;
 };
