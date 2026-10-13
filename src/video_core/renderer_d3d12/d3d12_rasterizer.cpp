@@ -83,15 +83,6 @@ using Maxwell = Tegra::Engines::Maxwell3D::Regs;
 // Scoped to the GPU thread and restored after each indirect batch.
 thread_local u32 indirect_draw_id{};
 
-struct DrawParams {
-    u32 base_instance;
-    u32 num_instances;
-    u32 base_vertex;
-    u32 num_vertices;
-    u32 first_index;
-    bool is_indexed;
-};
-
 DrawParams MakeDrawParams(const Tegra::Engines::Maxwell3D::DrawManager::State& draw_state,
                           u32 num_instances, bool is_indexed) {
     DrawParams params{

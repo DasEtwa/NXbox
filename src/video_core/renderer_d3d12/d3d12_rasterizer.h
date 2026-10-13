@@ -25,6 +25,16 @@ class System;
 
 namespace D3D12 {
 
+// Shared by the draw path and PrepareDrawIndices (a member), so it cannot stay file-local.
+struct DrawParams {
+    u32 base_instance;
+    u32 num_instances;
+    u32 base_vertex;
+    u32 num_vertices;
+    u32 first_index;
+    bool is_indexed;
+};
+
 class RasterizerD3D12;
 class PipelineCache;
 
