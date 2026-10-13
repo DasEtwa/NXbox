@@ -125,6 +125,19 @@ private:
     Tegra::MaxwellDeviceMemoryManager& device_memory;
     BindingState bindings;
     D3D12DescriptorAllocator descriptors;
+    /// Attachments last written into the fixed RTV/DSV slots (index NUM_RT is depth).
+    struct BoundTargets {
+        struct View {
+            s32 level{}, layer{}, format{};
+            bool operator==(const View&) const = default;
+        };
+        std::array<ResourcePtr, VideoCommon::NUM_RT + 1> resources{};
+        std::array<View, VideoCommon::NUM_RT + 1> views{};
+        u32 num_rts{}, layers{};
+        D3D12_DSV_FLAGS dsv_flags{};
+        bool operator==(const BoundTargets&) const = default;
+    };
+    BoundTargets bound_targets;
     IPipelineCache* pipeline_cache{};
     std::unique_ptr<PipelineCache> default_pipeline_cache;
     BufferCacheRuntime buffer_runtime;

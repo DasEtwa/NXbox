@@ -1010,15 +1010,14 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     const u32 cbv_size = root_cbvs ? 0u : TableSize(totals.cbv);
     const u32 srv_size = TableSize(totals.srv);
     const u32 uav_size = TableSize(totals.uav);
-    descriptors.Reserve(cbv_size + srv_size + uav_size, TableSize(totals.sampler),
-                        std::max(num_rts, 1u), has_depth ? 1u : 0u);
+    descriptors.Reserve(cbv_size + srv_size + uav_size, TableSize(totals.sampler));
     const auto view_block = descriptors.AllocateViews(cbv_size + srv_size + uav_size);
     const auto cbv_table = view_block.Slice(0, cbv_size);
     const auto srv_table = view_block.Slice(cbv_size, srv_size);
     const auto uav_table = view_block.Slice(cbv_size + srv_size, uav_size);
     const auto sampler_table = descriptors.AllocateSamplers(TableSize(totals.sampler));
-    const auto rtv_base = descriptors.AllocateRtv(std::max(num_rts, 1u));
-    const auto dsv_handle = has_depth ? descriptors.AllocateDsv() : D3D12_CPU_DESCRIPTOR_HANDLE{};
+    const auto rtv_base = descriptors.BoundRtvs();
+    const auto dsv_handle = has_depth ? descriptors.BoundDsv() : D3D12_CPU_DESCRIPTOR_HANDLE{};
 
     if (!injected_draw_skip && BisectEnabled("NXBOX_D3D12_INJECT_DRAW_SKIP")) {
         injected_draw_skip = true;
@@ -1170,27 +1169,46 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     for (u32 i = smp_i; i < sampler_table.count; ++i)
         descriptors.WriteNullSampler(sampler_table, i);
 
-    // Render targets.
-    const SIZE_T rtv_stride =
-        context.Device()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+    // Render targets: rewrite the fixed RTV/DSV slots only when the attachments change.
+    auto dsv_flags = D3D12_DSV_FLAG_NONE;
+    if (has_depth && readonly_depth) {
+        dsv_flags = D3D12_DSV_FLAG_READ_ONLY_DEPTH;
+        const auto format = DsvFormat(depth_view->Description().Format);
+        if (format == DXGI_FORMAT_D24_UNORM_S8_UINT || format == DXGI_FORMAT_D32_FLOAT_S8X24_UINT)
+            dsv_flags |= D3D12_DSV_FLAG_READ_ONLY_STENCIL;
+    }
+    BoundTargets targets;
+    targets.num_rts = num_rts;
+    targets.layers = render_area.layers;
+    targets.dsv_flags = has_depth ? dsv_flags : D3D12_DSV_FLAG_NONE;
     for (u32 slot = 0; slot < num_rts; ++slot) {
-        const auto replacement =
-            color_views[slot] && color_resources[slot] != color_views[slot]->ImageHandle()
-                ? color_resources[slot]
-                : ResourcePtr{};
-        descriptors.CreateRtv({rtv_base.ptr + slot * rtv_stride}, color_views[slot], replacement,
-                              render_area.layers);
+        if (const auto* view = color_views[slot]) {
+            targets.resources[slot] = color_resources[slot];
+            targets.views[slot] = {view->range.base.level, view->range.base.layer,
+                                   static_cast<s32>(view->Description().Format)};
+        }
     }
     if (has_depth) {
-        auto flags = D3D12_DSV_FLAG_NONE;
-        if (readonly_depth) {
-            flags = D3D12_DSV_FLAG_READ_ONLY_DEPTH;
-            const auto format = DsvFormat(depth_view->Description().Format);
-            if (format == DXGI_FORMAT_D24_UNORM_S8_UINT ||
-                format == DXGI_FORMAT_D32_FLOAT_S8X24_UINT)
-                flags |= D3D12_DSV_FLAG_READ_ONLY_STENCIL;
+        targets.resources[VideoCommon::NUM_RT] = depth_view->ImageHandle();
+        targets.views[VideoCommon::NUM_RT] = {depth_view->range.base.level,
+                                              depth_view->range.base.layer,
+                                              static_cast<s32>(depth_view->Description().Format)};
+    }
+    if (targets != bound_targets) {
+        const SIZE_T rtv_stride =
+            context.Device()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+        for (u32 slot = 0; slot < num_rts; ++slot) {
+            const auto replacement =
+                color_views[slot] && color_resources[slot] != color_views[slot]->ImageHandle()
+                    ? color_resources[slot]
+                    : ResourcePtr{};
+            descriptors.CreateRtv({rtv_base.ptr + slot * rtv_stride}, color_views[slot],
+                                  replacement, render_area.layers);
         }
-        descriptors.CreateDsv(dsv_handle, *depth_view, flags, render_area.layers);
+        if (has_depth)
+            descriptors.CreateDsv(dsv_handle, *depth_view, dsv_flags, render_area.layers);
+        // Holding the resources keeps their addresses from being reused while cached.
+        bound_targets = std::move(targets);
     }
     // Remaining attachment/UAV and storage/geometry aliases cannot have legal
     // combined states. Reject only this draw, leaving the GPU thread alive.

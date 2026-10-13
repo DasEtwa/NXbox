@@ -132,6 +132,15 @@ public:
     DescriptorTable AllocateSamplers(u32 count);
     D3D12_CPU_DESCRIPTOR_HANDLE AllocateRtv(u32 count);
     D3D12_CPU_DESCRIPTOR_HANDLE AllocateDsv();
+    /// Fixed RTV/DSV slots for the draw path. OMSetRenderTargets reads RTV/DSV
+    /// descriptors when it is recorded, so these can be rewritten at any time and
+    /// only need rewriting when the bound attachments change.
+    D3D12_CPU_DESCRIPTOR_HANDLE BoundRtvs() const {
+        return bound_rtvs.heap->GetCPUDescriptorHandleForHeapStart();
+    }
+    D3D12_CPU_DESCRIPTOR_HANDLE BoundDsv() const {
+        return bound_dsv.heap->GetCPUDescriptorHandleForHeapStart();
+    }
 
     // Writers. Null variants keep unbound/unsupported slots valid.
     void WriteNullCbv(const DescriptorTable& table, u32 slot);
@@ -217,6 +226,7 @@ public:
     u64 cache_tick{};
     bool new_frame{true};
     DescriptorCache view_cache, sampler_cache;
+    DescriptorCache bound_rtvs, bound_dsv;
     std::unordered_map<SIZE_T, DescriptorKey> slot_contents;
     std::array<RecordingTableCache<DescriptorTable>, 2> table_cache;
     Context& context;
