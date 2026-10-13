@@ -670,6 +670,11 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         const FrameProfile::Scope profile_cache{context.Profile(), FramePhase::TextureCache};
         texture_cache.FillImageViews(std::span(view_scratch.data(), view_scratch.size()), false,
                                      has_images);
+        // Mark the render targets modified again, after the sampled textures synchronized their
+        // aliases. Vulkan prepares textures first; here the targets were marked earlier, so a
+        // texture aliasing a target (SM3DW's bloom mip chain) copied the target's pre-draw
+        // contents and took its modification tick, and never picked up what this draw writes.
+        texture_cache.UpdateRenderTargets(false);
     }
 
     // Texel/image buffers are bound through the buffer cache from the resolved views.
