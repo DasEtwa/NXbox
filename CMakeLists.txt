@@ -394,6 +394,24 @@ find_package(Threads REQUIRED)
 find_package(RenderDoc MODULE)
 
 # openssl funniness
+set(NXBOX_OPENSSL_CACHE_HIT OFF)
+if (CMAKE_SYSTEM_NAME STREQUAL "WindowsStore" AND NOT "$ENV{NXBOX_OPENSSL_CACHE}" STREQUAL "")
+    file(TO_CMAKE_PATH "$ENV{NXBOX_OPENSSL_CACHE}" NXBOX_OPENSSL_CACHE)
+    if (EXISTS "${NXBOX_OPENSSL_CACHE}/include/openssl/ssl.h"
+        AND EXISTS "${NXBOX_OPENSSL_CACHE}/lib/libcrypto.lib"
+        AND EXISTS "${NXBOX_OPENSSL_CACHE}/lib/libssl.lib")
+        set(OPENSSL_ROOT_DIR "${NXBOX_OPENSSL_CACHE}")
+        set(OPENSSL_INCLUDE_DIR "${OPENSSL_ROOT_DIR}/include")
+        set(OPENSSL_CRYPTO_LIBRARY "${OPENSSL_ROOT_DIR}/lib/libcrypto.lib")
+        set(OPENSSL_SSL_LIBRARY "${OPENSSL_ROOT_DIR}/lib/libssl.lib")
+        set(OPENSSL_USE_STATIC_LIBS ON)
+        set(OPENSSL_MSVC_STATIC_RT OFF)
+        set(OpenSSL_FORCE_SYSTEM ON)
+        set(NXBOX_OPENSSL_CACHE_HIT ON)
+        message(STATUS "Using cached UWP OpenSSL: ${OPENSSL_ROOT_DIR}")
+    endif()
+endif()
+
 if (YUZU_USE_BUNDLED_OPENSSL)
     set(BUILD_SHARED_LIBS OFF)
     AddJsonPackage(openssl-ci)
@@ -404,10 +422,19 @@ else()
 
     if (OpenSSL_ADDED)
         AddJsonPackage(openssl-cmake)
+        if (DEFINED NXBOX_OPENSSL_CACHE)
+            # Stage the existing build without changing its Configure or nmake commands.
+            # Merge source headers with generated headers; no build tree is cached.
+            install(DIRECTORY "${OpenSSL_SOURCE_DIR}/include/" "${OpenSSL_BINARY_DIR}/include/"
+                DESTINATION include COMPONENT nxbox-openssl
+                FILES_MATCHING PATTERN "*.h")
+            install(FILES "${OPENSSL_CRYPTO_LIBRARY}" "${OPENSSL_SSL_LIBRARY}"
+                DESTINATION lib COMPONENT nxbox-openssl)
+        endif()
     endif()
 endif()
 
-if (OpenSSL_ADDED)
+if (OpenSSL_ADDED OR NXBOX_OPENSSL_CACHE_HIT)
     add_compile_definitions(YUZU_BUNDLED_OPENSSL)
 endif()
 
