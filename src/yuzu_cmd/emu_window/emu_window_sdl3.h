@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <functional>
 #include <tuple>
 #include <utility>
 
@@ -35,6 +36,16 @@ public:
     /// Returns if window is shown (not minimized)
     bool IsShown() const override;
 
+    void SetFrameDisplayedCallback(std::function<void()> callback) {
+        frame_displayed_callback = std::move(callback);
+    }
+
+    void OnFrameDisplayed() override {
+        if (IsShown() && frame_displayed_callback) {
+            frame_displayed_callback();
+        }
+    }
+
     /// Wait for the next event on the main thread.
     void OnEvent(SDL_Event& event);
 
@@ -42,6 +53,8 @@ public:
     void SetWindowIcon();
 
 protected:
+    std::function<void()> frame_displayed_callback;
+
     /// Called by WaitEvent when a key is pressed or released.
     void OnKeyEvent(int key, u8 state);
 

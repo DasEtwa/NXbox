@@ -5,14 +5,15 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cstring>
 #include <stdexcept>
 #include <dxgi1_4.h>
 #include <windows.h>
 #include "common/logging.h"
-#include "eden_uwp/renderer_boundary.h"
-#include "eden_uwp/thread_profile.h"
 #include "core/frontend/emu_window.h"
 #include "core/frontend/graphics_context.h"
+#include "eden_uwp/renderer_boundary.h"
+#include "eden_uwp/thread_profile.h"
 #include "video_core/capture.h"
 #include "video_core/renderer_d3d12/d3d12_shader.h"
 
@@ -56,6 +57,7 @@ struct RendererD3D12::Impl {
     ComPtr<ID3D12DescriptorHeap> srv_heap;
     ComPtr<ID3D12RootSignature> root;
     std::array<ComPtr<ID3D12PipelineState>, 3> pipelines;
+    std::array<ComPtr<ID3D12PipelineState>, 3> screenshot_pipelines;
     std::array<ResourcePtr, BufferCount> buffers;
     std::array<u64, BufferCount> present_ticks{};
     u64 present_sequence{};
@@ -142,7 +144,6 @@ struct RendererD3D12::Impl {
                                                D3D12_STENCIL_OP_KEEP, D3D12_COMPARISON_FUNC_ALWAYS};
         desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
         desc.NumRenderTargets = 1;
-        desc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
         desc.SampleDesc.Count = 1;
         auto& blend = desc.BlendState.RenderTarget[0];
         blend.SrcBlend = blend.SrcBlendAlpha = D3D12_BLEND_ONE;
@@ -150,13 +151,18 @@ struct RendererD3D12::Impl {
         blend.BlendOp = blend.BlendOpAlpha = D3D12_BLEND_OP_ADD;
         blend.LogicOp = D3D12_LOGIC_OP_NOOP;
         blend.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-        for (UINT i = 0; i < pipelines.size(); ++i) {
-            blend.BlendEnable = i != 0;
-            blend.SrcBlend = i == 2 ? D3D12_BLEND_SRC_ALPHA : D3D12_BLEND_ONE;
-            CheckPipeline(
-                context.Device()->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&pipelines[i])),
-                "Create present PSO", context.Device(),
-                Pso::HashBytes(desc.PS.pShaderBytecode, desc.PS.BytecodeLength));
+        for (UINT format_index = 0; format_index < 2; ++format_index) {
+            desc.RTVFormats[0] =
+                format_index == 0 ? DXGI_FORMAT_R8G8B8A8_UNORM : DXGI_FORMAT_B8G8R8A8_UNORM;
+            auto& target_pipelines = format_index == 0 ? pipelines : screenshot_pipelines;
+            for (UINT i = 0; i < target_pipelines.size(); ++i) {
+                blend.BlendEnable = i != 0;
+                blend.SrcBlend = i == 2 ? D3D12_BLEND_SRC_ALPHA : D3D12_BLEND_ONE;
+                CheckPipeline(context.Device()->CreateGraphicsPipelineState(
+                                  &desc, IID_PPV_ARGS(&target_pipelines[i])),
+                              "Create present PSO", context.Device(),
+                              Pso::HashBytes(desc.PS.pShaderBytecode, desc.PS.BytecodeLength));
+            }
         }
     }
     void Initialize(Core::Frontend::EmuWindow& window) {
@@ -201,12 +207,12 @@ struct RendererD3D12::Impl {
         Check(chain.As(&swapchain), "Query IDXGISwapChain3", context.Device());
         D3D12_DESCRIPTOR_HEAP_DESC heap{};
         heap.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-        heap.NumDescriptors = BufferCount;
+        heap.NumDescriptors = BufferCount + 1;
         Check(context.Device()->CreateDescriptorHeap(&heap, IID_PPV_ARGS(&rtv_heap)),
               "Create RTV heap", context.Device());
         rtv_stride = context.Device()->GetDescriptorHandleIncrementSize(heap.Type);
         heap.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-        heap.NumDescriptors = MaxLayers * BufferCount;
+        heap.NumDescriptors = MaxLayers * (BufferCount + 1);
         heap.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
         Check(context.Device()->CreateDescriptorHeap(&heap, IID_PPV_ARGS(&srv_heap)),
               "Create SRV heap", context.Device());
@@ -219,24 +225,10 @@ struct RendererD3D12::Impl {
         LOG_INFO(Render, "D3D12 initialized: native caches/framebuffer presentation; guest "
                          "pipeline path=Maxwell/HLSL/DXIL");
     }
-    void Present(const Layout::FramebufferLayout& layout,
-                 std::span<const Tegra::FramebufferConfig> layers, RasterizerD3D12& rasterizer) {
-        // Each swapchain buffer owns a descriptor slice; wait only when reusing it.
-        context.Collect();
-        const auto new_width = std::max(1u, layout.width);
-        const auto new_height = std::max(1u, layout.height);
-        if (width != new_width || height != new_height) {
-            context.Finish(FrameCount::ForcedSubmitLifecycle);
-            present_ticks.fill(0);
-            for (auto& buffer : buffers)
-                buffer.reset();
-            Check(swapchain->ResizeBuffers(BufferCount, new_width, new_height,
-                                           DXGI_FORMAT_R8G8B8A8_UNORM, 0),
-                  "ResizeBuffers", context.Device());
-            width = new_width;
-            height = new_height;
-            AcquireBuffers();
-        }
+    void Draw(const Layout::FramebufferLayout& layout,
+              std::span<const Tegra::FramebufferConfig> layers, RasterizerD3D12& rasterizer,
+              const ResourcePtr& render_target, D3D12_CPU_DESCRIPTOR_HANDLE target, UINT index,
+              const std::array<ComPtr<ID3D12PipelineState>, 3>& target_pipelines) {
         if (layers.size() > MaxLayers)
             throw std::runtime_error("D3D12 presentation layer limit exceeded");
         // Cache uploads/downloads may submit work. Resolve every source before binding
@@ -245,16 +237,16 @@ struct RendererD3D12::Impl {
         textures.reserve(layers.size());
         for (const auto& layer : layers)
             textures.push_back(rasterizer.FramebufferTexture(layer));
-        const UINT index = swapchain->GetCurrentBackBufferIndex();
-        context.WaitSubmitted(present_ticks[index]);
+        if (index < BufferCount)
+            context.WaitSubmitted(present_ticks[index]);
         context.MarkWork(layers.empty() ? "init present clear" : "frame present clear/compositor");
         auto* commands = context.Commands();
-        context.Transition(buffers[index], D3D12_RESOURCE_STATE_RENDER_TARGET);
-        const auto target = Rtv(index);
+        context.Transition(render_target, D3D12_RESOURCE_STATE_RENDER_TARGET);
         commands->OMSetRenderTargets(1, &target, FALSE, nullptr);
         constexpr float TestColor[]{0.08f, 0.25f, 0.5f, 1.0f};
         constexpr float Black[]{0, 0, 0, 1};
-        commands->ClearRenderTargetView(target, layers.empty() ? TestColor : Black, 0, nullptr);
+        commands->ClearRenderTargetView(
+            target, layers.empty() && index < BufferCount ? TestColor : Black, 0, nullptr);
         commands->SetGraphicsRootSignature(root.Get());
         ID3D12DescriptorHeap* heaps[]{srv_heap.Get()};
         commands->SetDescriptorHeaps(1, heaps);
@@ -300,14 +292,76 @@ struct RendererD3D12::Impl {
                                               static_cast<u32>(layer.transform_flags),
                                               layer.blending == Tegra::BlendMode::Opaque ? 1u : 0u};
             commands->SetPipelineState(
-                pipelines[layer.blending == Tegra::BlendMode::Opaque          ? 0
-                          : layer.blending == Tegra::BlendMode::Premultiplied ? 1
-                                                                              : 2]
+                target_pipelines[layer.blending == Tegra::BlendMode::Opaque          ? 0
+                                 : layer.blending == Tegra::BlendMode::Premultiplied ? 1
+                                                                                     : 2]
                     .Get());
             commands->SetGraphicsRootDescriptorTable(0, gpu_handle);
             commands->SetGraphicsRoot32BitConstants(1, 8, &constants, 0);
             commands->DrawInstanced(3, 1, 0, 0);
         }
+    }
+    void Capture(const Layout::FramebufferLayout& layout,
+                 std::span<const Tegra::FramebufferConfig> layers, RasterizerD3D12& rasterizer,
+                 void* bits) {
+        D3D12_RESOURCE_DESC desc{};
+        desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        desc.Width = layout.width;
+        desc.Height = layout.height;
+        desc.DepthOrArraySize = 1;
+        desc.MipLevels = 1;
+        desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        desc.SampleDesc.Count = 1;
+        desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+        const auto target = context.CreateResource(desc, D3D12_HEAP_TYPE_DEFAULT,
+                                                   D3D12_RESOURCE_STATE_RENDER_TARGET);
+        D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
+        UINT64 total_bytes{};
+        context.Device()->GetCopyableFootprints(&desc, 0, 1, 0, &footprint, nullptr, nullptr,
+                                                &total_bytes);
+        const auto readback = context.CreateBuffer(total_bytes, D3D12_HEAP_TYPE_READBACK);
+        context.Device()->CreateRenderTargetView(target->handle.Get(), nullptr, Rtv(BufferCount));
+        Draw(layout, layers, rasterizer, target, Rtv(BufferCount), BufferCount,
+             screenshot_pipelines);
+        context.Transition(target, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        D3D12_TEXTURE_COPY_LOCATION source{};
+        source.pResource = target->handle.Get();
+        source.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        D3D12_TEXTURE_COPY_LOCATION destination{};
+        destination.pResource = readback->handle.Get();
+        destination.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+        destination.PlacedFootprint = footprint;
+        context.Retain(readback);
+        context.Commands()->CopyTextureRegion(&destination, 0, 0, 0, &source, nullptr);
+        context.Finish(FrameCount::ForcedSubmitPresent);
+        const size_t row_bytes = static_cast<size_t>(layout.width) * 4;
+        for (u32 row = 0; row < layout.height; ++row) {
+            std::memcpy(static_cast<u8*>(bits) + row * row_bytes,
+                        readback->mapped.data() + footprint.Offset +
+                            static_cast<size_t>(row) * footprint.Footprint.RowPitch,
+                        row_bytes);
+        }
+    }
+    void Present(const Layout::FramebufferLayout& layout,
+                 std::span<const Tegra::FramebufferConfig> layers, RasterizerD3D12& rasterizer) {
+        // Each swapchain buffer owns a descriptor slice; wait only when reusing it.
+        context.Collect();
+        const auto new_width = std::max(1u, layout.width);
+        const auto new_height = std::max(1u, layout.height);
+        if (width != new_width || height != new_height) {
+            context.Finish(FrameCount::ForcedSubmitLifecycle);
+            present_ticks.fill(0);
+            for (auto& buffer : buffers)
+                buffer.reset();
+            Check(swapchain->ResizeBuffers(BufferCount, new_width, new_height,
+                                           DXGI_FORMAT_R8G8B8A8_UNORM, 0),
+                  "ResizeBuffers", context.Device());
+            width = new_width;
+            height = new_height;
+            AcquireBuffers();
+        }
+        const UINT index = swapchain->GetCurrentBackBufferIndex();
+        Draw(layout, layers, rasterizer, buffers[index], Rtv(index), index, pipelines);
         context.Transition(buffers[index], D3D12_RESOURCE_STATE_PRESENT);
         present_ticks[index] = context.Submit(FrameCount::ForcedSubmitPresent);
         const bool log_present = ++present_sequence <= 8 || present_sequence % 120 == 0;
@@ -362,11 +416,13 @@ void RendererD3D12::Composite(std::span<const Tegra::FramebufferConfig> layers) 
     impl->context.Profile().EndFrame();
     try {
         if (IsScreenshotPending()) {
+            std::vector<Tegra::FramebufferConfig> screenshot_layers;
+            const auto selected = Tegra::FilterLayerStack(
+                layers, renderer_settings.screenshot_layer_stack, screenshot_layers);
+            rasterizer.PreparePresentation();
+            impl->Capture(renderer_settings.screenshot_framebuffer_layout, selected, rasterizer,
+                          renderer_settings.screenshot_bits);
             renderer_settings.screenshot_requested = false;
-            const auto& size = renderer_settings.screenshot_framebuffer_layout;
-            std::fill_n(static_cast<u8*>(renderer_settings.screenshot_bits),
-                        static_cast<size_t>(size.width) * size.height * 4, u8{});
-            LOG_WARNING(Render, "D3D12 screenshot capture is stubbed");
             renderer_settings.screenshot_complete_callback(false);
         }
         if (!impl->failed && render_window.IsShown()) {

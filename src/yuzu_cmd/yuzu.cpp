@@ -4,6 +4,7 @@
 // SPDX-FileCopyrightText: 2014 Citra Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cstdlib>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -40,6 +41,7 @@
 #include "video_core/rasterizer_interface.h"
 #include "video_core/renderer_base.h"
 #include "yuzu_cmd/emu_window/emu_window_sdl3.h"
+#include "yuzu_cmd/frame_capture.h"
 #ifdef HAS_D3D12
 #include "yuzu_cmd/desktop_thread_profile.h"
 #include "yuzu_cmd/emu_window/emu_window_sdl3_d3d12.h"
@@ -168,6 +170,7 @@ struct SdlState {
     Core::System system{};
     InputCommon::InputSubsystem input_subsystem;
     std::unique_ptr<EmuWindow_SDL3> emu_window;
+    std::shared_ptr<FrameCapture> frame_capture;
 };
 
 extern "C" SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
@@ -335,6 +338,17 @@ extern "C" SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
         state->system.Run();
     });
 
+    // Read NXBOX_CAPTURE_FRAMES before the first guest frame can be presented.
+    try {
+        state->frame_capture = std::make_shared<FrameCapture>(std::getenv("NXBOX_CAPTURE_FRAMES"));
+        state->emu_window->SetFrameDisplayedCallback(
+            [state] { state->frame_capture->OnFrameDisplayed(state->system.Renderer()); });
+        state->frame_capture->RequestFrame(state->system.Renderer(), 1);
+    } catch (const std::exception& error) {
+        LOG_ERROR(Frontend, "Failed to configure frame capture: {}", error.what());
+        return SDL_APP_FAILURE;
+    }
+
     void(state->system.Run());
     if (state->system.DebuggerEnabled())
         state->system.InitializeDebugger();
@@ -342,7 +356,8 @@ extern "C" SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
 }
 extern "C" SDL_AppResult SDL_AppIterate(void *appstate) {
     SdlState *state = (SdlState *)appstate;
-    return state->emu_window->IsOpen() ? SDL_APP_CONTINUE : SDL_APP_SUCCESS;
+    return state->emu_window->IsOpen() && !state->frame_capture->ShouldExit() ? SDL_APP_CONTINUE
+                                                                              : SDL_APP_SUCCESS;
 }
 extern "C" SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
     SdlState *state = (SdlState *)appstate;
