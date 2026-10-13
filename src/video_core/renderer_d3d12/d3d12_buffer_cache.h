@@ -115,6 +115,9 @@ public:
     void BindTransformFeedbackBuffers(VideoCommon::HostBindings<Buffer>&) {}
     std::span<u8> BindMappedUniformBuffer(size_t stage, u32, u32 size);
     void BindUniformBuffer(const Buffer& buffer, u32 offset, u32 size);
+    /// Snapshot of a uniform range in its own buffer, for when the source must be a UAV in the
+    /// same draw (D3D12 cannot hold one buffer in CONSTANT_BUFFER and UNORDERED_ACCESS at once).
+    BoundBuffer CopyUniform(const BoundBuffer& uniform);
     void BindStorageBuffer(const Buffer& buffer, u32 offset, u32 size, bool is_written);
     void BindTextureBuffer(Buffer& buffer, u32 offset, u32 size,
                            VideoCore::Surface::PixelFormat format);

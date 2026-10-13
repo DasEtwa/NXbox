@@ -251,6 +251,14 @@ constexpr D3D12_RESOURCE_STATES SrvState =
 constexpr D3D12_RESOURCE_STATES BufferReadState =
     D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER | D3D12_RESOURCE_STATE_INDEX_BUFFER |
     D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+bool IsStorageBuffer(const BindingState& bindings, const ResourcePtr& resource) {
+    for (const auto& stage : bindings.stages)
+        for (const auto& storage : stage.storage)
+            if (storage.resource == resource)
+                return true;
+    return false;
+}
+
 } // namespace
 
 void RasterizerD3D12::SkipDraw(const char* reason) {
@@ -1014,7 +1022,11 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         for (const auto& desc : info->constant_buffer_descriptors) {
             for (u32 i = 0; i < desc.count; ++i, ++cbv_i) {
                 if (uniform_it < bound.uniform.size()) {
-                    const auto& buffer = bound.uniform[uniform_it++];
+                    auto buffer = bound.uniform[uniform_it++];
+                    // Maxwell lets a constant buffer share memory with a storage buffer; the
+                    // storage binding needs UNORDERED_ACCESS, so read the constants from a copy.
+                    if (buffer.resource && IsStorageBuffer(bindings, buffer.resource))
+                        buffer = buffer_runtime.CopyUniform(buffer);
                     descriptors.WriteCbv(cbv_table, cbv_i, buffer);
                     need(buffer.resource, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
                 } else {
@@ -1901,8 +1913,11 @@ void RasterizerD3D12::DispatchCompute() try {
     const auto& bound = bindings.stages[0];
     for (u32 i = 0; i < cbv_size; ++i) {
         if (i < bound.uniform.size()) {
-            descriptors.WriteCbv(cbv, i, bound.uniform[i]);
-            use(bound.uniform[i].resource, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
+            auto buffer = bound.uniform[i];
+            if (buffer.resource && IsStorageBuffer(bindings, buffer.resource))
+                buffer = buffer_runtime.CopyUniform(buffer);
+            descriptors.WriteCbv(cbv, i, buffer);
+            use(buffer.resource, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
         } else
             descriptors.WriteNullCbv(cbv, i);
     }

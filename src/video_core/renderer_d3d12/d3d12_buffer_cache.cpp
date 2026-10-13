@@ -241,28 +241,34 @@ void BufferCacheRuntime::BindUniformBuffer(const Buffer& buffer, u32 offset, u32
     // A copied CBV owns its padding; rounding a direct view must never expose unrelated bytes.
     const auto padded = UniformViewSize(size);
     if ((offset & 255) || size != padded || padded > width - offset) {
-        // A version changes on every write-state use, including same-state UAV/copy writes.
-        if (auto copy = uniform_copies.Find(resource, resource->content_version, offset, size)) {
-            context.Profile().Count(FrameCount::UniformCopyCacheHits);
-            bindings.stages[bindings.current_stage].uniform.push_back({std::move(copy), 0, padded});
-            return;
-        }
-        const FrameProfile::Scope profile_upload{context.Profile(), FramePhase::BufferUpload};
-        context.Profile().Count(FrameCount::BufferUploadBytes, padded);
-        context.Profile().Count(FrameCount::UniformUploadBytes, padded);
-        auto staging = upload.Request(padded);
-        std::fill(staging.mapped_span.begin(), staging.mapped_span.end(), u8{0});
-        auto target = context.CreateBuffer(padded, D3D12_HEAP_TYPE_DEFAULT);
-        const VideoCommon::BufferCopy zero{staging.offset, 0, padded};
-        CopyBuffer(target, staging.buffer, std::span{&zero, 1}, true);
-        const VideoCommon::BufferCopy data{offset, 0, size};
-        CopyBuffer(target, resource, std::span{&data, 1}, false);
-        // Bounded cache; command-list resource leases keep evicted copies alive for the GPU.
-        uniform_copies.Insert(resource, resource->content_version, offset, size, target);
-        bindings.stages[bindings.current_stage].uniform.push_back({std::move(target), 0, padded});
+        bindings.stages[bindings.current_stage].uniform.push_back(
+            CopyUniform({std::move(resource), offset, size}));
         return;
     }
     bindings.stages[bindings.current_stage].uniform.push_back({std::move(resource), offset, size});
+}
+BoundBuffer BufferCacheRuntime::CopyUniform(const BoundBuffer& uniform) {
+    const auto& resource = uniform.resource;
+    const u32 offset = uniform.offset, size = uniform.size;
+    const auto padded = UniformViewSize(size);
+    // A version changes on every write-state use, including same-state UAV/copy writes.
+    if (auto copy = uniform_copies.Find(resource, resource->content_version, offset, size)) {
+        context.Profile().Count(FrameCount::UniformCopyCacheHits);
+        return {std::move(copy), 0, padded};
+    }
+    const FrameProfile::Scope profile_upload{context.Profile(), FramePhase::BufferUpload};
+    context.Profile().Count(FrameCount::BufferUploadBytes, padded);
+    context.Profile().Count(FrameCount::UniformUploadBytes, padded);
+    auto staging = upload.Request(padded);
+    std::fill(staging.mapped_span.begin(), staging.mapped_span.end(), u8{0});
+    auto target = context.CreateBuffer(padded, D3D12_HEAP_TYPE_DEFAULT);
+    const VideoCommon::BufferCopy zero{staging.offset, 0, padded};
+    CopyBuffer(target, staging.buffer, std::span{&zero, 1}, true);
+    const VideoCommon::BufferCopy data{offset, 0, size};
+    CopyBuffer(target, resource, std::span{&data, 1}, false);
+    // Bounded cache; command-list resource leases keep evicted copies alive for the GPU.
+    uniform_copies.Insert(resource, resource->content_version, offset, size, target);
+    return {std::move(target), 0, padded};
 }
 void BufferCacheRuntime::BindStorageBuffer(const Buffer& buffer, u32 offset, u32 size,
                                            bool is_written) {
