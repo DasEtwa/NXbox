@@ -43,7 +43,7 @@ public:
     explicit A32Unicorn(TestEnvironment& testenv);
     ~A32Unicorn();
 
-    void Run();
+    void Run(u32 end_address = 0);
 
     u8 ReadMemoryByte(u32 address) const;
 

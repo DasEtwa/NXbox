@@ -98,14 +98,19 @@ void A32Unicorn<TestEnvironment>::CodeHook(uc_engine* uc, u64 address, u32, void
 }
 
 template<class TestEnvironment>
-void A32Unicorn<TestEnvironment>::Run() {
+void A32Unicorn<TestEnvironment>::Run(u32 end_address) {
     constexpr u64 pc_mask = std::is_same_v<TestEnvironment, ArmTestEnv> ? 0 : 1;
     UnmappedMemoryHook(uc, UC_MEM_READ_UNMAPPED, 0xfffff000, 1, 0, this);
     have_previous_instruction = false;
     // Restarting emulation inside an IT block can lose state at a VFP barrier.
     // Observe instruction boundaries while retaining one continuous execution.
     const u32 pc = GetPC() | pc_mask;
-    if (auto error = uc_emu_start(uc, pc, END_ADDRESS, 0, 0)) {
+    if (end_address == 0) {
+        end_address = static_cast<u32>(testenv.code_mem.size() * sizeof(typename TestEnvironment::InstructionType));
+    }
+    // A stop requested from a Thumb IT hook can be delayed until the IT group
+    // completes. The architectural program boundary must also stop translation.
+    if (auto error = uc_emu_start(uc, pc, end_address, 0, 0)) {
         fmt::print("uc_emu_start failed @ {:08x} with error {} ({})\n", GetPC(),
                    static_cast<size_t>(error), uc_strerror(error));
         throw "A32Unicorn::Run() failure";

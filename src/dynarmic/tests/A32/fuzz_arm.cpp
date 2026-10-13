@@ -354,7 +354,7 @@ static void RunTestInstance(Dynarmic::A32::Jit& jit,
     CheckedRun([&]() { jit.Run(); });
 
     uni_env.ticks_left = ticks_left;  // Unicorn 2 counts instructions, not Thumb halfwords.
-    uni.Run();
+    uni.Run(expected_end_pc);
 
     // SCOPE_FAIL {
     //     fmt::print("Instruction Listing:\n");
