@@ -18,6 +18,10 @@ namespace D3D12 {
 using VideoCommon::QueryType;
 namespace {
 constexpr u32 BankSize = 256;
+// Full banks rotate instead of waiting: a bank is consumed only when it comes around again,
+// several submits later, or when the guest reads a counter.
+constexpr u32 BankCount = 8;
+constexpr u32 SlotCount = BankSize * BankCount;
 constexpr u64 PipelineOffset = sizeof(u64);
 constexpr u64 SOOffset = PipelineOffset + sizeof(D3D12_QUERY_DATA_PIPELINE_STATISTICS);
 constexpr u64 ResultStride = SOOffset + 4 * sizeof(D3D12_QUERY_DATA_SO_STATISTICS);
@@ -106,11 +110,11 @@ struct QueryCacheRuntimeImpl {
         : context{context}, memory{memory}, cache{cache}, feedback{feedback},
           upload{context, D3D12_HEAP_TYPE_UPLOAD}, readback{context, D3D12_HEAP_TYPE_READBACK},
           guest{0, runtime},
-          occlusion{CreateHeap(context, D3D12_QUERY_HEAP_TYPE_OCCLUSION, BankSize)},
-          pipeline{CreateHeap(context, D3D12_QUERY_HEAP_TYPE_PIPELINE_STATISTICS, BankSize)},
-          results{context.CreateBuffer(ResultStride * BankSize, D3D12_HEAP_TYPE_READBACK)} {
+          occlusion{CreateHeap(context, D3D12_QUERY_HEAP_TYPE_OCCLUSION, SlotCount)},
+          pipeline{CreateHeap(context, D3D12_QUERY_HEAP_TYPE_PIPELINE_STATISTICS, SlotCount)},
+          results{context.CreateBuffer(ResultStride * SlotCount, D3D12_HEAP_TYPE_READBACK)} {
         for (auto& heap : so) {
-            heap = CreateHeap(context, D3D12_QUERY_HEAP_TYPE_SO_STATISTICS, BankSize);
+            heap = CreateHeap(context, D3D12_QUERY_HEAP_TYPE_SO_STATISTICS, SlotCount);
         }
         for (const auto type :
              {QueryType::ZPassPixelCount, QueryType::ZPassPixelCount64,
@@ -133,11 +137,39 @@ struct QueryCacheRuntimeImpl {
     }
     void Collect() {
         RequireClosed();
-        if (!count) {
+        bool any = count != 0;
+        for (const u32 used : bank_count)
+            any |= used != 0;
+        if (!any) {
             return;
         }
         context.Finish(FrameCount::ForcedSubmitQueryBank);
-        for (u32 slot = 0; slot < count; ++slot) {
+        for (u32 index = 0; index < BankCount; ++index) {
+            if (index != bank && bank_count[index]) {
+                Consume(index, bank_count[index]);
+                bank_count[index] = 0;
+            }
+        }
+        Consume(bank, count);
+        count = 0; // Recycle only after completion and CPU consumption of every slot.
+    }
+    // A full bank is left for the GPU; the next one is reused once its own work has completed.
+    void Rotate() {
+        bank_count[bank] = count;
+        bank_tick[bank] = context.CurrentTick();
+        bank = (bank + 1) % BankCount;
+        count = 0;
+        if (bank_count[bank]) {
+            context.Wait(bank_tick[bank]);
+            Consume(bank, bank_count[bank]);
+            bank_count[bank] = 0;
+        }
+    }
+    u32 Slot() const {
+        return bank * BankSize + count;
+    }
+    void Consume(u32 index, u32 used) {
+        for (u32 slot = index * BankSize; slot < index * BankSize + used; ++slot) {
             const auto* base = results->mapped.data() + slot * ResultStride;
             const auto add = [&](QueryType type, u64 value) {
                 totals[static_cast<size_t>(type)][0] += value;
@@ -189,7 +221,6 @@ struct QueryCacheRuntimeImpl {
                       [0] += overflow;
             }
         }
-        count = 0; // Recycle only after completion and CPU consumption of every slot.
     }
     u64 ReadGuest(VideoCommon::LookupData object) {
         if (!object.address) {
@@ -229,7 +260,10 @@ struct QueryCacheRuntimeImpl {
         bool occlusion{}, geometry{}, pipeline{}, recorded{};
         u32 streams{};
     };
-    std::array<Draw, BankSize> draws{};
+    std::array<Draw, SlotCount> draws{};
+    std::array<u32, BankCount> bank_count{};
+    std::array<u64, BankCount> bank_tick{};
+    u32 bank{};
     std::array<std::array<u64, 4>, TypeCount> totals{}, baselines{};
     std::array<bool, TypeCount> enabled{};
     std::atomic<u64> pending_reports{}, completed_reports{}, invalidated_reports{}, report_copies{};
@@ -278,7 +312,7 @@ void QueryCacheRuntime::PrepareDraw() {
         return;
     impl->RequireClosed();
     if (impl->count == BankSize) {
-        impl->Collect();
+        impl->Rotate();
     }
 }
 void QueryCacheRuntime::BeginDraw(bool geometry) {
@@ -289,7 +323,8 @@ void QueryCacheRuntime::BeginDraw(bool geometry) {
         throw std::logic_error("PrepareDraw must precede draw state binding");
     }
     ResumeHostConditionalRendering();
-    auto& draw = impl->draws[impl->count];
+    const u32 slot = impl->Slot();
+    auto& draw = impl->draws[slot];
     draw = {impl->enabled[static_cast<size_t>(QueryType::ZPassPixelCount)] ||
                 impl->enabled[static_cast<size_t>(QueryType::ZPassPixelCount64)],
             geometry, impl->pipeline_wanted, false, impl->feedback.StreamMask()};
@@ -300,14 +335,13 @@ void QueryCacheRuntime::BeginDraw(bool geometry) {
     auto* commands = impl->context.Commands();
     impl->context.MarkWork("queries");
     if (draw.pipeline)
-        commands->BeginQuery(impl->pipeline.Get(), D3D12_QUERY_TYPE_PIPELINE_STATISTICS,
-                             impl->count);
+        commands->BeginQuery(impl->pipeline.Get(), D3D12_QUERY_TYPE_PIPELINE_STATISTICS, slot);
     if (draw.occlusion) {
-        commands->BeginQuery(impl->occlusion.Get(), D3D12_QUERY_TYPE_OCCLUSION, impl->count);
+        commands->BeginQuery(impl->occlusion.Get(), D3D12_QUERY_TYPE_OCCLUSION, slot);
     }
     for (u32 stream = 0; stream < 4; ++stream) {
         if (draw.streams & (1U << stream)) {
-            commands->BeginQuery(impl->so[stream].Get(), SOType(stream), impl->count);
+            commands->BeginQuery(impl->so[stream].Get(), SOType(stream), slot);
         }
     }
 }
@@ -317,7 +351,8 @@ void QueryCacheRuntime::EndDraw() {
     if (!impl->drawing) {
         throw std::logic_error("D3D12 EndDraw without BeginDraw");
     }
-    const auto& draw = impl->draws[impl->count];
+    const u32 slot = impl->Slot();
+    const auto& draw = impl->draws[slot];
     if (!draw.recorded) {
         impl->drawing = false;
         return;
@@ -326,9 +361,9 @@ void QueryCacheRuntime::EndDraw() {
     context.Retain(impl->results);
     auto* commands = context.Commands();
     const auto end = [&](ID3D12QueryHeap* heap, D3D12_QUERY_TYPE type, u64 offset) {
-        commands->EndQuery(heap, type, impl->count);
-        commands->ResolveQueryData(heap, type, impl->count, 1, impl->results->handle.Get(),
-                                   impl->count * ResultStride + offset);
+        commands->EndQuery(heap, type, slot);
+        commands->ResolveQueryData(heap, type, slot, 1, impl->results->handle.Get(),
+                                   slot * ResultStride + offset);
     };
     if (draw.pipeline)
         end(impl->pipeline.Get(), D3D12_QUERY_TYPE_PIPELINE_STATISTICS, PipelineOffset);

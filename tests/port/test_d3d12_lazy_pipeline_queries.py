@@ -21,6 +21,14 @@ class LazyPipelineQueries(unittest.TestCase):
         read = re.search(r"u64 QueryCacheRuntime::ReadCounter\(.*?\{(.*?)\n\}", source, re.S).group(1)
         self.assertIn("impl->pipeline_wanted = true;", read)
 
+    def test_full_bank_rotates_without_finish(self):
+        source = (D3D12 / "d3d12_query_cache.cpp").read_text()
+        prepare = re.search(r"void QueryCacheRuntime::PrepareDraw\(\) \{(.*?)\n\}", source, re.S).group(1)
+        self.assertIn("impl->Rotate();", prepare)
+        self.assertNotIn("Collect", prepare)
+        rotate = re.search(r"void Rotate\(\) \{(.*?)\n    \}", source, re.S).group(1)
+        self.assertNotIn("Finish", rotate)
+
     def test_bisect_enabled_is_cached(self):
         source = (D3D12 / "d3d12_context.cpp").read_text()
         body = re.search(r"bool BisectEnabled\(const char\* name\) noexcept \{(.*?)\n\}", source, re.S).group(1)
