@@ -1062,7 +1062,11 @@ bool TextureCacheRuntime::ReinterpretOnGpu(Image& dst, Image& src,
                                            std::span<const VideoCommon::ImageCopy> copies) {
     const auto& from = src.HostFormat();
     const auto& to = dst.HostFormat();
-    if (&dst == &src || from.conversion != FormatConversion::None ||
+    // Block-compressed copies need 4x4-aligned boxes that small mips do not have; keep those on
+    // the CPU path, which handles partial blocks.
+    if (&dst == &src || BisectEnabled("NXBOX_D3D12_CPU_REINTERPRET") || from.block_width != 1 ||
+        from.block_height != 1 || to.block_width != 1 || to.block_height != 1 ||
+        from.conversion != FormatConversion::None ||
         to.conversion != FormatConversion::None || from.depth || to.depth || from.planes > 1 ||
         to.planes > 1 || from.bytes_per_block != to.bytes_per_block ||
         src.info.num_samples != 1 || dst.info.num_samples != 1)
