@@ -739,9 +739,10 @@ void TextureCache<P>::DumpPassRenderTargets() {
     std::string sampled;
     for (const ImageId id : pass_dump_sampled) {
         const auto& info = slot_images[id].info;
-        sampled += fmt::format("{}\"{:x} {}x{} {}\"", sampled.empty() ? "" : ",",
+        sampled += fmt::format("{}\"{:x} {}x{} {} aliases={}\"", sampled.empty() ? "" : ",",
                                slot_images[id].gpu_addr, info.size.width, info.size.height,
-                               PassDump::FormatName(info.format));
+                               PassDump::FormatName(info.format),
+                               slot_images[id].aliased_images.size());
     }
     pass_dump_sampled.clear();
     try {
@@ -2693,6 +2694,16 @@ void TextureCache<P>::SynchronizeAliases(ImageId image_id) {
         return lhs_image.modification_tick < rhs_image.modification_tick;
     });
     const auto& resolution = Settings::values.resolution_info;
+    if (PassDump::GetConfig().enabled && frame_tick + 1 == PassDump::GetConfig().frame) {
+        for (const AliasedImage* const aliased : aliased_images) {
+            const ImageBase& source = slot_images[aliased->id];
+            LOG_ERROR(Render, "Pass dump alias sync {:x} {}x{} <- {}x{} copies={} extent={}x{}",
+                      image.gpu_addr, image.info.size.width, image.info.size.height,
+                      source.info.size.width, source.info.size.height, aliased->copies.size(),
+                      aliased->copies.empty() ? 0 : aliased->copies[0].extent.width,
+                      aliased->copies.empty() ? 0 : aliased->copies[0].extent.height);
+        }
+    }
     for (const AliasedImage* const aliased : aliased_images) {
         if (!resolution.active || !any_rescaled) {
             CopyImage(image_id, aliased->id, aliased->copies);
