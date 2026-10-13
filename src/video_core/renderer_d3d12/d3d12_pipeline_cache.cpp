@@ -34,6 +34,17 @@
 
 namespace D3D12 {
 namespace {
+
+// NXBOX_D3D12_DUMP_HLSL=1 writes every translated graphics stage to the log directory.
+void DumpGraphicsHlsl(u64 guest_hash, Shader::Stage stage, const std::string& source) {
+    static const bool enabled = BisectEnabled("NXBOX_D3D12_DUMP_HLSL");
+    if (!enabled)
+        return;
+    std::ofstream{Common::FS::GetEdenPath(Common::FS::EdenPath::LogDir) /
+                      fmt::format("gfx_{:016x}_{}.hlsl", guest_hash, static_cast<int>(stage)),
+                  std::ios::binary}
+        << source;
+}
 using Maxwell = Tegra::Engines::Maxwell3D::Regs;
 
 void ReportUnsupported(std::string_view reason) {
@@ -699,6 +710,7 @@ std::shared_ptr<GraphicsPipeline> BuildAsyncGraphics(
         }
         sources[index] =
             Shader::Backend::HLSL::EmitHLSL(translation.profile, runtime, program, bindings);
+        DumpGraphicsHlsl(guest_hashes[index], program.stage, sources[index]);
         const auto counts = CountStageTables(program.info);
         stages.push_back({program.stage,
                           guest_hashes[index],
@@ -1064,6 +1076,7 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(
             }
             sources[index] =
                 Shader::Backend::HLSL::EmitHLSL(translation.profile, runtime, program, bindings);
+            DumpGraphicsHlsl(guest_hashes[index], program.stage, sources[index]);
             const auto counts = CountStageTables(program.info);
             stages.push_back({program.stage,
                               guest_hashes[index],
