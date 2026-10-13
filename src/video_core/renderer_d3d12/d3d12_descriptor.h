@@ -7,6 +7,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace D3D12 {
@@ -48,6 +49,10 @@ struct TSCEntry;
 }
 namespace D3D12 {
 class ImageView;
+/// Rewrites an SRV description to the shader's declared dimension when the resource allows it.
+std::optional<D3D12_SHADER_RESOURCE_VIEW_DESC> AdaptSrvDimension(
+    const D3D12_SHADER_RESOURCE_VIEW_DESC& desc, D3D12_SRV_DIMENSION wanted,
+    D3D12_RESOURCE_DIMENSION resource);
 class Sampler;
 class Framebuffer;
 
@@ -227,6 +232,7 @@ public:
     bool new_frame{true};
     DescriptorCache view_cache, sampler_cache;
     DescriptorCache bound_rtvs, bound_dsv;
+    std::unordered_set<int> logged_srv_mismatches;
     std::unordered_map<SIZE_T, DescriptorKey> slot_contents;
     std::array<RecordingTableCache<DescriptorTable>, 2> table_cache;
     Context& context;

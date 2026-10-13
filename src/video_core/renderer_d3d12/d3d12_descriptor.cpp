@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstring>
 #include <stdexcept>
+#include <fmt/format.h>
 #include "common/alignment.h"
 #include "video_core/renderer_d3d12/d3d12_texture_cache.h"
 #include "video_core/textures/texture.h"
@@ -27,6 +28,90 @@ DXGI_FORMAT DsvFormat(DXGI_FORMAT view_format) {
         return DXGI_FORMAT_D32_FLOAT_S8X24_UINT;
     default:
         return view_format;
+    }
+}
+
+namespace {
+
+struct SrvRange {
+    UINT mip, levels, first, size, plane;
+};
+
+std::optional<SrvRange> ReadSrvRange(const D3D12_SHADER_RESOURCE_VIEW_DESC& d) {
+    switch (d.ViewDimension) {
+    case D3D12_SRV_DIMENSION_TEXTURE1D:
+        return SrvRange{d.Texture1D.MostDetailedMip, d.Texture1D.MipLevels, 0, 1, 0};
+    case D3D12_SRV_DIMENSION_TEXTURE1DARRAY:
+        return SrvRange{d.Texture1DArray.MostDetailedMip, d.Texture1DArray.MipLevels,
+                        d.Texture1DArray.FirstArraySlice, d.Texture1DArray.ArraySize, 0};
+    case D3D12_SRV_DIMENSION_TEXTURE2D:
+        return SrvRange{d.Texture2D.MostDetailedMip, d.Texture2D.MipLevels, 0, 1,
+                        d.Texture2D.PlaneSlice};
+    case D3D12_SRV_DIMENSION_TEXTURE2DARRAY:
+        return SrvRange{d.Texture2DArray.MostDetailedMip, d.Texture2DArray.MipLevels,
+                        d.Texture2DArray.FirstArraySlice, d.Texture2DArray.ArraySize,
+                        d.Texture2DArray.PlaneSlice};
+    case D3D12_SRV_DIMENSION_TEXTURECUBE:
+        return SrvRange{d.TextureCube.MostDetailedMip, d.TextureCube.MipLevels, 0, 6, 0};
+    case D3D12_SRV_DIMENSION_TEXTURECUBEARRAY:
+        return SrvRange{d.TextureCubeArray.MostDetailedMip, d.TextureCubeArray.MipLevels,
+                        d.TextureCubeArray.First2DArrayFace, d.TextureCubeArray.NumCubes * 6, 0};
+    default:
+        return std::nullopt;
+    }
+}
+
+} // namespace
+
+// The shader's declared texture type, not the guest view type, decides the SRV
+// dimension: a mismatch is undefined in D3D12. vkd3d tolerates it, but the
+// Xbox driver samples zeros (SM3DW lost its ambient light that way).
+std::optional<D3D12_SHADER_RESOURCE_VIEW_DESC> AdaptSrvDimension(
+    const D3D12_SHADER_RESOURCE_VIEW_DESC& desc, D3D12_SRV_DIMENSION wanted,
+    D3D12_RESOURCE_DIMENSION resource) {
+    if (desc.ViewDimension == wanted)
+        return desc;
+    const auto range = ReadSrvRange(desc);
+    if (!range)
+        return std::nullopt;
+    const auto [mip, levels, first, size, plane] = *range;
+    const bool is_1d = resource == D3D12_RESOURCE_DIMENSION_TEXTURE1D;
+    const bool is_2d = resource == D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    auto out = desc;
+    out.ViewDimension = wanted;
+    switch (wanted) {
+    case D3D12_SRV_DIMENSION_TEXTURE1D:
+        if (!is_1d || first != 0)
+            return std::nullopt;
+        out.Texture1D = {mip, levels, 0.0f};
+        return out;
+    case D3D12_SRV_DIMENSION_TEXTURE1DARRAY:
+        if (!is_1d)
+            return std::nullopt;
+        out.Texture1DArray = {mip, levels, first, size, 0.0f};
+        return out;
+    case D3D12_SRV_DIMENSION_TEXTURE2D:
+        if (!is_2d || first != 0)
+            return std::nullopt;
+        out.Texture2D = {mip, levels, plane, 0.0f};
+        return out;
+    case D3D12_SRV_DIMENSION_TEXTURE2DARRAY:
+        if (!is_2d)
+            return std::nullopt;
+        out.Texture2DArray = {mip, levels, first, size, plane, 0.0f};
+        return out;
+    case D3D12_SRV_DIMENSION_TEXTURECUBE:
+        if (!is_2d || first != 0 || size < 6)
+            return std::nullopt;
+        out.TextureCube = {mip, levels, 0.0f};
+        return out;
+    case D3D12_SRV_DIMENSION_TEXTURECUBEARRAY:
+        if (!is_2d || size < 6)
+            return std::nullopt;
+        out.TextureCubeArray = {mip, levels, first, size / 6, 0.0f};
+        return out;
+    default:
+        return std::nullopt;
     }
 }
 
@@ -451,7 +536,18 @@ bool D3D12DescriptorAllocator::WriteImageSrv(const DescriptorTable& table, u32 s
         WriteNullSrv(table, slot, fallback_dimension);
         return false;
     }
-    const auto& desc = view.Description();
+    auto desc = view.Description();
+    if (desc.ViewDimension != fallback_dimension) {
+        if (const auto adapted = AdaptSrvDimension(desc, fallback_dimension,
+                                                   resource->handle->GetDesc().Dimension)) {
+            desc = *adapted;
+        } else if (logged_srv_mismatches.insert(desc.ViewDimension * 16 + fallback_dimension)
+                       .second) {
+            Diagnostic(fmt::format("D3D12 SRV dimension {} cannot become shader dimension {}",
+                                   static_cast<int>(desc.ViewDimension),
+                                   static_cast<int>(fallback_dimension)));
+        }
+    }
     WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, resource, 1, &desc, sizeof(desc),
                 table.Slot(slot));
     return true;
