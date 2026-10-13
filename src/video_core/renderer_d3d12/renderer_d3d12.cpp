@@ -447,6 +447,9 @@ void RendererD3D12::Composite(std::span<const Tegra::FramebufferConfig> layers) 
     }
     try {
         gpu.RendererFrameEndNotify();
+        // Advance the caches' frame clock like the Vulkan backend: texture garbage
+        // collection, buffer downloads, fence and descriptor-cache aging all key off it.
+        rasterizer.TickFrame();
     } catch (const std::exception& error) {
         ReportFailure(error);
     } catch (...) {
