@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstring>
 #include <exception>
+#include <fstream>
 #include <limits>
 #include <set>
 #include <stdexcept>
@@ -1169,6 +1170,13 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() try {
                     const auto source =
                         Shader::Backend::HLSL::EmitHLSL(translation.profile, program);
                     mark(fmt::format("dxc bytes={}", source.size()));
+                    if (trace && source.size() > 100'000) {
+                        // Oversized compute shaders are the ones the Xbox driver never finishes.
+                        std::ofstream{Common::FS::GetEdenPath(Common::FS::EdenPath::LogDir) /
+                                          fmt::format("compute_{:016x}.hlsl", request),
+                                      std::ios::binary}
+                            << source;
+                    }
                     const auto counts = CountStageTables(program.info);
                     const StageInput stage{Shader::Stage::Compute,
                                            shader_hash,
