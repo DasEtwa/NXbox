@@ -10,7 +10,18 @@ export function escapeXml(text: string): string {
     (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" })[c]!,
   );
 }
-export function generateManifest(titleId: string, name: string, version = "0.1.0.0"): string {
+// Re-registering the same identity at the same version from a new folder fails on the console,
+// so every pack gets a newer version: an in-place upgrade that keeps LocalState (saves).
+export function packageVersion(now = new Date()): string {
+  const days = Math.floor((now.getTime() - Date.UTC(2026, 0, 1)) / 86_400_000);
+  const twoSecondSteps = Math.floor((now.getTime() % 86_400_000) / 2_000);
+  return `0.2.${days}.${twoSecondSteps}`;
+}
+export function generateManifest(
+  titleId: string,
+  name: string,
+  version = packageVersion(),
+): string {
   if (!/^\d+\.\d+\.\d+\.\d+$/.test(version) || version.split(".").some((n) => Number(n) > 65535))
     throw new Error("Invalid package version");
   const displayName = escapeXml(validateName(name));

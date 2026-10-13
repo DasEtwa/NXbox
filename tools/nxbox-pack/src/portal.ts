@@ -75,6 +75,9 @@ export class DevicePortal {
     identity: string,
     timeout = 15 * 60_000,
   ): Promise<InstalledPackage> {
+    // Device Portal reports the display name in Name, so match the identity prefix of the
+    // full name, and skip the previous version that stays listed until the upgrade lands.
+    const before = new Set((await this.packages()).map((p) => p.PackageFullName));
     await this.request(
       "POST",
       `/api/app/packagemanager/register?${new URLSearchParams({ folder: Buffer.from(folder).toString("base64") })}`,
@@ -88,9 +91,11 @@ export class DevicePortal {
       if (text.trim()) {
         const result = JSON.parse(text) as { Code?: number; Success?: boolean };
         if (result.Success === false || (result.Code !== undefined && Number(result.Code) !== 0))
-          throw new PackError("deploy");
+          throw new PackError("deploy", { cause: new Error(String(text)) });
       }
-      const installed = (await this.packages()).find((p) => p.Name === identity);
+      const installed = (await this.packages()).find(
+        (p) => p.PackageFullName.startsWith(`${identity}_`) && !before.has(p.PackageFullName),
+      );
       if (installed) return installed;
     }
     throw new PackError("deploy");

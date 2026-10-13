@@ -22,7 +22,7 @@ fn main() -> eframe::Result {
         "NXbox Pack",
         eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
-                .with_inner_size([640.0, 720.0])
+                .with_inner_size([640.0, 800.0])
                 .with_min_inner_size([560.0, 560.0])
                 .with_icon(icon),
             ..Default::default()

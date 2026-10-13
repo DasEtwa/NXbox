@@ -16,6 +16,7 @@ test("portal URL validation keeps credentials out of URLs", () => {
 });
 test("Xbox loose deployment and multipart LocalState uploads use the portal contract", async () => {
   const calls: { url: URL; method: string; bytes: number }[] = [];
+  let registered = false;
   const transport = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input));
     const headers = new Headers(init?.headers);
@@ -32,10 +33,23 @@ test("Xbox loose deployment and multipart LocalState uploads use the portal cont
         { headers: { "Set-Cookie": "CSRF-Token=token; Path=/" } },
       );
     if (url.pathname.endsWith("/state")) return Response.json({ Code: 0 });
+    if (url.pathname.endsWith("/register")) registered = true;
     if (url.pathname.endsWith("/packages"))
       return Response.json({
+        // The previous version stays listed; Name is the display name, not the identity.
         InstalledPackages: [
-          { Name: "NSPX.NXbox.01007EF00011E000", PackageFullName: "game_full_name" },
+          {
+            Name: "Game",
+            PackageFullName: "NSPX.NXbox.01007EF00011E000_0.1.0.0_x64__xb0tjvbn8pcrt",
+          },
+          ...(registered
+            ? [
+                {
+                  Name: "Game",
+                  PackageFullName: "NSPX.NXbox.01007EF00011E000_0.2.0.0_x64__xb0tjvbn8pcrt",
+                },
+              ]
+            : []),
         ],
       });
     if (url.pathname.endsWith("/files"))
@@ -55,7 +69,9 @@ test("Xbox loose deployment and multipart LocalState uploads use the portal cont
     await writeFile(path, Buffer.alloc(4 * 1024 * 1024, 1));
     await portal.uploadRuntime("game-folder", path, "Assets/logo.png");
     const installed = await portal.register("game-folder", "NSPX.NXbox.01007EF00011E000", 5000);
-    expect(installed.PackageFullName).toBe("game_full_name");
+    expect(installed.PackageFullName).toBe(
+      "NSPX.NXbox.01007EF00011E000_0.2.0.0_x64__xb0tjvbn8pcrt",
+    );
     await portal.makeFolder(installed.PackageFullName, "LocalState", "games");
     let sent = 0;
     await portal.pushFile(installed.PackageFullName, path, "LocalState/games", "base.nsp", (n) => {
@@ -72,7 +88,9 @@ test("Xbox loose deployment and multipart LocalState uploads use the portal cont
     );
     const file = calls.find((c) => c.url.pathname.endsWith("/file"))!;
     expect(file.url.searchParams.get("path")).toBe("/LocalState/games");
-    expect(file.url.searchParams.get("packagefullname")).toBe("game_full_name");
+    expect(file.url.searchParams.get("packagefullname")).toBe(
+      "NSPX.NXbox.01007EF00011E000_0.2.0.0_x64__xb0tjvbn8pcrt",
+    );
     expect(file.url.searchParams.get("extract")).toBe("false");
   } finally {
     await rm(temporary, { recursive: true, force: true });
@@ -125,15 +143,15 @@ test("a 204 deployment state is pending even if an older package exists", async 
           : Response.json({ Code: 0, Success: true });
       }
       if (path.endsWith("/packages")) {
-        expect(states).toBe(2);
         return Response.json({
-          InstalledPackages: [{ Name: "game", PackageFullName: "game_full_name" }],
+          InstalledPackages:
+            states >= 2 ? [{ Name: "Game", PackageFullName: "game_1.0_x64__x" }] : [],
         });
       }
       return new Response("", { headers: { "Set-Cookie": "CSRF-Token=token" } });
     }) as unknown as typeof fetch,
   );
-  expect((await portal.register("folder", "game", 5000)).PackageFullName).toBe("game_full_name");
+  expect((await portal.register("folder", "game", 5000)).PackageFullName).toBe("game_1.0_x64__x");
 });
 test("registration HRESULT failures are not reported as success", async () => {
   const portal = new DevicePortal(
@@ -143,6 +161,7 @@ test("registration HRESULT failures are not reported as success", async () => {
     (async (input: string | URL | Request) => {
       if (String(input).includes("/state"))
         return Response.json({ Code: -2147009280, Success: false });
+      if (String(input).includes("/packages")) return Response.json({ InstalledPackages: [] });
       return new Response("", { headers: { "Set-Cookie": "CSRF-Token=token" } });
     }) as unknown as typeof fetch,
   );

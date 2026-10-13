@@ -9,7 +9,7 @@ import {
   validateFile,
   validateTitleId,
 } from "../src/files";
-import { generateManifest } from "../src/manifest";
+import { generateManifest, packageVersion } from "../src/manifest";
 import { parseArgs } from "../src/cli";
 import { localCandidates } from "../src/discovery";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -97,6 +97,18 @@ describe("independent game manifest", () => {
       expect(() => generateManifest(titleId, name)).toThrow();
     for (const version of ["1.0.0", "1.0.65536.0", "a.0.0.0"])
       expect(() => generateManifest(titleId, "Game", version)).toThrow();
+  });
+  test("each pack upgrades the last one in place", () => {
+    const order = (v: string) => v.split(".").reduce((a, n) => a * 65536 + Number(n), 0);
+    const a = packageVersion(new Date("2026-10-13T00:00:00Z"));
+    const b = packageVersion(new Date("2026-10-13T00:00:02Z"));
+    const c = packageVersion(new Date("2026-10-14T00:00:00Z"));
+    expect(order(a)).toBeGreaterThan(order("0.1.0.0"));
+    expect(order(b)).toBeGreaterThan(order(a));
+    expect(order(c)).toBeGreaterThan(order(b));
+    expect(() =>
+      generateManifest(titleId, "Game", packageVersion(new Date("2199-12-31T23:59:59Z"))),
+    ).not.toThrow();
   });
 });
 test("download URL and checksum must be supplied together", () => {

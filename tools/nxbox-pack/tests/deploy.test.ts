@@ -32,7 +32,7 @@ function runtimeFixture(): Record<string, Uint8Array> {
 test("staging through registration and verified content uploads completes over HTTP", async () => {
   const titleId = "01007EF00011E000";
   const identity = `NSPX.NXbox.${titleId}`;
-  const installed = { Name: identity, PackageFullName: "game_full_name" };
+  const installed = { Name: "Game", PackageFullName: `${identity}_0.2.0.0_x64__xb0tjvbn8pcrt` };
   const uploads = new Map<string, Uint8Array>();
   const runtime = new Map<string, Uint8Array>();
   const uploadOrder: string[] = [];
