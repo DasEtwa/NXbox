@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include <optional>
+#include <stdexcept>
+#include "video_core/renderer_d3d12/d3d12_context.h"
 #include "video_core/renderer_d3d12/d3d12_dxc.h"
 #include "video_core/renderer_d3d12/d3d12_pso_tables.h"
 
@@ -31,13 +34,29 @@ DxilBlob DxcCache::Compile(std::string_view hlsl, Shader::Stage stage, u64 pipel
     const auto [begin, end] = entries.equal_range(hash);
     for (auto it = begin; it != end; ++it) {
         if (it->second.target == target && it->second.source == hlsl) {
+            if (it->second.failure) {
+                if (profile)
+                    profile->Count(FrameCount::NegativeCacheHits);
+                std::rethrow_exception(it->second.failure);
+            }
             return it->second.dxil;
         }
     }
-    auto dxil = std::make_shared<const std::vector<u8>>(
-        compiler.Compile(hlsl, L"main", target, pipeline_hash));
-    entries.emplace(hash, Entry{std::string{hlsl}, target, dxil});
-    return dxil;
+    std::optional<FrameProfile::Scope> scope;
+    if (profile) {
+        scope.emplace(*profile, FramePhase::DxcCompile);
+        profile->Count(FrameCount::DxcCacheMisses);
+        profile->Count(FrameCount::DxcCompiles);
+    }
+    try {
+        auto dxil = std::make_shared<const std::vector<u8>>(
+            compiler.Compile(hlsl, L"main", target, pipeline_hash));
+        entries.emplace(hash, Entry{std::string{hlsl}, target, dxil, {}});
+        return dxil;
+    } catch (...) {
+        entries.emplace(hash, Entry{std::string{hlsl}, target, {}, std::current_exception()});
+        throw;
+    }
 }
 
 } // namespace D3D12

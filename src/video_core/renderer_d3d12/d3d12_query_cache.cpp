@@ -136,7 +136,7 @@ struct QueryCacheRuntimeImpl {
         if (!count) {
             return;
         }
-        context.Finish();
+        context.Finish(FrameCount::ForcedSubmitQueryBank);
         for (u32 slot = 0; slot < count; ++slot) {
             const auto* base = results->mapped.data() + slot * ResultStride;
             const auto add = [&](QueryType type, u64 value) {
@@ -209,7 +209,7 @@ struct QueryCacheRuntimeImpl {
             context.Commands()->CopyBufferRegion(result.buffer->handle.Get(), result.offset,
                                                  resource->handle.Get(), offset, 8);
         }
-        context.Finish();
+        context.Finish(FrameCount::ForcedSubmitQueryReadback);
         u64 value{};
         std::memcpy(&value, result.mapped_span.data(), 8);
         return value;

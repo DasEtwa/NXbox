@@ -218,12 +218,13 @@ struct FakeCommands {
         }
     }
 };
+enum class FrameCount { ForcedSubmitTextureDownload };
 struct Context {
     FakeDevice device; FakeCommands commands; std::vector<std::function<void()>> pending;
     FakeDevice* Device() { return &device; } FakeCommands* Commands() { return &commands; }
     void Retain(const ResourcePtr&) {} void Transition(const ResourcePtr&,int) {} void MarkWork(const char*) {}
     void AfterCompletion(std::function<void()> callback) { pending.push_back(std::move(callback)); }
-    void Finish() { for(auto& callback:pending) callback(); pending.clear(); }
+    void Finish(FrameCount = FrameCount::ForcedSubmitTextureDownload) { for(auto& callback:pending) callback(); pending.clear(); }
 };
 struct TextureCacheRuntime {
     Context context;

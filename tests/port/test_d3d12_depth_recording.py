@@ -90,6 +90,7 @@ using SIZE_T = std::uint64_t;
 using UINT64 = std::uint64_t;
 struct Handle { u64 ptr{}; };
 struct DescriptorTable { Handle cpu{}, gpu{}; u32 count{}, stride{}; };
+enum class FrameCount { ForcedSubmitDescriptorExhaustion };
 struct FakeContext {
     u64 submitted{};
     bool recording{};
@@ -100,7 +101,7 @@ struct FakeContext {
     }
     u64 CurrentTick() const { return submitted + 1; }
     bool IsFree(u64 tick) const { return tick <= submitted; }
-    void Submit() { if (recording) { ++submitted; recording = false; } }
+    void Submit(FrameCount reason) { assert(reason == FrameCount::ForcedSubmitDescriptorExhaustion); if (recording) { ++submitted; recording = false; } }
     void Wait(u64 tick) { assert(tick <= submitted); }
 };
 class D3D12DescriptorAllocator {
@@ -140,7 +141,7 @@ int main() {
         skip = function_body(source, "void RasterizerD3D12::SkipDraw(")
         for cleanup in ["stage.Clear()", "state_scratch.clear()", "converted_indices.reset()"]:
             self.assertIn(cleanup, skip)
-        self.assertLess(skip.index("query_runtime.CancelDraw()"), skip.index("context.Submit()"))
+        self.assertLess(skip.index("query_runtime.CancelDraw()"), skip.index("context.Submit(FrameCount::ForcedSubmitSkippedDraw)"))
         prepare = function_body(source, "void RasterizerD3D12::PrepareDraw(")
         self.assertIn("SCOPE_EXIT", prepare)
         self.assertLess(

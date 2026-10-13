@@ -56,7 +56,7 @@ public:
         context.Wait(tick);
     }
     void Finish() {
-        context.Finish();
+        context.Finish(FrameCount::ForcedSubmitBufferDownload);
     }
     u64 GetDeviceLocalMemory() const {
         return memory_target;
@@ -75,9 +75,13 @@ public:
         return 16;
     }
     StagingBufferRef UploadStagingBuffer(size_t size) {
+        const FrameProfile::Scope profile_upload{context.Profile(), FramePhase::BufferUpload};
+        context.Profile().Count(FrameCount::BufferUploadBytes, size);
         return upload.Request(size);
     }
     StagingBufferRef DownloadStagingBuffer(size_t size, bool = false) {
+        const FrameProfile::Scope profile_download{context.Profile(), FramePhase::BufferDownload};
+        context.Profile().Count(FrameCount::BufferDownloadBytes, size);
         return readback.Request(size);
     }
     void FreeDeferredStagingBuffer(StagingBufferRef& ref) {

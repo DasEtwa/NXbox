@@ -37,6 +37,11 @@ void BufferCacheRuntime::TickFrame(Common::SlotVector<Buffer>& buffers) {
 }
 void BufferCacheRuntime::CopyBuffer(ResourcePtr dst, ResourcePtr src,
                                     std::span<const VideoCommon::BufferCopy> copies, bool, bool) {
+    const FrameProfile::Scope profile_copy{
+        context.Profile(), src && src->heap == D3D12_HEAP_TYPE_UPLOAD ? FramePhase::BufferUpload
+                           : dst && dst->heap == D3D12_HEAP_TYPE_READBACK
+                               ? FramePhase::BufferDownload
+                               : FramePhase::BufferCache};
     if (!dst || !src) {
         InvalidRange(7, "null buffer copy", 0, 0, 0);
         return;
@@ -89,6 +94,8 @@ void BufferCacheRuntime::ClearBuffer(ResourcePtr dst, u32 offset, size_t size, u
     }
     while (size) {
         const size_t count = std::min(size, size_t{1 << 20});
+        const FrameProfile::Scope profile_upload{context.Profile(), FramePhase::BufferUpload};
+        context.Profile().Count(FrameCount::BufferUploadBytes, count);
         auto staging = upload.Request(count);
         for (size_t i = 0; i < count; i += sizeof(value))
             std::memcpy(staging.mapped_span.data() + i, &value, sizeof(value));
@@ -130,6 +137,8 @@ void BufferCacheRuntime::BindQuadIndexBuffer(Maxwell::PrimitiveTopology topology
         geometry.index_size = 0;
         return;
     }
+    const FrameProfile::Scope profile_upload{context.Profile(), FramePhase::BufferUpload};
+    context.Profile().Count(FrameCount::BufferUploadBytes, size_t{quads} * 6 * sizeof(u32));
     auto staging = upload.Request(size_t{quads} * 6 * sizeof(u32));
     auto* out = reinterpret_cast<u32*>(staging.mapped_span.data());
     for (u32 quad = 0; quad < quads; ++quad) {
@@ -162,6 +171,8 @@ void BufferCacheRuntime::BindVertexBuffers(VideoCommon::HostBindings<Buffer>& ho
                          static_cast<u32>(host.strides[i]));
 }
 std::span<u8> BufferCacheRuntime::BindMappedUniformBuffer(size_t stage, u32, u32 size) {
+    const FrameProfile::Scope profile_upload{context.Profile(), FramePhase::BufferUpload};
+    context.Profile().Count(FrameCount::BufferUploadBytes, std::max(size, u32{65536}));
     // Reserve the entire legal CBV range and initialize every byte beyond the guest upload.
     if (size > 65536) {
         InvalidRange(4, "mapped uniform exceeds Maxwell 64 KiB limit", 0, size, 65536);
@@ -193,6 +204,8 @@ void BufferCacheRuntime::BindUniformBuffer(const Buffer& buffer, u32 offset, u32
     // A copied CBV owns its padding; rounding a direct view must never expose unrelated bytes.
     const auto padded = Common::AlignUp<u32>(size, 256);
     if ((offset & 255) || size != padded || padded > width - offset) {
+        const FrameProfile::Scope profile_upload{context.Profile(), FramePhase::BufferUpload};
+        context.Profile().Count(FrameCount::BufferUploadBytes, 65536);
         auto staging = upload.Request(65536);
         std::fill(staging.mapped_span.begin(), staging.mapped_span.end(), u8{0});
         auto target = context.CreateBuffer(65536, D3D12_HEAP_TYPE_DEFAULT);

@@ -208,6 +208,7 @@ class D3D12FenceManagerTests(unittest.TestCase):
             + r"""
 using u64 = std::uint64_t;
 namespace D3D12 {
+enum class FrameCount { ForcedSubmitGuestFence };
 using TextureCache = Cache;
 using BufferCache = Cache;
 using QueryCache = Cache;
@@ -217,7 +218,7 @@ struct Context {
     bool fail = false;
     std::mutex guard;
     std::condition_variable cv;
-    u64 Submit() { return ++submitted; }
+    u64 Submit(FrameCount) { return ++submitted; }
     bool IsFree(u64 tick) const { return completed >= tick; }
     void WaitSubmitted(u64 tick) {
         ++waits;

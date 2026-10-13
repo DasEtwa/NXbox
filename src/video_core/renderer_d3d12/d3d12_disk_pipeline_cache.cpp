@@ -417,7 +417,7 @@ DiskPipelineCache::DiskPipelineCache(const std::filesystem::path& local_state,
 }
 Microsoft::WRL::ComPtr<ID3D12PipelineState> DiskPipelineCache::LoadOrCreateGraphics(
     std::uint64_t key, const D3D12_GRAPHICS_PIPELINE_STATE_DESC& desc,
-    std::span<const std::uint8_t> recipe) {
+    std::span<const std::uint8_t> recipe, FrameProfile* profile) {
     std::scoped_lock lock{impl->mutex};
     Microsoft::WRL::ComPtr<ID3D12PipelineState> pso;
     if (!impl->device)
@@ -430,6 +430,8 @@ Microsoft::WRL::ComPtr<ID3D12PipelineState> DiskPipelineCache::LoadOrCreateGraph
         impl->Write({DiskRecordKind::Graphics, key, DiskBytes(recipe.begin(), recipe.end())});
         return pso;
     }
+    if (profile)
+        profile->Count(FrameCount::PsoCompiles);
     CheckPipeline(impl->device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&pso)),
                   "CreateGraphicsPipelineState", impl->device.Get(), key);
     if (impl->library && CacheSucceeded(impl->library->StorePipeline(name.c_str(), pso.Get()),
@@ -440,7 +442,7 @@ Microsoft::WRL::ComPtr<ID3D12PipelineState> DiskPipelineCache::LoadOrCreateGraph
 }
 Microsoft::WRL::ComPtr<ID3D12PipelineState> DiskPipelineCache::LoadOrCreateCompute(
     std::uint64_t key, const D3D12_COMPUTE_PIPELINE_STATE_DESC& desc,
-    std::span<const std::uint8_t> recipe) {
+    std::span<const std::uint8_t> recipe, FrameProfile* profile) {
     std::scoped_lock lock{impl->mutex};
     Microsoft::WRL::ComPtr<ID3D12PipelineState> pso;
     if (!impl->device)
@@ -453,6 +455,8 @@ Microsoft::WRL::ComPtr<ID3D12PipelineState> DiskPipelineCache::LoadOrCreateCompu
         impl->Write({DiskRecordKind::Compute, key, DiskBytes(recipe.begin(), recipe.end())});
         return pso;
     }
+    if (profile)
+        profile->Count(FrameCount::PsoCompiles);
     CheckPipeline(impl->device->CreateComputePipelineState(&desc, IID_PPV_ARGS(&pso)),
                   "CreateComputePipelineState", impl->device.Get(), key);
     if (impl->library && CacheSucceeded(impl->library->StorePipeline(name.c_str(), pso.Get()),

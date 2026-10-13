@@ -37,6 +37,18 @@ struct Restart {
     bool enabled{};
     std::uint32_t index{0xffffffff};
 };
+// Native lists already have the required order. Avoid a synchronous guest read,
+// CPU expansion and staging upload when conversion would only copy the indices.
+constexpr bool NeedsConversion(Topology topology, Format format, Restart restart,
+                               Provoking provoking) {
+    if ((format != Format::Uint16 && format != Format::Uint32) || restart.enabled)
+        return true;
+    if (topology == Topology::Points)
+        return false;
+    if (topology == Topology::Lines || topology == Topology::Triangles)
+        return provoking == Provoking::Last;
+    return true;
+}
 struct Layout {
     Topology topology; // List topology, including adjacency; no restart markers.
     Format format;     // Never Uint8.

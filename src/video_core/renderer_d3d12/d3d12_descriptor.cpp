@@ -269,7 +269,7 @@ DescriptorTable D3D12DescriptorAllocator::Allocate(Ring& ring, u32 count) {
             throw std::runtime_error("D3D12 descriptor table larger than its heap");
         // Everything live belongs to the open command list: close it so it can retire.
         if (*oldest >= context.CurrentTick())
-            context.Submit();
+            context.Submit(FrameCount::ForcedSubmitDescriptorExhaustion);
         else
             context.Wait(*oldest);
     }

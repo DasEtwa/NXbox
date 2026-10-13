@@ -26,6 +26,7 @@ struct Resource {
 };
 using ResourcePtr = std::shared_ptr<Resource>;
 struct StagingBufferRef { ResourcePtr buffer; size_t offset; std::span<u8> mapped_span; };
+enum class FrameCount { ForcedSubmitStagingPressure };
 struct Context {
     u64 tick = 1, completed = 0;
     int finishes = 0;
@@ -33,7 +34,7 @@ struct Context {
     bool IsFree(u64 value) const { return value <= completed; }
     u64 CurrentTick() const { return tick; }
     void Collect() {}
-    void Finish() { ++finishes; completed = tick++; retained.clear(); }
+    void Finish(FrameCount = FrameCount::ForcedSubmitStagingPressure) { ++finishes; completed = tick++; retained.clear(); }
     ResourcePtr CreateBuffer(u64 size, int) { return std::make_shared<Resource>(size); }
 };
 struct StagingRing {

@@ -196,15 +196,18 @@ template<class... T> std::string format(const char*,T... args) {
 }
 std::string logged;
 void Diagnostic(const std::string& v) { logged=v; }
+#include "video_core/renderer_d3d12/d3d12_context.h"
+using D3D12::FramePhase;
+using D3D12::FrameCount;
 struct Timing {
-    std::array<u64,8> cpu{}; u64 last=10000000; int active=0;
+    std::array<u64,static_cast<size_t>(FramePhase::Count)> cpu{}; u64 last=10000000; int active=0;
     void Reset(u64 v) { last=v; }
 };
 struct FrameProfile {
     bool enabled=true;
     std::atomic<DWORD> owner{1};
     Timing timing;
-    std::array<u64,7> counts{};
+    std::array<u64,static_cast<size_t>(FrameCount::Count)> counts{};
     u64 frames=0,fence_wall=0,start_wall=0,initial_cpu=0;
     std::function<std::string()> guest_visibility;
     void BindRecordingThread() {}

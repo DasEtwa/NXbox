@@ -8,7 +8,7 @@
 namespace D3D12 {
 void InnerFence::Queue() {
     if (!is_stubbed) {
-        tick = context.Submit();
+        tick = context.Submit(FrameCount::ForcedSubmitGuestFence);
     }
 }
 bool InnerFence::IsSignaled() const {

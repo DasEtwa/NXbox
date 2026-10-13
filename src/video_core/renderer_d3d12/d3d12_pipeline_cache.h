@@ -66,6 +66,7 @@ public:
     void LoadDiskResources(u64 title_id, std::stop_token stop_loading,
                            const VideoCore::DiskResourceLoadCallback& callback);
     void FlushDiskCache();
+    std::string ProfileSummary();
 
     // Returns the pipeline for (state, stages), compiling HLSL->DXIL and creating the PSO on a
     // miss. `stages` must hold one entry per active stage.
@@ -88,7 +89,7 @@ private:
     std::recursive_mutex pipeline_mutex;
     Context& context;
     std::array<u64, 6> guest_hashes{};
-    DxcCache dxc;
+    DxcCache dxc{&context.Profile()};
     std::unique_ptr<DiskPipelineCache> disk;
     std::map<DescriptorCounts, Microsoft::WRL::ComPtr<ID3D12RootSignature>, CountsLess>
         root_signatures;

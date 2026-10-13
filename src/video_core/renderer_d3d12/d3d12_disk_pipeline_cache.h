@@ -17,6 +17,7 @@
 #endif
 
 namespace D3D12 {
+class FrameProfile;
 using DiskBytes = std::vector<std::uint8_t>;
 
 // Bump emitter/DXC/schema versions whenever generated code, compiler options,
@@ -80,10 +81,10 @@ public:
                                                           DiskCacheIdentity versions);
     Microsoft::WRL::ComPtr<ID3D12PipelineState> LoadOrCreateGraphics(
         std::uint64_t key, const D3D12_GRAPHICS_PIPELINE_STATE_DESC& desc,
-        std::span<const std::uint8_t> recipe);
+        std::span<const std::uint8_t> recipe, FrameProfile* profile = nullptr);
     Microsoft::WRL::ComPtr<ID3D12PipelineState> LoadOrCreateCompute(
         std::uint64_t key, const D3D12_COMPUTE_PIPELINE_STATE_DESC& desc,
-        std::span<const std::uint8_t> recipe);
+        std::span<const std::uint8_t> recipe, FrameProfile* profile = nullptr);
 #endif
     ~DiskPipelineCache();
     DiskPipelineCache(const DiskPipelineCache&) = delete;

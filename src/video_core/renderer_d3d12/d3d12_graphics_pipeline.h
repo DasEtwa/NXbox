@@ -33,7 +33,8 @@ public:
                      const Pso::GraphicsPsoState& state, u32 d3d_topology,
                      std::span<const StageProgram> programs, DiskPipelineCache* disk = nullptr,
                      u64 key = 0, std::span<const u8> recipe = {},
-                     const D3D12_STREAM_OUTPUT_DESC& stream_output = {});
+                     const D3D12_STREAM_OUTPUT_DESC& stream_output = {},
+                     FrameProfile* profile = nullptr);
 
     // IGraphicsPipeline. A front-and-back cull draws nothing and D3D12 cannot express it, so
     // the descriptor/draw path sees "no PSO" and skips the draw.

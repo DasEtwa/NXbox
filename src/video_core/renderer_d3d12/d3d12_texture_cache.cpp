@@ -286,6 +286,9 @@ void Image::DownloadMemory(std::span<const ResourcePtr> buffers, std::span<const
 void Image::Transfer(const StagingBufferRef& input,
                      std::span<const VideoCommon::BufferImageCopy> copies, bool download,
                      const ResourcePtr& gpu_destination, size_t gpu_offset) {
+    const FrameProfile::Scope profile_transfer{runtime->context.Profile(),
+                                               download ? FramePhase::TextureDownload
+                                                        : FramePhase::TextureUpload};
     if (!resource)
         return;
     if (download && VideoCore::Surface::IsPixelFormatBCn(info.format) &&
@@ -346,7 +349,7 @@ void Image::Transfer(const StagingBufferRef& input,
         // readback. Wait for packing, then upload it; correctness takes priority
         // over the native unconverted DMA fast path.
         auto& context = runtime->context;
-        context.Finish();
+        context.Finish(FrameCount::ForcedSubmitTextureDownload);
         const auto origin =
             static_cast<size_t>(input.mapped_span.data() - input.buffer->mapped.data());
         const auto tight = input.mapped_span.subspan(input.offset - origin);
@@ -1166,7 +1169,7 @@ void TextureCacheRuntime::ReinterpretImage(Image& dst, Image& src,
             // Reserved guest X/padding bits have no host plane; initialize them.
             std::fill(staging.mapped_span.begin(), staging.mapped_span.end(), u8{0});
             src.DownloadMemory(staging, downloads);
-            context.Finish();
+            context.Finish(FrameCount::ForcedSubmitTextureDownload);
             dst.UploadMemory(staging, uploads);
         } catch (const std::exception& error) {
             reject(error.what());

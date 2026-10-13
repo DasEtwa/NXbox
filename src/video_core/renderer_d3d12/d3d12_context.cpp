@@ -317,15 +317,47 @@ void FrameProfile::EndFrame(bool presented) {
     if (wall - start_wall < 50000000)
         return;
     try {
-        constexpr std::array names{"draw_setup",    "descriptor_writes", "barriers", "pso",
-                                   "buffer_upload", "texture_upload",    "submit",   "fence_wait"};
+        constexpr std::array names{
+            "draw_setup",      "descriptor_writes",  "barriers",     "pso",
+            "buffer_upload",   "texture_upload",     "submit",       "fence_wait",
+            "pipeline_lookup", "shader_translation", "dxc_compile",  "extent_copies",
+            "feedback_copies", "index_conversion",   "buffer_cache", "texture_cache",
+            "buffer_download", "texture_download"};
         constexpr std::array counters{"draws",
                                       "dispatches",
                                       "barriers",
                                       "descriptor_copies",
                                       "descriptor_writes",
                                       "pso_compiles",
-                                      "ExecuteCommandLists"};
+                                      "ExecuteCommandLists",
+                                      "pso_cache_misses",
+                                      "guest_pipeline_misses",
+                                      "native_index_draws",
+                                      "shader_translations",
+                                      "dxc_compiles",
+                                      "dxc_cache_misses",
+                                      "negative_cache_hits",
+                                      "extent_copies",
+                                      "feedback_copies",
+                                      "index_conversions",
+                                      "index_conversion_bytes",
+                                      "buffer_upload_bytes",
+                                      "buffer_download_bytes",
+                                      "skipped_draws",
+                                      "forced_submits_memory_pressure",
+                                      "forced_submits_allocation_retry",
+                                      "forced_submits_staging_pressure",
+                                      "forced_submits_descriptor_exhaustion",
+                                      "forced_submits_query_bank",
+                                      "forced_submits_query_readback",
+                                      "forced_submits_buffer_download",
+                                      "forced_submits_texture_download",
+                                      "forced_submits_skipped_draw",
+                                      "forced_submits_guest_flush",
+                                      "forced_submits_guest_fence",
+                                      "forced_submits_other"};
+        static_assert(names.size() == static_cast<size_t>(FramePhase::Count));
+        static_assert(counters.size() == static_cast<size_t>(FrameCount::Count));
         const double elapsed = static_cast<double>(wall - start_wall);
         std::string line = fmt::format(
             "D3D12_FRAME_PROFILE thread={} frames={} gpu_thread_cpu_pct={:.2f} "
@@ -608,7 +640,7 @@ void Context::MarkWork(std::string_view label) {
     commands->SetMarker(0, marker.c_str(),
                         static_cast<UINT>((marker.size() + 1) * sizeof(wchar_t)));
 }
-u64 Context::Submit() {
+u64 Context::Submit(FrameCount reason) {
     const FrameProfile::Scope profile_submit{profile, FramePhase::Submit};
     // QueueFence and FlushCommands can both request the same submission.
     // Empty requests reuse its value instead of emitting another queue signal.
@@ -634,6 +666,7 @@ u64 Context::Submit() {
         Check(device->GetDeviceRemovedReason(), "before ExecuteCommandLists", device.Get());
         queue->ExecuteCommandLists(1, lists);
         profile.Count(FrameCount::Executes);
+        profile.Count(reason);
         recording = false;
         allocators[allocator_index].tick = CurrentTick();
         allocator_index = (allocator_index + 1) % allocators.size();
@@ -656,8 +689,8 @@ u64 Context::Submit() {
     LogInfoQueue();
     return submitted;
 }
-void Context::Finish() {
-    Wait(Submit());
+void Context::Finish(FrameCount reason) {
+    Wait(Submit(reason));
 }
 void Context::Retain(const ResourcePtr& resource) {
     Commands();
@@ -849,7 +882,7 @@ ResourcePtr Context::CreateResource(const D3D12_RESOURCE_DESC& desc, D3D12_HEAP_
     // hold live resources after fence retirement; only the device can reject them.
     const auto target = NativeBufferMemoryTarget(budget->used);
     if (budget->used >= target || allocation.SizeInBytes > target - budget->used) {
-        Finish();
+        Finish(FrameCount::ForcedSubmitMemoryPressure);
         BufferPool(budget)->Trim();
     }
     auto resource = std::make_shared<Resource>();
@@ -859,7 +892,7 @@ ResourcePtr Context::CreateResource(const D3D12_RESOURCE_DESC& desc, D3D12_HEAP_
     auto result = device->CreateCommittedResource(&properties, D3D12_HEAP_FLAG_NONE, &desc, state,
                                                   nullptr, IID_PPV_ARGS(&resource->handle));
     if (result == E_OUTOFMEMORY) {
-        Finish();
+        Finish(FrameCount::ForcedSubmitAllocationRetry);
         BufferPool(budget)->Trim();
         result = device->CreateCommittedResource(&properties, D3D12_HEAP_FLAG_NONE, &desc, state,
                                                  nullptr, IID_PPV_ARGS(&resource->handle));
@@ -898,7 +931,7 @@ ResourcePtr Context::CreateBuffer(u64 size, D3D12_HEAP_TYPE heap) {
     auto pool = BufferPool(budget);
     Collect();
     if (budget->used >= NativeBufferMemoryTarget(budget->used)) {
-        Finish();
+        Finish(FrameCount::ForcedSubmitMemoryPressure);
         pool->Trim();
     }
     try {
@@ -914,7 +947,7 @@ ResourcePtr Context::CreateBuffer(u64 size, D3D12_HEAP_TYPE heap) {
         }
     } catch (const std::exception& error) {
         Diagnostic(fmt::format("D3D12 buffer allocation retry reason={}", error.what()));
-        Finish();
+        Finish(FrameCount::ForcedSubmitAllocationRetry);
         pool->Trim();
         // A committed allocation can succeed when a larger heap cannot fit.
     }
@@ -953,7 +986,7 @@ StagingBufferRef StagingRing::Request(size_t size) {
     if (page_size > (64ULL << 20) - capacity) {
         // Submit the producer before waiting, then reuse completed, unleased pages.
         // A request can arrive with a tight staging lease still held by its caller.
-        context.Finish();
+        context.Finish(FrameCount::ForcedSubmitStagingPressure);
         Collect();
         for (auto& page : pages) {
             if (aligned <= page.resource->mapped.size() - page.cursor) {

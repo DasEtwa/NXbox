@@ -44,7 +44,7 @@ template <typename DepthDescriptor, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE DepthTyp
 void CreateDepthStencilPipeline(ID3D12Device* device,
                                 const D3D12_GRAPHICS_PIPELINE_STATE_DESC& desc,
                                 const DepthDescriptor& depth, ComPtr<ID3D12PipelineState>& pso,
-                                u64 key) {
+                                u64 key, FrameProfile* profile) {
     ComPtr<ID3D12Device2> device2;
     Check(device->QueryInterface(IID_PPV_ARGS(&device2)),
           "D3D12 advanced depth-stencil device interface", device);
@@ -68,6 +68,8 @@ void CreateDepthStencilPipeline(ID3D12Device* device,
     stream.depth_format.value = desc.DSVFormat;
     stream.samples.value = desc.SampleDesc;
     const D3D12_PIPELINE_STATE_STREAM_DESC description{sizeof(stream), &stream};
+    if (profile)
+        profile->Count(FrameCount::PsoCompiles);
     CheckPipeline(device2->CreatePipelineState(&description, IID_PPV_ARGS(&pso)),
                   "CreatePipelineState(advanced depth-stencil)", device, key);
 }
@@ -87,7 +89,8 @@ GraphicsPipeline::GraphicsPipeline(ID3D12Device* device, ComPtr<ID3D12RootSignat
                                    const Pso::GraphicsPsoState& state_, u32 d3d_topology,
                                    std::span<const StageProgram> programs, DiskPipelineCache* disk,
                                    u64 key, std::span<const u8> recipe,
-                                   const D3D12_STREAM_OUTPUT_DESC& stream_output)
+                                   const D3D12_STREAM_OUTPUT_DESC& stream_output,
+                                   FrameProfile* profile)
     : state{state_}, topology{d3d_topology}, root_signature{std::move(signature)} {
     if (!Pso::DsvHasStencil(state.dsv_format))
         state.stencil_enable = 0;
@@ -203,7 +206,7 @@ GraphicsPipeline::GraphicsPipeline(ID3D12Device* device, ComPtr<ID3D12RootSignat
         depth.DepthBoundsTestEnable = state.depth_bounds != 0;
         CreateDepthStencilPipeline<D3D12_DEPTH_STENCIL_DESC2,
                                    D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL2>(
-            device, desc, depth, pso, key);
+            device, desc, depth, pso, key, profile);
         return;
     }
     if (state.depth_bounds) {
@@ -215,15 +218,17 @@ GraphicsPipeline::GraphicsPipeline(ID3D12Device* device, ComPtr<ID3D12RootSignat
             ds.FrontFace,     ds.BackFace,        TRUE};
         CreateDepthStencilPipeline<D3D12_DEPTH_STENCIL_DESC1,
                                    D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL1>(
-            device, desc, depth, pso, key);
+            device, desc, depth, pso, key, profile);
         return;
     }
     if (disk) {
-        pso = disk->LoadOrCreateGraphics(key, desc, recipe);
+        pso = disk->LoadOrCreateGraphics(key, desc, recipe, profile);
         if (!pso)
             throw std::runtime_error("D3D12 disk graphics PSO creation failed");
         return;
     }
+    if (profile)
+        profile->Count(FrameCount::PsoCompiles);
     CheckPipeline(device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&pso)),
                   "CreateGraphicsPipelineState", device, key);
 }

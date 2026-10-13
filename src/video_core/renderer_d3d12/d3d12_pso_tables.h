@@ -227,6 +227,12 @@ constexpr std::uint32_t TopologyType(std::uint32_t t) {
 // D3D_PRIMITIVE_TOPOLOGY for IASetPrimitiveTopology. `needs_conversion` means the guest
 // topology has no D3D12 equivalent (LineLoop, Fan, Quads, QuadStrip, Polygon): the rasterizer
 // must expand the index buffer and draw with the returned list/strip topology.
+// Match GraphicsRuntime: disabled and ALWAYS alpha tests emit no HLSL test.
+constexpr std::array<std::uint32_t, 2> AlphaTestSpecialization(bool enabled, std::uint32_t function,
+                                                               std::uint32_t reference) {
+    return enabled && function != 8 ? std::array{function, reference}
+                                    : std::array<std::uint32_t, 2>{};
+}
 struct TopologyInfo {
     std::uint32_t topology;
     bool needs_conversion;

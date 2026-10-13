@@ -29,6 +29,16 @@ enum class FramePhase : size_t {
     TextureUpload,
     Submit,
     FenceWait,
+    PipelineLookup,
+    ShaderTranslation,
+    DxcCompile,
+    ExtentCopies,
+    FeedbackCopies,
+    IndexConversion,
+    BufferCache,
+    TextureCache,
+    BufferDownload,
+    TextureDownload,
     Count
 };
 enum class FrameCount : size_t {
@@ -39,6 +49,32 @@ enum class FrameCount : size_t {
     DescriptorWrites,
     PsoCompiles,
     Executes,
+    PsoCacheMisses,
+    GuestPipelineMisses,
+    NativeIndexDraws,
+    ShaderTranslations,
+    DxcCompiles,
+    DxcCacheMisses,
+    NegativeCacheHits,
+    ExtentCopies,
+    FeedbackCopies,
+    IndexConversions,
+    IndexConversionBytes,
+    BufferUploadBytes,
+    BufferDownloadBytes,
+    SkippedDraws,
+    ForcedSubmitMemoryPressure,
+    ForcedSubmitAllocationRetry,
+    ForcedSubmitStagingPressure,
+    ForcedSubmitDescriptorExhaustion,
+    ForcedSubmitQueryBank,
+    ForcedSubmitQueryReadback,
+    ForcedSubmitBufferDownload,
+    ForcedSubmitTextureDownload,
+    ForcedSubmitSkippedDraw,
+    ForcedSubmitGuestFlush,
+    ForcedSubmitGuestFence,
+    ForcedSubmitOther,
     Count
 };
 // Monotonic CPU samples, independent of the host clock API, for exclusive phases.
@@ -285,9 +321,9 @@ public:
     Context(const Context&) = delete;
     Context& operator=(const Context&) = delete;
     ID3D12GraphicsCommandList* Commands();
-    u64 Submit();
+    u64 Submit(FrameCount reason = FrameCount::ForcedSubmitOther);
     void MarkWork(std::string_view label);
-    void Finish();
+    void Finish(FrameCount reason = FrameCount::ForcedSubmitOther);
     void ReportFailure(const std::exception& error) noexcept;
     void LogInfoQueue() noexcept;
     void Wait(u64 tick);

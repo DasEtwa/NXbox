@@ -57,7 +57,11 @@ RasterizerD3D12::RasterizerD3D12(Tegra::GPU& gpu, Tegra::MaxwellDeviceMemoryMana
                " uncommitted_buffer_writes=" +
                std::to_string(buffer_cache.HasUncommittedFlushes()) +
                " uncommitted_texture_writes=" +
-               std::to_string(texture_cache.HasUncommittedFlushes());
+               std::to_string(texture_cache.HasUncommittedFlushes()) +
+               default_pipeline_cache->ProfileSummary() +
+               " attachment_pool_entries=" + std::to_string(attachment_pool.size()) +
+               " feedback_pool_entries=" + std::to_string(feedback_pool.size()) +
+               " native_memory_bytes=" + std::to_string(context.MemoryUsage());
     };
 }
 RasterizerD3D12::~RasterizerD3D12() {
@@ -266,11 +270,12 @@ void RasterizerD3D12::SkipDraw(const char* reason) {
     converted_indices.reset();
     try {
         query_runtime.CancelDraw();
-        context.Submit();
+        context.Submit(FrameCount::ForcedSubmitSkippedDraw);
     } catch (const std::exception& error) {
         context.ReportFailure(error);
     }
     ++skipped_draws;
+    context.Profile().Count(FrameCount::SkippedDraws);
     static std::mutex warning_mutex;
     static std::set<std::string> warnings;
     {
@@ -283,6 +288,7 @@ void RasterizerD3D12::SkipDraw(const char* reason) {
 }
 
 ResourcePtr RasterizerD3D12::CopyFeedback(const ResourcePtr& source) {
+    const FrameProfile::Scope profile_feedback{context.Profile(), FramePhase::FeedbackCopies};
     auto desc = source->handle->GetDesc();
     desc.Flags &= ~D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
     FeedbackTexture* selected{};
@@ -343,6 +349,7 @@ ResourcePtr RasterizerD3D12::CopyFeedback(const ResourcePtr& source) {
     context.Commands()->CopyResource(selected->resource->handle.Get(), source->handle.Get());
     context.MarkWork("attachment feedback copies");
     ++feedback_copies;
+    context.Profile().Count(FrameCount::FeedbackCopies);
     return selected->resource;
 }
 
@@ -366,8 +373,11 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     }
     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
     const auto& regs = maxwell3d->regs;
-    texture_cache.SynchronizeDescriptors(false);
-    texture_cache.UpdateRenderTargets(false);
+    {
+        const FrameProfile::Scope profile_cache{context.Profile(), FramePhase::TextureCache};
+        texture_cache.SynchronizeDescriptors(false);
+        texture_cache.UpdateRenderTargets(false);
+    }
     auto* const cached_framebuffer = texture_cache.GetFramebuffer();
     if (!cached_framebuffer)
         return;
@@ -519,6 +529,7 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         if (!color)
             continue;
         color_resources[slot] = color->ImageHandle();
+        const FrameProfile::Scope profile_extent{context.Profile(), FramePhase::ExtentCopies};
         const auto original_extent = extent(*color);
         if (original_extent.width == matching_extent.width &&
             original_extent.height == matching_extent.height)
@@ -567,6 +578,7 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         // CopyImage uses a bitwise region copy for single-sample color and a
         // sample-preserving shader copy for MSAA (never an averaging resolve).
         texture_runtime.BlitHelpers().CopyImage(target, original, std::span{&copy, 1});
+        context.Profile().Count(FrameCount::ExtentCopies, render_area.layers);
         color_copies.push_back({original, target, copy});
     }
     if (!color_copies.empty() && attachment_extent_diagnostics++ < 16) {
@@ -649,8 +661,11 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
                     {.index = read_handle(desc, i).first, .blacklist = desc.is_written, .id = {}});
         }
     }
-    texture_cache.FillImageViews(std::span(view_scratch.data(), view_scratch.size()), false,
-                                 has_images);
+    {
+        const FrameProfile::Scope profile_cache{context.Profile(), FramePhase::TextureCache};
+        texture_cache.FillImageViews(std::span(view_scratch.data(), view_scratch.size()), false,
+                                     has_images);
+    }
 
     // Texel/image buffers are bound through the buffer cache from the resolved views.
     {
@@ -686,8 +701,11 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         }
     }
 
-    buffer_cache.UpdateGraphicsBuffers(is_indexed);
-    buffer_cache.BindHostGeometryBuffers(is_indexed);
+    {
+        const FrameProfile::Scope profile_cache{context.Profile(), FramePhase::BufferCache};
+        buffer_cache.UpdateGraphicsBuffers(is_indexed);
+        buffer_cache.BindHostGeometryBuffers(is_indexed);
+    }
     for (size_t stage = 0; stage < NUM_GRAPHICS_STAGES; ++stage) {
         bindings.stages[stage].Clear();
         if (!pipeline->StageInfo(stage))
@@ -1237,6 +1255,8 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     query_runtime.EndDraw();
     query_runtime.PauseHostConditionalRendering();
     for (const auto& copy : color_copies) {
+        const FrameProfile::Scope profile_extent{context.Profile(), FramePhase::ExtentCopies};
+        context.Profile().Count(FrameCount::ExtentCopies, copy.region.src_subresource.num_layers);
         auto region = copy.region;
         std::swap(region.src_subresource, region.dst_subresource);
         texture_runtime.BlitHelpers().CopyImage(copy.original, copy.temporary,
@@ -1265,12 +1285,15 @@ void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) try {
                                               ? IndexConversion::Provoking::Last
                                               : IndexConversion::Provoking::First)
                                        : IndexConversion::Provoking::Preserve;
+    const auto format = state.inline_index_draw_indexes.empty()
+                            ? static_cast<IndexConversion::Format>(state.index_buffer.format)
+                            : IndexConversion::Format::Uint32;
+    const IndexConversion::Restart restart{regs.primitive_restart.enabled != 0,
+                                           regs.primitive_restart.index};
     if (is_indexed &&
-        static_cast<u32>(topology) <= static_cast<u32>(IndexConversion::TriangleStripAdjacency)) {
+        static_cast<u32>(topology) <= static_cast<u32>(IndexConversion::TriangleStripAdjacency) &&
+        IndexConversion::NeedsConversion(topology, format, restart, provoking)) {
         gpu_memory->FlushCaching();
-        const auto format = state.inline_index_draw_indexes.empty()
-                                ? static_cast<IndexConversion::Format>(state.index_buffer.format)
-                                : IndexConversion::Format::Uint32;
         if (static_cast<u32>(format) > 2) {
             SkipDraw("invalid index_buffer.format");
             return;
@@ -1280,6 +1303,10 @@ void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) try {
             SkipDraw("index conversion exceeds 64 MiB draw budget");
             return;
         }
+        const FrameProfile::Scope profile_index{context.Profile(), FramePhase::IndexConversion};
+        context.Profile().Count(FrameCount::IndexConversions);
+        context.Profile().Count(FrameCount::IndexConversionBytes,
+                                u64{state.index_buffer.count} * width);
         std::vector<std::byte> input(size_t{state.index_buffer.count} * width);
         const auto address =
             state.index_buffer.StartAddress() + size_t{state.index_buffer.first} * width;
@@ -1292,6 +1319,8 @@ void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) try {
         } else {
             if (const auto cpu = gpu_memory->GpuToCpuAddress(address)) {
                 std::scoped_lock lock{buffer_cache.mutex};
+                const FrameProfile::Scope profile_download{context.Profile(),
+                                                           FramePhase::BufferDownload};
                 buffer_cache.DownloadMemory(*cpu, input.size());
             }
             gpu_memory->ReadBlock(address, input.data(), input.size());
@@ -1300,12 +1329,17 @@ void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) try {
                                                     {maxwell3d->regs.primitive_restart.enabled != 0,
                                                      maxwell3d->regs.primitive_restart.index},
                                                     provoking);
-    } else if (topology == IndexConversion::Topology::Quads ||
-               topology == IndexConversion::Topology::QuadStrip ||
-               topology == IndexConversion::Topology::TriangleFan ||
-               topology == IndexConversion::Topology::Polygon ||
-               topology == IndexConversion::Topology::LineLoop ||
-               (vertex_only && static_cast<u32>(topology) <= 9)) {
+    } else if (!is_indexed &&
+               (topology == IndexConversion::Topology::Quads ||
+                topology == IndexConversion::Topology::QuadStrip ||
+                topology == IndexConversion::Topology::TriangleFan ||
+                topology == IndexConversion::Topology::Polygon ||
+                topology == IndexConversion::Topology::LineLoop ||
+                (vertex_only && static_cast<u32>(topology) <= 9)) &&
+               IndexConversion::NeedsConversion(topology, IndexConversion::Format::Uint32, {},
+                                                provoking)) {
+        const FrameProfile::Scope profile_index{context.Profile(), FramePhase::IndexConversion};
+        context.Profile().Count(FrameCount::IndexConversions);
         converted_indices =
             index_converter.Generate(topology, state.vertex_buffer.count, 0, provoking);
     }
@@ -1314,6 +1348,8 @@ void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) try {
         m_gpu.TickWork();
         return;
     }
+    if (is_indexed && !converted_indices)
+        context.Profile().Count(FrameCount::NativeIndexDraws);
     DrawParams params = MakeDrawParams(state, instance_count, is_indexed);
     if (converted_indices) {
         params.num_vertices = converted_indices->count;
@@ -2050,7 +2086,7 @@ void RasterizerD3D12::TiledCacheBarrier() {
 }
 void RasterizerD3D12::FlushCommands() {
     // Cache batches and guest callbacks belong to FenceManager, never submission.
-    context.Submit();
+    context.Submit(FrameCount::ForcedSubmitGuestFlush);
     default_pipeline_cache->FlushDiskCache();
 }
 void RasterizerD3D12::TickFrame() {

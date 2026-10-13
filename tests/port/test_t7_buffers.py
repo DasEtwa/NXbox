@@ -152,7 +152,16 @@ struct Resource {
 using ResourcePtr=std::shared_ptr<Resource>;
 struct Buffer { ResourcePtr resource; ResourcePtr Handle() const { return resource; } };
 struct StagingRef { ResourcePtr buffer; size_t offset; std::span<u8> mapped_span; };
+enum class FramePhase { BufferUpload };
+enum class FrameCount { BufferUploadBytes };
+struct FrameProfile {
+    struct Scope { Scope(FrameProfile&, FramePhase) {} };
+    u64 upload_bytes{};
+    void Count(FrameCount, u64 amount) { upload_bytes += amount; }
+};
 struct Context {
+    FrameProfile profile;
+    FrameProfile& Profile() { return profile; }
     ResourcePtr CreateBuffer(size_t size, int) {
         auto r=std::make_shared<Resource>(); r->bytes.resize(size,0xcc); return r;
     }
@@ -215,6 +224,7 @@ int main() {
     assert(padded.offset==0 && padded.size==65536 && padded.resource!=memory);
     for (size_t i=0;i<259;++i) assert(padded.resource->bytes[i]==memory->bytes[i+4]);
     for (size_t i=259;i<65536;++i) assert(padded.resource->bytes[i]==0);
+    assert(runtime.context.Profile().upload_bytes==2*65536);
     runtime.BindUniformBuffer(buffer,131071,2);
     assert(!runtime.bindings.stages[0].uniform.back().resource && invalid==2);
     runtime.BindStorageBuffer(buffer,16,65536,true);

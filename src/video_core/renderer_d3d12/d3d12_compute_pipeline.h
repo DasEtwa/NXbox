@@ -15,7 +15,7 @@ public:
     ComputePipeline(ID3D12Device* device,
                     Microsoft::WRL::ComPtr<ID3D12RootSignature> root_signature,
                     const DxilBlob& dxil, DiskPipelineCache* disk = nullptr, u64 key = 0,
-                    std::span<const u8> recipe = {});
+                    std::span<const u8> recipe = {}, FrameProfile* profile = nullptr);
 
     ID3D12PipelineState* PipelineState() const {
         return pso.Get();

@@ -318,6 +318,15 @@ ID3D12RootSignature* PipelineCache::GetRootSignature(DescriptorCounts counts) {
     return it->second.Get();
 }
 
+std::string PipelineCache::ProfileSummary() {
+    std::scoped_lock lock{pipeline_mutex};
+    return fmt::format(
+        " guest_graphics_entries={} graphics_pso_entries={} failed_graphics_entries={} "
+        "guest_compute_entries={} compute_pso_entries={} dxc_entries={}",
+        guest_graphics.size(), graphics.size(), failed_graphics.size(), guest_compute.size(),
+        compute.size(), dxc.Size());
+}
+
 GraphicsPipeline& PipelineCache::GetGraphics(const Pso::GraphicsPsoState& state, u32 d3d_topology,
                                              std::span<const StageInput> stages) {
     std::scoped_lock lock{pipeline_mutex};
@@ -344,8 +353,12 @@ GraphicsPipeline& PipelineCache::GetGraphics(const Pso::GraphicsPsoState& state,
     if (const auto it = graphics.find(key); it != graphics.end()) {
         return *it->second;
     }
-    if (const auto failed = failed_graphics.find(key); failed != failed_graphics.end())
+    if (const auto failed = failed_graphics.find(key); failed != failed_graphics.end()) {
+        context.Profile().Count(FrameCount::NegativeCacheHits);
         throw std::runtime_error(failed->second);
+    }
+    context.Profile().Count(FrameCount::PsoCacheMisses);
+    const FrameProfile::Scope profile_pso{context.Profile(), FramePhase::Pso};
     try {
         std::vector<StageProgram> programs;
         for (const auto& stage : stages) {
@@ -366,7 +379,8 @@ GraphicsPipeline& PipelineCache::GetGraphics(const Pso::GraphicsPsoState& state,
         }
         auto pipeline = std::make_unique<GraphicsPipeline>(
             context.Device(), signature, state, d3d_topology, programs, disk.get(),
-            Pso::HashBytes(&key, sizeof(key)), Recipe(&state, d3d_topology, stages), stream_output);
+            Pso::HashBytes(&key, sizeof(key)), Recipe(&state, d3d_topology, stages), stream_output,
+            &context.Profile());
         if (feedback_info)
             pipeline->SetTransformFeedback(*feedback_info);
         return *graphics.emplace(key, std::move(pipeline)).first->second;
@@ -384,10 +398,12 @@ ComputePipeline& PipelineCache::GetCompute(const StageInput& stage) {
     if (const auto it = compute.find(key); it != compute.end()) {
         return *it->second;
     }
+    context.Profile().Count(FrameCount::PsoCacheMisses);
+    const FrameProfile::Scope profile_pso{context.Profile(), FramePhase::Pso};
     auto dxil = dxc.Compile(stage.hlsl, Shader::Stage::Compute, key);
     auto pipeline = std::make_unique<ComputePipeline>(
         context.Device(), GetRootSignature(stage.counts), dxil, disk.get(), key,
-        Recipe(nullptr, 0, std::span{&stage, size_t{1}}));
+        Recipe(nullptr, 0, std::span{&stage, size_t{1}}), &context.Profile());
     return *compute.emplace(key, std::move(pipeline)).first->second;
 }
 
@@ -538,6 +554,7 @@ Shader::RuntimeInfo GraphicsRuntime(const Maxwell& regs, const Shader::IR::Progr
 
 IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(
     const Pso::FramebufferFormats& formats) try {
+    const FrameProfile::Scope profile_lookup{context.Profile(), FramePhase::PipelineLookup};
     if (!maxwell3d)
         return nullptr;
     std::scoped_lock lock{pipeline_mutex};
@@ -645,12 +662,10 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(
         Pso::HashBytes(&regs.provoking_vertex, sizeof(regs.provoking_vertex), specialization);
     specialization =
         Pso::HashBytes(&regs.mandated_early_z, sizeof(regs.mandated_early_z), specialization);
-    specialization =
-        Pso::HashBytes(&regs.alpha_test_enabled, sizeof(regs.alpha_test_enabled), specialization);
-    specialization =
-        Pso::HashBytes(&regs.alpha_test_func, sizeof(regs.alpha_test_func), specialization);
-    specialization =
-        Pso::HashBytes(&regs.alpha_test_ref, sizeof(regs.alpha_test_ref), specialization);
+    const auto alpha = Pso::AlphaTestSpecialization(
+        regs.alpha_test_enabled != 0, Pso::ComparisonFunc(static_cast<u32>(regs.alpha_test_func)),
+        std::bit_cast<u32>(regs.alpha_test_ref));
+    specialization = Pso::HashBytes(alpha.data(), sizeof(alpha), specialization);
     specialization = Pso::HashBytes(&regs.transform_feedback_enabled,
                                     sizeof(regs.transform_feedback_enabled), specialization);
     if (regs.transform_feedback_enabled) {
@@ -661,10 +676,21 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(
     }
     request.stage_hashes[0] =
         Pso::HashBytes(&specialization, sizeof(specialization), request.stage_hashes[0]);
-    if (const auto found = guest_graphics.find(request); found != guest_graphics.end())
+    if (const auto found = guest_graphics.find(request); found != guest_graphics.end()) {
+        if (!found->second)
+            context.Profile().Count(FrameCount::NegativeCacheHits);
         return found->second;
+    }
+    context.Profile().Count(FrameCount::GuestPipelineMisses);
+    if (context.Profile().Enabled() &&
+        (guest_graphics.size() < 16 || guest_graphics.size() % 120 == 0))
+        Diagnostic(fmt::format(
+            "D3D12_PIPELINE_MISS kind=graphics request={:016x} guest_entries={} pso_entries={}",
+            Pso::HashBytes(&request, sizeof(request)), guest_graphics.size(), graphics.size()));
     try {
         GraphicsEnvironments environments;
+        const FrameProfile::Scope profile_translation{context.Profile(),
+                                                      FramePhase::ShaderTranslation};
         GetGraphicsEnvironments(environments, guest_hashes);
         TranslationState translation{context.Device()};
         std::array<Shader::IR::Program, 6> programs;
@@ -678,6 +704,7 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(
             Shader::Maxwell::Flow::CFG cfg{
                 env, translation.flow,
                 static_cast<u32>(env.StartAddress() + sizeof(Shader::ProgramHeader)), index == 0};
+            context.Profile().Count(FrameCount::ShaderTranslations);
             programs[index] = Shader::Maxwell::TranslateProgram(translation.inst, translation.block,
                                                                 env, cfg, translation.host);
             if (index == 1 && guest_hashes[0]) {
@@ -750,6 +777,7 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(
             }
         }
         Pso::ApplyVertexReads(state, vertex_reads);
+        const FrameProfile::Scope profile_build{context.Profile(), FramePhase::PipelineLookup};
         auto& pipeline = GetGraphics(state, topology.topology, stages);
         for (size_t index = 1; index < 6; ++index) {
             if (guest_hashes[index])
@@ -778,6 +806,7 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(
 }
 
 ComputePipeline* PipelineCache::CurrentComputePipeline() try {
+    const FrameProfile::Scope profile_lookup{context.Profile(), FramePhase::PipelineLookup};
     if (!kepler_compute)
         return nullptr;
     std::scoped_lock lock{pipeline_mutex};
@@ -791,20 +820,28 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() try {
                                             launch.local_pos_alloc, launch.local_crs_alloc};
     const u64 request =
         Pso::HashBytes(specialization.data(), sizeof(specialization), shader->unique_hash);
-    if (const auto found = guest_compute.find(request); found != guest_compute.end())
+    if (const auto found = guest_compute.find(request); found != guest_compute.end()) {
+        if (!found->second)
+            context.Profile().Count(FrameCount::NegativeCacheHits);
         return found->second;
+    }
+    context.Profile().Count(FrameCount::GuestPipelineMisses);
     try {
         const auto& qmd = kepler_compute->launch_description;
         VideoCommon::ComputeEnvironment env{*kepler_compute, *gpu_memory,
                                             kepler_compute->regs.code_loc.Address(),
                                             qmd.program_start};
         env.SetCachedSize(shader->size_bytes);
+        const FrameProfile::Scope profile_translation{context.Profile(),
+                                                      FramePhase::ShaderTranslation};
+        context.Profile().Count(FrameCount::ShaderTranslations);
         TranslationState translation{context.Device()};
         Shader::Maxwell::Flow::CFG cfg{env, translation.flow, env.StartAddress()};
         auto program = Shader::Maxwell::TranslateProgram(translation.inst, translation.block, env,
                                                          cfg, translation.host);
         const auto source = Shader::Backend::HLSL::EmitHLSL(translation.profile, program);
         const auto counts = CountStageTables(program.info);
+        const FrameProfile::Scope profile_build{context.Profile(), FramePhase::PipelineLookup};
         auto& pipeline = GetCompute({Shader::Stage::Compute,
                                      shader->unique_hash,
                                      source,
