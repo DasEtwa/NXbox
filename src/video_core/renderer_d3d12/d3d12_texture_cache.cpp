@@ -11,6 +11,7 @@
 #include <tuple>
 #include <bc_decoder.h>
 #include <fmt/format.h>
+#include "common/alignment.h"
 #include "common/logging.h"
 #include "common/settings.h"
 #include "video_core/framebuffer_config.h"
@@ -1054,6 +1055,114 @@ void TextureCacheRuntime::ConvertImage(Framebuffer*, ImageView& dst, ImageView& 
         src.LogUnsupported(error.what());
     }
 }
+// Equal-size color blocks with no host conversion have the same bytes on both sides: bounce
+// them through a GPU buffer with each side's footprint. The CPU path waited on the GPU for every
+// such copy (~10 per frame in BotW).
+bool TextureCacheRuntime::ReinterpretOnGpu(Image& dst, Image& src,
+                                           std::span<const VideoCommon::ImageCopy> copies) {
+    const auto& from = src.HostFormat();
+    const auto& to = dst.HostFormat();
+    if (&dst == &src || from.conversion != FormatConversion::None ||
+        to.conversion != FormatConversion::None || from.depth || to.depth || from.planes > 1 ||
+        to.planes > 1 || from.bytes_per_block != to.bytes_per_block ||
+        src.info.num_samples != 1 || dst.info.num_samples != 1)
+        return false;
+    const auto src_format = src.Handle()->handle->GetDesc().Format;
+    const auto dst_format = dst.Handle()->handle->GetDesc().Format;
+    struct Step {
+        D3D12_PLACED_SUBRESOURCE_FOOTPRINT read, write;
+        UINT src_subresource, dst_subresource;
+        D3D12_BOX src_box, dst_box;
+        UINT x, y, z;
+    };
+    std::vector<Step> steps;
+    u64 total = 0;
+    for (const auto& copy : copies) {
+        const auto& extent = copy.extent;
+        if (!extent.width || !extent.height || !extent.depth || copy.src_offset.x < 0 ||
+            copy.src_offset.y < 0 || copy.src_offset.z < 0 || copy.dst_offset.x < 0 ||
+            copy.dst_offset.y < 0 || copy.dst_offset.z < 0 ||
+            copy.src_subresource.num_layers != copy.dst_subresource.num_layers)
+            return false;
+        const u32 columns = (extent.width + from.block_width - 1) / from.block_width;
+        const u32 rows = (extent.height + from.block_height - 1) / from.block_height;
+        const s32 level = copy.dst_subresource.base_level;
+        const u32 mip_width = std::max(1u, dst.info.size.width >> level);
+        const u32 mip_height = std::max(1u, dst.info.size.height >> level);
+        const auto dx = static_cast<u32>(copy.dst_offset.x);
+        const auto dy = static_cast<u32>(copy.dst_offset.y);
+        if (dx >= mip_width || dy >= mip_height)
+            return false;
+        const u32 width = std::min(columns * to.block_width, mip_width - dx);
+        const u32 height = std::min(rows * to.block_height, mip_height - dy);
+        if ((width + to.block_width - 1) / to.block_width != columns ||
+            (height + to.block_height - 1) / to.block_height != rows)
+            return false;
+        const u32 pitch = Common::AlignUp(columns * from.bytes_per_block,
+                                          u32{D3D12_TEXTURE_DATA_PITCH_ALIGNMENT});
+        const u64 size = u64{pitch} * rows * extent.depth;
+        for (s32 layer = 0; layer < copy.src_subresource.num_layers; ++layer) {
+            Step step{};
+            const u64 offset =
+                Common::AlignUp(total, u64{D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT});
+            step.read = {offset,
+                         {src_format, Common::AlignUp(extent.width, from.block_width),
+                          Common::AlignUp(extent.height, from.block_height), extent.depth, pitch}};
+            step.write = {offset,
+                          {dst_format, Common::AlignUp(width, to.block_width),
+                           Common::AlignUp(height, to.block_height), extent.depth, pitch}};
+            step.src_subresource = Subresource(src.info, copy.src_subresource.base_level,
+                                               copy.src_subresource.base_layer + layer);
+            step.dst_subresource = Subresource(dst.info, level,
+                                               copy.dst_subresource.base_layer + layer);
+            const auto sx = static_cast<UINT>(copy.src_offset.x);
+            const auto sy = static_cast<UINT>(copy.src_offset.y);
+            const auto sz = static_cast<UINT>(copy.src_offset.z);
+            step.src_box = {sx, sy, sz, sx + extent.width, sy + extent.height, sz + extent.depth};
+            step.dst_box = {0, 0, 0, width, height, extent.depth};
+            step.x = dx;
+            step.y = dy;
+            step.z = static_cast<UINT>(copy.dst_offset.z);
+            steps.push_back(step);
+            total = offset + size;
+        }
+    }
+    if (steps.empty())
+        return true;
+    auto bounce = context.CreateBuffer(total, D3D12_HEAP_TYPE_DEFAULT);
+    const auto location = [](ID3D12Resource* resource, const D3D12_PLACED_SUBRESOURCE_FOOTPRINT* fp,
+                             UINT subresource) {
+        D3D12_TEXTURE_COPY_LOCATION result{};
+        result.pResource = resource;
+        if (fp) {
+            result.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+            result.PlacedFootprint = *fp;
+        } else {
+            result.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+            result.SubresourceIndex = subresource;
+        }
+        return result;
+    };
+    context.Retain(bounce);
+    context.Retain(src.Handle());
+    context.Retain(dst.Handle());
+    context.MarkWork("upload/copy");
+    context.Transition(src.Handle(), D3D12_RESOURCE_STATE_COPY_SOURCE);
+    context.Transition(bounce, D3D12_RESOURCE_STATE_COPY_DEST);
+    for (const auto& step : steps) {
+        const auto out = location(bounce->handle.Get(), &step.read, 0);
+        const auto in = location(src.Handle()->handle.Get(), nullptr, step.src_subresource);
+        context.Commands()->CopyTextureRegion(&out, 0, 0, 0, &in, &step.src_box);
+    }
+    context.Transition(bounce, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    context.Transition(dst.Handle(), D3D12_RESOURCE_STATE_COPY_DEST);
+    for (const auto& step : steps) {
+        const auto out = location(dst.Handle()->handle.Get(), nullptr, step.dst_subresource);
+        const auto in = location(bounce->handle.Get(), &step.write, 0);
+        context.Commands()->CopyTextureRegion(&out, step.x, step.y, step.z, &in, &step.dst_box);
+    }
+    return true;
+}
 bool TextureCacheRuntime::ShouldReinterpret(Image& dst, Image& src) {
     return dst.HostFormat().resource_format != src.HostFormat().resource_format ||
            (dst.info.format != src.info.format &&
@@ -1071,6 +1180,8 @@ void TextureCacheRuntime::ReinterpretImage(Image& dst, Image& src,
     const bool native_raw_alias = src.info.num_samples == 1 && dst.info.num_samples == 1 &&
                                   VideoCore::Surface::BytesPerBlock(src.info.format) ==
                                       VideoCore::Surface::BytesPerBlock(dst.info.format);
+    if (native_raw_alias && ReinterpretOnGpu(dst, src, copies))
+        return;
     if (native_raw_alias || dst.HostFormat().conversion != FormatConversion::None ||
         src.HostFormat().conversion != FormatConversion::None) {
         // A canonical host pixel is not the guest bit pattern. Reinterpret via

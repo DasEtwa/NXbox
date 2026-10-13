@@ -90,6 +90,7 @@ public:
     void CopyImageMSAA(Image&, Image&, std::span<const VideoCommon::ImageCopy>);
     bool ShouldReinterpret(Image& dst, Image& src);
     void ReinterpretImage(Image& dst, Image& src, std::span<const VideoCommon::ImageCopy> copies);
+    bool ReinterpretOnGpu(Image& dst, Image& src, std::span<const VideoCommon::ImageCopy> copies);
     void ConvertImage(Framebuffer*, ImageView&, ImageView&);
     // Raw framebuffer fallback lives here alongside the shared guest image cache.
     ResourcePtr UploadFramebuffer(Tegra::MaxwellDeviceMemoryManager&,
