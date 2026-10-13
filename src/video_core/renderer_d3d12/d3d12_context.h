@@ -77,6 +77,24 @@ enum class FrameCount : size_t {
     ForcedSubmitGuestFlush,
     ForcedSubmitGuestFence,
     ForcedSubmitOther,
+    VertexUploadBytes,
+    IndexUploadBytes,
+    UniformUploadBytes,
+    StorageUploadBytes,
+    TexelUploadBytes,
+    OtherUploadBytes,
+    TextureUploadBytes,
+    StagingCopyBytes,
+    GpuBufferCopyBytes,
+    UniformCopyCacheHits,
+    VertexRepackBytes,
+    VertexPaddingBytes,
+    ForcedSubmitFenceWait,
+    ForcedSubmitWaitForIdle,
+    ForcedSubmitFlushAll,
+    ForcedSubmitBufferClear,
+    ForcedSubmitLifecycle,
+    ForcedSubmitPresent,
     Count
 };
 // Monotonic CPU samples, independent of the host clock API, for exclusive phases.
@@ -271,6 +289,7 @@ struct Resource {
     std::span<u8> mapped;
     std::shared_ptr<MemoryBudget> budget;
     u64 allocation_size{};
+    u64 content_version{};
     ~Resource();
 };
 using ResourcePtr = std::shared_ptr<Resource>;

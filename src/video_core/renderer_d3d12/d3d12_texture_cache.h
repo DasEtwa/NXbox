@@ -22,9 +22,10 @@ public:
         : context{context}, upload{context, D3D12_HEAP_TYPE_UPLOAD},
           readback{context, D3D12_HEAP_TYPE_READBACK} {}
     void Finish() {
-        context.Finish();
+        context.Finish(FrameCount::ForcedSubmitTextureDownload);
     }
     StagingBufferRef UploadStagingBuffer(size_t size, bool = false) {
+        context.Profile().Count(FrameCount::TextureUploadBytes, size);
         return upload.Request(size);
     }
     StagingBufferRef DownloadStagingBuffer(size_t size, bool deferred = false) {

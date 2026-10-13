@@ -129,6 +129,7 @@ private:
     QueryCacheRuntime query_runtime;
     QueryCache query_cache;
     FenceManager fence_manager;
+    bool PrepareDrawIndices(bool is_indexed, DrawParams& params, const IGraphicsPipeline& pipeline);
     template <typename Func>
     void PrepareDraw(bool is_indexed, Func&& draw);
     ID3D12CommandSignature* IndirectSignature(bool indexed);

@@ -13,6 +13,9 @@ void TransformFeedback::EnsureCounters() {
         return;
     counters = context.CreateBuffer(32, D3D12_HEAP_TYPE_DEFAULT);
     context.Commands()->SetPredication(nullptr, 0, D3D12_PREDICATION_OP_EQUAL_ZERO);
+    context.Profile().Count(FrameCount::BufferUploadBytes, 32);
+    context.Profile().Count(FrameCount::StorageUploadBytes, 32);
+    context.Profile().Count(FrameCount::StagingCopyBytes, 32);
     auto initial = upload.Request(32);
     std::memset(initial.mapped_span.data(), 0, 32);
     context.Transition(counters, D3D12_RESOURCE_STATE_COPY_DEST);
@@ -107,6 +110,9 @@ void TransformFeedback::BindBuffer(u32 slot, ResourcePtr buffer, u64 offset, u64
         filled_size = 0;
     if (filled_size) {
         context.Commands()->SetPredication(nullptr, 0, D3D12_PREDICATION_OP_EQUAL_ZERO);
+        context.Profile().Count(FrameCount::BufferUploadBytes, 8);
+        context.Profile().Count(FrameCount::StorageUploadBytes, 8);
+        context.Profile().Count(FrameCount::StagingCopyBytes, 8);
         auto reset = upload.Request(8);
         std::memcpy(reset.mapped_span.data(), &*filled_size, 8);
         context.Transition(counters, D3D12_RESOURCE_STATE_COPY_DEST);
@@ -171,7 +177,7 @@ u64 TransformFeedback::ReadFilledSize(u32 stream) {
             context.MarkWork("upload/copy");
             context.Commands()->CopyBufferRegion(result.buffer->handle.Get(), result.offset,
                                                  counters->handle.Get(), i * 8, 8);
-            context.Finish();
+            context.Finish(FrameCount::ForcedSubmitBufferDownload);
             u64 value{};
             std::memcpy(&value, result.mapped_span.data(), 8);
             return value;

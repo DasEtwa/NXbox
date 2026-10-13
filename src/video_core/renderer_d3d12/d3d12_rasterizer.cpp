@@ -9,6 +9,7 @@
 #include <mutex>
 #include <optional>
 #include <set>
+#include <type_traits>
 #include <fmt/format.h>
 #include "common/alignment.h"
 #include "common/logging.h"
@@ -70,7 +71,7 @@ RasterizerD3D12::~RasterizerD3D12() {
     try {
         fence_manager.SignalReference();
         fence_manager.WaitPendingFences(true);
-        context.Finish();
+        context.Finish(FrameCount::ForcedSubmitLifecycle);
     } catch (const std::exception& error) {
         LOG_ERROR(Render, "D3D12 rasterizer teardown: {}", error.what());
     }
@@ -460,6 +461,10 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     ID3D12RootSignature* const root_signature = pipeline->RootSignature();
     if (!pso || !root_signature)
         return;
+    if constexpr (std::is_same_v<std::remove_cvref_t<Func>, DrawCommand>) {
+        if (!PrepareDrawIndices(is_indexed, draw.params, *pipeline))
+            return;
+    }
     FillGraphicsState(*maxwell3d, attachment_state);
     Pso::ApplyFramebufferFormats(attachment_state, formats);
     if (attachment_diagnostics < 8) {
@@ -704,7 +709,7 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     {
         const FrameProfile::Scope profile_cache{context.Profile(), FramePhase::BufferCache};
         buffer_cache.UpdateGraphicsBuffers(is_indexed);
-        buffer_cache.BindHostGeometryBuffers(is_indexed);
+        buffer_cache.BindHostGeometryBuffers(is_indexed, !converted_indices.has_value());
     }
     for (size_t stage = 0; stage < NUM_GRAPHICS_STAGES; ++stage) {
         bindings.stages[stage].Clear();
@@ -796,6 +801,8 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     auto& geometry = bindings.geometry;
     std::array<D3D12_VERTEX_BUFFER_VIEW, GeometryBindings::MaxVertexBuffers> vertex_views{};
     if (!zero_vertex_buffer) {
+        context.Profile().Count(FrameCount::BufferUploadBytes, 65536);
+        context.Profile().Count(FrameCount::VertexUploadBytes, 65536);
         zero_vertex_buffer = context.CreateBuffer(65536, D3D12_HEAP_TYPE_UPLOAD);
         std::fill(zero_vertex_buffer->mapped.begin(), zero_vertex_buffer->mapped.end(), u8{0});
     }
@@ -846,10 +853,6 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
                        : 0;
         const u64 required = Pso::VertexRequiredBytes(last, slot.stride, bytes);
         constexpr u64 MaxVertexUpload = 64 * 1024 * 1024;
-        if (required > MaxVertexUpload) {
-            SkipDraw("vertex binding exceeds 64 MiB draw budget");
-            return;
-        }
         const u64 available = slot.size > attribute.offset ? slot.size - attribute.offset : 0;
         const u64 source_offset = u64{slot.offset} + attribute.offset;
         const bool realign = (source_offset % alignment) || (slot.stride % alignment) ||
@@ -860,8 +863,17 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
             need(slot.resource, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
             continue;
         }
+        if (required > MaxVertexUpload) {
+            SkipDraw("vertex binding exceeds 64 MiB draw budget");
+            return;
+        }
         if (!realign) {
             // Preserve hardware zero reads beyond the inclusive Maxwell limit.
+            context.Profile().Count(FrameCount::BufferUploadBytes, required);
+            context.Profile().Count(FrameCount::VertexUploadBytes, required);
+            context.Profile().Count(FrameCount::VertexPaddingBytes, required);
+            context.Profile().Count(FrameCount::StagingCopyBytes, required);
+            context.Profile().Count(FrameCount::GpuBufferCopyBytes, std::min(available, required));
             auto zero = context.CreateBuffer(required, D3D12_HEAP_TYPE_UPLOAD);
             std::fill(zero->mapped.begin(), zero->mapped.end(), u8{0});
             auto padded = context.CreateBuffer(required, D3D12_HEAP_TYPE_DEFAULT);
@@ -889,6 +901,9 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
             SkipDraw("realigned vertex binding exceeds 64 MiB draw budget");
             return;
         }
+        context.Profile().Count(FrameCount::BufferUploadBytes, elements * storage_bytes);
+        context.Profile().Count(FrameCount::VertexUploadBytes, elements * storage_bytes);
+        context.Profile().Count(FrameCount::VertexRepackBytes, elements * storage_bytes);
         auto packed = context.CreateBuffer(elements * storage_bytes, D3D12_HEAP_TYPE_UPLOAD);
         std::fill(packed->mapped.begin(), packed->mapped.end(), u8{0});
         const u64 read_bytes = std::min(available, required);
@@ -1268,40 +1283,52 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         stage.Clear(); // drop upload-page references so the staging ring can recycle them
 }
 
-void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) try {
-    if (BisectEnabled("NXBOX_D3D12_NO_DRAWS")) {
-        m_gpu.TickWork();
-        return;
-    }
-    converted_indices.reset();
-    query_runtime.PauseHostConditionalRendering();
+bool RasterizerD3D12::PrepareDrawIndices(bool is_indexed, DrawParams& params,
+                                         const IGraphicsPipeline& pipeline) {
     const auto& state = maxwell3d->draw_manager.draw_state;
     const auto topology = static_cast<IndexConversion::Topology>(state.topology);
     const auto& regs = maxwell3d->regs;
     const bool vertex_only = !regs.IsShaderConfigEnabled(Maxwell::ShaderType::Geometry) &&
                              !regs.IsShaderConfigEnabled(Maxwell::ShaderType::TessellationInit) &&
                              !regs.IsShaderConfigEnabled(Maxwell::ShaderType::Tessellation);
-    const auto provoking = vertex_only ? (regs.provoking_vertex == Maxwell::ProvokingVertex::Last
-                                              ? IndexConversion::Provoking::Last
-                                              : IndexConversion::Provoking::First)
-                                       : IndexConversion::Provoking::Preserve;
+    const auto* fragment = pipeline.StageInfo(4);
+    bool has_primitive_outputs = false;
+    for (size_t stage : {size_t{0}, size_t{1}}) {
+        if (const auto* vertex = pipeline.StageInfo(stage))
+            has_primitive_outputs |= vertex->stores[Shader::IR::Attribute::Layer] ||
+                                     vertex->stores[Shader::IR::Attribute::ViewportIndex];
+    }
+    bool has_flat_inputs = false;
+    if (fragment) {
+        for (size_t i = 0; i < fragment->interpolation.size(); ++i)
+            has_flat_inputs |= fragment->loads.Generic(i) &&
+                               fragment->interpolation[i] == Shader::Interpolation::Flat;
+    }
+    const auto provoking = vertex_only && (has_flat_inputs || has_primitive_outputs)
+                               ? (regs.provoking_vertex == Maxwell::ProvokingVertex::Last
+                                      ? IndexConversion::Provoking::Last
+                                      : IndexConversion::Provoking::First)
+                               : IndexConversion::Provoking::Preserve;
     const auto format = state.inline_index_draw_indexes.empty()
                             ? static_cast<IndexConversion::Format>(state.index_buffer.format)
                             : IndexConversion::Format::Uint32;
-    const IndexConversion::Restart restart{regs.primitive_restart.enabled != 0,
-                                           regs.primitive_restart.index};
+    const IndexConversion::Restart restart{
+        regs.primitive_restart.enabled != 0 &&
+            IndexConversion::RestartCanMatch(format, regs.primitive_restart.index),
+        regs.primitive_restart.index};
     if (is_indexed &&
         static_cast<u32>(topology) <= static_cast<u32>(IndexConversion::TriangleStripAdjacency) &&
-        IndexConversion::NeedsConversion(topology, format, restart, provoking)) {
+        (IndexConversion::NeedsConversion(topology, format, restart, provoking) ||
+         !state.inline_index_draw_indexes.empty())) {
         gpu_memory->FlushCaching();
         if (static_cast<u32>(format) > 2) {
             SkipDraw("invalid index_buffer.format");
-            return;
+            return false;
         }
         const size_t width = size_t{1} << static_cast<u32>(format);
         if (u64{state.index_buffer.count} * width > 64 * 1024 * 1024) {
             SkipDraw("index conversion exceeds 64 MiB draw budget");
-            return;
+            return false;
         }
         const FrameProfile::Scope profile_index{context.Profile(), FramePhase::IndexConversion};
         context.Profile().Count(FrameCount::IndexConversions);
@@ -1313,22 +1340,18 @@ void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) try {
         if (!state.inline_index_draw_indexes.empty()) {
             if (input.size() > state.inline_index_draw_indexes.size()) {
                 SkipDraw("inline_index_draw_indexes truncated");
-                return;
+                return false;
             }
             std::memcpy(input.data(), state.inline_index_draw_indexes.data(), input.size());
         } else {
             if (const auto cpu = gpu_memory->GpuToCpuAddress(address)) {
-                std::scoped_lock lock{buffer_cache.mutex};
                 const FrameProfile::Scope profile_download{context.Profile(),
                                                            FramePhase::BufferDownload};
                 buffer_cache.DownloadMemory(*cpu, input.size());
             }
             gpu_memory->ReadBlock(address, input.data(), input.size());
         }
-        converted_indices = index_converter.Convert(topology, format, input,
-                                                    {maxwell3d->regs.primitive_restart.enabled != 0,
-                                                     maxwell3d->regs.primitive_restart.index},
-                                                    provoking);
+        converted_indices = index_converter.Convert(topology, format, input, restart, provoking);
     } else if (!is_indexed &&
                (topology == IndexConversion::Topology::Quads ||
                 topology == IndexConversion::Topology::QuadStrip ||
@@ -1345,18 +1368,28 @@ void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) try {
     }
     if (converted_indices && !converted_indices->count) {
         converted_indices.reset();
-        m_gpu.TickWork();
-        return;
+        return false;
     }
     if (is_indexed && !converted_indices)
         context.Profile().Count(FrameCount::NativeIndexDraws);
-    DrawParams params = MakeDrawParams(state, instance_count, is_indexed);
     if (converted_indices) {
         params.num_vertices = converted_indices->count;
         params.first_index = 0;
         params.base_vertex = is_indexed ? state.base_index : state.vertex_buffer.first;
         params.is_indexed = true;
     }
+    return true;
+}
+
+void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) try {
+    if (BisectEnabled("NXBOX_D3D12_NO_DRAWS")) {
+        m_gpu.TickWork();
+        return;
+    }
+    converted_indices.reset();
+    query_runtime.PauseHostConditionalRendering();
+    DrawParams params =
+        MakeDrawParams(maxwell3d->draw_manager.draw_state, instance_count, is_indexed);
     PrepareDraw(is_indexed, DrawCommand{params});
     converted_indices.reset();
     m_gpu.TickWork();
@@ -1957,7 +1990,7 @@ void RasterizerD3D12::DisableGraphicsUniformBuffer(size_t stage, u32 index) {
 void RasterizerD3D12::FlushAll() {
     fence_manager.SignalReference();
     fence_manager.WaitPendingFences(true);
-    context.Finish();
+    context.Finish(FrameCount::ForcedSubmitFlushAll);
 }
 void RasterizerD3D12::FlushRegion(DAddr addr, u64 size, VideoCommon::CacheType which) {
     if (!addr || !size)
@@ -2072,7 +2105,7 @@ void RasterizerD3D12::FlushAndInvalidateRegion(DAddr addr, u64 size, VideoCommon
 }
 void RasterizerD3D12::WaitForIdle() {
     query_cache.NotifyWFI();
-    context.Finish();
+    context.Finish(FrameCount::ForcedSubmitWaitForIdle);
     fence_manager.WaitPendingFences(true);
     fence_manager.SignalOrdering();
 }

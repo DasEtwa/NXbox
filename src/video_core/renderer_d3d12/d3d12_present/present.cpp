@@ -199,13 +199,13 @@ struct Presenter::Impl {
 Presenter::Presenter(Context& context) : impl{std::make_unique<Impl>(context)} {}
 Presenter::~Presenter() {
     try {
-        impl->context.Finish();
+        impl->context.Finish(FrameCount::ForcedSubmitLifecycle);
     } catch (const std::exception& error) {
         LOG_ERROR(Render, "D3D12 presentation teardown: {}", error.what());
     }
 }
 void Presenter::BeginFrame() {
-    impl->context.Finish();
+    impl->context.Finish(FrameCount::ForcedSubmitLifecycle);
     impl->cursor = 0;
     impl->begun = true;
 }

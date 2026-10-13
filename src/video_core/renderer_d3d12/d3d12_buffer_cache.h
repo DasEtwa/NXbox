@@ -7,6 +7,7 @@
 #include "video_core/renderer_d3d12/d3d12_context.h"
 #include "video_core/renderer_d3d12/d3d12_descriptor.h"
 #include "video_core/renderer_d3d12/d3d12_ring_allocator.h"
+#include "video_core/renderer_d3d12/d3d12_upload_cache.h"
 
 namespace D3D12 {
 class BufferCacheRuntime;
@@ -45,6 +46,10 @@ public:
     BufferCacheRuntime(Context& context, BindingState& bindings)
         : context{context}, bindings{bindings}, upload{context, D3D12_HEAP_TYPE_UPLOAD},
           readback{context, D3D12_HEAP_TYPE_READBACK} {}
+    bool PreferCachedUniformBuffers() const {
+        return true;
+    }
+    void RecordBufferUpload(VideoCommon::BufferUploadSource source, u64 bytes);
     void TickFrame(Common::SlotVector<Buffer>& buffers);
     u64 CurrentTick() {
         return context.CurrentTick();
@@ -77,6 +82,8 @@ public:
     StagingBufferRef UploadStagingBuffer(size_t size) {
         const FrameProfile::Scope profile_upload{context.Profile(), FramePhase::BufferUpload};
         context.Profile().Count(FrameCount::BufferUploadBytes, size);
+        context.Profile().Count(upload_source, size);
+        upload_source = FrameCount::OtherUploadBytes;
         return upload.Request(size);
     }
     StagingBufferRef DownloadStagingBuffer(size_t size, bool = false) {
@@ -114,6 +121,8 @@ public:
     Context& context;
 
 private:
+    UniformCopyCache<Resource> uniform_copies;
+    FrameCount upload_source{FrameCount::OtherUploadBytes};
     BindingState& bindings;
     const u64 memory_target{NativeBufferMemoryTarget(context.MemoryUsage())};
     StagingRing upload;

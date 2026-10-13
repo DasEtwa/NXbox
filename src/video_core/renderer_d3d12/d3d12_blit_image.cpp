@@ -407,7 +407,7 @@ struct BlitImageHelper::Impl {
             return;
         }
         if (++pending_descriptors > 128) {
-            context.Finish();
+            context.Finish(FrameCount::ForcedSubmitTextureDownload);
             pending_descriptors = 1;
         }
         const auto src = Snapshot(original_src, dst);

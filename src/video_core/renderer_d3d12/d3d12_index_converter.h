@@ -37,11 +37,23 @@ struct Restart {
     bool enabled{};
     std::uint32_t index{0xffffffff};
 };
+constexpr bool RestartCanMatch(Format format, std::uint32_t index) {
+    switch (format) {
+    case Format::Uint8:
+        return index <= 0xff;
+    case Format::Uint16:
+        return index <= 0xffff;
+    case Format::Uint32:
+        return true;
+    }
+    return true; // Invalid guest formats must take the validating conversion path.
+}
 // Native lists already have the required order. Avoid a synchronous guest read,
 // CPU expansion and staging upload when conversion would only copy the indices.
 constexpr bool NeedsConversion(Topology topology, Format format, Restart restart,
                                Provoking provoking) {
-    if ((format != Format::Uint16 && format != Format::Uint32) || restart.enabled)
+    if ((format != Format::Uint16 && format != Format::Uint32) ||
+        (restart.enabled && RestartCanMatch(format, restart.index)))
         return true;
     if (topology == Topology::Points)
         return false;

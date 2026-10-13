@@ -41,6 +41,7 @@
 #include "video_core/texture_cache/types.h"
 
 namespace VideoCommon {
+enum class BufferUploadSource { Other, Vertex, Index, Uniform, Storage, Texture };
 
 using BufferId = Common::SlotId;
 
@@ -253,7 +254,7 @@ public:
 
     void UpdateComputeBuffers();
 
-    void BindHostGeometryBuffers(bool is_indexed);
+    void BindHostGeometryBuffers(bool is_indexed, bool bind_index = true);
 
     void BindHostStageBuffers(size_t stage);
 
@@ -452,7 +453,8 @@ private:
 
     void TouchBuffer(Buffer& buffer, BufferId buffer_id) noexcept;
 
-    bool SynchronizeBuffer(Buffer& buffer, DAddr device_addr, u32 size);
+    bool SynchronizeBuffer(Buffer& buffer, DAddr device_addr, u32 size,
+                           BufferUploadSource source = BufferUploadSource::Other);
 
     void UploadMemory(Buffer& buffer, u64 total_size_bytes, u64 largest_copy,
                       std::span<BufferCopy> copies);

@@ -29,6 +29,30 @@ void Buffer::MarkUsage(u64 offset, u64 size) {
     tick = context->CurrentTick();
     context->Retain(resource);
 }
+void BufferCacheRuntime::RecordBufferUpload(VideoCommon::BufferUploadSource source, u64 bytes) {
+    FrameCount counter = FrameCount::OtherUploadBytes;
+    switch (source) {
+    case VideoCommon::BufferUploadSource::Other:
+        break;
+    case VideoCommon::BufferUploadSource::Vertex:
+        counter = FrameCount::VertexUploadBytes;
+        break;
+    case VideoCommon::BufferUploadSource::Index:
+        counter = FrameCount::IndexUploadBytes;
+        break;
+    case VideoCommon::BufferUploadSource::Uniform:
+        counter = FrameCount::UniformUploadBytes;
+        break;
+    case VideoCommon::BufferUploadSource::Storage:
+        counter = FrameCount::StorageUploadBytes;
+        break;
+    case VideoCommon::BufferUploadSource::Texture:
+        counter = FrameCount::TexelUploadBytes;
+        break;
+    }
+    upload_source = counter;
+    (void)bytes; // The staging allocation records the actual transferred bytes.
+}
 void BufferCacheRuntime::TickFrame(Common::SlotVector<Buffer>& buffers) {
     upload.Collect();
     readback.Collect();
@@ -80,6 +104,10 @@ void BufferCacheRuntime::CopyBuffer(ResourcePtr dst, ResourcePtr src,
     context.Transition(src, D3D12_RESOURCE_STATE_COPY_SOURCE);
     context.Transition(dst, D3D12_RESOURCE_STATE_COPY_DEST);
     for (const auto& copy : copies) {
+        context.Profile().Count(src->heap == D3D12_HEAP_TYPE_UPLOAD
+                                    ? FrameCount::StagingCopyBytes
+                                    : FrameCount::GpuBufferCopyBytes,
+                                copy.size);
         context.MarkWork("upload/copy");
         context.Commands()->CopyBufferRegion(dst->handle.Get(), copy.dst_offset, src->handle.Get(),
                                              copy.src_offset, copy.size);
@@ -96,6 +124,7 @@ void BufferCacheRuntime::ClearBuffer(ResourcePtr dst, u32 offset, size_t size, u
         const size_t count = std::min(size, size_t{1 << 20});
         const FrameProfile::Scope profile_upload{context.Profile(), FramePhase::BufferUpload};
         context.Profile().Count(FrameCount::BufferUploadBytes, count);
+        context.Profile().Count(FrameCount::OtherUploadBytes, count);
         auto staging = upload.Request(count);
         for (size_t i = 0; i < count; i += sizeof(value))
             std::memcpy(staging.mapped_span.data() + i, &value, sizeof(value));
@@ -105,7 +134,7 @@ void BufferCacheRuntime::ClearBuffer(ResourcePtr dst, u32 offset, size_t size, u
         size -= count;
         // Prevent a single large clear from exhausting the staging ring.
         if (size)
-            context.Finish();
+            context.Finish(FrameCount::ForcedSubmitBufferClear);
     }
 }
 using Maxwell = Tegra::Engines::Maxwell3D::Regs;
@@ -139,6 +168,7 @@ void BufferCacheRuntime::BindQuadIndexBuffer(Maxwell::PrimitiveTopology topology
     }
     const FrameProfile::Scope profile_upload{context.Profile(), FramePhase::BufferUpload};
     context.Profile().Count(FrameCount::BufferUploadBytes, size_t{quads} * 6 * sizeof(u32));
+    context.Profile().Count(FrameCount::IndexUploadBytes, size_t{quads} * 6 * sizeof(u32));
     auto staging = upload.Request(size_t{quads} * 6 * sizeof(u32));
     auto* out = reinterpret_cast<u32*>(staging.mapped_span.data());
     for (u32 quad = 0; quad < quads; ++quad) {
@@ -172,8 +202,11 @@ void BufferCacheRuntime::BindVertexBuffers(VideoCommon::HostBindings<Buffer>& ho
 }
 std::span<u8> BufferCacheRuntime::BindMappedUniformBuffer(size_t stage, u32, u32 size) {
     const FrameProfile::Scope profile_upload{context.Profile(), FramePhase::BufferUpload};
-    context.Profile().Count(FrameCount::BufferUploadBytes, std::max(size, u32{65536}));
-    // Reserve the entire legal CBV range and initialize every byte beyond the guest upload.
+    const u32 padded = UniformViewSize(size);
+    const u64 allocation_bytes = size > 65536 ? size : padded;
+    context.Profile().Count(FrameCount::BufferUploadBytes, allocation_bytes);
+    context.Profile().Count(FrameCount::UniformUploadBytes, allocation_bytes);
+    // Own only the alignment tail; reads outside the declared CBV return zero.
     if (size > 65536) {
         InvalidRange(4, "mapped uniform exceeds Maxwell 64 KiB limit", 0, size, 65536);
         // Keep the caller's memcpy in bounds while exposing only legal bytes to D3D12.
@@ -182,10 +215,14 @@ std::span<u8> BufferCacheRuntime::BindMappedUniformBuffer(size_t stage, u32, u32
         bindings.stages[stage].uniform.push_back({nullptr, 0, 0});
         return rejected.mapped_span;
     }
-    auto staging = upload.Request(65536);
+    if (!size) {
+        bindings.stages[stage].uniform.push_back({nullptr, 0, 0});
+        return {};
+    }
+    auto staging = upload.Request(padded);
     std::fill(staging.mapped_span.begin(), staging.mapped_span.end(), u8{0});
     bindings.stages[stage].uniform.push_back(
-        {staging.buffer, static_cast<u32>(staging.offset), 65536});
+        {staging.buffer, static_cast<u32>(staging.offset), padded});
     return staging.mapped_span.first(size);
 }
 void BufferCacheRuntime::BindUniformBuffer(const Buffer& buffer, u32 offset, u32 size) {
@@ -202,18 +239,27 @@ void BufferCacheRuntime::BindUniformBuffer(const Buffer& buffer, u32 offset, u32
         return;
     }
     // A copied CBV owns its padding; rounding a direct view must never expose unrelated bytes.
-    const auto padded = Common::AlignUp<u32>(size, 256);
+    const auto padded = UniformViewSize(size);
     if ((offset & 255) || size != padded || padded > width - offset) {
+        // A version changes on every write-state use, including same-state UAV/copy writes.
+        if (auto copy = uniform_copies.Find(resource, resource->content_version, offset, size)) {
+            context.Profile().Count(FrameCount::UniformCopyCacheHits);
+            bindings.stages[bindings.current_stage].uniform.push_back({std::move(copy), 0, padded});
+            return;
+        }
         const FrameProfile::Scope profile_upload{context.Profile(), FramePhase::BufferUpload};
-        context.Profile().Count(FrameCount::BufferUploadBytes, 65536);
-        auto staging = upload.Request(65536);
+        context.Profile().Count(FrameCount::BufferUploadBytes, padded);
+        context.Profile().Count(FrameCount::UniformUploadBytes, padded);
+        auto staging = upload.Request(padded);
         std::fill(staging.mapped_span.begin(), staging.mapped_span.end(), u8{0});
-        auto target = context.CreateBuffer(65536, D3D12_HEAP_TYPE_DEFAULT);
-        const VideoCommon::BufferCopy zero{staging.offset, 0, 65536};
+        auto target = context.CreateBuffer(padded, D3D12_HEAP_TYPE_DEFAULT);
+        const VideoCommon::BufferCopy zero{staging.offset, 0, padded};
         CopyBuffer(target, staging.buffer, std::span{&zero, 1}, true);
         const VideoCommon::BufferCopy data{offset, 0, size};
         CopyBuffer(target, resource, std::span{&data, 1}, false);
-        bindings.stages[bindings.current_stage].uniform.push_back({std::move(target), 0, 65536});
+        // Bounded cache; command-list resource leases keep evicted copies alive for the GPU.
+        uniform_copies.Insert(resource, resource->content_version, offset, size, target);
+        bindings.stages[bindings.current_stage].uniform.push_back({std::move(target), 0, padded});
         return;
     }
     bindings.stages[bindings.current_stage].uniform.push_back({std::move(resource), offset, size});
