@@ -8,6 +8,7 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <string_view>
 #include <regex>
 #include <string>
 #include "common/settings_enums.h"
@@ -34,6 +35,7 @@
 #include "core/hle/service/filesystem/filesystem.h"
 #include "core/loader/loader.h"
 #include "frontend_common/config.h"
+#include "input_common/drivers/tas_input.h"
 #include "input_common/main.h"
 #include "network/network.h"
 #include "sdl_config.h"
@@ -342,11 +344,23 @@ extern "C" SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
     try {
         state->frame_capture = std::make_shared<FrameCapture>(std::getenv("NXBOX_CAPTURE_FRAMES"));
         state->emu_window->SetFrameDisplayedCallback(
-            [state] { state->frame_capture->OnFrameDisplayed(state->system.Renderer()); });
+            [state] {
+                // Like the Qt frontend, advance TAS playback once per presented frame.
+                state->input_subsystem.GetTas()->UpdateThread();
+                state->frame_capture->OnFrameDisplayed(state->system.Renderer());
+            });
         state->frame_capture->RequestFrame(state->system.Renderer(), 1);
     } catch (const std::exception& error) {
         LOG_ERROR(Frontend, "Failed to configure frame capture: {}", error.what());
         return SDL_APP_FAILURE;
+    }
+
+    // NXBOX_TAS_AUTOSTART=1 plays <eden>/tas/script0-N.txt from boot, so every renderer under
+    // comparison receives the same input on the same emulated frames.
+    if (const char* tas = std::getenv("NXBOX_TAS_AUTOSTART"); tas && std::string_view{tas} == "1") {
+        Settings::values.tas_enable = true;
+        state->input_subsystem.GetTas()->Reset();
+        state->input_subsystem.GetTas()->StartStop();
     }
 
     void(state->system.Run());
