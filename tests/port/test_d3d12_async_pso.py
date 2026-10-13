@@ -13,6 +13,8 @@ DRIVER = r"""
 #include <cassert>
 #include <future>
 #include <stdexcept>
+#include <thread>
+#include <chrono>
 #include "video_core/renderer_d3d12/d3d12_async_pso.h"
 #include "video_core/renderer_d3d12/d3d12_context.h"
 #include "video_core/renderer_d3d12/d3d12_pso_diagnostics.h"
@@ -75,6 +77,33 @@ int main() {
     unblock.set_value();
     stopped.get();
     assert(shutdown.Lookup(1).status == Cache::Status::Ready);
+    // A job stuck past the stall limit frees its queue slot and gets a replacement worker;
+    // shutdown detaches it instead of waiting forever.
+    {
+        std::promise<void> entered, freed;
+        auto stuck_gate = freed.get_future().share();
+        std::atomic<bool> stuck_done{};
+        {
+            Cache stall{1, 1, std::chrono::milliseconds{50}, 2};
+            assert(stall.Submit(1, [&] {
+                entered.set_value();
+                stuck_gate.wait();
+                stuck_done = true;
+                return std::make_shared<int>(1);
+            }));
+            entered.get_future().wait();
+            assert(!stall.CanSubmit());
+            std::this_thread::sleep_for(std::chrono::milliseconds{100});
+            assert(stall.Stalled() == 1);
+            assert(stall.Submit(2, [] { return std::make_shared<int>(2); }));
+            while (stall.Lookup(2).status == Cache::Status::Pending) std::this_thread::yield();
+            assert(*stall.Lookup(2).result == 2);
+            assert(stall.Lookup(1).status == Cache::Status::Pending);
+        }
+        freed.set_value();
+        while (!stuck_done) std::this_thread::yield();
+        std::this_thread::sleep_for(std::chrono::milliseconds{20});
+    }
     return 0;
 }
 """
