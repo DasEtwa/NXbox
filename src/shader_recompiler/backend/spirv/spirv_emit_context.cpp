@@ -239,6 +239,9 @@ InputGenericInfo GetAttributeInfo(EmitContext& ctx, AttributeType type, Id id) {
                    : InputGenericInfo{id, ctx.input_u32, ctx.U32[1], InputGenericLoadOp::UToF};
     case AttributeType::Disabled:
         return InputGenericInfo{};
+    case AttributeType::SignedNorm10: // D3D12-only fetch policy; Vulkan uses native formats.
+    case AttributeType::SignedInt10:
+        break;
     }
     throw InvalidArgument("Invalid attribute type {}", type);
 }
