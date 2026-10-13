@@ -6,11 +6,17 @@
 
 #pragma once
 
+#include <bit>
+#include <charconv>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <limits>
 #include <optional>
-#include <bit>
-#include "common/container/unordered_map.h"
+#include <string>
+#include <string_view>
 #include <boost/container/small_vector.hpp>
+#include "common/container/unordered_map.h"
 
 #include "common/alignment.h"
 #include "common/nxbox_stall.h"
@@ -29,6 +35,47 @@
 #include "video_core/textures/decoders.h"
 
 namespace VideoCommon {
+
+// Cached once for all backends; a disabled capture only checks enabled.
+namespace PassDump {
+struct Config {
+    u64 frame = 0;
+    std::filesystem::path directory;
+    bool enabled = false;
+};
+
+inline const Config& GetConfig() {
+    static const Config config = [] {
+        Config result;
+        const char* frame = std::getenv("NXBOX_PASS_DUMP_FRAME");
+        const char* directory = std::getenv("NXBOX_PASS_DUMP_DIR");
+        if (frame && directory && *directory) {
+            const std::string_view text{frame};
+            const auto parsed =
+                std::from_chars(text.data(), text.data() + text.size(), result.frame);
+            result.enabled = parsed.ec == std::errc{} && parsed.ptr == text.data() + text.size() &&
+                             result.frame > 0;
+            if (result.enabled) {
+                result.directory = std::filesystem::path{directory};
+            }
+        }
+        return result;
+    }();
+    return config;
+}
+
+inline const char* FormatName(VideoCore::Surface::PixelFormat format) {
+    switch (format) {
+#define PIXEL_FORMAT_ELEM(name, ...)                                                               \
+    case VideoCore::Surface::PixelFormat::name:                                                    \
+        return #name;
+        PIXEL_FORMAT_LIST
+#undef PIXEL_FORMAT_ELEM
+    default:
+        return "Invalid";
+    }
+}
+} // namespace PassDump
 
 using Tegra::Texture::TICEntry;
 using Tegra::Texture::TSCEntry;
@@ -176,6 +223,11 @@ void TextureCache<P>::RunGarbageCollector() {
 
 template <class P>
 void TextureCache<P>::TickFrame() {
+    if (PassDump::GetConfig().enabled) {
+        if (frame_tick + 1 == PassDump::GetConfig().frame) {
+            DumpPassRenderTargets();
+        }
+    }
     // If we can obtain the memory info, use it instead of the estimate.
     if (runtime.CanReportMemoryUsage()) {
         total_used_memory = runtime.GetDeviceMemoryUsage();
@@ -484,6 +536,9 @@ void TextureCache<P>::UpdateRenderTargets(bool is_clear) {
     using namespace VideoCommon::Dirty;
     auto& flags = maxwell3d->dirty.flags;
     if (!flags[Dirty::RenderTargets]) {
+        if (PassDump::GetConfig().enabled) {
+            UpdatePassDumpRenderTargets();
+        }
         for (size_t index = 0; index < NUM_RT; ++index) {
             ImageViewId& color_buffer_id = render_targets.color_buffer_ids[index];
             PrepareImageView(color_buffer_id, true, is_clear && IsFullClear(color_buffer_id));
@@ -495,6 +550,10 @@ void TextureCache<P>::UpdateRenderTargets(bool is_clear) {
 
     const VideoCommon::RenderTargets previous_render_targets = render_targets;
     const bool rescaled = RescaleRenderTargets();
+    // Read the old set before PrepareImageView can discard or refresh the new targets.
+    if (PassDump::GetConfig().enabled) {
+        UpdatePassDumpRenderTargets();
+    }
     if (is_rescaling != rescaled) {
         flags[Dirty::RescaleViewports] = true;
         flags[Dirty::RescaleScissors] = true;
@@ -632,6 +691,87 @@ bool TextureCache<P>::IsDownloadable(const ImageBase& image) const noexcept {
         return runtime.CanDownloadMsaa(image.info);
     } else {
         return false;
+    }
+}
+
+template <class P>
+void TextureCache<P>::UpdatePassDumpRenderTargets() {
+    if (frame_tick + 1 != PassDump::GetConfig().frame) {
+        return;
+    }
+    std::array<ImageId, NUM_RT> colors{};
+    const auto image_id = [this](ImageViewId view) {
+        return view && view != NULL_IMAGE_VIEW_ID ? slot_image_views[view].image_id : ImageId{};
+    };
+    for (size_t slot = 0; slot < colors.size(); ++slot) {
+        colors[slot] = image_id(render_targets.color_buffer_ids[slot]);
+    }
+    const ImageId depth = image_id(render_targets.depth_buffer_id);
+    if (pass_dump_has_set && colors == pass_dump_colors && depth == pass_dump_depth) {
+        return;
+    }
+    DumpPassRenderTargets();
+    pass_dump_colors = colors;
+    pass_dump_depth = depth;
+    pass_dump_has_set = true;
+}
+
+template <class P>
+void TextureCache<P>::DumpPassRenderTargets() {
+    if (!pass_dump_has_set) {
+        return;
+    }
+    pass_dump_has_set = false;
+    const u64 seq = ++pass_dump_sequence;
+    const auto& directory = PassDump::GetConfig().directory;
+    try {
+        std::filesystem::create_directories(directory);
+        std::ofstream manifest{directory / "manifest.jsonl", std::ios::app};
+        manifest.exceptions(std::ios::failbit | std::ios::badbit);
+        for (size_t slot = 0; slot < pass_dump_colors.size(); ++slot) {
+            const ImageId id = pass_dump_colors[slot];
+            if (!id || id == NULL_IMAGE_ID) {
+                continue;
+            }
+            Image& image = slot_images[id];
+            const auto& info = image.info;
+            const std::string file = fmt::format("pass_{:04}_c{}.raw", seq, slot);
+            size_t bytes = 0;
+            if (info.num_samples <= 1) {
+                // A tightly packed copy, including for pitched guest images. No format conversion.
+                const Extent2D block{VideoCore::Surface::DefaultBlockWidth(info.format),
+                                     VideoCore::Surface::DefaultBlockHeight(info.format)};
+                bytes = static_cast<size_t>((info.size.width + block.width - 1) / block.width) *
+                        ((info.size.height + block.height - 1) / block.height) *
+                        VideoCore::Surface::BytesPerBlock(info.format);
+                const std::array copies{BufferImageCopy{
+                    .buffer_offset = 0,
+                    .buffer_size = bytes,
+                    .buffer_row_length = info.size.width,
+                    .buffer_image_height = info.size.height,
+                    .image_subresource = {.base_level = 0, .base_layer = 0, .num_layers = 1},
+                    .image_offset = {0, 0, 0},
+                    .image_extent = {info.size.width, info.size.height, 1},
+                }};
+                auto map = runtime.DownloadStagingBuffer(bytes);
+                image.DownloadMemory(map, copies);
+                runtime.Finish();
+                std::ofstream output{directory / file, std::ios::binary};
+                output.exceptions(std::ios::failbit | std::ios::badbit);
+                output.write(reinterpret_cast<const char*>(map.mapped_span.data()),
+                             static_cast<std::streamsize>(bytes));
+                output.close();
+            }
+            manifest << fmt::format(
+                "{{\"seq\":{},\"slot\":{},\"gpu_addr\":{},\"width\":{},\"height\":{},"
+                "\"format\":\"{}\",\"bytes\":{},\"file\":\"{}\"{}}}\n",
+                seq, slot, image.gpu_addr, info.size.width, info.size.height,
+                PassDump::FormatName(info.format), bytes, file,
+                info.num_samples > 1 ? ",\"skipped\":\"msaa\"" : "");
+        }
+        manifest.close();
+    } catch (const std::exception& error) {
+        LOG_ERROR(Render, "Pass dump seq={} failed: {}", seq, error.what());
     }
 }
 
@@ -2355,6 +2495,14 @@ void TextureCache<P>::UntrackImage(ImageBase& image, ImageId image_id) {
 
 template <class P>
 void TextureCache<P>::DeleteImage(ImageId image_id, bool immediate_delete) {
+    // Target lookup can retire old images. Capture before their slot can be reused.
+    if (PassDump::GetConfig().enabled) {
+        if (pass_dump_has_set &&
+            (image_id == pass_dump_depth ||
+             std::ranges::find(pass_dump_colors, image_id) != pass_dump_colors.end())) {
+            DumpPassRenderTargets();
+        }
+    }
     ImageBase& image = slot_images[image_id];
     if (image.HasScaled()) {
         total_used_memory -= GetScaledImageSizeBytes(image);

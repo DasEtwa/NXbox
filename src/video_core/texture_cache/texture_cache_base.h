@@ -303,6 +303,9 @@ private:
     /// Runs the Garbage Collector.
     void RunGarbageCollector();
 
+    void UpdatePassDumpRenderTargets();
+    void DumpPassRenderTargets();
+
     /// Find or create an image view in the guest descriptor table
     ImageViewId VisitImageView(u32 index, bool compute);
 
@@ -438,6 +441,10 @@ private:
 
     RenderTargets render_targets;
     u64 render_targets_serial = 0;
+    std::array<ImageId, 8> pass_dump_colors{};
+    ImageId pass_dump_depth{};
+    u64 pass_dump_sequence = 0;
+    bool pass_dump_has_set = false;
     u32 rt_active_mask = 0;
     std::array<ImageId, 8> rt_image_id{};
     ImageId rt_depth_image_id{};
