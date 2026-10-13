@@ -2,6 +2,8 @@
 #pragma once
 
 #include <array>
+#include <filesystem>
+#include <unordered_set>
 #include <map>
 #include <memory>
 #include <span>
@@ -109,6 +111,11 @@ private:
     std::unordered_map<GraphicsPipelineKey, GraphicsPipeline*, GraphicsPipelineKeyHash>
         guest_graphics;
     std::unordered_map<u64, ComputePipeline*> guest_compute;
+    // Requests whose native compile never returned on this console, kept across boots so they
+    // fail fast instead of tying up (and spinning) another compiler thread.
+    std::unordered_set<u64> stalled_requests;
+    std::filesystem::path stalled_path;
+    bool CheckStalled(const GraphicsPipelineKey& key, u64 hash);
 };
 
 } // namespace D3D12

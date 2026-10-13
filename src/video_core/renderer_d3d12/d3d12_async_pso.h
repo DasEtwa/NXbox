@@ -37,7 +37,7 @@ public:
     using Clock = std::chrono::steady_clock;
     explicit AsyncPsoWorkerPool(size_t thread_count = 2, size_t capacity_ = 4,
                                 Clock::duration stall_limit = std::chrono::seconds{5},
-                                size_t max_threads = 6)
+                                size_t max_threads = 4)
         : state{std::make_shared<State>()} {
         state->capacity = capacity_;
         state->stall_limit = stall_limit;
@@ -79,6 +79,16 @@ public:
         std::scoped_lock lock{state->mutex};
         return CountStalled();
     }
+    /// Whether `key` is running past the stall limit.
+    bool IsStalled(const Key& key) {
+        std::scoped_lock lock{state->mutex};
+        const auto now = Clock::now();
+        for (size_t i = 0; i < state->busy_since.size(); ++i)
+            if (state->busy_since[i] && now - *state->busy_since[i] >= state->stall_limit &&
+                state->running[i] && *state->running[i] == key)
+                return true;
+        return false;
+    }
     /// Returns how many busy workers were detached instead of joined.
     size_t Stop() {
         std::vector<bool> busy;
@@ -118,6 +128,7 @@ private:
         std::deque<std::pair<Key, Job>> queue;
         std::unordered_map<Key, Entry, Hash> entries;
         std::vector<std::optional<Clock::time_point>> busy_since; // Indexed by worker.
+        std::vector<std::optional<Key>> running;
     };
 
     // Caller holds the mutex.
@@ -141,6 +152,7 @@ private:
         // The new thread blocks on the mutex the caller holds until busy_since has its slot.
         workers.emplace_back([shared = state, index] { Run(*shared, index); });
         state->busy_since.emplace_back();
+        state->running.emplace_back();
     }
     static void Run(State& state, size_t index) {
         for (;;) {
@@ -153,6 +165,7 @@ private:
                 item = std::move(state.queue.front());
                 state.queue.pop_front();
                 state.busy_since[index] = Clock::now();
+                state.running[index] = item.first;
             }
             Entry result;
             try {
@@ -174,6 +187,7 @@ private:
                 state.entries.at(item.first) = std::move(result);
                 --state.pending;
                 state.busy_since[index].reset();
+                state.running[index].reset();
             }
         }
     }

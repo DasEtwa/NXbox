@@ -98,6 +98,7 @@ int main() {
             while (stall.Lookup(2).status == Cache::Status::Pending) std::this_thread::yield();
             assert(*stall.Lookup(2).result == 2);
             assert(stall.Lookup(1).status == Cache::Status::Pending);
+            assert(stall.IsStalled(1) && !stall.IsStalled(2));
         }
         freed.set_value();
         while (!stuck_done) std::this_thread::yield();

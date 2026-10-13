@@ -4,6 +4,7 @@
 #include <bit>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <exception>
 #include <fstream>
@@ -929,6 +930,11 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(
         try {
             if (!async)
                 async = std::make_unique<AsyncCache>();
+            const u64 request_hash = Pso::HashBytes(&request, sizeof(request));
+            if (CheckStalled(request, request_hash)) {
+                guest_graphics.emplace(request, nullptr);
+                return nullptr;
+            }
             const auto entry = async->Lookup(request);
             if (entry.status == AsyncCache::Status::Ready) {
                 guest_graphics.emplace(request, entry.result->graphics.get());
@@ -962,6 +968,8 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(
                      regs = maxwell3d->regs, formats, hashes = guest_hashes, snapshots,
                      hash = Pso::HashBytes(&request, sizeof(request))] {
                         SetThreadDescription(GetCurrentThread(), L"D3D12 PSO compiler");
+                        // A compile the driver never finishes must only use idle CPU.
+                        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
                         auto result = std::make_shared<AsyncResult>();
                         result->graphics = BuildAsyncGraphics(device.Get(), disk_cache, state,
                                                               d3d_topology, guest_topology, regs,
@@ -1131,6 +1139,10 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() try {
             async_key.stage_hashes[0] = request;
             async_key.state.sample_count =
                 0; // Graphics requests always have a nonzero sample count.
+            if (CheckStalled(async_key, request)) {
+                guest_compute.emplace(request, nullptr);
+                return nullptr;
+            }
             const auto entry = async->Lookup(async_key);
             if (entry.status == AsyncCache::Status::Ready) {
                 guest_compute.emplace(request, entry.result->compute.get());
@@ -1154,6 +1166,8 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() try {
                 async->Submit(async_key, [device, disk_cache = disk.get(), snapshot,
                                           shader_hash = shader->unique_hash, request] {
                     SetThreadDescription(GetCurrentThread(), L"D3D12 PSO compiler");
+                    // A compile the driver never finishes must only use idle CPU.
+                    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
                     static const bool trace = BisectEnabled("NXBOX_D3D12_PSO_TRACE");
                     const auto mark = [&](std::string_view phase) {
                         if (trace)
@@ -1279,6 +1293,18 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
     disk = std::make_unique<DiskPipelineCache>(
         Common::FS::GetEdenPath(Common::FS::EdenPath::ShaderDir), title_id, *identity,
         context.Device());
+    stalled_path = Common::FS::GetEdenPath(Common::FS::EdenPath::ShaderDir) /
+                   fmt::format("{:016x}_d3d12_stalled_pso.txt", title_id);
+    {
+        std::ifstream file{stalled_path};
+        std::string line;
+        while (std::getline(file, line))
+            if (!line.empty())
+                stalled_requests.insert(std::strtoull(line.c_str(), nullptr, 16));
+    }
+    if (!stalled_requests.empty())
+        Diagnostic(fmt::format("D3D12 skipping {} PSOs that stalled the driver before",
+                               stalled_requests.size()));
     if (AsyncPsoEnabled()) {
         // Recipes do not contain guest request/runtime metadata. Eager replay would create
         // duplicate PSOs under the synchronous key and block the loading UI unnecessarily.
@@ -1352,6 +1378,18 @@ void PipelineCache::BindToChannel(s32 id) {
     VideoCommon::ShaderCache::BindToChannel(id);
     if (maxwell3d)
         maxwell3d->dirty.flags[VideoCommon::Dirty::Shaders] = true;
+}
+bool PipelineCache::CheckStalled(const GraphicsPipelineKey& key, u64 hash) {
+    if (stalled_requests.contains(hash))
+        return true;
+    if (!async || !async->IsStalled(key))
+        return false;
+    stalled_requests.insert(hash);
+    Diagnostic(fmt::format("D3D12 PSO request={:016x} stalled the driver; skipped from now on",
+                           hash));
+    if (!stalled_path.empty())
+        std::ofstream{stalled_path, std::ios::app} << fmt::format("{:016x}\n", hash);
+    return true;
 }
 PipelineCache::~PipelineCache() {
     try {
