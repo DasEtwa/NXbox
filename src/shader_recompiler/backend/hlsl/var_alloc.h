@@ -52,6 +52,10 @@ public:
     std::string GetHlslType(IR::Type type) const;
     std::string Declarations() const;
 
+    /// Compute shaders drop `precise`: the Xbox driver stalls for minutes on BotW's large
+    /// compute shaders with it, and nothing there needs cross-pass position invariance.
+    bool drop_precise = false;
+
 private:
     struct Variable {
         HlslVarType type;

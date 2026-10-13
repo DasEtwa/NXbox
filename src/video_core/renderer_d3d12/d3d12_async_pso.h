@@ -79,12 +79,12 @@ public:
         std::scoped_lock lock{state->mutex};
         return CountStalled();
     }
-    /// Whether `key` is running past the stall limit.
-    bool IsStalled(const Key& key) {
+    /// Whether `key` has been running for at least `limit`.
+    bool IsStalled(const Key& key, Clock::duration limit) {
         std::scoped_lock lock{state->mutex};
         const auto now = Clock::now();
         for (size_t i = 0; i < state->busy_since.size(); ++i)
-            if (state->busy_since[i] && now - *state->busy_since[i] >= state->stall_limit &&
+            if (state->busy_since[i] && now - *state->busy_since[i] >= limit &&
                 state->running[i] && *state->running[i] == key)
                 return true;
         return false;

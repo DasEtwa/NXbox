@@ -94,8 +94,7 @@ std::string VarAlloc::GetHlslType(IR::Type type) const {
     return GetHlslType(RegType(type));
 }
 namespace {
-// Diagnostic: BotW compute shaders carry hundreds of precise values and stall the Xbox
-// driver's DXIL compiler; NXBOX_HLSL_NO_PRECISE=1 drops the qualifier to test that.
+// Diagnostic: NXBOX_HLSL_NO_PRECISE=1 drops the qualifier from every stage, not only compute.
 bool NoPrecise() {
     static const bool value = [] {
         const char* env = std::getenv("NXBOX_HLSL_NO_PRECISE");
@@ -116,11 +115,11 @@ std::string VarAlloc::GetHlslType(HlslVarType type) const {
     case HlslVarType::F32:
         return "float";
     case HlslVarType::PrecF32:
-        return NoPrecise() ? "float" : "precise float";
+        return drop_precise || NoPrecise() ? "float" : "precise float";
     case HlslVarType::F64:
         return "double";
     case HlslVarType::PrecF64:
-        return NoPrecise() ? "double" : "precise double";
+        return drop_precise || NoPrecise() ? "double" : "precise double";
     case HlslVarType::F64x2:
         return "double2";
     case HlslVarType::F64x3:

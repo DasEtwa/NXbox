@@ -56,6 +56,7 @@ std::string VectorType(AttributeType type) {
 EmitContext::EmitContext(IR::Program& program, Bindings& bindings, const Profile& profile_,
                          const RuntimeInfo& runtime_info_)
     : info{program.info}, profile{profile_}, runtime_info{runtime_info_}, stage{program.stage} {
+    var_alloc.drop_precise = stage == Stage::Compute;
     if (stage != Stage::VertexA && stage != Stage::VertexB && stage != Stage::Fragment &&
         stage != Stage::Compute && stage != Stage::Geometry)
         throw NotImplementedException("HLSL tessellation stage {} requires stage linkage",

@@ -1294,7 +1294,7 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
         Common::FS::GetEdenPath(Common::FS::EdenPath::ShaderDir), title_id, *identity,
         context.Device());
     stalled_path = Common::FS::GetEdenPath(Common::FS::EdenPath::ShaderDir) /
-                   fmt::format("{:016x}_d3d12_stalled_pso.txt", title_id);
+                   fmt::format("{:016x}_d3d12_stalled_pso_v2.txt", title_id);
     {
         std::ifstream file{stalled_path};
         std::string line;
@@ -1382,7 +1382,10 @@ void PipelineCache::BindToChannel(s32 id) {
 bool PipelineCache::CheckStalled(const GraphicsPipelineKey& key, u64 hash) {
     if (stalled_requests.contains(hash))
         return true;
-    if (!async || !async->IsStalled(key))
+    // The pool already replaces workers stuck past its 5 s limit. Skipping a request for good
+    // needs far longer: DXC alone takes ~5 s on the Xbox for a 100 KB vertex shader that then
+    // finishes fine, and a false positive here hides that geometry in every later boot.
+    if (!async || !async->IsStalled(key, std::chrono::seconds{60}))
         return false;
     stalled_requests.insert(hash);
     Diagnostic(fmt::format("D3D12 PSO request={:016x} stalled the driver; skipped from now on",
