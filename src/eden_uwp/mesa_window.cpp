@@ -44,6 +44,13 @@ void LoadRuntimeEnvironment() {
         _putenv_s(key.c_str(), value.c_str());
         Diagnostic("ENV " + key + "=" + value);
     }
+    // The texture cache's per-pass dump needs an absolute, writable directory; this runs for
+    // every renderer, unlike the Mesa-only knobs below.
+    if (std::getenv("NXBOX_PASS_DUMP_FRAME") && !std::getenv("NXBOX_PASS_DUMP_DIR")) {
+        const std::string pass_dir = (env_file.parent_path() / "passdump").string();
+        _putenv_s("NXBOX_PASS_DUMP_DIR", pass_dir.c_str());
+        Diagnostic("PASS_DUMP dir=" + pass_dir);
+    }
 }
 HMODULE loader_library = nullptr;
 void* ResolveGL(const char* name) {
@@ -130,12 +137,6 @@ struct MesaRuntime {
                 std::error_code remove_error;
                 std::filesystem::remove(log_path, remove_error);
                 _putenv_s("NXBOX_DRAW_BUCKET_LOG", log_path.c_str());
-            }
-            // The texture cache's per-pass dump needs an absolute, writable directory.
-            if (std::getenv("NXBOX_PASS_DUMP_FRAME") && !std::getenv("NXBOX_PASS_DUMP_DIR")) {
-                const std::string pass_dir = (env_file.parent_path() / "passdump").string();
-                _putenv_s("NXBOX_PASS_DUMP_DIR", pass_dir.c_str());
-                Diagnostic("PASS_DUMP dir=" + pass_dir);
             }
             if (const char* dump = std::getenv("NXBOX_FRAME_DUMP"); dump && *dump == '1') {
                 const std::string dump_dir = (env_file.parent_path() / "framedump").string();
