@@ -169,6 +169,10 @@ public:
                    const ResourcePtr& replacement = {}, u32 layer_count = 0);
     void CreateDsv(D3D12_CPU_DESCRIPTOR_HANDLE handle, const ImageView& view,
                    D3D12_DSV_FLAGS flags = D3D12_DSV_FLAG_NONE, u32 layer_count = 0);
+    /// Lets the CPU view cache release the resources it keeps alive.
+    void TickFrame() {
+        new_frame = true;
+    }
 
   private:
     struct Ring {
@@ -211,6 +215,7 @@ public:
     void WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE type, const ResourcePtr& resource, u32 kind,
                      const void* desc, size_t size, D3D12_CPU_DESCRIPTOR_HANDLE destination);
     u64 cache_tick{};
+    bool new_frame{true};
     DescriptorCache view_cache, sampler_cache;
     std::unordered_map<SIZE_T, DescriptorKey> slot_contents;
     std::array<RecordingTableCache<DescriptorTable>, 2> table_cache;

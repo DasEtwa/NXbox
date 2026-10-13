@@ -94,7 +94,7 @@ D3D12DescriptorAllocator::D3D12DescriptorAllocator(Context& context, u32 view_ca
     Init(samplers, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, sampler_capacity, true);
     Init(rtvs, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, RtvHeapSize, false);
     Init(dsvs, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, DsvHeapSize, false);
-    InitCache(view_cache, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1024);
+    InitCache(view_cache, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 4096);
     InitCache(sampler_cache, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, 256);
 }
 
@@ -112,10 +112,15 @@ void D3D12DescriptorAllocator::RefreshCaches() {
     if (cache_tick == context.CurrentTick())
         return;
     cache_tick = context.CurrentTick();
-    view_cache.entries.clear();
-    view_cache.cursor = 0;
     slot_contents.clear();
-    // Sampler descriptions do not reference resources and stay valid across ticks.
+    // Cached views hold their resource, so they stay valid across ticks. Clearing them on every
+    // submit (~30 per frame in BotW) recreated ~11k descriptors per frame; once per frame bounds
+    // how long they keep freed resources alive. Samplers reference no resources at all.
+    if (new_frame) {
+        new_frame = false;
+        view_cache.entries.clear();
+        view_cache.cursor = 0;
+    }
 }
 void D3D12DescriptorAllocator::WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE type,
                                            const ResourcePtr& resource, u32 kind, const void* desc,

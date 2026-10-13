@@ -2122,6 +2122,7 @@ void RasterizerD3D12::FlushCommands() {
 }
 void RasterizerD3D12::TickFrame() {
     fence_manager.TickFrame();
+    descriptors.TickFrame();
     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
     buffer_cache.TickFrame();
     texture_cache.TickFrame();
