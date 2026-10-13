@@ -1153,13 +1153,22 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() try {
                 async->Submit(async_key, [device, disk_cache = disk.get(), snapshot,
                                           shader_hash = shader->unique_hash, request] {
                     SetThreadDescription(GetCurrentThread(), L"D3D12 PSO compiler");
+                    static const bool trace = BisectEnabled("NXBOX_D3D12_PSO_TRACE");
+                    const auto mark = [&](std::string_view phase) {
+                        if (trace)
+                            Diagnostic(fmt::format("PSO_TRACE compute={:016x} {}", request, phase));
+                    };
+                    mark("start");
                     TranslationState translation{device.Get()};
                     Shader::Maxwell::Flow::CFG cfg{*snapshot, translation.flow,
                                                    snapshot->StartAddress()};
+                    mark("cfg");
                     auto program = Shader::Maxwell::TranslateProgram(
                         translation.inst, translation.block, *snapshot, cfg, translation.host);
+                    mark("translated");
                     const auto source =
                         Shader::Backend::HLSL::EmitHLSL(translation.profile, program);
+                    mark(fmt::format("dxc bytes={}", source.size()));
                     const auto counts = CountStageTables(program.info);
                     const StageInput stage{Shader::Stage::Compute,
                                            shader_hash,
@@ -1170,6 +1179,7 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() try {
                         compiler.Compile(source, Shader::Stage::Compute, request, disk_cache);
                     auto result = std::make_shared<AsyncResult>();
                     const auto native_start = std::chrono::steady_clock::now();
+                    mark("native_pso");
                     result->compute = std::make_shared<ComputePipeline>(
                         device.Get(), CreateRootSignature(device.Get(), stage.counts), dxil,
                         disk_cache, Pso::HashBytes(source.data(), source.size(), request),
@@ -1179,6 +1189,7 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() try {
                                   native_start, result->compute->RootSignature(), stage.counts,
                                   std::span{&stage, size_t{1}}, std::span{&compiled, size_t{1}});
                     result->compute->info = program.info;
+                    mark("done");
                     return result;
                 });
                 context.Profile().Count(FrameCount::GuestPipelineMisses);
