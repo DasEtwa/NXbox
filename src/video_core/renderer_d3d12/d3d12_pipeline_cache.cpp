@@ -34,16 +34,6 @@
 
 namespace D3D12 {
 namespace {
-
-// How long a draw waits for its PSO the first time it is requested (NXBOX_D3D12_PSO_WAIT_MS).
-std::chrono::milliseconds PsoWaitBudget() {
-    static const auto budget = [] {
-        const char* value = std::getenv("NXBOX_D3D12_PSO_WAIT_MS");
-        return std::chrono::milliseconds{value ? std::strtol(value, nullptr, 10) : 5000};
-    }();
-    return budget;
-}
-
 using Maxwell = Tegra::Engines::Maxwell3D::Regs;
 
 void ReportUnsupported(std::string_view reason) {
@@ -1000,16 +990,6 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(
                     });
                 context.Profile().Count(FrameCount::GuestPipelineMisses);
             }
-            // Skipping a draw loses it for good when the game renders it once (SM3DW
-            // bakes its ambient light at level load), so give each PSO one bounded wait.
-            if (pso_waited.insert(request_hash).second) {
-                const auto settled = async->WaitFor(request, PsoWaitBudget());
-                if (settled.status == AsyncCache::Status::Ready) {
-                    guest_graphics.emplace(request, settled.result->graphics.get());
-                    context.Profile().Count(FrameCount::PsoCompiles);
-                    return settled.result->graphics.get();
-                }
-            }
             context.Profile().Count(FrameCount::DrawsSkippedPendingPso);
             return nullptr;
         } catch (const std::exception& error) {
@@ -1251,14 +1231,6 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() try {
                     return result;
                 });
                 context.Profile().Count(FrameCount::GuestPipelineMisses);
-            }
-            if (pso_waited.insert(request).second) {
-                const auto settled = async->WaitFor(async_key, PsoWaitBudget());
-                if (settled.status == AsyncCache::Status::Ready) {
-                    guest_compute.emplace(request, settled.result->compute.get());
-                    context.Profile().Count(FrameCount::PsoCompiles);
-                    return settled.result->compute.get();
-                }
             }
             context.Profile().Count(FrameCount::DispatchesSkippedPendingPso);
             return nullptr;

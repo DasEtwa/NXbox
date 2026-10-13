@@ -74,17 +74,6 @@ public:
         state->condition.notify_one();
         return true;
     }
-    /// Blocks until `key` leaves Pending or `timeout` passes, then returns its entry.
-    Entry WaitFor(const Key& key, Clock::duration timeout) {
-        std::unique_lock lock{state->mutex};
-        const auto settled = [&] {
-            const auto it = state->entries.find(key);
-            return it == state->entries.end() || it->second.status != Status::Pending;
-        };
-        state->finished.wait_for(lock, timeout, settled);
-        const auto it = state->entries.find(key);
-        return it == state->entries.end() ? Entry{Status::Missing, {}, {}} : it->second;
-    }
     /// Jobs that have run past the stall limit and still hold a worker.
     size_t Stalled() {
         std::scoped_lock lock{state->mutex};
@@ -136,7 +125,6 @@ private:
         bool stopping{};
         std::mutex mutex;
         std::condition_variable condition;
-        std::condition_variable finished;
         std::deque<std::pair<Key, Job>> queue;
         std::unordered_map<Key, Entry, Hash> entries;
         std::vector<std::optional<Clock::time_point>> busy_since; // Indexed by worker.
@@ -201,7 +189,6 @@ private:
                 state.busy_since[index].reset();
                 state.running[index].reset();
             }
-            state.finished.notify_all();
         }
     }
     std::shared_ptr<State> state;
