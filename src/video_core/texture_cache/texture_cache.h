@@ -797,7 +797,7 @@ void TextureCache<P>::DumpPassRenderTargets() {
                 info.num_samples > 1 ? ",\"skipped\":\"msaa\"" : "");
         }
         manifest.close();
-        // Every mip of the uncompressed textures the pass sampled, as they stand after it.
+        // Every mip (layer 0) of the 1D/2D/cube textures the pass sampled, as they stand after it.
         std::ofstream sampled_manifest{directory / "sampled.jsonl", std::ios::app};
         sampled_manifest.exceptions(std::ios::failbit | std::ios::badbit);
         for (size_t index = 0; index < sampled_ids.size(); ++index) {
@@ -805,7 +805,7 @@ void TextureCache<P>::DumpPassRenderTargets() {
             const auto& info = image.info;
             if (info.num_samples > 1 ||
                 (info.type != ImageType::e2D && info.type != ImageType::e1D) ||
-                VideoCore::Surface::DefaultBlockWidth(info.format) != 1) {
+                VideoCore::Surface::IsPixelFormatASTC(info.format)) {
                 continue;
             }
             for (s32 level = 0; level < info.resources.levels; ++level) {
