@@ -182,7 +182,11 @@ export async function serveApi(): Promise<void> {
     else if (request.cmd === "run") await runJob(request.job, emit);
     else throw new PackError("args");
   } catch (error) {
-    emit({ error: error instanceof PackError ? error.code : String(error) });
+    const cause = error instanceof Error && error.cause instanceof Error ? error.cause.message : "";
+    emit({
+      error: error instanceof PackError ? error.code : String(error),
+      ...(cause && { detail: cause }),
+    });
     process.exitCode = 1;
   }
 }

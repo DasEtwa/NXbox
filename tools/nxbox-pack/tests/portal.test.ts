@@ -87,7 +87,7 @@ test("Xbox loose deployment and multipart LocalState uploads use the portal cont
       "game-folder",
     );
     const file = calls.find((c) => c.url.pathname.endsWith("/file"))!;
-    expect(file.url.searchParams.get("path")).toBe("/LocalState/games");
+    expect(file.url.searchParams.get("path")).toBe("\\LocalState\\games");
     expect(file.url.searchParams.get("packagefullname")).toBe(
       "NSPX.NXbox.01007EF00011E000_0.2.0.0_x64__xb0tjvbn8pcrt",
     );

@@ -149,7 +149,8 @@ export class DevicePortal {
     return new URLSearchParams({
       knownfolderid: "LocalAppData",
       packagefullname: pkg,
-      path: path ? `/${path.replace(/^[/\\]+/, "")}` : "",
+      // The console silently ignores folder creation and rejects uploads on "/" paths.
+      path: path ? `\\${path.replace(/^[/\\]+/, "").replaceAll("/", "\\")}` : "",
     });
   }
   async listFiles(pkg: string, path: string): Promise<{ Name: string }[]> {

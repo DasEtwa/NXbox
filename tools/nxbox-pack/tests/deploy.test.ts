@@ -66,7 +66,7 @@ test("staging through registration and verified content uploads completes over H
           runtime.set(`${folder}\\${file.name}`, bytes);
         } else {
           expect(url.searchParams.get("packagefullname")).toBe(installed.PackageFullName);
-          const path = `${url.searchParams.get("path")}/${file.name}`;
+          const path = `${url.searchParams.get("path")!.replaceAll("\\", "/")}/${file.name}`;
           uploads.set(path, bytes);
           uploadOrder.push(path);
         }
@@ -81,7 +81,7 @@ test("staging through registration and verified content uploads completes over H
         return Response.json({ InstalledPackages: registered ? [installed] : [] });
       if (url.pathname.endsWith("/folder")) return new Response("");
       if (url.pathname.endsWith("/files")) {
-        const prefix = url.searchParams.get("path") + "/";
+        const prefix = url.searchParams.get("path")!.replaceAll("\\", "/") + "/";
         return Response.json({
           Items: [...uploads]
             .filter(([path]) => path.startsWith(prefix))
