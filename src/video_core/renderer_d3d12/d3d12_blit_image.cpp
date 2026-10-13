@@ -8,6 +8,7 @@
 #include <stdexcept>
 #include <string>
 #include <tuple>
+#include <fmt/format.h>
 
 #include "video_core/renderer_d3d12/d3d12_shader.h"
 
@@ -679,6 +680,17 @@ void BlitImageHelper::CopyImage(const BlitSurface& dst, const BlitSurface& origi
             };
             const bool full_src = check_region(s, copy.src_offset),
                        full_dst = check_region(d, copy.dst_offset);
+            static int trace_budget = BisectEnabled("NXBOX_D3D12_COPY_TRACE") ? 400 : 0;
+            if (trace_budget > 0 && (s.level || d.level)) {
+                --trace_budget;
+                Diagnostic(fmt::format(
+                    "D3D12_COPY_TRACE src={}x{} L{} dst={}x{} L{} src_off={},{} dst_off={},{} "
+                    "extent={}x{} compatible={} full={}{} src_sub={} dst_sub={} dst_levels={}",
+                    Width(s), Height(s), s.level, Width(d), Height(d), d.level, copy.src_offset.x,
+                    copy.src_offset.y, copy.dst_offset.x, copy.dst_offset.y, copy.extent.width,
+                    copy.extent.height, CopyCompatible(d, s), full_src, full_dst, Subresource(s),
+                    Subresource(d), d.resource->handle->GetDesc().MipLevels));
+            }
             if (CopyCompatible(d, s) &&
                 (!(s.format.depth || d.format.depth || Samples(s) > 1) || (full_src && full_dst))) {
                 const auto& f = s.format;
