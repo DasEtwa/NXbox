@@ -541,7 +541,7 @@ impl App {
                                 if i <= self.page_index {
                                     design::ACCENT
                                 } else {
-                                    design::surface(ui)
+                                    design::secondary(ui).gamma_multiply(0.35)
                                 },
                             );
                         }
