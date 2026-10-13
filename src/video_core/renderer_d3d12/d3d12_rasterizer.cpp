@@ -2150,11 +2150,16 @@ void RasterizerD3D12::FlushCommands() {
     default_pipeline_cache->FlushDiskCache();
 }
 void RasterizerD3D12::TickFrame() {
-    fence_manager.TickFrame();
-    descriptors.TickFrame();
+    // Bisect toggles: each one skips one cache's per-frame aging.
+    if (!BisectEnabled("NXBOX_D3D12_TICK_NO_FENCE"))
+        fence_manager.TickFrame();
+    if (!BisectEnabled("NXBOX_D3D12_TICK_NO_DESCRIPTORS"))
+        descriptors.TickFrame();
     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
-    buffer_cache.TickFrame();
-    texture_cache.TickFrame();
+    if (!BisectEnabled("NXBOX_D3D12_TICK_NO_BUFFER"))
+        buffer_cache.TickFrame();
+    if (!BisectEnabled("NXBOX_D3D12_TICK_NO_TEXTURE"))
+        texture_cache.TickFrame();
     if (feedback_frame < 8 || feedback_frame % 120 == 0) {
         u64 pool_bytes{};
         for (const auto& entry : feedback_pool)
