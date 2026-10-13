@@ -8,6 +8,7 @@
 
 #include <type_traits>
 #include <bitset>
+#include <cstdint>
 #include <initializer_list>
 #include "common/assert.h"
 
@@ -264,9 +265,14 @@ enum {
 };
 
 constexpr bool IsWithin2G(uintptr_t ref, uintptr_t target) noexcept {
-    u64 const distance = target - (ref + 5);
-    return (distance & 0xffff'ffff) == distance;
+    // rel32 reaches [-2 GiB, +2 GiB) from the end of the 5-byte call.
+    s64 const distance = s64(target - (ref + 5));
+    return distance >= INT32_MIN && distance <= INT32_MAX;
 }
+static_assert(IsWithin2G(0x1000, 0x1000ULL + 0x7fff'ffff));
+static_assert(!IsWithin2G(0x1000, 0x1000ULL + 0x8000'0005));
+static_assert(IsWithin2G(0x9000'0000, 0x1000'0010));
+static_assert(!IsWithin2G(0x1'4000'0000, 0x1000));
 
 template <typename T>
     requires std::is_pointer_v<T>
