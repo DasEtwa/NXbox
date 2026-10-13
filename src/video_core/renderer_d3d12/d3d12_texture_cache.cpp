@@ -1088,6 +1088,16 @@ bool TextureCacheRuntime::ReinterpretOnGpu(Image& dst, Image& src,
             copy.dst_offset.y < 0 || copy.dst_offset.z < 0 ||
             copy.src_subresource.num_layers != copy.dst_subresource.num_layers)
             return false;
+        const s32 src_level = copy.src_subresource.base_level;
+        const u32 src_depth = src.info.type == VideoCommon::ImageType::e3D
+                                  ? std::max(1u, src.info.size.depth >> src_level)
+                                  : 1u;
+        if (u64{static_cast<u32>(copy.src_offset.x)} + extent.width >
+                std::max(1u, src.info.size.width >> src_level) ||
+            u64{static_cast<u32>(copy.src_offset.y)} + extent.height >
+                std::max(1u, src.info.size.height >> src_level) ||
+            u64{static_cast<u32>(copy.src_offset.z)} + extent.depth > src_depth)
+            return false;
         const u32 columns = (extent.width + from.block_width - 1) / from.block_width;
         const u32 rows = (extent.height + from.block_height - 1) / from.block_height;
         const s32 level = copy.dst_subresource.base_level;
@@ -1095,7 +1105,11 @@ bool TextureCacheRuntime::ReinterpretOnGpu(Image& dst, Image& src,
         const u32 mip_height = std::max(1u, dst.info.size.height >> level);
         const auto dx = static_cast<u32>(copy.dst_offset.x);
         const auto dy = static_cast<u32>(copy.dst_offset.y);
-        if (dx >= mip_width || dy >= mip_height)
+        const u32 dst_depth = dst.info.type == VideoCommon::ImageType::e3D
+                                  ? std::max(1u, dst.info.size.depth >> level)
+                                  : 1u;
+        if (dx >= mip_width || dy >= mip_height ||
+            u64{static_cast<u32>(copy.dst_offset.z)} + extent.depth > dst_depth)
             return false;
         const u32 width = std::min(columns * to.block_width, mip_width - dx);
         const u32 height = std::min(rows * to.block_height, mip_height - dy);
