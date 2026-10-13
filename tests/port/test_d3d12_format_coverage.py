@@ -489,7 +489,7 @@ class D3D12FormatCoverageTests(unittest.TestCase):
         driver = driver.replace("struct ImageInfo {", "struct ImageInfo { u32 num_samples{1};")
         driver = driver.replace(
             "struct TextureCacheRuntime {",
-            "struct Image;\nstruct BlitSurface { ResourcePtr resource; FormatInfo format; };\nstruct FakeBlit { void CopyImage(const BlitSurface&,const BlitSurface&,std::span<const VideoCommon::ImageCopy>) { assert(false); } };\nstruct TextureCacheRuntime {\n    bool CanDownloadImage(const Image&) const { return true; }\n    bool ShouldReinterpret(Image&,Image&);\n    void ReinterpretImage(Image&,Image&,std::span<const VideoCommon::ImageCopy>);\n    void CopyImage(Image&,Image&,std::span<const VideoCommon::ImageCopy>);\n    void CopyImageMSAA(Image&,Image&,std::span<const VideoCommon::ImageCopy>) { assert(false); }\n    FakeBlit blit; FakeBlit& BlitHelpers() { return blit; }",
+            "struct Image;\nstruct BlitSurface { ResourcePtr resource; FormatInfo format; };\nstruct FakeBlit { void CopyImage(const BlitSurface&,const BlitSurface&,std::span<const VideoCommon::ImageCopy>) { assert(false); } };\nstruct TextureCacheRuntime {\n    bool CanDownloadImage(const Image&) const { return true; }\n    bool ReinterpretOnGpu(Image&,Image&,std::span<const VideoCommon::ImageCopy>) { return false; }\n    bool ShouldReinterpret(Image&,Image&);\n    void ReinterpretImage(Image&,Image&,std::span<const VideoCommon::ImageCopy>);\n    void CopyImage(Image&,Image&,std::span<const VideoCommon::ImageCopy>);\n    void CopyImageMSAA(Image&,Image&,std::span<const VideoCommon::ImageCopy>) { assert(false); }\n    FakeBlit blit; FakeBlit& BlitHelpers() { return blit; }",
         )
         driver = driver.replace(
             "struct Image {",

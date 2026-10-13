@@ -170,6 +170,8 @@ private:
     bool injected_draw_skip{};
     bool presentation_logged{};
     ResourcePtr zero_vertex_buffer;
+    ResourcePtr zero_uniform_buffer;
+    void PrepareZeroUniformBuffer();
     std::vector<std::pair<ResourcePtr, D3D12_RESOURCE_STATES>> state_scratch;
     ComPtr<ID3D12CommandSignature> draw_signature;
     ComPtr<ID3D12CommandSignature> indexed_signature;

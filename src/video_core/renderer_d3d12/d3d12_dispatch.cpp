@@ -3,6 +3,8 @@
 
 #include <algorithm>
 
+#include "video_core/renderer_d3d12/d3d12_root_signature.h"
+
 namespace D3D12 {
 ComPtr<ID3D12RootSignature> CreateComputeRootSignature(ID3D12Device* device,
                                                        ComputeBindingCounts counts) {
@@ -62,7 +64,7 @@ void ComputeDispatch::Bind(const ComputeBindings& bindings) {
         !(resource_heap.Flags & D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE) ||
         !(sampler_heap.Flags & D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE))
         throw std::invalid_argument("D3D12 invalid compute descriptor heaps");
-    for (std::size_t i = 0; i < bindings.tables.size(); ++i) {
+    for (std::size_t i = bindings.root_cbvs ? 1u : 0u; i < bindings.tables.size(); ++i) {
         auto* heap = i == 3 ? bindings.sampler_heap.Get() : bindings.resource_heap.Get();
         const auto desc = heap->GetDesc();
         const auto start = heap->GetGPUDescriptorHandleForHeapStart().ptr;
@@ -101,8 +103,16 @@ void ComputeDispatch::Bind(const ComputeBindings& bindings) {
     commands->SetComputeRootSignature(bindings.root_signature.Get());
     commands->SetPipelineState(bindings.pipeline.Get());
     commands->SetComputeRoot32BitConstants(0, ComputeRootDwords, bindings.constants.data(), 0);
-    for (UINT i = 0; i < bindings.tables.size(); ++i)
-        commands->SetComputeRootDescriptorTable(i + 1, bindings.tables[i]);
+    for (UINT i = bindings.root_cbvs ? 1u : 0u; i < bindings.tables.size(); ++i)
+        commands->SetComputeRootDescriptorTable(i + (bindings.root_cbvs ? 0u : 1u),
+                                                bindings.tables[i]);
+    if (bindings.root_cbvs) {
+        for (UINT i = 0; i < bindings.root_cbv_addresses.size(); ++i) {
+            commands->SetComputeRootConstantBufferView(kFirstRootCbv + i,
+                                                       bindings.root_cbv_addresses[i]);
+            context.Profile().Count(FrameCount::RootCbvBinds);
+        }
+    }
 }
 void ComputeDispatch::Direct(const ComputeBindings& bindings, ComputeGroups groups) {
     if (!HasComputeWork(groups))

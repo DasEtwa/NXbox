@@ -22,9 +22,12 @@ class GraphicsPipeline;
 class IGraphicsPipeline {
 public:
     virtual ~IGraphicsPipeline() = default;
-    // Root signature layout (contract): 0 root constants b0/space1 (16 dwords),
-    // 1 CBV table, 2 SRV table, 3 UAV table, 4 sampler table; visibility ALL.
+    // Root constants are b0/space1. Root-CBV pipelines have three tables at 1..3
+    // and sequential space0 CBVs at 4+; legacy pipelines have four tables at 1..4.
     virtual ID3D12RootSignature* RootSignature() const = 0;
+    virtual bool UsesRootCbvs() const {
+        return false;
+    }
     // nullptr while the PSO is still compiling: the draw is skipped.
     virtual ID3D12PipelineState* PipelineState() const = 0;
     virtual D3D_PRIMITIVE_TOPOLOGY Topology() const = 0;

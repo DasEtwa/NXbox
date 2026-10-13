@@ -12,6 +12,7 @@
 #include <tuple>
 #include <type_traits>
 #include <unordered_map>
+#include <utility>
 
 #include "shader_recompiler/stage.h"
 #include "video_core/renderer_d3d12/d3d12_async_pso.h"
@@ -77,15 +78,15 @@ public:
                                   std::span<const StageInput> stages);
     ComputePipeline& GetCompute(const StageInput& stage);
 
-    // Shared root signature for a total table size (also needed by callers that bind tables
-    // before a pipeline exists).
+    // Shared guest root signature, keyed by descriptor counts and CBV layout choice.
     ID3D12RootSignature* GetRootSignature(DescriptorCounts counts);
 
 private:
     struct CountsLess {
-        bool operator()(const DescriptorCounts& a, const DescriptorCounts& b) const {
-            return std::tie(a.cbv, a.srv, a.uav, a.sampler) <
-                   std::tie(b.cbv, b.srv, b.uav, b.sampler);
+        bool operator()(const std::pair<DescriptorCounts, bool>& a,
+                        const std::pair<DescriptorCounts, bool>& b) const {
+            return std::tie(a.first.cbv, a.first.srv, a.first.uav, a.first.sampler, a.second) <
+                   std::tie(b.first.cbv, b.first.srv, b.first.uav, b.first.sampler, b.second);
         }
     };
 
@@ -101,7 +102,8 @@ private:
     std::array<u64, 6> guest_hashes{};
     DxcCache dxc{&context.Profile()};
     std::unique_ptr<DiskPipelineCache> disk;
-    std::map<DescriptorCounts, Microsoft::WRL::ComPtr<ID3D12RootSignature>, CountsLess>
+    std::map<std::pair<DescriptorCounts, bool>, Microsoft::WRL::ComPtr<ID3D12RootSignature>,
+             CountsLess>
         root_signatures;
     std::unordered_map<GraphicsPipelineKey, std::unique_ptr<GraphicsPipeline>,
                        GraphicsPipelineKeyHash>

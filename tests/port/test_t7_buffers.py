@@ -203,6 +203,7 @@ struct BufferCacheRuntime {
     void BindVertexBuffer(u32, ResourcePtr, u32, u32, u32);
     std::span<u8> BindMappedUniformBuffer(size_t, u32, u32);
     void BindUniformBuffer(const Buffer&, u32, u32);
+    BoundBuffer CopyUniform(const BoundBuffer&);
     void BindStorageBuffer(const Buffer&, u32, u32, bool);
 };
 __BINDINGS__

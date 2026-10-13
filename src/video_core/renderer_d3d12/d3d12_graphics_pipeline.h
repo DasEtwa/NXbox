@@ -44,6 +44,13 @@ public:
     ID3D12RootSignature* RootSignature() const override {
         return root_signature.Get();
     }
+    bool UsesRootCbvs() const override {
+        return root_cbvs;
+    }
+    void SetRootCbvs(bool enabled) {
+        root_cbvs = enabled;
+    }
+
     D3D_PRIMITIVE_TOPOLOGY Topology() const override {
         return static_cast<D3D_PRIMITIVE_TOPOLOGY>(topology);
     }
@@ -87,6 +94,7 @@ public:
     }
 
 private:
+    bool root_cbvs{};
     Pso::GraphicsPsoState state;
     u32 topology{};
     std::optional<Shader::RuntimeInfo> transform_feedback;

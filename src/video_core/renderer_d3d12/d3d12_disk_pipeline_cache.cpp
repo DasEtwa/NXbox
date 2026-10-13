@@ -18,7 +18,7 @@
 namespace D3D12 {
 namespace {
 constexpr std::array<std::uint8_t, 8> Magic{'N', 'X', 'D', '3', 'D', '1', '2', 'C'};
-constexpr std::uint32_t FormatVersion = 1;
+constexpr std::uint32_t FormatVersion = 2;
 constexpr std::size_t HeaderSize = 84;
 std::uint64_t PayloadLimit(DiskRecordKind kind) {
     switch (kind) {

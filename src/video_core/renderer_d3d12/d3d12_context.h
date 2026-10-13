@@ -47,6 +47,7 @@ enum class FrameCount : size_t {
     Barriers,
     DescriptorCopies,
     DescriptorWrites,
+    RootCbvBinds,
     PsoCompiles,
     Executes,
     PsoCacheMisses,

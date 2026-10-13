@@ -352,6 +352,7 @@ void FrameProfile::EndFrame(bool presented) {
                                       "barriers",
                                       "descriptor_copies",
                                       "descriptor_writes",
+                                      "root_cbv_binds",
                                       "pso_compiles",
                                       "ExecuteCommandLists",
                                       "pso_cache_misses",

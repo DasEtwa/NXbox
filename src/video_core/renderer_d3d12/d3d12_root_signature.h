@@ -9,8 +9,8 @@
 
 namespace D3D12 {
 
-// Root parameter indices, fixed by P3_CONTRACT.md. The descriptor allocator fills tables 1..4
-// in exactly this order; table 0 is the 16-dword NxboxRootConstants block (b0, space1).
+// Legacy table layout, also used by internal passes. Guest root-CBV layouts omit
+// the CBV table: SRV/UAV/sampler occupy 1..3, followed by CBVs starting at 4.
 enum RootParameter : u32 {
     RootConstants = 0,
     RootCbvTable = 1,
@@ -20,6 +20,13 @@ enum RootParameter : u32 {
     RootParameterCount = 5,
 };
 inline constexpr u32 kRootConstantDwords = 16;
+inline constexpr u32 kFirstRootCbv = 4;
+inline constexpr u32 kRootSignatureDwordLimit = 64;
+
+// Constants cost 16 DWORDs, each remaining table one, and each root CBV two.
+constexpr bool UseRootCbvs(u32 count) {
+    return count <= (kRootSignatureDwordLimit - kRootConstantDwords - 3) / 2;
+}
 
 // Number of descriptors in each table (all stages of a pipeline summed, in binding order).
 struct DescriptorCounts {
@@ -42,9 +49,10 @@ struct DescriptorCounts {
 // uav = storage buffers then images then image buffers (the contract order).
 DescriptorCounts CountDescriptors(const Shader::Info& info);
 
-// Builds (uncached) the root signature for the given table sizes. A table with 0 descriptors
-// still gets one range so the parameter index stays fixed; it is simply never bound.
+// Builds an uncached signature. Empty tables still have one null descriptor.
+// Guest pipelines request root CBVs; oversized layouts fall back to four tables.
 Microsoft::WRL::ComPtr<ID3D12RootSignature> CreateRootSignature(ID3D12Device* device,
-                                                                DescriptorCounts counts);
+                                                                DescriptorCounts counts,
+                                                                bool root_cbvs = false);
 
 } // namespace D3D12

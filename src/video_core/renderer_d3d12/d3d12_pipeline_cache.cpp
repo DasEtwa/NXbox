@@ -151,7 +151,11 @@ void Append64(DiskBytes& bytes, u64 value) {
 DiskBytes Recipe(const Pso::GraphicsPsoState* state, u32 topology,
                  std::span<const StageInput> stages) {
     DiskBytes bytes;
-    Append32(bytes, 2);
+    Append32(bytes, 3);
+    u32 cbv_count{};
+    for (const auto& stage : stages)
+        cbv_count += stage.counts.cbv;
+    Append32(bytes, UseRootCbvs(cbv_count) ? 1u : 0u);
     Append32(bytes, topology);
     if (state) {
         const auto* data = reinterpret_cast<const u8*>(state);
@@ -193,7 +197,7 @@ void ReportSlowPso(u64 hash, std::chrono::steady_clock::time_point start, ID3D12
             return;
     }
     Diagnostic(fmt::format("D3D12_SLOW_PSO hash={:016x} native_wall_ms={:.3f} "
-                           "root={} root_schema=9 cbv={} srv={} uav={} sampler={}",
+                           "root={} root_schema=10 cbv={} srv={} uav={} sampler={}",
                            hash, elapsed, fmt::ptr(root), counts.cbv, counts.srv, counts.uav,
                            counts.sampler));
     try {
@@ -375,9 +379,11 @@ void FillGraphicsState(Tegra::Engines::Maxwell3D& maxwell3d, Pso::GraphicsPsoSta
 }
 
 ID3D12RootSignature* PipelineCache::GetRootSignature(DescriptorCounts counts) {
-    auto it = root_signatures.find(counts);
+    const auto key = std::pair{counts, UseRootCbvs(counts.cbv)};
+    auto it = root_signatures.find(key);
     if (it == root_signatures.end()) {
-        it = root_signatures.emplace(counts, CreateRootSignature(context.Device(), counts)).first;
+        it = root_signatures.emplace(key, CreateRootSignature(context.Device(), counts, key.second))
+                 .first;
     }
     return it->second.Get();
 }
@@ -408,9 +414,11 @@ GraphicsPipeline& PipelineCache::GetGraphics(const Pso::GraphicsPsoState& state,
         }
     }
     // Root/input binding ABI salt invalidates old disk PSOs without changing cache files.
-    constexpr u32 StageBindingAbi = 9;
+    constexpr u32 StageBindingAbi = 10;
     key.stage_hashes[0] =
         Pso::HashBytes(&StageBindingAbi, sizeof(StageBindingAbi), key.stage_hashes[0]);
+    const bool root_cbvs = UseRootCbvs(total.cbv);
+    key.stage_hashes[0] = Pso::HashBytes(&root_cbvs, sizeof(root_cbvs), key.stage_hashes[0]);
     // Fragment occupies slot 5: folding topology after stage hashes prevents
     // its shader hash from overwriting the wrapper's IA topology identity.
     key.stage_hashes[5] = Pso::HashBytes(&d3d_topology, sizeof(d3d_topology), key.stage_hashes[5]);
@@ -447,6 +455,7 @@ GraphicsPipeline& PipelineCache::GetGraphics(const Pso::GraphicsPsoState& state,
             context.Device(), signature, state, d3d_topology, programs, disk.get(),
             Pso::HashBytes(&key, sizeof(key)), Recipe(&state, d3d_topology, stages), stream_output,
             &context.Profile());
+        pipeline->SetRootCbvs(UseRootCbvs(total.cbv));
         ReportSlowPso(Pso::HashBytes(&key, sizeof(key)), native_start, signature, total, stages,
                       programs);
         if (feedback_info)
@@ -462,7 +471,8 @@ GraphicsPipeline& PipelineCache::GetGraphics(const Pso::GraphicsPsoState& state,
 
 ComputePipeline& PipelineCache::GetCompute(const StageInput& stage) {
     std::scoped_lock lock{pipeline_mutex};
-    const u64 key = Pso::HashBytes(stage.hlsl.data(), stage.hlsl.size(), stage.hash);
+    const auto recipe = Recipe(nullptr, 0, std::span{&stage, size_t{1}});
+    const u64 key = Pso::HashBytes(recipe.data(), recipe.size(), stage.hash);
     if (const auto it = compute.find(key); it != compute.end()) {
         return *it->second;
     }
@@ -470,9 +480,10 @@ ComputePipeline& PipelineCache::GetCompute(const StageInput& stage) {
     const FrameProfile::Scope profile_pso{context.Profile(), FramePhase::Pso};
     auto dxil = dxc.Compile(stage.hlsl, Shader::Stage::Compute, key, disk.get());
     const auto native_start = std::chrono::steady_clock::now();
-    auto pipeline = std::make_unique<ComputePipeline>(
-        context.Device(), GetRootSignature(stage.counts), dxil, disk.get(), key,
-        Recipe(nullptr, 0, std::span{&stage, size_t{1}}), &context.Profile());
+    auto pipeline =
+        std::make_unique<ComputePipeline>(context.Device(), GetRootSignature(stage.counts), dxil,
+                                          disk.get(), key, recipe, &context.Profile());
+    pipeline->SetRootCbvs(UseRootCbvs(stage.counts.cbv));
     const StageProgram compiled{Shader::Stage::Compute, dxil};
     ReportSlowPso(key, native_start, pipeline->RootSignature(), stage.counts,
                   std::span{&stage, size_t{1}}, std::span{&compiled, size_t{1}});
@@ -729,7 +740,7 @@ std::shared_ptr<GraphicsPipeline> BuildAsyncGraphics(
         total += stage.counts;
     }
     mark("root_signature");
-    auto signature = CreateRootSignature(device, total);
+    auto signature = CreateRootSignature(device, total, UseRootCbvs(total.cbv));
     // Stream-output declaration is pure CPU state, independent of Context and buffers.
     std::vector<D3D12_SO_DECLARATION_ENTRY> entries;
     std::array<UINT, 4> strides{};
@@ -784,6 +795,7 @@ std::shared_ptr<GraphicsPipeline> BuildAsyncGraphics(
     mark("native_pso");
     auto pipeline = std::make_shared<GraphicsPipeline>(
         device, signature, state, d3d_topology, compiled, disk, native_key, recipe, stream_output);
+    pipeline->SetRootCbvs(UseRootCbvs(total.cbv));
     mark("done");
     ReportSlowPso(native_key, native_start, signature.Get(), total, stages, compiled);
     if (feedback)
@@ -1202,14 +1214,18 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() try {
                     auto result = std::make_shared<AsyncResult>();
                     const auto native_start = std::chrono::steady_clock::now();
                     mark("native_pso");
+                    const auto recipe = Recipe(nullptr, 0, std::span{&stage, size_t{1}});
+                    const u64 native_key = Pso::HashBytes(recipe.data(), recipe.size(), request);
                     result->compute = std::make_shared<ComputePipeline>(
-                        device.Get(), CreateRootSignature(device.Get(), stage.counts), dxil,
-                        disk_cache, Pso::HashBytes(source.data(), source.size(), request),
-                        Recipe(nullptr, 0, std::span{&stage, size_t{1}}));
+                        device.Get(),
+                        CreateRootSignature(device.Get(), stage.counts,
+                                            UseRootCbvs(stage.counts.cbv)),
+                        dxil, disk_cache, native_key, recipe);
+                    result->compute->SetRootCbvs(UseRootCbvs(stage.counts.cbv));
                     const StageProgram compiled{Shader::Stage::Compute, dxil};
-                    ReportSlowPso(Pso::HashBytes(source.data(), source.size(), request),
-                                  native_start, result->compute->RootSignature(), stage.counts,
-                                  std::span{&stage, size_t{1}}, std::span{&compiled, size_t{1}});
+                    ReportSlowPso(native_key, native_start, result->compute->RootSignature(),
+                                  stage.counts, std::span{&stage, size_t{1}},
+                                  std::span{&compiled, size_t{1}});
                     result->compute->info = program.info;
                     mark("done");
                     return result;
@@ -1281,7 +1297,7 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
     guest_compute.clear();
     graphics.clear();
     compute.clear();
-    const auto identity = DiskPipelineCache::QueryIdentity(context.Device(), {4, 2, 4});
+    const auto identity = DiskPipelineCache::QueryIdentity(context.Device(), {4, 2, 5});
     if (!identity) {
         LOG_WARNING(Render, "D3D12 adapter identity unavailable; disk PSO reuse disabled");
         disk.reset();
@@ -1319,8 +1335,9 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
                 return false;
             try {
                 RecipeReader reader{record.payload};
-                if (reader.U32() != 2)
+                if (reader.U32() != 3)
                     return false;
+                const bool root_cbvs = reader.U32() != 0;
                 const u32 topology = reader.U32();
                 Pso::GraphicsPsoState state{};
                 if (record.kind == DiskRecordKind::Graphics) {
@@ -1348,7 +1365,10 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
                                       {reinterpret_cast<const char*>(source.data()), source.size()},
                                       counts});
                 }
-                if (!reader.Empty())
+                u32 cbv_count{};
+                for (const auto& stage : stages)
+                    cbv_count += stage.counts.cbv;
+                if (root_cbvs != UseRootCbvs(cbv_count) || !reader.Empty())
                     return false;
                 if (record.kind == DiskRecordKind::Graphics)
                     GetGraphics(state, topology, stages);

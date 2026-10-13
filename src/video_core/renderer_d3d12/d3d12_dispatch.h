@@ -44,7 +44,7 @@ struct ComputeBindingCounts {
     std::uint32_t cbv{}, srv{}, uav{}, sampler{};
 };
 // Empty ranges have one null descriptor. Space0 tables follow Shader::Info's
-// order; constants are b0/space1. No root CBVs or additional root parameters.
+// order; constants are b0/space1. Internal passes keep this legacy layout.
 ComPtr<ID3D12RootSignature> CreateComputeRootSignature(ID3D12Device* device,
                                                        ComputeBindingCounts counts);
 struct ComputeResourceUse {
@@ -56,8 +56,10 @@ struct ComputeBindings {
     ComPtr<ID3D12RootSignature> root_signature;
     ComPtr<ID3D12DescriptorHeap> resource_heap;
     ComPtr<ID3D12DescriptorHeap> sampler_heap;
-    // CBV, SRV, UAV, sampler, in contract parameter order 1..4.
+    // CBV, SRV, UAV, sampler. Root-CBV layouts ignore tables[0] and bind 1..3.
     std::array<D3D12_GPU_DESCRIPTOR_HANDLE, 4> tables{};
+    bool root_cbvs{};
+    std::span<const D3D12_GPU_VIRTUAL_ADDRESS> root_cbv_addresses;
     ComputeConstants constants{};
     std::span<const ComputeResourceUse> resources;
 };

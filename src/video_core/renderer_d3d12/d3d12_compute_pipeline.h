@@ -24,9 +24,17 @@ public:
         return root_signature.Get();
     }
 
+    bool UsesRootCbvs() const {
+        return root_cbvs;
+    }
+    void SetRootCbvs(bool enabled) {
+        root_cbvs = enabled;
+    }
+
     Shader::Info info;
 
 private:
+    bool root_cbvs{};
     Microsoft::WRL::ComPtr<ID3D12RootSignature> root_signature;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> pso;
 };

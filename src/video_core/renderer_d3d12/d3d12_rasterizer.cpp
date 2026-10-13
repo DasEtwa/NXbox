@@ -31,6 +31,14 @@
 
 namespace D3D12 {
 
+void RasterizerD3D12::PrepareZeroUniformBuffer() {
+    if (!zero_uniform_buffer) {
+        // Root CBVs cannot be null; cover the full 64 KiB guest cbuffer declaration.
+        zero_uniform_buffer = context.CreateBuffer(65536, D3D12_HEAP_TYPE_UPLOAD);
+        std::fill(zero_uniform_buffer->mapped.begin(), zero_uniform_buffer->mapped.end(), u8{0});
+    }
+}
+
 AccelerateDMA::AccelerateDMA() = default;
 
 bool AccelerateDMA::BufferCopy(GPUVAddr start_address, GPUVAddr end_address, u64 amount) {
@@ -994,7 +1002,12 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         }
     }
     // ---- 2. Allocate every descriptor this draw needs (may submit the command list) ----
-    const u32 cbv_size = TableSize(totals.cbv);
+    const bool root_cbvs = pipeline->UsesRootCbvs();
+    if (root_cbvs)
+        PrepareZeroUniformBuffer();
+    std::vector<D3D12_GPU_VIRTUAL_ADDRESS> root_cbv_addresses;
+    root_cbv_addresses.reserve(totals.cbv);
+    const u32 cbv_size = root_cbvs ? 0u : TableSize(totals.cbv);
     const u32 srv_size = TableSize(totals.srv);
     const u32 uav_size = TableSize(totals.uav);
     descriptors.Reserve(cbv_size + srv_size + uav_size, TableSize(totals.sampler),
@@ -1026,17 +1039,21 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         // Constant buffers, in the order of constant_buffer_descriptors.
         for (const auto& desc : info->constant_buffer_descriptors) {
             for (u32 i = 0; i < desc.count; ++i, ++cbv_i) {
-                if (uniform_it < bound.uniform.size()) {
-                    auto buffer = bound.uniform[uniform_it++];
-                    // Maxwell lets a constant buffer share memory with a storage buffer; the
-                    // storage binding needs UNORDERED_ACCESS, so read the constants from a copy.
-                    if (buffer.resource && IsStorageBuffer(bindings, buffer.resource))
-                        buffer = buffer_runtime.CopyUniform(buffer);
-                    descriptors.WriteCbv(cbv_table, cbv_i, buffer);
-                    need(buffer.resource, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
+                BoundBuffer buffer;
+                if (uniform_it < bound.uniform.size())
+                    buffer = bound.uniform[uniform_it++];
+                // Storage aliases need a copy; CopyUniform also aligns the GPU address.
+                if (buffer.resource && IsStorageBuffer(bindings, buffer.resource))
+                    buffer = buffer_runtime.CopyUniform(buffer);
+                if (root_cbvs) {
+                    if (!buffer.resource || !buffer.size)
+                        buffer = {zero_uniform_buffer, 0, 65536};
+                    root_cbv_addresses.push_back(buffer.resource->handle->GetGPUVirtualAddress() +
+                                                 buffer.offset);
                 } else {
-                    descriptors.WriteNullCbv(cbv_table, cbv_i);
+                    descriptors.WriteCbv(cbv_table, cbv_i, buffer);
                 }
+                need(buffer.resource, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
             }
         }
         // Textures (+ samplers), then texel buffers.
@@ -1201,10 +1218,16 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     commands->SetPipelineState(pso);
     commands->IASetPrimitiveTopology(converted_indices ? converted_indices->topology
                                                        : pipeline->Topology());
-    commands->SetGraphicsRootDescriptorTable(1, cbv_table.gpu);
-    commands->SetGraphicsRootDescriptorTable(2, srv_table.gpu);
-    commands->SetGraphicsRootDescriptorTable(3, uav_table.gpu);
-    commands->SetGraphicsRootDescriptorTable(4, sampler_table.gpu);
+    if (!root_cbvs)
+        commands->SetGraphicsRootDescriptorTable(RootCbvTable, cbv_table.gpu);
+    const UINT table_shift = root_cbvs ? 1u : 0u;
+    commands->SetGraphicsRootDescriptorTable(RootSrvTable - table_shift, srv_table.gpu);
+    commands->SetGraphicsRootDescriptorTable(RootUavTable - table_shift, uav_table.gpu);
+    commands->SetGraphicsRootDescriptorTable(RootSamplerTable - table_shift, sampler_table.gpu);
+    for (UINT i = 0; i < root_cbv_addresses.size(); ++i) {
+        commands->SetGraphicsRootConstantBufferView(kFirstRootCbv + i, root_cbv_addresses[i]);
+        context.Profile().Count(FrameCount::RootCbvBinds);
+    }
 
     commands->OMSetRenderTargets(num_rts, num_rts ? &rtv_base : nullptr, TRUE,
                                  has_depth ? &dsv_handle : nullptr);
@@ -1903,8 +1926,13 @@ void RasterizerD3D12::DispatchCompute() try {
     buffer_cache.UpdateComputeBuffers();
     buffer_cache.BindHostComputeBuffers();
     const auto counts = CountStageTables(info);
-    const u32 cbv_size = TableSize(counts.cbv), srv_size = TableSize(counts.srv),
-              uav_size = TableSize(counts.uav);
+    const bool root_cbvs = pipeline->UsesRootCbvs();
+    if (root_cbvs)
+        PrepareZeroUniformBuffer();
+    std::vector<D3D12_GPU_VIRTUAL_ADDRESS> root_cbv_addresses;
+    root_cbv_addresses.reserve(counts.cbv);
+    const u32 cbv_size = root_cbvs ? 0u : TableSize(counts.cbv);
+    const u32 srv_size = TableSize(counts.srv), uav_size = TableSize(counts.uav);
     descriptors.Reserve(cbv_size + srv_size + uav_size, TableSize(counts.sampler));
     const auto allocation = descriptors.AllocateViews(cbv_size + srv_size + uav_size);
     const auto cbv = allocation.Slice(0, cbv_size), srv = allocation.Slice(cbv_size, srv_size),
@@ -1916,15 +1944,21 @@ void RasterizerD3D12::DispatchCompute() try {
             resources.push_back({resource, state});
     };
     const auto& bound = bindings.stages[0];
-    for (u32 i = 0; i < cbv_size; ++i) {
-        if (i < bound.uniform.size()) {
-            auto buffer = bound.uniform[i];
-            if (buffer.resource && IsStorageBuffer(bindings, buffer.resource))
-                buffer = buffer_runtime.CopyUniform(buffer);
+    for (u32 i = 0; i < (root_cbvs ? counts.cbv : cbv_size); ++i) {
+        BoundBuffer buffer;
+        if (i < bound.uniform.size())
+            buffer = bound.uniform[i];
+        if (buffer.resource && IsStorageBuffer(bindings, buffer.resource))
+            buffer = buffer_runtime.CopyUniform(buffer);
+        if (root_cbvs) {
+            if (!buffer.resource || !buffer.size)
+                buffer = {zero_uniform_buffer, 0, 65536};
+            root_cbv_addresses.push_back(buffer.resource->handle->GetGPUVirtualAddress() +
+                                         buffer.offset);
+        } else {
             descriptors.WriteCbv(cbv, i, buffer);
-            use(buffer.resource, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
-        } else
-            descriptors.WriteNullCbv(cbv, i);
+        }
+        use(buffer.resource, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
     }
     u32 srv_index = 0, sampler_index = 0;
     for (const auto& desc : info.texture_descriptors)
@@ -1982,6 +2016,8 @@ void RasterizerD3D12::DispatchCompute() try {
     dispatch.resource_heap = descriptors.ResourceHeap();
     dispatch.sampler_heap = descriptors.SamplerHeap();
     dispatch.tables = {cbv.gpu, srv.gpu, uav.gpu, sampler.gpu};
+    dispatch.root_cbvs = root_cbvs;
+    dispatch.root_cbv_addresses = root_cbv_addresses;
     Shader::Backend::HLSL::RootConstants constants;
     std::memcpy(dispatch.constants.data(), &constants, sizeof(constants));
     dispatch.resources = resources;
