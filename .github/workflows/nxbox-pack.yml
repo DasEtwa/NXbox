@@ -59,6 +59,13 @@ jobs:
         run: |
           NXBOX_PACK_LANG=en ./dist/${{ matrix.binary }} --help
           NXBOX_PACK_LANG=pt ./dist/${{ matrix.binary }} --help
+      # The GUI talks to the core over stdin; Wine's fstat on a pipe breaks Bun, so prove it on a real host.
+      - name: Smoke test the GUI API over a stdin pipe
+        shell: bash
+        run: |
+          out=$(echo '{"cmd":"nope"}' | ./dist/${{ matrix.binary }} --api || true)
+          echo "$out"
+          test "$out" = '{"error":"args"}'
       - name: Record binary checksum
         env:
           NXBOX_PACK_BINARY: ${{ matrix.binary }}
