@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <bit>
 #include <cmath>
+#include <atomic>
 #include <cstring>
 #include <limits>
 #include <mutex>
@@ -781,8 +782,21 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
             constexpr u32 WriteStates =
                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS | D3D12_RESOURCE_STATE_RENDER_TARGET |
                 D3D12_RESOURCE_STATE_DEPTH_WRITE | D3D12_RESOURCE_STATE_STREAM_OUT;
-            if (!CompatibleDrawStates(known_state, state, WriteStates))
+            if (!CompatibleDrawStates(known_state, state, WriteStates)) {
+                // Name the first conflicts so the skipped draw can be traced to its bindings.
+                static std::atomic<u32> logged{};
+                if (!invalid_states && logged.fetch_add(1, std::memory_order_relaxed) < 16) {
+                    const auto desc = resource->handle->GetDesc();
+                    Diagnostic(fmt::format(
+                        "D3D12_STATE_CONFLICT have={:#x} want={:#x} dim={} size={}x{}x{} mips={} "
+                        "format={} flags={:#x}",
+                        static_cast<u32>(known_state), static_cast<u32>(state),
+                        static_cast<int>(desc.Dimension), desc.Width, desc.Height,
+                        desc.DepthOrArraySize, desc.MipLevels, static_cast<int>(desc.Format),
+                        static_cast<u32>(desc.Flags)));
+                }
                 invalid_states = true;
+            }
             known_state |= state;
             return;
         }
