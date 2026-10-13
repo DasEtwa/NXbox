@@ -295,6 +295,17 @@ void TextureCache<P>::FillImageViews(std::span<ImageViewInOut> views, bool compu
             }
         }
     } while (has_deleted_images || (blacklist && has_blacklisted));
+    if (PassDump::GetConfig().enabled && frame_tick + 1 == PassDump::GetConfig().frame) {
+        for (const auto& view : views) {
+            if (view.id == NULL_IMAGE_VIEW_ID || slot_image_views[view.id].IsBuffer()) {
+                continue;
+            }
+            const ImageId id = slot_image_views[view.id].image_id;
+            if (std::ranges::find(pass_dump_sampled, id) == pass_dump_sampled.end()) {
+                pass_dump_sampled.push_back(id);
+            }
+        }
+    }
     if (NxboxUpload::Enabled()) {
         for (const auto& view : views) {
             const auto& image_view = slot_image_views[view.id];
@@ -724,6 +735,15 @@ void TextureCache<P>::DumpPassRenderTargets() {
     pass_dump_has_set = false;
     const u64 seq = ++pass_dump_sequence;
     const auto& directory = PassDump::GetConfig().directory;
+    // Textures the pass sampled, so a dead pass can be traced back to its inputs.
+    std::string sampled;
+    for (const ImageId id : pass_dump_sampled) {
+        const auto& info = slot_images[id].info;
+        sampled += fmt::format("{}\"{:x} {}x{} {}\"", sampled.empty() ? "" : ",",
+                               slot_images[id].gpu_addr, info.size.width, info.size.height,
+                               PassDump::FormatName(info.format));
+    }
+    pass_dump_sampled.clear();
     try {
         std::filesystem::create_directories(directory);
         std::ofstream manifest{directory / "manifest.jsonl", std::ios::app};
@@ -764,9 +784,9 @@ void TextureCache<P>::DumpPassRenderTargets() {
             }
             manifest << fmt::format(
                 "{{\"seq\":{},\"slot\":{},\"gpu_addr\":{},\"width\":{},\"height\":{},"
-                "\"format\":\"{}\",\"bytes\":{},\"file\":\"{}\"{}}}\n",
+                "\"format\":\"{}\",\"bytes\":{},\"file\":\"{}\",\"sampled\":[{}]{}}}\n",
                 seq, slot, image.gpu_addr, info.size.width, info.size.height,
-                PassDump::FormatName(info.format), bytes, file,
+                PassDump::FormatName(info.format), bytes, file, sampled,
                 info.num_samples > 1 ? ",\"skipped\":\"msaa\"" : "");
         }
         manifest.close();
@@ -2502,6 +2522,7 @@ void TextureCache<P>::DeleteImage(ImageId image_id, bool immediate_delete) {
              std::ranges::find(pass_dump_colors, image_id) != pass_dump_colors.end())) {
             DumpPassRenderTargets();
         }
+        std::erase(pass_dump_sampled, image_id);
     }
     ImageBase& image = slot_images[image_id];
     if (image.HasScaled()) {

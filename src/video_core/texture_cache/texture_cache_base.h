@@ -445,6 +445,7 @@ private:
     ImageId pass_dump_depth{};
     u64 pass_dump_sequence = 0;
     bool pass_dump_has_set = false;
+    std::vector<ImageId> pass_dump_sampled;
     u32 rt_active_mask = 0;
     std::array<ImageId, 8> rt_image_id{};
     ImageId rt_depth_image_id{};
