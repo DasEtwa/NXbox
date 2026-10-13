@@ -68,7 +68,7 @@ struct RendererD3D12::Impl {
     ~Impl() {
         // Drain before destroying swapchain buffers, descriptors or PSOs.
         try {
-            context.Finish();
+            context.Finish(FrameCount::ForcedSubmitLifecycle);
         } catch (const std::exception& error) {
             context.ReportFailure(error);
         } catch (...) {
@@ -226,7 +226,7 @@ struct RendererD3D12::Impl {
         const auto new_width = std::max(1u, layout.width);
         const auto new_height = std::max(1u, layout.height);
         if (width != new_width || height != new_height) {
-            context.Finish();
+            context.Finish(FrameCount::ForcedSubmitLifecycle);
             present_ticks.fill(0);
             for (auto& buffer : buffers)
                 buffer.reset();
@@ -309,7 +309,7 @@ struct RendererD3D12::Impl {
             commands->DrawInstanced(3, 1, 0, 0);
         }
         context.Transition(buffers[index], D3D12_RESOURCE_STATE_PRESENT);
-        present_ticks[index] = context.Submit();
+        present_ticks[index] = context.Submit(FrameCount::ForcedSubmitPresent);
         const bool log_present = ++present_sequence <= 8 || present_sequence % 120 == 0;
         if (log_present)
             Diagnostic("D3D12 Present begin");
@@ -334,7 +334,7 @@ RendererD3D12::RendererD3D12(Core::Frontend::EmuWindow& window,
     try {
         impl->Initialize(window);
         impl->Present(window.GetFramebufferLayout(), {}, rasterizer);
-        impl->context.Finish();
+        impl->context.Finish(FrameCount::ForcedSubmitLifecycle);
         SetEnvironmentVariableA("NXBOX_NATIVE_D3D12_ACTIVE", "1");
     } catch (const std::exception& error) {
         ReportFailure(error);

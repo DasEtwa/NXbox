@@ -362,13 +362,13 @@ void BufferCache<P>::UpdateComputeBuffers() {
 }
 
 template <class P>
-void BufferCache<P>::BindHostGeometryBuffers(bool is_indexed) {
-    if (is_indexed) {
+void BufferCache<P>::BindHostGeometryBuffers(bool is_indexed, bool bind_index) {
+    if (is_indexed && bind_index) {
         BindHostIndexBuffer();
     } else if constexpr (!HAS_FULL_INDEX_AND_PRIMITIVE_SUPPORT) {
         const auto& draw_state = maxwell3d->draw_manager.draw_state;
-        if (draw_state.topology == Maxwell::PrimitiveTopology::Quads ||
-            draw_state.topology == Maxwell::PrimitiveTopology::QuadStrip) {
+        if (bind_index && (draw_state.topology == Maxwell::PrimitiveTopology::Quads ||
+                           draw_state.topology == Maxwell::PrimitiveTopology::QuadStrip)) {
             runtime.BindQuadIndexBuffer(draw_state.topology, draw_state.vertex_buffer.first,
                                         draw_state.vertex_buffer.count);
         }
@@ -752,9 +752,12 @@ void BufferCache<P>::BindHostIndexBuffer() {
     const u32 size = channel_state->index_buffer.size;
     const auto& draw_state = maxwell3d->draw_manager.draw_state;
     if (draw_state.inline_index_draw_indexes.empty()) {
-        SynchronizeBuffer(buffer, channel_state->index_buffer.device_addr, size);
+        SynchronizeBuffer(buffer, channel_state->index_buffer.device_addr, size,
+                          BufferUploadSource::Index);
     } else {
         if constexpr (USE_MEMORY_MAPS_FOR_UPLOADS) {
+            if constexpr (requires { runtime.RecordBufferUpload(BufferUploadSource::Index, size); })
+                runtime.RecordBufferUpload(BufferUploadSource::Index, size);
             auto upload_staging = runtime.UploadStagingBuffer(size);
             std::array<BufferCopy, 1> copies{{BufferCopy{.src_offset = upload_staging.offset, .dst_offset = 0, .size = size}}};
             std::memcpy(upload_staging.mapped_span.data(), draw_state.inline_index_draw_indexes.data(), size);
@@ -837,7 +840,8 @@ void BufferCache<P>::BindHostVertexBuffers() {
             const Binding& binding = VertexBufferSlot(index);
             Buffer& buffer = slot_buffers[binding.buffer_id];
             TouchBuffer(buffer, binding.buffer_id);
-            SynchronizeBuffer(buffer, binding.device_addr, binding.size);
+            SynchronizeBuffer(buffer, binding.device_addr, binding.size,
+                              BufferUploadSource::Vertex);
             if (!flags[Dirty::VertexBuffer0 + index]) {
                 flush_bindings();
                 continue;
@@ -867,7 +871,8 @@ void BufferCache<P>::BindHostVertexBuffers() {
             const Binding& binding = channel_state->vertex_buffers[index];
             Buffer& buffer = slot_buffers[binding.buffer_id];
             TouchBuffer(buffer, binding.buffer_id);
-            SynchronizeBuffer(buffer, binding.device_addr, binding.size);
+            SynchronizeBuffer(buffer, binding.device_addr, binding.size,
+                              BufferUploadSource::Vertex);
             if (!flags[Dirty::VertexBuffer0 + index]) {
                 continue;
             }
@@ -950,9 +955,16 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
             return alignment > 1 && (offset % alignment) != 0;
         }
     }();
-    const bool use_fast_buffer = needs_alignment_stream
-        || (has_host_buffer && size <= channel_state->uniform_buffer_skip_cache_size
-            && !memory_tracker.IsRegionGpuModified(device_addr, size));
+    const bool prefer_cached = [&] {
+        if constexpr (requires { runtime.PreferCachedUniformBuffers(); })
+            return runtime.PreferCachedUniformBuffers();
+        return false;
+    }();
+    const bool use_fast_buffer =
+        !prefer_cached &&
+        (needs_alignment_stream ||
+         (has_host_buffer && size <= channel_state->uniform_buffer_skip_cache_size &&
+          !memory_tracker.IsRegionGpuModified(device_addr, size)));
     if (use_fast_buffer) {
         if constexpr (IS_OPENGL) {
             if (runtime.HasFastBufferSubData()) {
@@ -979,7 +991,7 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
         return;
     }
     // Classic cached path
-    if (SynchronizeBuffer(buffer, device_addr, size)) {
+    if (SynchronizeBuffer(buffer, device_addr, size, BufferUploadSource::Uniform)) {
         ++channel_state->uniform_cache_hits[0];
     }
     // Skip binding if it's not needed and if the bound buffer is not the fast version
@@ -1090,7 +1102,7 @@ void BufferCache<P>::BindHostGraphicsStorageBuffers(size_t stage) {
         Buffer& buffer = slot_buffers[binding.buffer_id];
         TouchBuffer(buffer, binding.buffer_id);
         const u32 size = binding.size;
-        SynchronizeBuffer(buffer, binding.device_addr, size);
+        SynchronizeBuffer(buffer, binding.device_addr, size, BufferUploadSource::Storage);
 
         const u32 offset = buffer.Offset(binding.device_addr);
         buffer.MarkUsage(offset, size);
@@ -1114,7 +1126,7 @@ void BufferCache<P>::BindHostGraphicsTextureBuffers(size_t stage) {
         const TextureBufferBinding& binding = channel_state->texture_buffers[stage][index];
         Buffer& buffer = slot_buffers[binding.buffer_id];
         const u32 size = binding.size;
-        SynchronizeBuffer(buffer, binding.device_addr, size);
+        SynchronizeBuffer(buffer, binding.device_addr, size, BufferUploadSource::Texture);
 
         const bool is_written = ((channel_state->written_texture_buffers[stage] >> index) & 1) != 0;
         if (is_written) {
@@ -1197,7 +1209,12 @@ void BufferCache<P>::BindHostComputeUniformBuffers() {
             }
         }();
         if constexpr (!IS_OPENGL) {
-            if (needs_alignment_stream) {
+            const bool prefer_cached = [&] {
+                if constexpr (requires { runtime.PreferCachedUniformBuffers(); })
+                    return runtime.PreferCachedUniformBuffers();
+                return false;
+            }();
+            if (needs_alignment_stream && !prefer_cached) {
                 const std::span<u8> span =
                     runtime.BindMappedUniformBuffer(0, binding_index, size);
                 device_memory.ReadBlockUnsafe(binding.device_addr, span.data(), size);
@@ -1205,7 +1222,7 @@ void BufferCache<P>::BindHostComputeUniformBuffers() {
             }
         }
 
-        SynchronizeBuffer(buffer, binding.device_addr, size);
+        SynchronizeBuffer(buffer, binding.device_addr, size, BufferUploadSource::Uniform);
 
         buffer.MarkUsage(offset, size);
         if constexpr (NEEDS_BIND_UNIFORM_INDEX) {
@@ -1230,7 +1247,7 @@ void BufferCache<P>::BindHostComputeStorageBuffers() {
         Buffer& buffer = slot_buffers[binding.buffer_id];
         TouchBuffer(buffer, binding.buffer_id);
         const u32 size = binding.size;
-        SynchronizeBuffer(buffer, binding.device_addr, size);
+        SynchronizeBuffer(buffer, binding.device_addr, size, BufferUploadSource::Storage);
 
         const u32 offset = buffer.Offset(binding.device_addr);
         buffer.MarkUsage(offset, size);
@@ -1254,7 +1271,7 @@ void BufferCache<P>::BindHostComputeTextureBuffers() {
         const TextureBufferBinding& binding = channel_state->compute_texture_buffers[index];
         Buffer& buffer = slot_buffers[binding.buffer_id];
         const u32 size = binding.size;
-        SynchronizeBuffer(buffer, binding.device_addr, size);
+        SynchronizeBuffer(buffer, binding.device_addr, size, BufferUploadSource::Texture);
 
         const bool is_written =
             ((channel_state->written_compute_texture_buffers >> index) & 1) != 0;
@@ -1739,7 +1756,8 @@ void BufferCache<P>::TouchBuffer(Buffer& buffer, BufferId buffer_id) noexcept {
 }
 
 template <class P>
-bool BufferCache<P>::SynchronizeBuffer(Buffer& buffer, DAddr device_addr, u32 size) {
+bool BufferCache<P>::SynchronizeBuffer(Buffer& buffer, DAddr device_addr, u32 size,
+                                       BufferUploadSource source) {
     upload_copies.clear();
     u64 total_size_bytes = 0;
     u64 largest_copy = 0;
@@ -1768,6 +1786,9 @@ bool BufferCache<P>::SynchronizeBuffer(Buffer& buffer, DAddr device_addr, u32 si
     }
     const std::span<BufferCopy> copies_span(upload_copies.data(), upload_copies.size());
     NxboxUpload::Record(NxboxUpload::Event::BufferUpload);
+    if constexpr (requires { runtime.RecordBufferUpload(source, total_size_bytes); }) {
+        runtime.RecordBufferUpload(source, total_size_bytes);
+    }
     UploadMemory(buffer, total_size_bytes, largest_copy, copies_span);
     any_buffer_uploaded = true;
     return false;

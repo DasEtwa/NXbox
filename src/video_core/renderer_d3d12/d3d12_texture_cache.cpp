@@ -486,6 +486,7 @@ void Image::Transfer(const StagingBufferRef& input,
             texture.SubresourceIndex = subresource;
             context.Retain(aligned.buffer);
             if (!download) {
+                context.Profile().Count(FrameCount::StagingCopyBytes, padded_size);
                 RepackRows(aligned.mapped_span, map.mapped_span.subspan(base), row_bytes, num_rows,
                            extent.depth, footprint.Footprint.RowPitch, padded_slice, row_stride,
                            slice_stride);
@@ -732,6 +733,8 @@ bool Image::TransferConverted(const StagingBufferRef& input,
                     context.AfterCompletion(convert);
                 } else {
                     convert();
+                    context.Profile().Count(FrameCount::StagingCopyBytes,
+                                            padded_slice * extent.depth);
                     context.Commands()->CopyTextureRegion(&texture, offset.x, offset.y, offset.z,
                                                           &linear, nullptr);
                 }
@@ -1254,7 +1257,7 @@ ResourcePtr TextureCacheRuntime::UploadFramebuffer(Tegra::MaxwellDeviceMemoryMan
     Tegra::Texture::UnswizzleTexture(framebuffer_linear, framebuffer_tiled, guest_bytes,
                                      config.stride, config.height, 1, block_height, 0);
     const auto footprint = MakeFootprint(format, config.width, config.height);
-    auto staging = upload.Request(footprint.size);
+    auto staging = UploadStagingBuffer(footprint.size);
     for (u32 y = 0; y < config.height; ++y) {
         auto* host_row = staging.mapped_span.data() + y * footprint.row_pitch;
         auto* guest_row = framebuffer_linear.data() + u64{y} * config.stride * guest_bytes;
@@ -1274,6 +1277,7 @@ ResourcePtr TextureCacheRuntime::UploadFramebuffer(Tegra::MaxwellDeviceMemoryMan
     target.pResource = framebuffer->handle.Get();
     target.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
     context.MarkWork("upload/copy");
+    context.Profile().Count(FrameCount::StagingCopyBytes, staging.mapped_span.size());
     context.Commands()->CopyTextureRegion(&target, 0, 0, 0, &source, nullptr);
     return framebuffer;
 }

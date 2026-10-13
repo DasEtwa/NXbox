@@ -76,6 +76,10 @@ ResourcePtr ComputePasses::UploadInput(const ResourcePtr& staging, std::uint64_t
     context.Transition(staging, D3D12_RESOURCE_STATE_COPY_SOURCE);
     context.Retain(input);
     context.MarkWork("upload/copy");
+    context.Profile().Count(staging->heap == D3D12_HEAP_TYPE_UPLOAD
+                                ? FrameCount::StagingCopyBytes
+                                : FrameCount::GpuBufferCopyBytes,
+                            size);
     context.Commands()->CopyBufferRegion(input->handle.Get(), 0, staging->handle.Get(), offset,
                                          size);
     return input;

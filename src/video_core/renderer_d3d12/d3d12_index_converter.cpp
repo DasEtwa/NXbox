@@ -303,6 +303,8 @@ ConvertedIndexBuffer IndexConverter::Upload(const IndexConversion::Layout& layou
                                                 : D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
     if (!layout.count)
         return {{}, topology, 0};
+    context.Profile().Count(FrameCount::BufferUploadBytes, layout.bytes);
+    context.Profile().Count(FrameCount::IndexUploadBytes, layout.bytes);
     context.Retain(allocation.buffer); // Fence-retired resource lease prevents ring reuse.
     return {{allocation.buffer->handle->GetGPUVirtualAddress() + allocation.offset,
              static_cast<UINT>(layout.bytes),

@@ -236,6 +236,8 @@ void D3D12DescriptorAllocator::Reserve(u32 view_count, u32 sampler_count, u32 rt
             if (counts[i] && !rings[i]->math.CanAllocate(counts[i]))
                 oldest_blocked = std::min(oldest_blocked, *rings[i]->math.OldestTick());
         }
+        if (oldest_blocked == context.CurrentTick())
+            context.Submit(FrameCount::ForcedSubmitDescriptorExhaustion);
         context.Wait(oldest_blocked);
     }
 }

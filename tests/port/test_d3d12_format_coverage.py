@@ -218,8 +218,10 @@ struct FakeCommands {
         }
     }
 };
-enum class FrameCount { ForcedSubmitTextureDownload };
+enum class FrameCount { StagingCopyBytes, ForcedSubmitTextureDownload };
+struct FrameProfile { void Count(FrameCount, u64) {} };
 struct Context {
+    FrameProfile profile; FrameProfile& Profile() { return profile; }
     FakeDevice device; FakeCommands commands; std::vector<std::function<void()>> pending;
     FakeDevice* Device() { return &device; } FakeCommands* Commands() { return &commands; }
     void Retain(const ResourcePtr&) {} void Transition(const ResourcePtr&,int) {} void MarkWork(const char*) {}

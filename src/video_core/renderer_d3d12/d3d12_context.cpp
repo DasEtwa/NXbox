@@ -355,7 +355,25 @@ void FrameProfile::EndFrame(bool presented) {
                                       "forced_submits_skipped_draw",
                                       "forced_submits_guest_flush",
                                       "forced_submits_guest_fence",
-                                      "forced_submits_other"};
+                                      "forced_submits_other",
+                                      "vertex_upload_bytes",
+                                      "index_upload_bytes",
+                                      "uniform_upload_bytes",
+                                      "storage_upload_bytes",
+                                      "texel_upload_bytes",
+                                      "other_upload_bytes",
+                                      "texture_upload_bytes",
+                                      "staging_copy_bytes",
+                                      "gpu_buffer_copy_bytes",
+                                      "uniform_copy_cache_hits",
+                                      "vertex_repack_bytes",
+                                      "vertex_padding_bytes",
+                                      "forced_submits_fence_wait",
+                                      "forced_submits_wait_for_idle",
+                                      "forced_submits_flush_all",
+                                      "forced_submits_buffer_clear",
+                                      "forced_submits_lifecycle",
+                                      "forced_submits_present"};
         static_assert(names.size() == static_cast<size_t>(FramePhase::Count));
         static_assert(counters.size() == static_cast<size_t>(FrameCount::Count));
         const double elapsed = static_cast<double>(wall - start_wall);
@@ -489,7 +507,7 @@ Context::Context() {
 }
 Context::~Context() {
     try {
-        Finish();
+        Finish(FrameCount::ForcedSubmitLifecycle);
     } catch (const std::exception& error) {
         ReportFailure(error);
     } catch (...) {
@@ -547,7 +565,7 @@ void Context::Wait(u64 tick) {
     if (tick > submitted) {
         if (tick != CurrentTick())
             throw std::invalid_argument("D3D12 future fence");
-        Submit();
+        Submit(FrameCount::ForcedSubmitFenceWait);
     }
     WaitSubmitted(tick);
     LogInfoQueue();
@@ -713,6 +731,9 @@ void Context::Transition(const ResourcePtr& resource, D3D12_RESOURCE_STATES stat
     if (!resource)
         throw std::invalid_argument("D3D12 null resource");
     Retain(resource);
+    if (state & (D3D12_RESOURCE_STATE_COPY_DEST | D3D12_RESOURCE_STATE_UNORDERED_ACCESS |
+                 D3D12_RESOURCE_STATE_STREAM_OUT))
+        ++resource->content_version;
     if (resource->heap != D3D12_HEAP_TYPE_DEFAULT || resource->state == state)
         return;
     D3D12_RESOURCE_BARRIER barrier{};
@@ -738,6 +759,9 @@ void Context::TransitionBatch(std::span<const std::pair<ResourcePtr, D3D12_RESOU
         Retain(use.first);
     }
     for (const auto& [resource, state] : uses) {
+        if (state & (D3D12_RESOURCE_STATE_COPY_DEST | D3D12_RESOURCE_STATE_UNORDERED_ACCESS |
+                     D3D12_RESOURCE_STATE_STREAM_OUT))
+            ++resource->content_version;
         if (resource->heap != D3D12_HEAP_TYPE_DEFAULT || resource->state == state)
             continue;
         D3D12_RESOURCE_BARRIER barrier{};

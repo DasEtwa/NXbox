@@ -241,7 +241,7 @@ QueryCacheRuntime::QueryCacheRuntime(Context& context, Tegra::MaxwellDeviceMemor
     : impl{std::make_unique<QueryCacheRuntimeImpl>(*this, context, memory, cache, feedback)} {}
 QueryCacheRuntime::~QueryCacheRuntime() {
     try {
-        impl->context.Finish();
+        impl->context.Finish(FrameCount::ForcedSubmitQueryReadback);
     } catch (const std::exception& error) {
         LOG_ERROR(Render, "D3D12 query teardown: {}", error.what());
     }
@@ -369,6 +369,8 @@ void QueryCacheRuntime::WriteValue(DAddr address, const void* value, u64 size) {
     if (size != 4 && size != 8) {
         throw std::invalid_argument("Invalid guest query write size");
     }
+    impl->context.Profile().Count(FrameCount::BufferUploadBytes, size);
+    impl->context.Profile().Count(FrameCount::OtherUploadBytes, size);
     auto upload = impl->upload.Request(static_cast<size_t>(size));
     std::memcpy(upload.mapped_span.data(), value, static_cast<size_t>(size));
     CopyValue(address, upload.buffer, upload.offset, size);
@@ -387,6 +389,10 @@ void QueryCacheRuntime::CopyValue(DAddr address, const ResourcePtr& source, u64 
     auto resource = buffer->Handle();
     impl->context.Transition(source, D3D12_RESOURCE_STATE_COPY_SOURCE);
     impl->context.Transition(resource, D3D12_RESOURCE_STATE_COPY_DEST);
+    impl->context.Profile().Count(source->heap == D3D12_HEAP_TYPE_UPLOAD
+                                      ? FrameCount::StagingCopyBytes
+                                      : FrameCount::GpuBufferCopyBytes,
+                                  size);
     ++impl->report_copies;
     impl->context.MarkWork("query report/predicate copy");
     impl->context.Commands()->CopyBufferRegion(resource->handle.Get(), destination,
@@ -446,6 +452,9 @@ bool QueryCacheRuntime::CompareConditional(VideoCommon::LookupData first,
     const auto a = impl->ReadGuest(first);
     const auto b = second.address ? impl->ReadGuest(second) : 0;
     const u64 predicate = (a == b) == equal;
+    impl->context.Profile().Count(FrameCount::BufferUploadBytes, 8);
+    impl->context.Profile().Count(FrameCount::OtherUploadBytes, 8);
+    impl->context.Profile().Count(FrameCount::StagingCopyBytes, 8);
     auto upload = impl->upload.Request(8);
     std::memcpy(upload.mapped_span.data(), &predicate, 8);
     // Fresh storage: a previous SetPredication may still reference the old value.

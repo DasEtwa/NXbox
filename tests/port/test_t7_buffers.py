@@ -134,6 +134,8 @@ BINDINGS_DRIVER = r"""
 #include <memory>
 #include <span>
 #include <vector>
+#include "video_core/renderer_d3d12/d3d12_upload_cache.h"
+using namespace D3D12;
 using u64=std::uint64_t; using u32=std::uint32_t; using u8=std::uint8_t;
 namespace Common {
 template<class T> T AlignUp(T value, T alignment) { return (value+alignment-1)&~(alignment-1); }
@@ -141,6 +143,7 @@ template<class T> T AlignUp(T value, T alignment) { return (value+alignment-1)&~
 namespace VideoCommon { struct BufferCopy { u64 src_offset, dst_offset, size; }; }
 constexpr int D3D12_HEAP_TYPE_DEFAULT=0;
 struct Resource {
+    u64 content_version{};
     std::vector<u8> bytes;
     struct Handle {
         Resource* owner;
@@ -153,11 +156,13 @@ using ResourcePtr=std::shared_ptr<Resource>;
 struct Buffer { ResourcePtr resource; ResourcePtr Handle() const { return resource; } };
 struct StagingRef { ResourcePtr buffer; size_t offset; std::span<u8> mapped_span; };
 enum class FramePhase { BufferUpload };
-enum class FrameCount { BufferUploadBytes };
+enum class FrameCount { BufferUploadBytes, UniformUploadBytes, UniformCopyCacheHits };
 struct FrameProfile {
     struct Scope { Scope(FrameProfile&, FramePhase) {} };
     u64 upload_bytes{};
-    void Count(FrameCount, u64 amount) { upload_bytes += amount; }
+    void Count(FrameCount counter, u64 amount=1) {
+        if (counter==FrameCount::BufferUploadBytes) upload_bytes += amount;
+    }
 };
 struct Context {
     FrameProfile profile;
@@ -189,7 +194,9 @@ struct BufferCacheRuntime {
     Context context;
     Staging upload{context};
     BindingState bindings;
+    UniformCopyCache<Resource> uniform_copies;
     void CopyBuffer(ResourcePtr dst, ResourcePtr src, std::span<const VideoCommon::BufferCopy> copies, bool) {
+        ++dst->content_version;
         for (const auto& copy:copies)
             std::memcpy(dst->bytes.data()+copy.dst_offset,src->bytes.data()+copy.src_offset,copy.size);
     }
@@ -214,17 +221,27 @@ int main() {
     auto stream=runtime.BindMappedUniformBuffer(0,0,3);
     assert(stream.size()==3);
     const auto& mapped=runtime.bindings.stages[0].uniform.back();
-    assert(mapped.offset%256==0 && mapped.size==65536);
+    assert(mapped.offset%256==0 && mapped.size==256);
     assert(mapped.resource->bytes.back()==0);
     stream[0]=42; assert(mapped.resource->bytes[0]==42);
     runtime.BindUniformBuffer(buffer,256,65536);
     assert(runtime.bindings.stages[0].uniform.back().resource==memory);
     runtime.BindUniformBuffer(buffer,4,259);
     const auto& padded=runtime.bindings.stages[0].uniform.back();
-    assert(padded.offset==0 && padded.size==65536 && padded.resource!=memory);
+    assert(padded.offset==0 && padded.size==512 && padded.resource!=memory);
     for (size_t i=0;i<259;++i) assert(padded.resource->bytes[i]==memory->bytes[i+4]);
-    for (size_t i=259;i<65536;++i) assert(padded.resource->bytes[i]==0);
-    assert(runtime.context.Profile().upload_bytes==2*65536);
+    for (size_t i=259;i<512;++i) assert(padded.resource->bytes[i]==0);
+    assert(runtime.context.Profile().upload_bytes==256+512);
+    auto snapshot=padded.resource;
+    runtime.BindUniformBuffer(buffer,4,259);
+    assert(runtime.bindings.stages[0].uniform.back().resource==snapshot);
+    assert(runtime.context.Profile().upload_bytes==256+512);
+    memory->bytes[4]=81; ++memory->content_version;
+    runtime.BindUniformBuffer(buffer,4,259);
+    auto updated=runtime.bindings.stages[0].uniform.back().resource;
+    assert(updated!=snapshot && updated->bytes[0]==81 && snapshot->bytes[0]==4);
+    assert(updated->bytes[259]==0);
+    assert(runtime.context.Profile().upload_bytes==256+512+512);
     runtime.BindUniformBuffer(buffer,131071,2);
     assert(!runtime.bindings.stages[0].uniform.back().resource && invalid==2);
     runtime.BindStorageBuffer(buffer,16,65536,true);
@@ -289,6 +306,8 @@ class T7BuffersTests(unittest.TestCase):
                     "-Wextra",
                     "-Werror",
                     "-fsanitize=address,undefined",
+                    "-I",
+                    str(ROOT / "src"),
                     str(source_file),
                     "-o",
                     str(binary),
@@ -309,7 +328,8 @@ class T7BuffersTests(unittest.TestCase):
 
     def test_uniform_padding_and_vertex_range_contract(self):
         source = (BACKEND / "d3d12_buffer_cache.cpp").read_text()
-        self.assertIn("upload.Request(65536)", source)
+        self.assertIn("upload.Request(padded)", source)
+        self.assertNotIn("upload.Request(65536)", source)
         self.assertIn("staging.mapped_span.end(), u8{0}", source)
         self.assertIn("size > width - offset", source)
         self.assertIn("offset & 255", source)
