@@ -757,6 +757,15 @@ void Context::Transition(const ResourcePtr& resource, D3D12_RESOURCE_STATES stat
     profile.Count(FrameCount::Barriers);
     resource->state = state;
 }
+void Context::GlobalUavBarrier() {
+    const FrameProfile::Scope profile_barrier{profile, FramePhase::Barriers};
+    auto* list = Commands();
+    D3D12_RESOURCE_BARRIER barrier{};
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+    barrier.UAV.pResource = nullptr;
+    list->ResourceBarrier(1, &barrier);
+    profile.Count(FrameCount::Barriers);
+}
 void Context::TransitionBatch(std::span<const std::pair<ResourcePtr, D3D12_RESOURCE_STATES>> uses) {
     const FrameProfile::Scope profile_barrier{profile, FramePhase::Barriers};
     // Start/retire recording before reading tracked states: completion callbacks

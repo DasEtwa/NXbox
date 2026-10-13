@@ -356,6 +356,8 @@ public:
         return submitted + 1;
     }
     void Transition(const ResourcePtr& resource, D3D12_RESOURCE_STATES state);
+    /// Orders every prior UAV write before later work on the GPU, without a CPU wait.
+    void GlobalUavBarrier();
     // Explicit batch keeps raw Commands() users ordered; no hidden deferred barriers.
     void TransitionBatch(std::span<const std::pair<ResourcePtr, D3D12_RESOURCE_STATES>> uses);
     FrameProfile& Profile() {

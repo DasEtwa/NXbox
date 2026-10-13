@@ -2096,8 +2096,15 @@ void RasterizerD3D12::FlushAndInvalidateRegion(DAddr addr, u64 size, VideoCommon
 }
 void RasterizerD3D12::WaitForIdle() {
     query_cache.NotifyWFI();
-    context.Finish(FrameCount::ForcedSubmitWaitForIdle);
-    fence_manager.WaitPendingFences(true);
+    // Guest WFI is a GPU-side ordering point, as in the Vulkan backend. Waiting on the CPU here
+    // ran ~34 times per frame in SM3DW and serialized the GPU thread with the GPU.
+    static const bool cpu_wait = BisectEnabled("NXBOX_D3D12_WFI_FINISH");
+    if (cpu_wait) {
+        context.Finish(FrameCount::ForcedSubmitWaitForIdle);
+        fence_manager.WaitPendingFences(true);
+    } else {
+        context.GlobalUavBarrier();
+    }
     fence_manager.SignalOrdering();
 }
 void RasterizerD3D12::FragmentBarrier() {
