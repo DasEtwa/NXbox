@@ -25,8 +25,7 @@ export async function deployGame(options: {
   if (!content.length && !library) throw new Error("A base game is required");
   const identity = packageIdentity(titleId);
   const folder = `${identity}-${crypto.randomUUID()}`;
-  for (const file of runtimeFiles)
-    await portal.uploadRuntime(folder, join(runtimeDirectory, file), file);
+  await portal.uploadRuntime(folder, runtimeDirectory, runtimeFiles);
   const pkg = await portal.register(folder, identity);
   options.onUploading?.();
   await portal.makeFolder(pkg.PackageFullName, "LocalState", "games");

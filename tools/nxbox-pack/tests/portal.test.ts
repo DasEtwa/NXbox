@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { DevicePortal, portalUrl } from "../src/portal";
@@ -15,7 +15,7 @@ test("portal URL validation keeps credentials out of URLs", () => {
     expect(() => portalUrl(url)).toThrow();
 });
 test("Xbox loose deployment and multipart LocalState uploads use the portal contract", async () => {
-  const calls: { url: URL; method: string; bytes: number }[] = [];
+  const calls: { url: URL; method: string; bytes: number; body: string }[] = [];
   let registered = false;
   const transport = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input));
@@ -24,9 +24,11 @@ test("Xbox loose deployment and multipart LocalState uploads use the portal cont
       `Basic ${Buffer.from("user:password").toString("base64")}`,
     );
     if (init?.method === "POST") expect(headers.get("X-CSRF-Token")).toBe("token");
-    let bytes = 0;
-    if (init?.body) bytes = (await new Response(init.body).arrayBuffer()).byteLength;
-    calls.push({ url, method: init?.method ?? "GET", bytes });
+    const raw = init?.body
+      ? Buffer.from(await new Response(init.body).arrayBuffer())
+      : Buffer.alloc(0);
+    const bytes = raw.byteLength;
+    calls.push({ url, method: init?.method ?? "GET", bytes, body: raw.toString("latin1") });
     if (url.pathname.endsWith("machinename"))
       return Response.json(
         { ComputerName: "Xbox" },
@@ -67,7 +69,10 @@ test("Xbox loose deployment and multipart LocalState uploads use the portal cont
   try {
     const path = join(temporary, "local.nsp");
     await writeFile(path, Buffer.alloc(4 * 1024 * 1024, 1));
-    await portal.uploadRuntime("game-folder", path, "Assets/logo.png");
+    const runtime = ["nxbox.exe", "opengl32.dll", "Assets/logo.png", "Assets/wide.png"];
+    await mkdir(join(temporary, "Assets"));
+    for (const file of runtime) await writeFile(join(temporary, file), file);
+    await portal.uploadRuntime("game-folder", temporary, runtime);
     const installed = await portal.register("game-folder", "NSPX.NXbox.01007EF00011E000", 5000);
     expect(installed.PackageFullName).toBe(
       "NSPX.NXbox.01007EF00011E000_0.2.0.0_x64__xb0tjvbn8pcrt",
@@ -78,10 +83,23 @@ test("Xbox loose deployment and multipart LocalState uploads use the portal cont
       sent = n;
     });
     expect(sent).toBe(4 * 1024 * 1024);
-    const upload = calls.find((c) => c.url.pathname.endsWith("/upload"))!;
+    // The console keeps only the last upload per folder: one request per folder, root first.
+    const uploads = calls.filter((c) => c.url.pathname.endsWith("/upload"));
     expect(
-      Buffer.from(upload.url.searchParams.get("destinationFolder")!, "base64").toString(),
-    ).toBe("game-folder\\Assets");
+      uploads.map((c) =>
+        Buffer.from(c.url.searchParams.get("destinationFolder")!, "base64").toString(),
+      ),
+    ).toEqual(["game-folder", "game-folder\\Assets"]);
+    expect(uploads[0]!.body).toContain('filename="nxbox.exe"');
+    expect(uploads[0]!.body).toContain('filename="opengl32.dll"');
+    expect(uploads[1]!.body).toContain('filename="logo.png"');
+    expect(uploads[1]!.body).toContain('filename="wide.png"');
+    const parts = await new Response(uploads[1]!.body, {
+      headers: {
+        "Content-Type": `multipart/form-data; boundary=${uploads[1]!.body.slice(2, uploads[1]!.body.indexOf("\r\n"))}`,
+      },
+    }).formData();
+    expect(parts.getAll("file").length).toBe(2);
     const registration = calls.find((c) => c.url.pathname.endsWith("/register"))!;
     expect(Buffer.from(registration.url.searchParams.get("folder")!, "base64").toString()).toBe(
       "game-folder",

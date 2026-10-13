@@ -63,7 +63,11 @@ test("staging through registration and verified content uploads completes over H
             url.searchParams.get("destinationFolder")!,
             "base64",
           ).toString();
-          runtime.set(`${folder}\\${file.name}`, bytes);
+          // Like the console: each upload replaces the files already in that folder.
+          for (const key of [...runtime.keys()])
+            if (key.slice(0, key.lastIndexOf("\\")) === folder) runtime.delete(key);
+          for (const part of form.getAll("file") as File[])
+            runtime.set(`${folder}\\${part.name}`, new Uint8Array(await part.arrayBuffer()));
         } else {
           expect(url.searchParams.get("packagefullname")).toBe(installed.PackageFullName);
           const path = `${url.searchParams.get("path")!.replaceAll("\\", "/")}/${file.name}`;
@@ -128,6 +132,10 @@ test("staging through registration and verified content uploads completes over H
     expect(uploads.has("/LocalState/eden/keys/prod.keys")).toBe(true);
     expect(uploadOrder.slice(-2)).toEqual(["/LocalState/game.txt", "/LocalState/skip_library.txt"]);
     const names = [...runtime.keys()];
+    // Every staged runtime file must survive on the console, not just the last per folder.
+    expect(
+      names.map((name) => name.slice(name.indexOf("\\") + 1).replaceAll("\\", "/")).sort(),
+    ).toEqual([...runtimeFiles].sort());
     expect(names.some((name) => name.endsWith("prod.keys") || name.endsWith(".nsp"))).toBe(false);
     const manifest = [...runtime].find(([name]) => name.endsWith("AppxManifest.xml"))![1];
     expect(new TextDecoder().decode(manifest)).toContain(identity);

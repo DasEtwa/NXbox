@@ -1,5 +1,5 @@
 import { createReadStream } from "node:fs";
-import { basename } from "node:path";
+import { basename, join, posix } from "node:path";
 import { Readable } from "node:stream";
 import { PackError } from "./i18n";
 
@@ -100,50 +100,68 @@ export class DevicePortal {
     }
     throw new PackError("deploy");
   }
-  private async sendFile(
+  private async sendFiles(
     endpoint: string,
-    path: string,
-    remoteName: string,
+    files: { path: string; name: string }[],
     onProgress?: (bytes: number, total: number) => void,
   ): Promise<void> {
     // Stream multipart bodies with backpressure; never buffer multi-GB dumps in FormData.
-    const file = Bun.file(path);
-    if (!(await file.exists()) || /["\r\n\x00]/.test(remoteName)) throw new PackError("file");
+    for (const { path, name } of files)
+      if (!(await Bun.file(path).exists()) || /["\r\n\x00]/.test(name)) throw new PackError("file");
     const boundary = `nxbox-${crypto.randomUUID()}`;
-    const prefix = Buffer.from(
-      `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${remoteName}"\r\nContent-Type: application/octet-stream\r\n\r\n`,
+    const head = (name: string) =>
+      Buffer.from(
+        `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${name}"\r\nContent-Type: application/octet-stream\r\n\r\n`,
+      );
+    const suffix = Buffer.from(`--${boundary}--\r\n`);
+    const total = files.reduce((sum, { path }) => sum + Bun.file(path).size, 0);
+    const length = files.reduce(
+      (sum, { path, name }) => sum + head(name).length + Bun.file(path).size + 2,
+      suffix.length,
     );
-    const suffix = Buffer.from(`\r\n--${boundary}--\r\n`);
-    const total = file.size;
     async function* body() {
-      yield prefix;
       let sent = 0;
-      for await (const chunk of createReadStream(path, { highWaterMark: 1024 * 1024 })) {
-        sent += chunk.length;
-        onProgress?.(sent, total);
-        yield chunk;
+      for (const { path, name } of files) {
+        yield head(name);
+        for await (const chunk of createReadStream(path, { highWaterMark: 1024 * 1024 })) {
+          sent += chunk.length;
+          onProgress?.(sent, total);
+          yield chunk;
+        }
+        yield Buffer.from("\r\n");
       }
       yield suffix;
     }
     await this.request("POST", endpoint, {
       headers: {
         "Content-Type": `multipart/form-data; boundary=${boundary}`,
-        "Content-Length": String(prefix.length + total + suffix.length),
+        "Content-Length": String(length),
       },
       body: Readable.toWeb(Readable.from(body())) as unknown as ReadableStream,
       signal: AbortSignal.timeout(12 * 60 * 60_000),
     });
   }
-  async uploadRuntime(folder: string, path: string, relativePath: string): Promise<void> {
-    const parent = relativePath.includes("/")
-      ? relativePath.slice(0, relativePath.lastIndexOf("/"))
-      : "";
-    const destination = [folder, parent].filter(Boolean).join("\\").replaceAll("/", "\\");
-    await this.sendFile(
-      `/api/app/packagemanager/upload?${new URLSearchParams({ destinationFolder: Buffer.from(destination).toString("base64") })}`,
-      path,
-      basename(path),
+  /** Each upload replaces the destination folder's files, so one request carries a whole
+   * folder, and the package root goes first. */
+  async uploadRuntime(folder: string, directory: string, relativePaths: string[]): Promise<void> {
+    const groups = new Map<string, string[]>();
+    for (const relativePath of relativePaths) {
+      const parent = posix.dirname(relativePath.replaceAll("\\", "/"));
+      groups.set(parent, [...(groups.get(parent) ?? []), relativePath]);
+    }
+    const parents = [...groups.keys()].sort((a, b) =>
+      a === "." ? -1 : b === "." ? 1 : a.localeCompare(b),
     );
+    for (const parent of parents) {
+      const destination = [folder, parent === "." ? "" : parent]
+        .filter(Boolean)
+        .join("\\")
+        .replaceAll("/", "\\");
+      await this.sendFiles(
+        `/api/app/packagemanager/upload?${new URLSearchParams({ destinationFolder: Buffer.from(destination).toString("base64") })}`,
+        groups.get(parent)!.map((file) => ({ path: join(directory, file), name: basename(file) })),
+      );
+    }
   }
   private query(pkg: string, path: string): URLSearchParams {
     return new URLSearchParams({
@@ -180,7 +198,11 @@ export class DevicePortal {
   ): Promise<void> {
     const query = this.query(pkg, directory);
     query.set("extract", "false");
-    await this.sendFile(`/api/filesystem/apps/file?${query}`, path, remoteName, onProgress);
+    await this.sendFiles(
+      `/api/filesystem/apps/file?${query}`,
+      [{ path, name: remoteName }],
+      onProgress,
+    );
     const data = (await (
       await this.request("GET", `/api/filesystem/apps/files?${query}`)
     ).json()) as { Items?: { Name: string; FileSize?: number; SizeInBytes?: number }[] };
