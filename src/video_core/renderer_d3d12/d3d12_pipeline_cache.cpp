@@ -1355,14 +1355,18 @@ void PipelineCache::BindToChannel(s32 id) {
 }
 PipelineCache::~PipelineCache() {
     try {
+        size_t detached = 0;
         if (async) {
-            async->Stop();
+            detached = async->Stop();
             context.Finish();
             async.reset();
         }
         if (disk) {
             disk->StopWarmup();
             disk->Flush();
+            // A detached compile that ever returns still writes through this pointer.
+            if (detached)
+                (void)disk.release();
         }
     } catch (const std::exception& error) {
         LOG_ERROR(Render, "D3D12 pipeline cache teardown: {}", error.what());

@@ -64,18 +64,17 @@ int main() {
     cache.Stop();
     cache.Stop();
     assert(!cache.Submit(5, job));
-    // Shutdown cancels queued jobs, but joins active jobs and preserves their results.
+    // Shutdown cancels queued jobs and detaches active ones; their results still land.
     Cache shutdown{1, 3};
     std::promise<void> started, unblock;
     auto gate = unblock.get_future().share();
     assert(shutdown.Submit(1, [&] { started.set_value(); gate.wait(); return std::make_shared<int>(1); }));
     started.get_future().wait();
     assert(shutdown.Submit(2, [] { return std::make_shared<int>(2); }));
-    auto stopped = std::async(std::launch::async, [&] { shutdown.Stop(); });
-    while (shutdown.Lookup(2).status == Cache::Status::Pending) std::this_thread::yield();
+    assert(shutdown.Stop() == 1);
     assert(shutdown.Lookup(2).status == Cache::Status::Failed);
     unblock.set_value();
-    stopped.get();
+    while (shutdown.Lookup(1).status == Cache::Status::Pending) std::this_thread::yield();
     assert(shutdown.Lookup(1).status == Cache::Status::Ready);
     // A job stuck past the stall limit frees its queue slot and gets a replacement worker;
     // shutdown detaches it instead of waiting forever.

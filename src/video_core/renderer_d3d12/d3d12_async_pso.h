@@ -21,8 +21,9 @@ namespace D3D12 {
 //
 // A driver compile can block forever (BotW has compute shaders the Xbox driver never finishes),
 // and a thread cannot be cancelled. A job running longer than `stall_limit` stops counting
-// against the queue capacity and a replacement worker takes over, up to `max_threads`; the
-// stuck thread is detached at shutdown and keeps the shared state alive by itself.
+// against the queue capacity and a replacement worker takes over, up to `max_threads`. Shutdown
+// detaches every busy worker (any of them may never return); each keeps the shared state alive,
+// and Stop() reports how many so the owner can keep what the jobs still reference.
 template <typename Key, typename Result, typename Hash = std::hash<Key>>
 class AsyncPsoWorkerPool {
 public:
@@ -78,8 +79,10 @@ public:
         std::scoped_lock lock{state->mutex};
         return CountStalled();
     }
-    void Stop() {
-        std::vector<bool> stalled;
+    /// Returns how many busy workers were detached instead of joined.
+    size_t Stop() {
+        std::vector<bool> busy;
+        size_t detached = 0;
         {
             std::scoped_lock lock{state->mutex};
             state->stopping = true;
@@ -88,19 +91,21 @@ public:
                 --state->pending;
             }
             state->queue.clear();
-            const auto now = Clock::now();
             for (const auto& since : state->busy_since)
-                stalled.push_back(since && now - *since >= state->stall_limit);
+                busy.push_back(since.has_value());
         }
         state->condition.notify_all();
         for (size_t i = 0; i < workers.size(); ++i) {
             if (!workers[i].joinable())
                 continue;
-            if (stalled[i])
+            if (busy[i]) {
                 workers[i].detach();
-            else
+                ++detached;
+            } else {
                 workers[i].join();
+            }
         }
+        return detached;
     }
 
 private:
@@ -127,13 +132,15 @@ private:
         const size_t stalled = CountStalled();
         while (workers.size() - stalled < base_threads && workers.size() < thread_limit)
             Spawn();
-        return state->pending - stalled < state->capacity;
+        // With every worker stuck, an admitted job would stay Pending forever.
+        return workers.size() > stalled && state->pending - stalled < state->capacity;
     }
     // Caller holds the mutex.
     void Spawn() {
         const size_t index = workers.size();
+        // The new thread blocks on the mutex the caller holds until busy_since has its slot.
+        workers.emplace_back([shared = state, index] { Run(*shared, index); });
         state->busy_since.emplace_back();
-        workers.emplace_back([state = state, index] { Run(*state, index); });
     }
     static void Run(State& state, size_t index) {
         for (;;) {
