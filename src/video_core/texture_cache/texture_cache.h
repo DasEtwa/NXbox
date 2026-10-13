@@ -803,7 +803,8 @@ void TextureCache<P>::DumpPassRenderTargets() {
         for (size_t index = 0; index < sampled_ids.size(); ++index) {
             Image& image = slot_images[sampled_ids[index]];
             const auto& info = image.info;
-            if (info.num_samples > 1 || info.type != ImageType::e2D ||
+            if (info.num_samples > 1 ||
+                (info.type != ImageType::e2D && info.type != ImageType::e1D) ||
                 VideoCore::Surface::DefaultBlockWidth(info.format) != 1) {
                 continue;
             }
@@ -812,10 +813,10 @@ void TextureCache<P>::DumpPassRenderTargets() {
                 const size_t bytes = download(image, level, directory / file);
                 sampled_manifest << fmt::format(
                     "{{\"seq\":{},\"texture\":{},\"level\":{},\"gpu_addr\":{},\"width\":{},"
-                    "\"height\":{},\"format\":\"{}\",\"bytes\":{},\"file\":\"{}\"}}\n",
+                    "\"height\":{},\"format\":\"{}\",\"bytes\":{},\"file\":\"{}\",\"type\":{}}}\n",
                     seq, index, level, image.gpu_addr, (std::max)(info.size.width >> level, 1u),
                     (std::max)(info.size.height >> level, 1u), PassDump::FormatName(info.format),
-                    bytes, file);
+                    bytes, file, static_cast<int>(info.type));
             }
         }
     } catch (const std::exception& error) {
