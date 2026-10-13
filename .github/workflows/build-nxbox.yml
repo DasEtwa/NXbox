@@ -21,7 +21,10 @@ jobs:
     runs-on: windows-2025
     timeout-minutes: 90
     env:
-      SCCACHE_GHA_ENABLED: "true"
+      # Local sccache directory saved as one cache archive: the GHA backend fetched each of
+      # ~1700 objects with its own HTTP request, which took ~7 minutes even at 99.9% hits.
+      SCCACHE_DIR: ${{ github.workspace }}\.cache\sccache
+      SCCACHE_CACHE_SIZE: 4G
     steps:
       - uses: actions/checkout@v4
       - uses: actions/cache/restore@v4
@@ -29,6 +32,11 @@ jobs:
         with:
           path: .cache/cpm
           key: uwp-cpm-${{ runner.os }}-${{ hashFiles('cpmfile.json', '**/cpmfile.json') }}
+      - uses: actions/cache/restore@v4
+        with:
+          path: .cache/sccache
+          key: uwp-sccache-${{ github.run_id }}
+          restore-keys: uwp-sccache-
       - uses: Mozilla-Actions/sccache-action@v0.0.11
       - name: Check sparse memory on Windows
         run: |
@@ -45,6 +53,15 @@ jobs:
         with:
           path: .cache/cpm
           key: ${{ steps.cpm-cache.outputs.cache-primary-key }}
+      - name: Stop sccache before saving its directory
+        if: always()
+        run: sccache --stop-server
+        continue-on-error: true
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: .cache/sccache
+          key: uwp-sccache-${{ github.run_id }}
       - name: Collect build evidence
         if: always()
         uses: actions/upload-artifact@v4

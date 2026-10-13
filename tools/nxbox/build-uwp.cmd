@@ -12,12 +12,13 @@ if /i not "%VSCMD_ARG_app_plat%"=="UWP" (
 set "PATH=C:\Strawberry\perl\bin;C:\Program Files\NASM;%NXBOX_VSROOT%\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja;%PATH%"
 where perl
 where nasm
-if not defined NXBOX_JOBS set "NXBOX_JOBS=3"
+if not defined NXBOX_JOBS set "NXBOX_JOBS=%NUMBER_OF_PROCESSORS%"
 if not exist build-uwp mkdir build-uwp
 set "NXBOX_CACHE_ARGS="
 rem sccache cannot share a /Zi program database between parallel compilers; embed debug info
 rem (/Z7) everywhere, including dependencies with older policy defaults, and keep /FS as a guard.
-if defined SCCACHE_PATH set "NXBOX_CACHE_ARGS=-DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache -DCMAKE_POLICY_DEFAULT_CMP0141=NEW -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded -DCMAKE_C_FLAGS_INIT=/FS -DCMAKE_CXX_FLAGS_INIT=/FS"
+rem USE_CCACHE also routes the OpenSSL nmake build through sccache (about 7 minutes otherwise).
+if defined SCCACHE_PATH set "NXBOX_CACHE_ARGS=-DUSE_CCACHE=ON -DCCACHE_PATH=sccache -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache -DCMAKE_POLICY_DEFAULT_CMP0141=NEW -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded -DCMAKE_C_FLAGS_INIT=/FS -DCMAKE_CXX_FLAGS_INIT=/FS"
 python tools\nxbox\run_logged.py build-uwp\configure.log cmake --preset uwp-x64 -DYUZU_USE_BUNDLED_SIRIT=OFF %NXBOX_CACHE_ARGS%
 if errorlevel 1 (
   type build-uwp\configure.log
