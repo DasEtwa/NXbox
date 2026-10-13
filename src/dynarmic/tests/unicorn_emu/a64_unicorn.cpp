@@ -18,6 +18,7 @@ constexpr u64 END_ADDRESS = ~u64(0);
 A64Unicorn::A64Unicorn(A64TestEnv& testenv)
         : testenv(testenv) {
     CHECKED(uc_open(UC_ARCH_ARM64, UC_MODE_ARM, &uc));
+    CHECKED(uc_ctl_set_cpu_model(uc, UC_CPU_ARM64_MAX));
     u64 fpv = 3 << 20;
     CHECKED(uc_reg_write(uc, UC_ARM64_REG_CPACR_EL1, &fpv));
     CHECKED(uc_hook_add(uc, &intr_hook, UC_HOOK_INTR, (void*)InterruptHook, this, BEGIN_ADDRESS, END_ADDRESS));
@@ -33,8 +34,21 @@ A64Unicorn::~A64Unicorn() {
 }
 
 void A64Unicorn::Run() {
+    // Unicorn 2 can drop a store when lazily mapping near the end of the address space.
+    UnmappedMemoryHook(uc, UC_MEM_READ_UNMAPPED, 0xfffffffffffff000, 1, 0, this);
     while (testenv.ticks_left > 0) {
         CHECKED(uc_emu_start(uc, GetPC(), END_ADDRESS, 0, 1));
+        // The hook value is only 64 bits even for a 128-bit vector store. Read back
+        // committed bytes after the instruction to capture its complete result.
+        for (const auto& [address, size] : pending_writes) {
+            for (int byte = 0; byte < size; ++byte) {
+                const u64 byte_address = address + static_cast<u64>(byte);
+                u8 value;
+                CHECKED(uc_mem_read(uc, byte_address, &value, sizeof(value)));
+                testenv.MemoryWrite(byte_address, value, sizeof(value));
+            }
+        }
+        pending_writes.clear();
         testenv.ticks_left--;
         if (!testenv.interrupts.empty() || testenv.code_mem_modified_by_guest) {
             return;
@@ -149,6 +163,9 @@ void A64Unicorn::ClearPageCache() {
         CHECKED(uc_mem_unmap(uc, page->address, 4096));
     }
     pages.clear();
+    // Each case installs fresh guest code; release translations from prior cases.
+    CHECKED(uc_ctl_flush_tb(uc));
+    pending_writes.clear();
 }
 
 void A64Unicorn::DumpMemoryInformation() {
@@ -188,11 +205,9 @@ bool A64Unicorn::UnmappedMemoryHook(uc_engine* uc, uc_mem_type /*type*/, u64 sta
     const auto generate_page = [&](u64 base_address) {
         // printf("generate_page(%" PRIx64 ")\n", base_address);
 
-        const u32 permissions = [&]() -> u32 {
-            if (base_address < this_->testenv.code_mem.size() * 4)
-                return UC_PROT_READ | UC_PROT_EXEC;
-            return UC_PROT_READ;
-        }();
+        // The test callbacks model flat memory; writes are observed by MemoryWriteHook.
+        // Read-only pages turn normal stores into mapping faults in Unicorn 2.
+        constexpr u32 permissions = UC_PROT_ALL;
 
         auto page = std::make_unique<Page>();
         page->address = base_address;
@@ -225,8 +240,8 @@ bool A64Unicorn::UnmappedMemoryHook(uc_engine* uc, uc_mem_type /*type*/, u64 sta
     return true;
 }
 
-bool A64Unicorn::MemoryWriteHook(uc_engine* /*uc*/, uc_mem_type /*type*/, u64 start_address, int size, u64 value, void* user_data) {
+bool A64Unicorn::MemoryWriteHook(uc_engine* /*uc*/, uc_mem_type /*type*/, u64 start_address, int size, u64 /*value*/, void* user_data) {
     auto* this_ = static_cast<A64Unicorn*>(user_data);
-    this_->testenv.MemoryWrite(start_address, value, size);
+    this_->pending_writes.emplace_back(start_address, size);
     return true;
 }

@@ -3,6 +3,7 @@
 include(TargetArchitectureSpecificSources)
 
 add_executable(dynarmic_tests
+    test_trace_listener.cpp
     fp/FPToFixed.cpp
     fp/FPValue.cpp
     fp/mantissa_util_tests.cpp
@@ -133,4 +134,9 @@ target_include_directories(dynarmic_tests PRIVATE . ../src)
 target_compile_options(dynarmic_tests PRIVATE ${DYNARMIC_CXX_FLAGS})
 target_compile_definitions(dynarmic_tests PRIVATE FMT_USE_USER_DEFINED_LITERALS=1)
 
-add_test(NAME dynarmic_tests COMMAND dynarmic_tests --durations yes)
+set(DYNARMIC_TEST_SEED "" CACHE STRING "Catch2 seed for reproducible CPU test ordering")
+set(test_seed_arguments)
+if(NOT DYNARMIC_TEST_SEED STREQUAL "")
+    list(APPEND test_seed_arguments --rng-seed "${DYNARMIC_TEST_SEED}")
+endif()
+add_test(NAME dynarmic_tests COMMAND dynarmic_tests --durations yes ${test_seed_arguments})

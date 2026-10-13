@@ -15,8 +15,9 @@ find_path(LIBUNICORN_INCLUDE_DIR
           PATH_SUFFIXES include)
 
 find_library(LIBUNICORN_LIBRARY
-             NAMES unicorn
-             HINTS $ENV{UNICORNDIR})
+             NAMES unicorn unicorn_static
+             HINTS $ENV{UNICORNDIR}
+             PATH_SUFFIXES lib lib64)
 
 include(FindPackageHandleStandardArgs)
 find_package_handle_standard_args(Unicorn DEFAULT_MSG LIBUNICORN_LIBRARY LIBUNICORN_INCLUDE_DIR)

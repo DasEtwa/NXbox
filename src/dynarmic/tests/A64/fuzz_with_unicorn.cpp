@@ -8,17 +8,13 @@
 
 #include <algorithm>
 #include <cstring>
+#include <random>
 #include <string>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
-#include "common/common_types.h"
 
-#include "dynarmic/tests/fuzz_util.h"
-#include "dynarmic/tests/rand_int.h"
-#include "dynarmic/tests/unicorn_emu/a64_unicorn.h"
-#include "dynarmic/tests/A64/testenv.h"
-#include "dynarmic/tests/native/testenv.h"
+#include "common/common_types.h"
 #include "dynarmic/common/fp/fpcr.h"
 #include "dynarmic/common/fp/fpsr.h"
 #include "dynarmic/common/llvm_disassemble.h"
@@ -29,6 +25,11 @@
 #include "dynarmic/ir/basic_block.h"
 #include "dynarmic/ir/opcodes.h"
 #include "dynarmic/ir/opt_passes.h"
+#include "dynarmic/tests/A64/testenv.h"
+#include "dynarmic/tests/fuzz_util.h"
+#include "dynarmic/tests/native/testenv.h"
+#include "dynarmic/tests/rand_int.h"
+#include "dynarmic/tests/unicorn_emu/a64_unicorn.h"
 
 // Must be declared last for all necessary operator<< to be declared prior to this.
 #include <fmt/format.h>
@@ -168,12 +169,21 @@ static Dynarmic::A64::UserConfig GetUserConfig(A64TestEnv& jit_env) {
 }
 
 static void RunTestInstance(Dynarmic::A64::Jit& jit, A64Unicorn& uni, A64TestEnv& jit_env, A64TestEnv& uni_env, Dynarmic::A64::UserConfig& conf, const A64Unicorn::RegisterArray& regs, const A64Unicorn::VectorArray& vecs, const size_t instructions_start, const std::vector<u32>& instructions, const u32 pstate, const u32 fpcr) {
+    std::string program;
+    for (const auto instruction : instructions) {
+        program += fmt::format("{:08x} ", instruction);
+    }
+    INFO("instructions=" << program << " fpcr=" << std::hex << fpcr);
     jit_env.code_mem = instructions;
     uni_env.code_mem = instructions;
     jit_env.code_mem.emplace_back(0x14000000);  // B .
     uni_env.code_mem.emplace_back(0x14000000);  // B .
     jit_env.code_mem_start_address = instructions_start;
     uni_env.code_mem_start_address = instructions_start;
+    jit_env.code_mem_modified_by_guest = false;
+    uni_env.code_mem_modified_by_guest = false;
+    jit_env.interrupts.clear();
+    uni_env.interrupts.clear();
     jit_env.modified_memory.clear();
     uni_env.modified_memory.clear();
 
@@ -199,7 +209,7 @@ static void RunTestInstance(Dynarmic::A64::Jit& jit, A64Unicorn& uni, A64TestEnv
     jit_env.ticks_left = instructions.size();
     CheckedRun([&]() { jit.Run(); });
 
-    uni_env.ticks_left = instructions.size() * 4;
+    uni_env.ticks_left = instructions.size();
     uni.Run();
 
     // SCOPE_FAIL {
@@ -284,11 +294,25 @@ static void RunTestInstance(Dynarmic::A64::Jit& jit, A64Unicorn& uni, A64TestEnv
         return;
     }
 
-    REQUIRE(uni.GetPC() + 4 == jit.GetPC());
+    REQUIRE(uni.GetPC() == jit.GetPC());
     REQUIRE(uni.GetRegisters() == jit.GetRegisters());
     REQUIRE(uni.GetVectors() == jit.GetVectors());
     REQUIRE(uni.GetSP() == jit.GetSP());
     REQUIRE((uni.GetPstate() & 0xF0000000) == (jit.GetPstate() & 0xF0000000));
+    std::string memory_difference;
+    for (const auto& [address, value] : uni_env.modified_memory) {
+        const auto it = jit_env.modified_memory.find(address);
+        if (it == jit_env.modified_memory.end() || it->second != value) {
+            memory_difference += fmt::format("{:016x}: reference={:02x} jit={}\n", address, value,
+                                             it == jit_env.modified_memory.end() ? "unwritten" : fmt::format("{:02x}", it->second));
+        }
+    }
+    for (const auto& [address, value] : jit_env.modified_memory) {
+        if (!uni_env.modified_memory.contains(address)) {
+            memory_difference += fmt::format("{:016x}: reference=unwritten jit={:02x}\n", address, value);
+        }
+    }
+    INFO("memory differences=" << memory_difference);
     REQUIRE(uni_env.modified_memory == jit_env.modified_memory);
     REQUIRE(uni_env.interrupts.empty());
     REQUIRE(FP::FPSR{uni.GetFpsr()}.QC() == FP::FPSR{jit.GetFpsr()}.QC());
@@ -512,4 +536,289 @@ TEST_CASE("A64: Large random block", "[a64][unicorn]") {
 
         RunTestInstance(jit, uni, jit_env, uni_env, conf, regs, vecs, start_address, instructions, pstate, fpcr);
     }
+}
+
+TEST_CASE("A64: CLZ halfword lanes differential", "[a64][unicorn][conformance]") {
+    A64TestEnv jit_env{};
+    A64TestEnv uni_env{};
+    auto conf = GetUserConfig(jit_env);
+    A64::Jit jit{conf};
+    A64Unicorn uni{uni_env};
+    std::mt19937 random{0x1916};
+    A64Unicorn::RegisterArray regs{};
+
+    for (size_t iteration = 0; iteration < 1024; ++iteration) {
+        A64Unicorn::VectorArray vecs{};
+        for (size_t lane = 0; lane < 8; ++lane) {
+            const u64 value = iteration == 0 ? 0 : (random() & 0xffff) >> (lane * 2);
+            vecs[0][lane / 4] |= value << ((lane % 4) * 16);
+        }
+        INFO("iteration=" << iteration);
+        // CLZ V1.8H, V0.8H: widening to YMM must preserve all eight lanes on narrowing.
+        RunTestInstance(jit, uni, jit_env, uni_env, conf, regs, vecs, 0,
+                        {0x6e604801}, 0, 0);
+    }
+}
+
+TEST_CASE("A64: SM4 rounds differential", "[a64][unicorn][conformance]") {
+    A64TestEnv jit_env{};
+    A64TestEnv uni_env{};
+    auto conf = GetUserConfig(jit_env);
+    A64::Jit jit{conf};
+    A64Unicorn uni{uni_env};
+    std::mt19937 random{0x1944};
+    A64Unicorn::RegisterArray regs{};
+
+    for (size_t variant = 0; variant < 2; ++variant) {
+        for (size_t iteration = 0; iteration < 256; ++iteration) {
+            A64Unicorn::VectorArray vecs{};
+            for (auto& vector : vecs) {
+                for (auto& part : vector) {
+                    part = (static_cast<u64>(random()) << 32) | random();
+                }
+            }
+            const u32 destination = static_cast<u32>(iteration % 3);
+            const u32 instruction = (variant == 0 ? 0xcec08420 : 0xce62c820) | destination;
+            INFO("variant=" << variant << " iteration=" << iteration);
+            RunTestInstance(jit, uni, jit_env, uni_env, conf, regs, vecs, 0,
+                            {instruction}, 0, 0);
+        }
+    }
+}
+
+TEST_CASE("A64: Scalar rounding differential", "[a64][unicorn][conformance]") {
+    A64TestEnv jit_env{};
+    A64TestEnv uni_env{};
+    auto conf = GetUserConfig(jit_env);
+    A64::Jit jit{conf};
+    A64Unicorn uni{uni_env};
+    std::mt19937 random{0x1950};
+    A64Unicorn::RegisterArray regs{};
+    const std::array<u32, 7> operations{
+        0x1e244020,
+        0x1e24c020,
+        0x1e254020,
+        0x1e25c020,
+        0x1e264020,
+        0x1e274020,
+        0x1e27c020,
+    };  // FRINTN/P/M/Z/A/X/I S0, S1.
+    const std::array<u32, 3> types{0, 1, 3};  // Single, double, half.
+
+    for (const u32 type : types) {
+        for (const u32 operation : operations) {
+            for (size_t iteration = 0; iteration < 256; ++iteration) {
+                A64Unicorn::VectorArray vecs{};
+                vecs[1][0] = (static_cast<u64>(random()) << 32) | random();
+                const u32 fpcr = (static_cast<u32>(iteration % 4) << 22) | ((random() & 1) << 24) | ((random() & 1) << 25) | ((random() & 1) << 19);
+                const u32 instruction = operation | (type << 22);
+                INFO("instruction=" << instruction << " fpcr=" << fpcr);
+                RunTestInstance(jit, uni, jit_env, uni_env, conf, regs, vecs, 0,
+                                {instruction}, 0, fpcr);
+                REQUIRE(FP::FPSR{uni.GetFpsr()}.IXC() == FP::FPSR{jit.GetFpsr()}.IXC());
+            }
+        }
+    }
+}
+
+TEST_CASE("A64: Signed to unsigned saturating shifts differential", "[a64][unicorn][conformance]") {
+    A64TestEnv jit_env{};
+    A64TestEnv uni_env{};
+    auto conf = GetUserConfig(jit_env);
+    A64::Jit jit{conf};
+    A64Unicorn uni{uni_env};
+    std::mt19937 random{0x1951};
+    A64Unicorn::RegisterArray regs{};
+
+    for (const u32 element_size : {8U, 16U, 32U, 64U}) {
+        for (u32 shift = 0; shift < element_size; ++shift) {
+            for (size_t iteration = 0; iteration < 32; ++iteration) {
+                A64Unicorn::VectorArray vecs{};
+                for (auto& part : vecs[1]) {
+                    part = (static_cast<u64>(random()) << 32) | random();
+                }
+                const u32 instruction = 0x6f006420 | ((element_size + shift) << 16) | static_cast<u32>(iteration % 2);
+                INFO("element_size=" << element_size << " shift=" << shift);
+                RunTestInstance(jit, uni, jit_env, uni_env, conf, regs, vecs, 0,
+                                {instruction}, 0, 0);
+            }
+        }
+    }
+}
+
+TEST_CASE("A64: Vector rounding differential", "[a64][unicorn][conformance]") {
+    A64TestEnv jit_env{};
+    A64TestEnv uni_env{};
+    auto conf = GetUserConfig(jit_env);
+    A64::Jit jit{conf};
+    A64Unicorn uni{uni_env};
+    std::mt19937 random{0x1952};
+    A64Unicorn::RegisterArray regs{};
+    const std::array<u32, 7> operations{
+        0x4e218820,
+        0x4ea18820,
+        0x4e219820,
+        0x4ea19820,
+        0x6e218820,
+        0x6e219820,
+        0x6ea19820,
+    };  // FRINTN/P/M/Z/A/X/I V0.4S, V1.4S.
+
+    for (const u32 type : {0U, 1U}) {
+        for (const u32 operation : operations) {
+            for (size_t iteration = 0; iteration < 64; ++iteration) {
+                A64Unicorn::VectorArray vecs{};
+                for (auto& part : vecs[1]) {
+                    part = (static_cast<u64>(random()) << 32) | random();
+                }
+                const u32 fpcr = (static_cast<u32>(iteration % 4) << 22) | ((random() & 1) << 24) | ((random() & 1) << 25);
+                const u32 instruction = operation | (type << 22);
+                INFO("instruction=" << instruction << " fpcr=" << fpcr);
+                RunTestInstance(jit, uni, jit_env, uni_env, conf, regs, vecs, 0,
+                                {instruction}, 0, fpcr);
+                REQUIRE(FP::FPSR{uni.GetFpsr()}.IXC() == FP::FPSR{jit.GetFpsr()}.IXC());
+            }
+        }
+    }
+}
+
+TEST_CASE("A64: Signed division boundaries differential", "[a64][unicorn][conformance]") {
+    A64TestEnv jit_env{};
+    A64TestEnv uni_env{};
+    auto conf = GetUserConfig(jit_env);
+    A64::Jit jit{conf};
+    A64Unicorn uni{uni_env};
+    std::mt19937 random{0x1953};
+    A64Unicorn::VectorArray vecs{};
+    const std::array<u64, 8> boundaries{
+        0,
+        1,
+        ~u64{0},
+        0x80000000,
+        0x7fffffff,
+        0x8000000000000000,
+        0x7fffffffffffffff,
+        2,
+    };
+
+    for (const u32 width : {0U, 1U}) {
+        for (size_t iteration = 0; iteration < 512; ++iteration) {
+            A64Unicorn::RegisterArray regs{};
+            regs[1] = iteration < boundaries.size() * boundaries.size()
+                        ? boundaries[iteration / boundaries.size()]
+                        : (static_cast<u64>(random()) << 32) | random();
+            regs[2] = boundaries[iteration % boundaries.size()];
+            const u32 instruction = 0x1ac20c20 | (width << 31) | static_cast<u32>(iteration % 3);
+            INFO("width=" << width << " iteration=" << iteration);
+            RunTestInstance(jit, uni, jit_env, uni_env, conf, regs, vecs, 0,
+                            {instruction}, 0, 0);
+        }
+    }
+}
+
+TEST_CASE("A64: Complex floating point differential", "[a64][unicorn][conformance]") {
+    A64TestEnv jit_env{};
+    A64TestEnv uni_env{};
+    auto conf = GetUserConfig(jit_env);
+    A64::Jit jit{conf};
+    A64Unicorn uni{uni_env};
+    std::mt19937 random{0x1954};
+    A64Unicorn::RegisterArray regs{};
+    const std::array<u32, 3> bases{0x2e00e400, 0x2e00c400, 0x2f001000};
+
+    for (size_t variant = 0; variant < bases.size(); ++variant) {
+        for (u32 size = 1; size <= (variant == 2 ? 2U : 3U); ++size) {
+            for (u32 q = 0; q < 2; ++q) {
+                if (!q && (size == 3 || (variant == 2 && size == 2))) {
+                    continue;
+                }
+                const u32 rotations = variant == 0 ? 2 : 4;
+                const u32 indices = variant != 2 ? 1 : (size == 1 ? (q ? 4 : 2) : 2);
+                for (u32 rotation = 0; rotation < rotations; ++rotation) {
+                    for (u32 index = 0; index < indices; ++index) {
+                        for (size_t iteration = 0; iteration < 16; ++iteration) {
+                            A64Unicorn::VectorArray vecs{};
+                            for (size_t reg = 0; reg < 3; ++reg) {
+                                for (auto& part : vecs[reg]) {
+                                    part = (static_cast<u64>(random()) << 32) | random();
+                                }
+                            }
+                            if (size == 1 && iteration < 8) {
+                                const std::array<u16, 16> edges{0, 0x8000, 1, 0x8001, 0x03ff, 0x0400, 0x3c00, 0xbc00,
+                                                                0x7bff, 0xfbff, 0x7c00, 0xfc00, 0x7e01, 0xfe02, 0x7c01, 0xfc02};
+                                for (size_t reg = 0; reg < 3; ++reg) {
+                                    for (size_t part = 0; part < 2; ++part) {
+                                        vecs[reg][part] = 0;
+                                        for (size_t lane = 0; lane < 4; ++lane) {
+                                            const u16 value = edges[(iteration + reg * 5 + part * 4 + lane) % edges.size()];
+                                            vecs[reg][part] |= static_cast<u64>(value) << (lane * 16);
+                                        }
+                                    }
+                                }
+                            }
+                            if (variant == 2 && !q) {
+                                // Unicorn 2.1.4 evaluates inactive upper FCMLA lanes for
+                                // FPSR. Mirrored inputs duplicate active exceptions only.
+                                // The separate hardware-oracle case checks ignored lanes.
+                                for (size_t reg = 0; reg < 3; ++reg) {
+                                    vecs[reg][1] = vecs[reg][0];
+                                }
+                            }
+                            u32 instruction = bases[variant] | (q << 30) | (size << 22) | (2U << 16) | (1U << 5) | static_cast<u32>(iteration % 3);
+                            instruction |= rotation << (variant == 0 ? 12 : variant == 1 ? 11
+                                                                                         : 13);
+                            if (variant == 2) {
+                                instruction |= size == 1 ? ((index & 1) << 21) | ((index >> 1) << 11)
+                                                         : index << 11;
+                            }
+                            const u32 fpcr = (static_cast<u32>(iteration % 4) << 22) | ((random() & 1) << 25) | ((random() & 1) << 19);
+                            INFO("variant=" << variant << " size=" << size << " instruction=" << instruction);
+                            RunTestInstance(jit, uni, jit_env, uni_env, conf, regs, vecs, 0,
+                                            {instruction}, 0, fpcr);
+                            REQUIRE(uni.GetFpsr() == jit.GetFpsr());
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+TEST_CASE("A64: Final-page stores differential", "[a64][unicorn][conformance]") {
+    A64TestEnv jit_env{};
+    A64TestEnv uni_env{};
+    auto conf = GetUserConfig(jit_env);
+    A64::Jit jit{conf};
+    A64Unicorn uni{uni_env};
+    std::mt19937 random{0x19ff};
+    const std::array<u32, 5> stores{0x39000001, 0x79000001, 0xb9000001, 0xf9000001, 0x3d800001};
+    for (const u32 instruction : stores) {
+        for (size_t iteration = 0; iteration < 128; ++iteration) {
+            A64Unicorn::RegisterArray regs{};
+            A64Unicorn::VectorArray vecs{};
+            regs[0] = 0xfffffffffffff000 | (random() % 4081);
+            regs[1] = (static_cast<u64>(random()) << 32) | random();
+            for (auto& part : vecs[1]) {
+                part = (static_cast<u64>(random()) << 32) | random();
+            }
+            RunTestInstance(jit, uni, jit_env, uni_env, conf, regs, vecs, 0, {instruction}, 0, 0);
+        }
+    }
+}
+
+TEST_CASE("A64: FCMLA inactive lanes hardware oracle", "[a64][unicorn][conformance]") {
+    A64TestEnv jit_env{};
+    A64TestEnv uni_env{};
+    auto conf = GetUserConfig(jit_env);
+    A64::Jit jit{conf};
+    A64Unicorn uni{uni_env};
+    A64Unicorn::RegisterArray regs{};
+    A64Unicorn::VectorArray vecs{};
+    vecs[1] = {0xfbff7bffbc003c00, 0xfe027e01fc007c00};
+    vecs[2] = {0x7c01fe027e01fc00, 0x000180000000fc02};
+    RunTestInstance(jit, uni, jit_env, uni_env, conf, regs, vecs, 0, {0x2f421021}, 0, 1U << 25);
+    // Measured on Apple M3 Pro ARM hardware; Unicorn reports spurious IOC here.
+    REQUIRE(jit.GetFpsr() == 0);
+    const A64::Vector expected{0x7e00fc007e00fc00, 0};
+    REQUIRE(jit.GetVectors()[1] == expected);
 }

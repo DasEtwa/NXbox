@@ -9,6 +9,7 @@
 #pragma once
 
 #include <array>
+#include <utility>
 #include <vector>
 
 #ifdef _MSC_VER
@@ -42,7 +43,9 @@ public:
     explicit A32Unicorn(TestEnvironment& testenv);
     ~A32Unicorn();
 
-    void Run();
+    void Run(u32 end_address = 0);
+
+    u8 ReadMemoryByte(u32 address) const;
 
     u32 GetSP() const;
     void SetSP(u32 value);
@@ -72,6 +75,9 @@ public:
     void DumpMemoryInformation();
 
 private:
+    void CommitWrites();
+    void CompleteInstruction(u32 next_pc);
+    static void CodeHook(uc_engine* uc, u64 address, u32 size, void* user_data);
     static void InterruptHook(uc_engine* uc, u32 interrupt, void* user_data);
     static bool UnmappedMemoryHook(uc_engine* uc, uc_mem_type type, u32 addr, int size, u64 value, void* user_data);
     static bool MemoryWriteHook(uc_engine* uc, uc_mem_type type, u32 addr, int size, u64 value, void* user_data);
@@ -83,9 +89,14 @@ private:
 
     TestEnvironment& testenv;
     uc_engine* uc{};
+    uc_hook code_hook{};
     uc_hook intr_hook{};
     uc_hook mem_invalid_hook{};
     uc_hook mem_write_prot_hook{};
 
     std::vector<std::unique_ptr<Page>> pages;
+    std::vector<std::pair<u32, int>> pending_writes;
+    u32 previous_pc = 0;
+    u32 previous_cpsr = 0;
+    bool have_previous_instruction = false;
 };

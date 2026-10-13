@@ -12,44 +12,245 @@
 
 namespace Dynarmic::A32 {
 
-bool TranslatorVisitor::arm_LDRBT() {
-    // System instructions unimplemented
-    return UndefinedInstruction();
+namespace {
+
+// A32 unprivileged accesses are post-indexed, including when executed in user mode.
+// Keep the access type explicit so a privileged caller cannot acquire elevated access.
+bool UnprivilegedTransfer(TranslatorVisitor& v, bool add, Reg n, Reg t, IR::U32 offset, size_t bitsize, bool load, bool sign_extend) {
+    const IR::U32 address = v.ir.GetRegister(n);
+    const IR::U32 offset_address = add ? v.ir.Add(address, offset) : v.ir.Sub(address, offset);
+    if (load) {
+        IR::U32 data;
+        switch (bitsize) {
+        case 8: {
+            const auto value = v.ir.ReadMemory8(address, IR::AccType::UNPRIV);
+            data = sign_extend ? v.ir.SignExtendByteToWord(value) : v.ir.ZeroExtendByteToWord(value);
+            break;
+        }
+        case 16: {
+            const auto value = v.ir.ReadMemory16(address, IR::AccType::UNPRIV);
+            data = sign_extend ? v.ir.SignExtendHalfToWord(value) : v.ir.ZeroExtendHalfToWord(value);
+            break;
+        }
+        default:
+            data = v.ir.ReadMemory32(address, IR::AccType::UNPRIV);
+            break;
+        }
+        v.ir.SetRegister(t, data);
+    } else {
+        const auto value = v.ir.GetRegister(t);
+        switch (bitsize) {
+        case 8:
+            v.ir.WriteMemory8(address, v.ir.LeastSignificantByte(value), IR::AccType::UNPRIV);
+            break;
+        case 16:
+            v.ir.WriteMemory16(address, v.ir.LeastSignificantHalf(value), IR::AccType::UNPRIV);
+            break;
+        default:
+            v.ir.WriteMemory32(address, value, IR::AccType::UNPRIV);
+            break;
+        }
+    }
+    v.ir.SetRegister(n, offset_address);
+    return true;
 }
 
-bool TranslatorVisitor::arm_LDRHT() {
-    // System instructions unimplemented
-    return UndefinedInstruction();
+}  // namespace
+
+bool TranslatorVisitor::arm_LDRBT_imm(Cond cond, bool U, Reg n, Reg t, Imm<12> imm12) {
+    if (!ArmConditionPassed(cond)) {
+        return true;
+    }
+    if (n == Reg::PC || t == Reg::PC || n == t) {
+        return UnpredictableInstruction();
+    }
+
+    const auto offset = ir.Imm32(imm12.ZeroExtend());
+    return UnprivilegedTransfer(*this, U, n, t, offset, 8, true, false);
 }
 
-bool TranslatorVisitor::arm_LDRSBT() {
-    // System instructions unimplemented
-    return UndefinedInstruction();
+bool TranslatorVisitor::arm_LDRBT_reg(Cond cond, bool U, Reg n, Reg t, Imm<5> imm5, ShiftType shift, Reg m) {
+    if (!ArmConditionPassed(cond)) {
+        return true;
+    }
+    if (n == Reg::PC || t == Reg::PC || n == t || m == Reg::PC) {
+        return UnpredictableInstruction();
+    }
+
+    const auto offset = EmitImmShift(ir.GetRegister(m), shift, imm5, ir.GetCFlag()).result;
+    return UnprivilegedTransfer(*this, U, n, t, offset, 8, true, false);
 }
 
-bool TranslatorVisitor::arm_LDRSHT() {
-    // System instructions unimplemented
-    return UndefinedInstruction();
+bool TranslatorVisitor::arm_LDRHT_lit(Cond cond, bool U, Reg t, Imm<4> imm8a, Imm<4> imm8b) {
+    return arm_LDRHT_imm(cond, U, Reg::PC, t, imm8a, imm8b);
 }
 
-bool TranslatorVisitor::arm_LDRT() {
-    // System instructions unimplemented
-    return UndefinedInstruction();
+bool TranslatorVisitor::arm_LDRHT_imm(Cond cond, bool U, Reg n, Reg t, Imm<4> imm8a, Imm<4> imm8b) {
+    if (!ArmConditionPassed(cond)) {
+        return true;
+    }
+    if (n == Reg::PC || t == Reg::PC || n == t) {
+        return UnpredictableInstruction();
+    }
+
+    const auto offset = ir.Imm32(concatenate(imm8a, imm8b).ZeroExtend());
+    return UnprivilegedTransfer(*this, U, n, t, offset, 16, true, false);
 }
 
-bool TranslatorVisitor::arm_STRBT() {
-    // System instructions unimplemented
-    return UndefinedInstruction();
+bool TranslatorVisitor::arm_LDRHT_reg(Cond cond, bool U, Reg n, Reg t, Reg m) {
+    if (!ArmConditionPassed(cond)) {
+        return true;
+    }
+    if (n == Reg::PC || t == Reg::PC || n == t || m == Reg::PC) {
+        return UnpredictableInstruction();
+    }
+
+    const auto offset = ir.GetRegister(m);
+    return UnprivilegedTransfer(*this, U, n, t, offset, 16, true, false);
 }
 
-bool TranslatorVisitor::arm_STRHT() {
-    // System instructions unimplemented
-    return UndefinedInstruction();
+bool TranslatorVisitor::arm_LDRSBT_imm(Cond cond, bool U, Reg n, Reg t, Imm<4> imm8a, Imm<4> imm8b) {
+    if (!ArmConditionPassed(cond)) {
+        return true;
+    }
+    if (n == Reg::PC || t == Reg::PC || n == t) {
+        return UnpredictableInstruction();
+    }
+
+    const auto offset = ir.Imm32(concatenate(imm8a, imm8b).ZeroExtend());
+    return UnprivilegedTransfer(*this, U, n, t, offset, 8, true, true);
 }
 
-bool TranslatorVisitor::arm_STRT() {
-    // System instructions unimplemented
-    return UndefinedInstruction();
+bool TranslatorVisitor::arm_LDRSBT_reg(Cond cond, bool U, Reg n, Reg t, Reg m) {
+    if (!ArmConditionPassed(cond)) {
+        return true;
+    }
+    if (n == Reg::PC || t == Reg::PC || n == t || m == Reg::PC) {
+        return UnpredictableInstruction();
+    }
+
+    const auto offset = ir.GetRegister(m);
+    return UnprivilegedTransfer(*this, U, n, t, offset, 8, true, true);
+}
+
+bool TranslatorVisitor::arm_LDRSHT_imm(Cond cond, bool U, Reg n, Reg t, Imm<4> imm8a, Imm<4> imm8b) {
+    if (!ArmConditionPassed(cond)) {
+        return true;
+    }
+    if (n == Reg::PC || t == Reg::PC || n == t) {
+        return UnpredictableInstruction();
+    }
+
+    const auto offset = ir.Imm32(concatenate(imm8a, imm8b).ZeroExtend());
+    return UnprivilegedTransfer(*this, U, n, t, offset, 16, true, true);
+}
+
+bool TranslatorVisitor::arm_LDRSHT_reg(Cond cond, bool U, Reg n, Reg t, Reg m) {
+    if (!ArmConditionPassed(cond)) {
+        return true;
+    }
+    if (n == Reg::PC || t == Reg::PC || n == t || m == Reg::PC) {
+        return UnpredictableInstruction();
+    }
+
+    const auto offset = ir.GetRegister(m);
+    return UnprivilegedTransfer(*this, U, n, t, offset, 16, true, true);
+}
+
+bool TranslatorVisitor::arm_LDRT_imm(Cond cond, bool U, Reg n, Reg t, Imm<12> imm12) {
+    if (!ArmConditionPassed(cond)) {
+        return true;
+    }
+    if (n == Reg::PC || t == Reg::PC || n == t) {
+        return UnpredictableInstruction();
+    }
+
+    const auto offset = ir.Imm32(imm12.ZeroExtend());
+    return UnprivilegedTransfer(*this, U, n, t, offset, 32, true, false);
+}
+
+bool TranslatorVisitor::arm_LDRT_reg(Cond cond, bool U, Reg n, Reg t, Imm<5> imm5, ShiftType shift, Reg m) {
+    if (!ArmConditionPassed(cond)) {
+        return true;
+    }
+    if (n == Reg::PC || t == Reg::PC || n == t || m == Reg::PC) {
+        return UnpredictableInstruction();
+    }
+
+    const auto offset = EmitImmShift(ir.GetRegister(m), shift, imm5, ir.GetCFlag()).result;
+    return UnprivilegedTransfer(*this, U, n, t, offset, 32, true, false);
+}
+
+bool TranslatorVisitor::arm_STRBT_imm(Cond cond, bool U, Reg n, Reg t, Imm<12> imm12) {
+    if (!ArmConditionPassed(cond)) {
+        return true;
+    }
+    if (n == Reg::PC || t == Reg::PC || n == t) {
+        return UnpredictableInstruction();
+    }
+
+    const auto offset = ir.Imm32(imm12.ZeroExtend());
+    return UnprivilegedTransfer(*this, U, n, t, offset, 8, false, false);
+}
+
+bool TranslatorVisitor::arm_STRBT_reg(Cond cond, bool U, Reg n, Reg t, Imm<5> imm5, ShiftType shift, Reg m) {
+    if (!ArmConditionPassed(cond)) {
+        return true;
+    }
+    if (n == Reg::PC || t == Reg::PC || n == t || m == Reg::PC) {
+        return UnpredictableInstruction();
+    }
+
+    const auto offset = EmitImmShift(ir.GetRegister(m), shift, imm5, ir.GetCFlag()).result;
+    return UnprivilegedTransfer(*this, U, n, t, offset, 8, false, false);
+}
+
+bool TranslatorVisitor::arm_STRHT_imm(Cond cond, bool U, Reg n, Reg t, Imm<4> imm8a, Imm<4> imm8b) {
+    if (!ArmConditionPassed(cond)) {
+        return true;
+    }
+    if (n == Reg::PC || t == Reg::PC || n == t) {
+        return UnpredictableInstruction();
+    }
+
+    const auto offset = ir.Imm32(concatenate(imm8a, imm8b).ZeroExtend());
+    return UnprivilegedTransfer(*this, U, n, t, offset, 16, false, false);
+}
+
+bool TranslatorVisitor::arm_STRHT_reg(Cond cond, bool U, Reg n, Reg t, Reg m) {
+    if (!ArmConditionPassed(cond)) {
+        return true;
+    }
+    if (n == Reg::PC || t == Reg::PC || n == t || m == Reg::PC) {
+        return UnpredictableInstruction();
+    }
+
+    const auto offset = ir.GetRegister(m);
+    return UnprivilegedTransfer(*this, U, n, t, offset, 16, false, false);
+}
+
+bool TranslatorVisitor::arm_STRT_imm(Cond cond, bool U, Reg n, Reg t, Imm<12> imm12) {
+    if (!ArmConditionPassed(cond)) {
+        return true;
+    }
+    if (n == Reg::PC || t == Reg::PC || n == t) {
+        return UnpredictableInstruction();
+    }
+
+    const auto offset = ir.Imm32(imm12.ZeroExtend());
+    return UnprivilegedTransfer(*this, U, n, t, offset, 32, false, false);
+}
+
+bool TranslatorVisitor::arm_STRT_reg(Cond cond, bool U, Reg n, Reg t, Imm<5> imm5, ShiftType shift, Reg m) {
+    if (!ArmConditionPassed(cond)) {
+        return true;
+    }
+    if (n == Reg::PC || t == Reg::PC || n == t || m == Reg::PC) {
+        return UnpredictableInstruction();
+    }
+
+    const auto offset = EmitImmShift(ir.GetRegister(m), shift, imm5, ir.GetCFlag()).result;
+    return UnprivilegedTransfer(*this, U, n, t, offset, 32, false, false);
 }
 
 static IR::U32 GetAddress(A32::IREmitter& ir, bool P, bool U, bool W, Reg n, IR::U32 offset) {

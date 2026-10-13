@@ -6,11 +6,15 @@
  * SPDX-License-Identifier: 0BSD
  */
 
-#include <type_traits>
-#include <fmt/format.h>
-#include "dynarmic/mcl/bit.hpp"
 #include "dynarmic/tests/unicorn_emu/a32_unicorn.h"
+
+#include <algorithm>
+#include <type_traits>
+
+#include <fmt/format.h>
+
 #include "common/assert.h"
+#include "dynarmic/mcl/bit.hpp"
 #include "dynarmic/tests/A32/testenv.h"
 
 #define CHECKED(expr) do if ((expr)) ASSERT(false && "Call " #expr " failed with error\n"); while (0)
@@ -24,6 +28,8 @@ A32Unicorn<TestEnvironment>::A32Unicorn(TestEnvironment& testenv)
     constexpr uc_mode open_mode = std::is_same_v<TestEnvironment, ArmTestEnv> ? UC_MODE_ARM : UC_MODE_THUMB;
 
     CHECKED(uc_open(UC_ARCH_ARM, open_mode, &uc));
+    CHECKED(uc_ctl_set_cpu_model(uc, UC_CPU_ARM_MAX));
+    CHECKED(uc_hook_add(uc, &code_hook, UC_HOOK_CODE, (void*)CodeHook, this, BEGIN_ADDRESS, END_ADDRESS));
     CHECKED(uc_hook_add(uc, &intr_hook, UC_HOOK_INTR, (void*)InterruptHook, this, BEGIN_ADDRESS, END_ADDRESS));
     CHECKED(uc_hook_add(uc, &mem_invalid_hook, UC_HOOK_MEM_INVALID, (void*)UnmappedMemoryHook, this, BEGIN_ADDRESS, END_ADDRESS));
     CHECKED(uc_hook_add(uc, &mem_write_prot_hook, UC_HOOK_MEM_WRITE, (void*)MemoryWriteHook, this, BEGIN_ADDRESS, END_ADDRESS));
@@ -32,33 +38,85 @@ A32Unicorn<TestEnvironment>::A32Unicorn(TestEnvironment& testenv)
 template<class TestEnvironment>
 A32Unicorn<TestEnvironment>::~A32Unicorn() {
     ClearPageCache();
+    CHECKED(uc_hook_del(uc, code_hook));
     CHECKED(uc_hook_del(uc, intr_hook));
     CHECKED(uc_hook_del(uc, mem_invalid_hook));
     CHECKED(uc_close(uc));
 }
 
 template<class TestEnvironment>
-void A32Unicorn<TestEnvironment>::Run() {
-    // Thumb execution mode requires the LSB to be set to 1.
-    constexpr u64 pc_mask = std::is_same_v<TestEnvironment, ArmTestEnv> ? 0 : 1;
-    while (testenv.ticks_left > 0) {
-        const u32 pc = GetPC() | pc_mask;
-        if (!testenv.IsInCodeMem(pc)) {
-            return;
-        }
-        if (auto cerr_ = uc_emu_start(uc, pc, END_ADDRESS, 0, 1)) {
-            fmt::print("uc_emu_start failed @ {:08x} (code = {:08x}) with error {} ({})", pc, *testenv.MemoryReadCode(pc), static_cast<size_t>(cerr_), uc_strerror(cerr_));
-            throw "A32Unicorn::Run() failure";
-        }
-        testenv.ticks_left--;
-        if (!testenv.interrupts.empty() || testenv.code_mem_modified_by_guest) {
-            return;
+void A32Unicorn<TestEnvironment>::CommitWrites() {
+    for (const auto& [address, size] : pending_writes) {
+        for (int byte = 0; byte < size; ++byte) {
+            const u32 byte_address = address + static_cast<u32>(byte);
+            u8 value;
+            CHECKED(uc_mem_read(uc, byte_address, &value, sizeof(value)));
+            testenv.MemoryWrite(byte_address, value, sizeof(value));
         }
     }
+    pending_writes.clear();
+}
 
-    const bool T = mcl::bit::get_bit<5>(GetCpsr());
-    const u32 new_pc = GetPC() | (T ? 1 : 0);
-    SetPC(new_pc);
+template<class TestEnvironment>
+void A32Unicorn<TestEnvironment>::CompleteInstruction(u32 next_pc) {
+    if (!have_previous_instruction) {
+        return;
+    }
+    size_t consumed = 1;
+    if constexpr (std::is_same_v<TestEnvironment, ThumbTestEnv>) {
+        const u16 first = static_cast<u16>(*testenv.MemoryReadCode(previous_pc));
+        const bool in_it = (previous_cpsr & 0x0600fc00) != 0;
+        const bool starts_it = (first & 0xff00) == 0xbf00 && (first & 0xf) != 0;
+        if ((in_it || starts_it) && next_pc > previous_pc && next_pc <= previous_pc + 18) {
+            // Unicorn omits code hooks for some IT slots. Count every guest slot.
+            consumed = 0;
+            u32 cursor = previous_pc;
+            while (cursor < next_pc) {
+                const u16 instruction = static_cast<u16>(*testenv.MemoryReadCode(cursor));
+                cursor += (instruction >> 11) >= 0b11101 ? 4 : 2;
+                ++consumed;
+            }
+        }
+    }
+    testenv.ticks_left -= std::min<u64>(testenv.ticks_left, consumed);
+    have_previous_instruction = false;
+}
+
+template<class TestEnvironment>
+void A32Unicorn<TestEnvironment>::CodeHook(uc_engine* uc, u64 address, u32, void* user_data) {
+    auto* self = static_cast<A32Unicorn*>(user_data);
+    const u32 pc = static_cast<u32>(address);
+    self->CommitWrites();
+    self->CompleteInstruction(pc);
+    if (self->testenv.ticks_left == 0 || !self->testenv.IsInCodeMem(pc) || !self->testenv.interrupts.empty() || self->testenv.code_mem_modified_by_guest) {
+        CHECKED(uc_emu_stop(uc));
+        return;
+    }
+    self->previous_pc = pc;
+    self->previous_cpsr = self->GetCpsr();
+    self->have_previous_instruction = true;
+}
+
+template<class TestEnvironment>
+void A32Unicorn<TestEnvironment>::Run(u32 end_address) {
+    constexpr u64 pc_mask = std::is_same_v<TestEnvironment, ArmTestEnv> ? 0 : 1;
+    UnmappedMemoryHook(uc, UC_MEM_READ_UNMAPPED, 0xfffff000, 1, 0, this);
+    have_previous_instruction = false;
+    // Restarting emulation inside an IT block can lose state at a VFP barrier.
+    // Observe instruction boundaries while retaining one continuous execution.
+    const u32 pc = GetPC() | pc_mask;
+    if (end_address == 0) {
+        end_address = static_cast<u32>(testenv.code_mem.size() * sizeof(typename TestEnvironment::InstructionType));
+    }
+    // A stop requested from a Thumb IT hook can be delayed until the IT group
+    // completes. The architectural program boundary must also stop translation.
+    if (auto error = uc_emu_start(uc, pc, end_address, 0, 0)) {
+        fmt::print("uc_emu_start failed @ {:08x} with error {} ({})\n", GetPC(),
+                   static_cast<size_t>(error), uc_strerror(error));
+        throw "A32Unicorn::Run() failure";
+    }
+    CommitWrites();
+    CompleteInstruction(GetPC());
 }
 
 template<class TestEnvironment>
@@ -71,6 +129,17 @@ u32 A32Unicorn<TestEnvironment>::GetPC() const {
 template<class TestEnvironment>
 void A32Unicorn<TestEnvironment>::SetPC(u32 value) {
     CHECKED(uc_reg_write(uc, UC_ARM_REG_PC, &value));
+}
+
+template<class TestEnvironment>
+u8 A32Unicorn<TestEnvironment>::ReadMemoryByte(u32 address) const {
+    u8 value;
+    const auto error = uc_mem_read(uc, address, &value, sizeof(value));
+    if (error == UC_ERR_READ_UNMAPPED) {
+        return static_cast<u8>(testenv.MemoryRead(address, sizeof(value)));
+    }
+    CHECKED(error);
+    return value;
 }
 
 template<class TestEnvironment>
@@ -238,6 +307,9 @@ void A32Unicorn<TestEnvironment>::ClearPageCache() {
         CHECKED(uc_mem_unmap(uc, page->address, 4096));
     }
     pages.clear();
+    // Each case installs fresh guest code; release translations from prior cases.
+    CHECKED(uc_ctl_flush_tb(uc));
+    pending_writes.clear();
 }
 
 template<class TestEnvironment>
@@ -254,12 +326,13 @@ void A32Unicorn<TestEnvironment>::DumpMemoryInformation() {
 }
 
 template<class TestEnvironment>
-void A32Unicorn<TestEnvironment>::InterruptHook(uc_engine* /*uc*/, u32 int_number, void* user_data) {
+void A32Unicorn<TestEnvironment>::InterruptHook(uc_engine* uc, u32 int_number, void* user_data) {
     auto* this_ = static_cast<A32Unicorn*>(user_data);
 
     u32 esr = 0;
     // CHECKED(uc_reg_read(uc, UC_ARM_REG_ESR, &esr));
 
+    CHECKED(uc_emu_stop(uc));
     auto ec = esr >> 26;
     auto iss = esr & 0xFFFFFF;
 
@@ -280,12 +353,9 @@ bool A32Unicorn<TestEnvironment>::UnmappedMemoryHook(uc_engine* uc, uc_mem_type 
     const auto generate_page = [&](u32 base_address) {
         // printf("generate_page(%x)\n", base_address);
 
-        const u32 permissions = [&]() -> u32 {
-            if (base_address < this_->testenv.code_mem.size() * sizeof(typename TestEnvironment::InstructionType)) {
-                return UC_PROT_READ | UC_PROT_EXEC;
-            }
-            return UC_PROT_READ;
-        }();
+        // The test callbacks model flat memory; writes are observed by MemoryWriteHook.
+        // Read-only pages turn normal stores into mapping faults in Unicorn 2.
+        constexpr u32 permissions = UC_PROT_ALL;
 
         auto page = std::make_unique<Page>();
         page->address = base_address;
@@ -319,9 +389,9 @@ bool A32Unicorn<TestEnvironment>::UnmappedMemoryHook(uc_engine* uc, uc_mem_type 
 }
 
 template<class TestEnvironment>
-bool A32Unicorn<TestEnvironment>::MemoryWriteHook(uc_engine* /*uc*/, uc_mem_type /*type*/, u32 start_address, int size, u64 value, void* user_data) {
+bool A32Unicorn<TestEnvironment>::MemoryWriteHook(uc_engine* /*uc*/, uc_mem_type /*type*/, u32 start_address, int size, u64 /*value*/, void* user_data) {
     auto* this_ = static_cast<A32Unicorn*>(user_data);
-    this_->testenv.MemoryWrite(start_address, value, size);
+    this_->pending_writes.emplace_back(start_address, size);
     return true;
 }
 

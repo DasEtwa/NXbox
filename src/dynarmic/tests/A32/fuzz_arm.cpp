@@ -10,19 +10,14 @@
 #include <array>
 #include <cstdio>
 #include <functional>
+#include <random>
 #include <tuple>
 #include <type_traits>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
-#include "dynarmic/mcl/bit.hpp"
-#include "common/common_types.h"
 
-#include "dynarmic/tests/fuzz_util.h"
-#include "dynarmic/tests/rand_int.h"
-#include "dynarmic/tests/unicorn_emu/a32_unicorn.h"
-#include "dynarmic/tests/A32/testenv.h"
-#include "dynarmic/tests/native/testenv.h"
+#include "common/common_types.h"
 #include "dynarmic/common/fp/fpcr.h"
 #include "dynarmic/common/fp/fpsr.h"
 #include "dynarmic/common/llvm_disassemble.h"
@@ -34,6 +29,12 @@
 #include "dynarmic/ir/basic_block.h"
 #include "dynarmic/ir/location_descriptor.h"
 #include "dynarmic/ir/opcodes.h"
+#include "dynarmic/mcl/bit.hpp"
+#include "dynarmic/tests/A32/testenv.h"
+#include "dynarmic/tests/fuzz_util.h"
+#include "dynarmic/tests/native/testenv.h"
+#include "dynarmic/tests/rand_int.h"
+#include "dynarmic/tests/unicorn_emu/a32_unicorn.h"
 
 // Must be declared last for all necessary operator<< to be declared prior to this.
 #include <fmt/format.h>
@@ -115,9 +116,6 @@ u32 GenRandomArmInst(u32 pc, bool is_last_inst) {
 
         // List of instructions not to test
         static constexpr std::array do_not_test{
-            // Translating load/stores
-            "arm_LDRBT", "arm_LDRBT", "arm_LDRHT", "arm_LDRHT", "arm_LDRSBT", "arm_LDRSBT", "arm_LDRSHT", "arm_LDRSHT", "arm_LDRT", "arm_LDRT",
-            "arm_STRBT", "arm_STRBT", "arm_STRHT", "arm_STRHT", "arm_STRT", "arm_STRT",
             // Exclusive load/stores
             "arm_LDREXB", "arm_LDREXD", "arm_LDREXH", "arm_LDREX", "arm_LDAEXB", "arm_LDAEXD", "arm_LDAEXH", "arm_LDAEX",
             "arm_STREXB", "arm_STREXD", "arm_STREXH", "arm_STREX", "arm_STLEXB", "arm_STLEXD", "arm_STLEXH", "arm_STLEX",
@@ -159,6 +157,11 @@ u32 GenRandomArmInst(u32 pc, bool is_last_inst) {
         const u32 inst = instructions.generators[index].Generate();
 
         if ((instructions.generators[index].Mask() & 0xF0000000) == 0 && (inst & 0xF0000000) == 0xF0000000) {
+            continue;
+        }
+
+        // A32 hint aliases have reserved rotation bits, not random operands.
+        if ((inst & 0x0ffff000) == 0x0320f000 && (inst & 0x00000f00) != 0) {
             continue;
         }
 
@@ -304,7 +307,14 @@ static void RunTestInstance(Dynarmic::A32::Jit& jit,
                             const std::vector<typename TestEnv::InstructionType>& instructions,
                             const u32 cpsr,
                             const u32 fpscr,
-                            const size_t ticks_left) {
+                            const size_t ticks_left,
+                            const std::map<u32, u8>& initial_memory = {},
+                            bool compare_pc = false) {
+    std::string program;
+    for (const auto instruction : instructions) {
+        program += fmt::format("{:08x} ", instruction);
+    }
+    INFO("instructions=" << program << " cpsr=" << std::hex << cpsr << " fpscr=" << fpscr);
     const u32 initial_pc = regs[15];
     const u32 num_words = initial_pc / sizeof(typename TestEnv::InstructionType);
     const u32 code_mem_size = num_words + static_cast<u32>(instructions.size());
@@ -319,14 +329,20 @@ static void RunTestInstance(Dynarmic::A32::Jit& jit,
     std::copy(instructions.begin(), instructions.end(), uni_env.code_mem.begin() + num_words);
     jit_env.PadCodeMem();
     uni_env.PadCodeMem();
-    jit_env.modified_memory.clear();
-    uni_env.modified_memory.clear();
+    jit_env.code_mem_modified_by_guest = false;
+    uni_env.code_mem_modified_by_guest = false;
+    jit_env.interrupts.clear();
+    uni_env.interrupts.clear();
+    jit_env.modified_memory = initial_memory;
+    uni_env.modified_memory = initial_memory;
 
     jit.Regs() = regs;
     jit.ExtRegs() = vecs;
     jit.SetFpscr(fpscr);
     jit.SetCpsr(cpsr);
     jit.ClearCache();
+    // Select the register bank before seeding SP/LR. Unicorn resets in SVC mode.
+    uni.SetCpsr(cpsr);
     uni.SetRegisters(regs);
     uni.SetExtRegs(vecs);
     uni.SetFpscr(fpscr);
@@ -337,8 +353,8 @@ static void RunTestInstance(Dynarmic::A32::Jit& jit,
     jit_env.ticks_left = ticks_left;
     CheckedRun([&]() { jit.Run(); });
 
-    uni_env.ticks_left = instructions.size();  // Unicorn counts thumb instructions weirdly.
-    uni.Run();
+    uni_env.ticks_left = ticks_left;  // Unicorn 2 counts instructions, not Thumb halfwords.
+    uni.Run(expected_end_pc);
 
     // SCOPE_FAIL {
     //     fmt::print("Instruction Listing:\n");
@@ -424,13 +440,52 @@ static void RunTestInstance(Dynarmic::A32::Jit& jit,
     }
 
     // TODO: Why the difference? QEMU what are you doing???
-    jit.Regs()[15] = uni.GetRegisters()[15];
+    if (compare_pc) {
+        REQUIRE(jit.Regs()[15] == uni.GetRegisters()[15]);
+    } else {
+        jit.Regs()[15] = uni.GetRegisters()[15];
+    }
 
     REQUIRE(uni.GetRegisters() == jit.Regs());
     REQUIRE(uni.GetExtRegs() == jit.ExtRegs());
     REQUIRE((uni.GetCpsr() & 0xFFFFFDDF) == (jit.Cpsr() & 0xFFFFFDDF));
     REQUIRE((uni.GetFpscr() & 0xF8000000) == (jit.Fpscr() & 0xF8000000));
-    REQUIRE(uni_env.modified_memory == jit_env.modified_memory);
+    bool memory_equal = true;
+    std::string memory_difference;
+    // Hooks run before stores commit and can describe physical split accesses.
+    // Read live Unicorn RAM across the union of touched byte addresses instead.
+    const auto compare_byte = [&](u32 address) {
+        const auto reference = uni.ReadMemoryByte(address);
+        const auto actual = jit_env.MemoryRead(address, sizeof(u8));
+        if (reference != actual) {
+            memory_equal = false;
+            memory_difference += fmt::format("{:08x}: reference={:02x} jit={:02x}\n", address, reference, actual);
+        }
+    };
+    for (const auto& [address, value] : uni_env.modified_memory) {
+        (void)value;
+        compare_byte(address);
+    }
+    for (const auto& [address, value] : jit_env.modified_memory) {
+        (void)value;
+        if (!uni_env.modified_memory.contains(address)) {
+            compare_byte(address);
+        }
+    }
+    if (!memory_equal) {
+        std::fprintf(stderr, "Initial A32 registers:");
+        for (const auto value : regs) {
+            std::fprintf(stderr, " %08x", value);
+        }
+        std::fprintf(stderr, "\nInitial A32 extended registers:");
+        for (const auto value : vecs) {
+            std::fprintf(stderr, " %08x", value);
+        }
+        std::fprintf(stderr, "\n");
+        std::fflush(stderr);
+    }
+    INFO("RAM differences=" << memory_difference);
+    REQUIRE(memory_equal);
     REQUIRE(uni_env.interrupts.empty());
 }
 }  // Anonymous namespace
@@ -667,5 +722,164 @@ TEST_CASE("A32: Test thumb IT instruction", "[thumb]") {
 
         regs[15] = start_address;
         RunTestInstance(jit, uni, jit_env, uni_env, regs, ext_reg, instructions, cpsr, fpcr, pre_instructions + 1 + post_instructions);
+    }
+}
+
+TEST_CASE("A32: Unprivileged transfers differential", "[arm][unicorn][conformance]") {
+    ArmTestEnv jit_env{};
+    ArmTestEnv uni_env{};
+    Dynarmic::A32::Jit jit{GetUserConfig(jit_env)};
+    A32Unicorn<ArmTestEnv> uni{uni_env};
+    std::mt19937 random{0x1932};
+    const std::array<u32, 16> encodings{
+        0x04f12000,
+        0x06f12003,  // LDRBT immediate/register
+        0x04b12000,
+        0x06b12003,  // LDRT immediate/register
+        0x04e12000,
+        0x06e12003,  // STRBT immediate/register
+        0x04a12000,
+        0x06a12003,  // STRT immediate/register
+        0x00f120b0,
+        0x00b120b3,  // LDRHT immediate/register
+        0x00f120d0,
+        0x00b120d3,  // LDRSBT immediate/register
+        0x00f120f0,
+        0x00b120f3,  // LDRSHT immediate/register
+        0x00e120b0,
+        0x00a120b3,  // STRHT immediate/register
+    };
+
+    for (size_t form = 0; form < encodings.size(); ++form) {
+        for (size_t iteration = 0; iteration < 256; ++iteration) {
+            A32Unicorn<ArmTestEnv>::RegisterArray regs{};
+            A32Unicorn<ArmTestEnv>::ExtRegArray ext_regs{};
+            std::generate(regs.begin(), regs.end(), [&] { return random(); });
+            regs[1] = 0x10000 + (random() & 0xffc);
+            regs[3] = random() & 0xff;
+            regs[15] = 0;
+            // Exercise all condition codes except the unconditional extension space.
+            const u32 condition = static_cast<u32>(iteration % 15);
+            u32 instruction = encodings[form] | (condition << 28);
+            if (iteration & 1) {
+                instruction &= ~(1U << 23);  // Subtract the offset.
+            }
+            if ((form & 1) == 0) {
+                const u32 offset = random() & 0xff;
+                instruction |= form < 8 ? offset : ((offset & 0xf0) << 4) | (offset & 0xf);
+            } else if (form < 8) {
+                instruction |= (static_cast<u32>((iteration / 32) % 4) << 5) | (static_cast<u32>(iteration % 32) << 7);
+            }
+            std::map<u32, u8> initial_memory;
+            for (u32 byte = 0; byte < 4; ++byte) {
+                initial_memory[regs[1] + byte] = static_cast<u8>(random());
+            }
+            const u32 cpsr = (random() & 0xf0000000) | 0x10;  // User mode.
+            INFO("form=" << form << " iteration=" << iteration << " instruction=" << instruction);
+            RunTestInstance(jit, uni, jit_env, uni_env, regs, ext_regs,
+                            {instruction}, cpsr, 0, 1, initial_memory, true);
+        }
+    }
+}
+
+TEST_CASE("A32: Signed division boundaries differential", "[arm][thumb][unicorn][conformance]") {
+    const auto run = []<typename TestEnv>(const std::vector<typename TestEnv::InstructionType>& instructions) {
+        TestEnv jit_env{};
+        TestEnv uni_env{};
+        Dynarmic::A32::Jit jit{GetUserConfig(jit_env)};
+        A32Unicorn<TestEnv> uni{uni_env};
+        std::mt19937 random{0x1933};
+        const std::array<u32, 6> boundaries{0, 1, ~u32{0}, 0x80000000, 0x7fffffff, 2};
+
+        for (size_t iteration = 0; iteration < 256; ++iteration) {
+            typename A32Unicorn<TestEnv>::RegisterArray regs{};
+            typename A32Unicorn<TestEnv>::ExtRegArray ext_regs{};
+            regs[2] = iteration < boundaries.size() * boundaries.size()
+                        ? boundaries[iteration / boundaries.size()]
+                        : random();
+            regs[9] = boundaries[iteration % boundaries.size()];
+            const u32 cpsr = std::is_same_v<TestEnv, ThumbTestEnv> ? 0x30 : 0x10;
+            INFO("iteration=" << iteration);
+            RunTestInstance(jit, uni, jit_env, uni_env, regs, ext_regs,
+                            instructions, cpsr, 0, 1, {}, true);
+        }
+    };
+    run.template operator()<ArmTestEnv>({0xe71af912});
+    run.template operator()<ThumbTestEnv>({0xfb92, 0xfaf9});
+}
+
+TEST_CASE("A32: Thumb IT skipped-slot differential", "[thumb][unicorn][conformance]") {
+    ThumbTestEnv jit_env{};
+    ThumbTestEnv uni_env{};
+    A32::Jit jit{GetUserConfig(jit_env)};
+    A32Unicorn<ThumbTestEnv> uni{uni_env};
+    std::mt19937 random{0x1917};
+    for (const u16 instruction : {u16{0xbf08}, u16{0xbf18}}) {
+        for (size_t iteration = 0; iteration < 128; ++iteration) {
+            A32Unicorn<ThumbTestEnv>::RegisterArray regs{};
+            A32Unicorn<ThumbTestEnv>::ExtRegArray vecs{};
+            for (auto& reg : regs) {
+                reg = random();
+            }
+            regs[15] = 0;
+            const u32 cpsr = (static_cast<u32>(iteration % 2) << 30) | 0x1f0;
+            // JIT Run retires whole blocks, so compare the complete three-slot block.
+            RunTestInstance(jit, uni, jit_env, uni_env, regs, vecs,
+                            {instruction, 0x2001, 0x2102}, cpsr, 0, 3, {}, true);
+            // Check the reference budget independently at the IT block boundary.
+            uni.SetCpsr(cpsr);
+            uni.SetRegisters(regs);
+            uni.SetCpsr(cpsr);
+            uni.ClearPageCache();
+            uni_env.ticks_left = 2;
+            uni.Run();
+            REQUIRE(uni.GetPC() == 4);
+            REQUIRE(uni.GetRegisters()[1] == regs[1]);
+        }
+    }
+}
+
+TEST_CASE("A32: User-mode CPS differential", "[arm][unicorn][conformance]") {
+    ArmTestEnv jit_env{};
+    ArmTestEnv uni_env{};
+    A32::Jit jit{GetUserConfig(jit_env)};
+    A32Unicorn<ArmTestEnv> uni{uni_env};
+    std::mt19937 random{0x19c5};
+    const std::array<u32, 5> bases{0xf1020000, 0xf1080000, 0xf10a0000, 0xf10c0000, 0xf10e0000};
+    for (const u32 base : bases) {
+        for (size_t iteration = 0; iteration < 128; ++iteration) {
+            A32Unicorn<ArmTestEnv>::RegisterArray regs{};
+            A32Unicorn<ArmTestEnv>::ExtRegArray vecs{};
+            for (auto& reg : regs) {
+                reg = random();
+            }
+            regs[15] = 0;
+            u32 instruction = base;
+            if (base & 0x00080000) {
+                instruction |= (1 + random() % 7) << 6;
+            }
+            if (base & 0x00020000) {
+                const std::array<u32, 7> modes{0x10, 0x11, 0x12, 0x13, 0x17, 0x1b, 0x1f};
+                instruction |= modes[iteration % modes.size()];
+            }
+            const u32 cpsr = (random() & 0xf8000000) | ((random() & 7) << 6) | 0x10;
+            RunTestInstance(jit, uni, jit_env, uni_env, regs, vecs, {instruction}, cpsr, 0, 1, {}, true);
+        }
+    }
+}
+
+TEST_CASE("A32: Unaligned word stores differential", "[arm][unicorn][conformance]") {
+    ArmTestEnv jit_env{};
+    ArmTestEnv uni_env{};
+    A32::Jit jit{GetUserConfig(jit_env)};
+    A32Unicorn<ArmTestEnv> uni{uni_env};
+    std::mt19937 random{0x19a1};
+    for (size_t iteration = 0; iteration < 512; ++iteration) {
+        A32Unicorn<ArmTestEnv>::RegisterArray regs{};
+        A32Unicorn<ArmTestEnv>::ExtRegArray vecs{};
+        regs[0] = random();
+        regs[1] = 0x10000 + (random() & 0xffc) + 1 + iteration % 3;
+        const u32 cpsr = (random() & 0xf8000000) | 0x10;
+        RunTestInstance(jit, uni, jit_env, uni_env, regs, vecs, {0xe5810000}, cpsr, 0, 1, {}, true);
     }
 }
