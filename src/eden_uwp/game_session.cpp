@@ -462,6 +462,16 @@ void LogVirtualMemoryMap() {
 
 // Kept free of objects with destructors so MSVC accepts the structured exception handler.
 bool CopyStackSlice(std::uintptr_t from, void* to, std::size_t bytes) {
+    // Stay inside the committed region: a faulting copy is caught here, but the crash logger's
+    // vectored handler still records each first-chance fault, and at 8 ms per sample that flood
+    // stalled the game being measured.
+    MEMORY_BASIC_INFORMATION region{};
+    if (VirtualQuery(reinterpret_cast<const void*>(from), &region, sizeof(region)) == 0 ||
+        region.State != MEM_COMMIT)
+        return false;
+    const auto end = reinterpret_cast<std::uintptr_t>(region.BaseAddress) + region.RegionSize;
+    if (from + bytes > end)
+        return false;
     __try {
         std::memcpy(to, reinterpret_cast<const void*>(from), bytes);
         return true;
