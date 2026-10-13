@@ -31,7 +31,16 @@ bool BisectEnabled(const char* name) noexcept {
     return GetEnvironmentVariableA(name, value, sizeof(value)) == 1 && value[0] == '1';
 }
 bool AsyncPsoEnabled() noexcept {
-    static const bool enabled = BisectEnabled("NXBOX_D3D12_ASYNC_PSO");
+    static const bool enabled = [] {
+        char value[2]{};
+        if (GetEnvironmentVariableA("NXBOX_D3D12_ASYNC_PSO", value, sizeof(value)) == 1)
+            return value[0] != '0';
+#ifdef NXBOX_UWP
+        return true;
+#else
+        return false;
+#endif
+    }();
     return enabled;
 }
 void Diagnostic(std::string_view message) noexcept {
@@ -337,6 +346,8 @@ void FrameProfile::EndFrame(bool presented) {
                                       "dxc_compiles",
                                       "dxc_cache_misses",
                                       "negative_cache_hits",
+                                      "draws_skipped_pending_pso",
+                                      "dispatches_skipped_pending_pso",
                                       "extent_copies",
                                       "feedback_copies",
                                       "index_conversions",

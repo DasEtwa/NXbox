@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <exception>
@@ -23,6 +24,7 @@
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/memory_manager.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_cache.h"
+#include "video_core/renderer_d3d12/d3d12_pso_diagnostics.h"
 #include "video_core/renderer_d3d12/d3d12_texture_cache.h"
 #include "video_core/renderer_d3d12/d3d12_transform_feedback.h"
 #include "video_core/surface.h"
@@ -165,6 +167,66 @@ DiskBytes Recipe(const Pso::GraphicsPsoState* state, u32 topology,
         bytes.insert(bytes.end(), stage.hlsl.begin(), stage.hlsl.end());
     }
     return bytes;
+}
+size_t Occurrences(std::string_view text, std::string_view token) {
+    size_t count{}, position{};
+    while ((position = text.find(token, position)) != std::string_view::npos) {
+        ++count;
+        position += token.size();
+    }
+    return count;
+}
+void ReportSlowPso(u64 hash, std::chrono::steady_clock::time_point start, ID3D12RootSignature* root,
+                   DescriptorCounts counts, std::span<const StageInput> sources,
+                   std::span<const StageProgram> programs) {
+    const auto elapsed =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+    if (elapsed < 1000 || !BisectEnabled("NXBOX_D3D12_PSO_DIAGNOSTICS"))
+        return;
+    static std::mutex mutex;
+    static std::set<u64> reported;
+    {
+        std::scoped_lock lock{mutex};
+        if (!reported.emplace(hash).second)
+            return;
+    }
+    Diagnostic(fmt::format("D3D12_SLOW_PSO hash={:016x} native_wall_ms={:.3f} "
+                           "root={} root_schema=9 cbv={} srv={} uav={} sampler={}",
+                           hash, elapsed, fmt::ptr(root), counts.cbv, counts.srv, counts.uav,
+                           counts.sampler));
+    try {
+        ShaderCompiler compiler;
+        for (size_t i = 0; i < programs.size(); ++i) {
+            const auto& program = programs[i];
+            const auto assembly = compiler.Disassemble(*program.dxil);
+            const auto source = sources[i].hlsl;
+            const auto local = source.find("uint lmem[");
+            const auto end = local == std::string_view::npos ? local : source.find(';', local);
+            const auto local_array =
+                local == std::string_view::npos
+                    ? std::string_view{"none"}
+                    : source.substr(local, end == std::string_view::npos ? 80 : end - local);
+            Diagnostic(fmt::format(
+                "D3D12_SLOW_PSO_STAGE hash={:016x} stage={} dxil_bytes={} "
+                "hlsl_bytes={} llvm_instruction_count={} llvm_instruction_results={} llvm_calls={} "
+                "llvm_alloca={} "
+                "llvm_gep={} llvm_switch={} hlsl_unroll={} hlsl_loops={} "
+                "texcoord_declarations={} local_array={} lmem_nonliteral_indices={} "
+                "register_array={} register_nonliteral_indices={}",
+                hash, static_cast<u32>(program.stage), program.dxil->size(), source.size(),
+                CountLlvmInstructions(assembly), Occurrences(assembly, " = "),
+                Occurrences(assembly, "call "), Occurrences(assembly, "alloca "),
+                Occurrences(assembly, "getelementptr "), Occurrences(assembly, "switch "),
+                Occurrences(source, "[unroll"), Occurrences(source, "while ("),
+                Occurrences(source, ": TEXCOORD"), local_array,
+                CountNonliteralIndices(source, "lmem["),
+                source.find("nx_regs[255]") != std::string_view::npos,
+                CountNonliteralIndices(source, "nx_regs[")));
+        }
+    } catch (const std::exception& error) {
+        Diagnostic(
+            fmt::format("D3D12_SLOW_PSO hash={:016x} analysis_failed={}", hash, error.what()));
+    }
 }
 class RecipeReader {
 public:
@@ -362,8 +424,9 @@ GraphicsPipeline& PipelineCache::GetGraphics(const Pso::GraphicsPsoState& state,
     try {
         std::vector<StageProgram> programs;
         for (const auto& stage : stages) {
-            programs.push_back({stage.stage, dxc.Compile(stage.hlsl, stage.stage,
-                                                         Pso::HashBytes(&key, sizeof(key)))});
+            programs.push_back(
+                {stage.stage, dxc.Compile(stage.hlsl, stage.stage,
+                                          Pso::HashBytes(&key, sizeof(key)), disk.get())});
         }
         ID3D12RootSignature* signature = GetRootSignature(total);
         const Shader::RuntimeInfo* feedback_info = nullptr;
@@ -377,10 +440,13 @@ GraphicsPipeline& PipelineCache::GetGraphics(const Pso::GraphicsPsoState& state,
             feedback->Configure(*feedback_info);
             stream_output = feedback->Declaration((state.cull_all & 2) == 0);
         }
+        const auto native_start = std::chrono::steady_clock::now();
         auto pipeline = std::make_unique<GraphicsPipeline>(
             context.Device(), signature, state, d3d_topology, programs, disk.get(),
             Pso::HashBytes(&key, sizeof(key)), Recipe(&state, d3d_topology, stages), stream_output,
             &context.Profile());
+        ReportSlowPso(Pso::HashBytes(&key, sizeof(key)), native_start, signature, total, stages,
+                      programs);
         if (feedback_info)
             pipeline->SetTransformFeedback(*feedback_info);
         return *graphics.emplace(key, std::move(pipeline)).first->second;
@@ -400,10 +466,14 @@ ComputePipeline& PipelineCache::GetCompute(const StageInput& stage) {
     }
     context.Profile().Count(FrameCount::PsoCacheMisses);
     const FrameProfile::Scope profile_pso{context.Profile(), FramePhase::Pso};
-    auto dxil = dxc.Compile(stage.hlsl, Shader::Stage::Compute, key);
+    auto dxil = dxc.Compile(stage.hlsl, Shader::Stage::Compute, key, disk.get());
+    const auto native_start = std::chrono::steady_clock::now();
     auto pipeline = std::make_unique<ComputePipeline>(
         context.Device(), GetRootSignature(stage.counts), dxil, disk.get(), key,
         Recipe(nullptr, 0, std::span{&stage, size_t{1}}), &context.Profile());
+    const StageProgram compiled{Shader::Stage::Compute, dxil};
+    ReportSlowPso(key, native_start, pipeline->RootSignature(), stage.counts,
+                  std::span{&stage, size_t{1}}, std::span{&compiled, size_t{1}});
     return *compute.emplace(key, std::move(pipeline)).first->second;
 }
 
@@ -552,6 +622,167 @@ Shader::RuntimeInfo GraphicsRuntime(const Maxwell& regs, const Shader::IR::Progr
 }
 } // namespace
 
+namespace {
+std::shared_ptr<GraphicsPipeline> BuildAsyncGraphics(
+    ID3D12Device* device, DiskPipelineCache* disk, Pso::GraphicsPsoState state, u32 d3d_topology,
+    u32 guest_topology, const Maxwell& regs, const Pso::FramebufferFormats& formats,
+    const std::array<u64, 6>& guest_hashes,
+    std::array<std::unique_ptr<Shader::Environment>, 6>& environments, u64 request_hash) {
+    TranslationState translation{device};
+    std::array<Shader::IR::Program, 6> programs;
+    std::array<std::string, 6> sources;
+    std::array<Shader::RuntimeInfo, 6> runtimes;
+    std::vector<StageInput> stages;
+    for (size_t index = 0; index < programs.size(); ++index) {
+        if (!guest_hashes[index])
+            continue;
+        auto& env = *environments[index];
+        Shader::Maxwell::Flow::CFG cfg{
+            env, translation.flow,
+            static_cast<u32>(env.StartAddress() + sizeof(Shader::ProgramHeader)), index == 0};
+        programs[index] = Shader::Maxwell::TranslateProgram(translation.inst, translation.block,
+                                                            env, cfg, translation.host);
+        if (index == 1 && guest_hashes[0]) {
+            programs[index] =
+                Shader::Maxwell::MergeDualVertexPrograms(programs[0], programs[1], env);
+        }
+    }
+    Shader::Backend::Bindings bindings;
+    const Shader::IR::Program* previous{};
+    for (size_t index = guest_hashes[0] && guest_hashes[1] ? 1 : 0; index < 6; ++index) {
+        if (!guest_hashes[index])
+            continue;
+        auto& program = programs[index];
+        if (index == 0)
+            program.stage = Shader::Stage::VertexB;
+        if (program.stage == Shader::Stage::Fragment) {
+            // Guest shaders may export more colors than this framebuffer binds.
+            // Specialize the DXIL signature together with the PSO attachment key.
+            for (size_t slot = 0; slot < formats.colors.size(); ++slot)
+                program.info.stores_frag_color[slot] &= formats.colors[slot] != 0;
+        }
+        const auto& runtime = runtimes[index] =
+            GraphicsRuntime(regs, program, previous, guest_topology);
+        Shader::Maxwell::ConvertLegacyToGeneric(program, runtime);
+        if (program.stage == Shader::Stage::Fragment &&
+            guest_topology == static_cast<u32>(Maxwell::PrimitiveTopology::Quads) &&
+            regs.provoking_vertex == Maxwell::ProvokingVertex::Last) {
+            for (size_t attribute = 0; attribute < program.info.interpolation.size(); ++attribute) {
+                if (program.info.loads.Generic(attribute) &&
+                    program.info.interpolation[attribute] == Shader::Interpolation::Flat) {
+                    ReportUnsupported("provoking_vertex=Last for flat quads requires "
+                                      "flat-value replication without changing diagonal");
+                    throw std::runtime_error("Unsupported flat quad provoking vertex");
+                }
+            }
+        }
+        sources[index] =
+            Shader::Backend::HLSL::EmitHLSL(translation.profile, runtime, program, bindings);
+        const auto counts = CountStageTables(program.info);
+        stages.push_back({program.stage,
+                          guest_hashes[index],
+                          sources[index],
+                          {counts.cbv, counts.srv, counts.uav, counts.sampler},
+                          &runtime});
+        previous = &program;
+    }
+    std::uint32_t vertex_reads = 0;
+    const auto& vertex_info = programs[guest_hashes[1] ? 1 : 0].info;
+    for (std::size_t i = 0; i < Pso::kNumVertexAttributes; ++i)
+        if (vertex_info.loads.Generic(i))
+            vertex_reads |= std::uint32_t{1} << i;
+    for (size_t index = 0; index < state.attributes.size(); ++index) {
+        if (!(vertex_reads & (u32{1} << index)) || regs.vertex_attrib_format[index].constant)
+            continue;
+        const auto& input = regs.vertex_attrib_format[index];
+        const auto& attribute = state.attributes[index];
+        const u32 size = static_cast<u32>(input.size.Value());
+        const bool component_conversion = attribute.swap_rb || attribute.scaled;
+        if (!attribute.dxgi || (attribute.swap_rb && size == Pso::VSize::B10G11R11)) {
+            ReportUnsupported(
+                fmt::format("vertex_attrib_format[{}] size={:x} type={} bgra={} "
+                            "requires vertex pulling/component conversion native_conversion={}",
+                            index, size, static_cast<u32>(input.type.Value()), input.bgra != 0,
+                            component_conversion));
+            throw std::runtime_error("Unsupported vertex input conversion");
+        }
+    }
+    Pso::ApplyVertexReads(state, vertex_reads);
+
+    thread_local DxcCache compiler;
+    std::vector<StageProgram> compiled;
+    DescriptorCounts total;
+    for (const auto& stage : stages) {
+        compiled.push_back(
+            {stage.stage, compiler.Compile(stage.hlsl, stage.stage, request_hash, disk)});
+        total += stage.counts;
+    }
+    auto signature = CreateRootSignature(device, total);
+    // Stream-output declaration is pure CPU state, independent of Context and buffers.
+    std::vector<D3D12_SO_DECLARATION_ENTRY> entries;
+    std::array<UINT, 4> strides{};
+    const Shader::RuntimeInfo* feedback{};
+    for (const auto& stage : stages)
+        if (stage.runtime && stage.runtime->xfb_count)
+            feedback = stage.runtime;
+    if (feedback) {
+        std::vector<StreamOutputVarying> varyings;
+        for (u32 attribute = 0; attribute < feedback->xfb_count; ++attribute) {
+            const auto& v = feedback->xfb_varyings[attribute];
+            if (v.components)
+                varyings.push_back(
+                    {attribute, v.buffer, v.stream, v.stride, v.offset, v.components});
+        }
+        const auto layout = MakeStreamOutputLayout(varyings);
+        strides = layout.strides;
+        for (const auto& element : layout.elements) {
+            const char* semantic{};
+            u32 index{};
+            if (element.attribute != StreamOutputElement::Gap) {
+                if (element.attribute / 4 == 7) {
+                    semantic = "NX_XFB_POSITION";
+                } else if (element.attribute >= 32 && element.attribute < 160) {
+                    semantic = "TEXCOORD";
+                    index = (element.attribute - 32) / 4;
+                } else {
+                    throw std::runtime_error("Unsupported stream output semantic");
+                }
+            }
+            u32 remaining = element.components;
+            do {
+                const auto components = std::min(remaining, 4U);
+                entries.push_back(
+                    {element.stream, semantic, index, static_cast<BYTE>(element.start_component),
+                     static_cast<BYTE>(components), static_cast<BYTE>(element.buffer)});
+                remaining -= components;
+            } while (remaining);
+        }
+    }
+    UINT stride_count{};
+    for (UINT i = 0; i < strides.size(); ++i)
+        if (strides[i])
+            stride_count = i + 1;
+    const D3D12_STREAM_OUTPUT_DESC stream_output{
+        entries.data(), static_cast<UINT>(entries.size()), strides.data(), stride_count,
+        (state.cull_all & 2) ? D3D12_SO_NO_RASTERIZED_STREAM : 0U};
+    const auto recipe = Recipe(&state, d3d_topology, stages);
+    // The immutable recipe includes source, linkage state and fixed state.
+    const u64 native_key = Pso::HashBytes(recipe.data(), recipe.size(), request_hash);
+    const auto native_start = std::chrono::steady_clock::now();
+    auto pipeline = std::make_shared<GraphicsPipeline>(
+        device, signature, state, d3d_topology, compiled, disk, native_key, recipe, stream_output);
+    ReportSlowPso(native_key, native_start, signature.Get(), total, stages, compiled);
+    if (feedback)
+        pipeline->SetTransformFeedback(*feedback);
+    for (size_t index = 1; index < 6; ++index)
+        if (guest_hashes[index])
+            pipeline->SetStageInfo(index - 1, &programs[index].info);
+    if (guest_hashes[0] && !guest_hashes[1])
+        pipeline->SetStageInfo(0, &programs[0].info);
+    return pipeline;
+}
+} // namespace
+
 IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(
     const Pso::FramebufferFormats& formats) try {
     const FrameProfile::Scope profile_lookup{context.Profile(), FramePhase::PipelineLookup};
@@ -680,6 +911,60 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(
         if (!found->second)
             context.Profile().Count(FrameCount::NegativeCacheHits);
         return found->second;
+    }
+    if (AsyncPsoEnabled()) {
+        try {
+            if (!async)
+                async = std::make_unique<AsyncCache>();
+            const auto entry = async->Lookup(request);
+            if (entry.status == AsyncCache::Status::Ready) {
+                guest_graphics.emplace(request, entry.result->graphics.get());
+                context.Profile().Count(FrameCount::PsoCompiles);
+                return entry.result->graphics.get();
+            }
+            if (entry.status == AsyncCache::Status::Failed) {
+                Diagnostic(fmt::format("D3D12 async graphics request={:016x} failed={}",
+                                       Pso::HashBytes(&request, sizeof(request)), entry.error));
+                guest_graphics.emplace(request, nullptr);
+                context.Profile().Count(FrameCount::NegativeCacheHits);
+                return nullptr;
+            }
+            if (entry.status == AsyncCache::Status::Missing && async->CanSubmit()) {
+                GraphicsEnvironments live;
+                GetGraphicsEnvironments(live, guest_hashes);
+                auto snapshots =
+                    std::make_shared<std::array<std::unique_ptr<Shader::Environment>, 6>>();
+                Shader::Environment* texture_source{};
+                for (size_t index = 0; index < guest_hashes.size(); ++index) {
+                    if (!guest_hashes[index])
+                        continue;
+                    (*snapshots)[index] = live.envs[index].Snapshot(texture_source);
+                    texture_source = (*snapshots)[index].get();
+                }
+                Microsoft::WRL::ComPtr<ID3D12Device> device{context.Device()};
+                async->Submit(
+                    request,
+                    [device, disk_cache = disk.get(), state, d3d_topology = topology.topology,
+                     guest_topology = static_cast<u32>(maxwell3d->draw_manager.draw_state.topology),
+                     regs = maxwell3d->regs, formats, hashes = guest_hashes, snapshots,
+                     hash = Pso::HashBytes(&request, sizeof(request))] {
+                        SetThreadDescription(GetCurrentThread(), L"D3D12 PSO compiler");
+                        auto result = std::make_shared<AsyncResult>();
+                        result->graphics = BuildAsyncGraphics(device.Get(), disk_cache, state,
+                                                              d3d_topology, guest_topology, regs,
+                                                              formats, hashes, *snapshots, hash);
+                        return result;
+                    });
+                context.Profile().Count(FrameCount::GuestPipelineMisses);
+            }
+            context.Profile().Count(FrameCount::DrawsSkippedPendingPso);
+            return nullptr;
+        } catch (const std::exception& error) {
+            Diagnostic(fmt::format("D3D12 async graphics snapshot={:016x} failed={}",
+                                   Pso::HashBytes(&request, sizeof(request)), error.what()));
+            guest_graphics.emplace(request, nullptr);
+            return nullptr;
+        }
     }
     context.Profile().Count(FrameCount::GuestPipelineMisses);
     if (context.Profile().Enabled() &&
@@ -825,6 +1110,76 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() try {
             context.Profile().Count(FrameCount::NegativeCacheHits);
         return found->second;
     }
+    if (AsyncPsoEnabled()) {
+        try {
+            if (!async)
+                async = std::make_unique<AsyncCache>();
+            GraphicsPipelineKey async_key{};
+            async_key.stage_hashes[0] = request;
+            async_key.state.sample_count =
+                0; // Graphics requests always have a nonzero sample count.
+            const auto entry = async->Lookup(async_key);
+            if (entry.status == AsyncCache::Status::Ready) {
+                guest_compute.emplace(request, entry.result->compute.get());
+                context.Profile().Count(FrameCount::PsoCompiles);
+                return entry.result->compute.get();
+            }
+            if (entry.status == AsyncCache::Status::Failed) {
+                Diagnostic(fmt::format("D3D12 async compute request={:016x} failed={}", request,
+                                       entry.error));
+                guest_compute.emplace(request, nullptr);
+                context.Profile().Count(FrameCount::NegativeCacheHits);
+                return nullptr;
+            }
+            if (entry.status == AsyncCache::Status::Missing && async->CanSubmit()) {
+                VideoCommon::ComputeEnvironment live{*kepler_compute, *gpu_memory,
+                                                     kepler_compute->regs.code_loc.Address(),
+                                                     launch.program_start};
+                live.SetCachedSize(shader->size_bytes);
+                std::shared_ptr<Shader::Environment> snapshot{live.Snapshot()};
+                Microsoft::WRL::ComPtr<ID3D12Device> device{context.Device()};
+                async->Submit(async_key, [device, disk_cache = disk.get(), snapshot,
+                                          shader_hash = shader->unique_hash, request] {
+                    SetThreadDescription(GetCurrentThread(), L"D3D12 PSO compiler");
+                    TranslationState translation{device.Get()};
+                    Shader::Maxwell::Flow::CFG cfg{*snapshot, translation.flow,
+                                                   snapshot->StartAddress()};
+                    auto program = Shader::Maxwell::TranslateProgram(
+                        translation.inst, translation.block, *snapshot, cfg, translation.host);
+                    const auto source =
+                        Shader::Backend::HLSL::EmitHLSL(translation.profile, program);
+                    const auto counts = CountStageTables(program.info);
+                    const StageInput stage{Shader::Stage::Compute,
+                                           shader_hash,
+                                           source,
+                                           {counts.cbv, counts.srv, counts.uav, counts.sampler}};
+                    thread_local DxcCache compiler;
+                    auto dxil =
+                        compiler.Compile(source, Shader::Stage::Compute, request, disk_cache);
+                    auto result = std::make_shared<AsyncResult>();
+                    const auto native_start = std::chrono::steady_clock::now();
+                    result->compute = std::make_shared<ComputePipeline>(
+                        device.Get(), CreateRootSignature(device.Get(), stage.counts), dxil,
+                        disk_cache, Pso::HashBytes(source.data(), source.size(), request),
+                        Recipe(nullptr, 0, std::span{&stage, size_t{1}}));
+                    const StageProgram compiled{Shader::Stage::Compute, dxil};
+                    ReportSlowPso(Pso::HashBytes(source.data(), source.size(), request),
+                                  native_start, result->compute->RootSignature(), stage.counts,
+                                  std::span{&stage, size_t{1}}, std::span{&compiled, size_t{1}});
+                    result->compute->info = program.info;
+                    return result;
+                });
+                context.Profile().Count(FrameCount::GuestPipelineMisses);
+            }
+            context.Profile().Count(FrameCount::DispatchesSkippedPendingPso);
+            return nullptr;
+        } catch (const std::exception& error) {
+            Diagnostic(fmt::format("D3D12 async compute snapshot={:016x} failed={}", request,
+                                   error.what()));
+            guest_compute.emplace(request, nullptr);
+            return nullptr;
+        }
+    }
     context.Profile().Count(FrameCount::GuestPipelineMisses);
     try {
         const auto& qmd = kepler_compute->launch_description;
@@ -867,17 +1222,21 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() try {
 
 void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading,
                                       const VideoCore::DiskResourceLoadCallback& callback) {
+    if (async) {
+        async->Stop();
+    }
     if (disk) {
         disk->StopWarmup();
         disk->Flush();
     }
     std::unique_lock lock{pipeline_mutex};
     context.Finish(); // Retire PSOs referenced by the previous title before replacing the maps.
+    async.reset();
     guest_graphics.clear();
     guest_compute.clear();
     graphics.clear();
     compute.clear();
-    const auto identity = DiskPipelineCache::QueryIdentity(context.Device(), {3, 2, 3});
+    const auto identity = DiskPipelineCache::QueryIdentity(context.Device(), {4, 2, 4});
     if (!identity) {
         LOG_WARNING(Render, "D3D12 adapter identity unavailable; disk PSO reuse disabled");
         disk.reset();
@@ -889,6 +1248,14 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
     disk = std::make_unique<DiskPipelineCache>(
         Common::FS::GetEdenPath(Common::FS::EdenPath::ShaderDir), title_id, *identity,
         context.Device());
+    if (AsyncPsoEnabled()) {
+        // Recipes do not contain guest request/runtime metadata. Eager replay would create
+        // duplicate PSOs under the synchronous key and block the loading UI unnecessarily.
+        // Workers lazily reuse validated DXIL/native blobs under their original request key.
+        if (callback)
+            callback(VideoCore::LoadCallbackStage::Complete, 0, 0);
+        return;
+    }
     disk->StartWarmup(
         [this](const DiskPipelineRecord& record, std::stop_token stop) {
             if (stop.stop_requested())
@@ -957,6 +1324,11 @@ void PipelineCache::BindToChannel(s32 id) {
 }
 PipelineCache::~PipelineCache() {
     try {
+        if (async) {
+            async->Stop();
+            context.Finish();
+            async.reset();
+        }
         if (disk) {
             disk->StopWarmup();
             disk->Flush();

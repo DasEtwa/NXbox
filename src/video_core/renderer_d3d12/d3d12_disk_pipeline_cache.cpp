@@ -23,6 +23,8 @@ constexpr std::size_t HeaderSize = 84;
 std::uint64_t PayloadLimit(DiskRecordKind kind) {
     switch (kind) {
     case DiskRecordKind::Dxil:
+    case DiskRecordKind::NativeGraphics:
+    case DiskRecordKind::NativeCompute:
         return 64ULL << 20;
     case DiskRecordKind::Graphics:
     case DiskRecordKind::Compute:
@@ -63,6 +65,10 @@ std::string Filename(DiskRecordKind kind, std::uint64_t key) {
         return Hex(key) + ".compute";
     case DiskRecordKind::Library:
         return "pso.library";
+    case DiskRecordKind::NativeGraphics:
+        return Hex(key) + ".gpso";
+    case DiskRecordKind::NativeCompute:
+        return Hex(key) + ".cpso";
     }
     return {};
 }
@@ -130,6 +136,7 @@ struct DiskPipelineCache::Impl {
     DiskBytes library_input;
     Microsoft::WRL::ComPtr<ID3D12PipelineLibrary> library;
     bool library_dirty{};
+    bool native_supported{};
 #endif
     std::optional<DiskPipelineRecord> Read(const std::filesystem::path& path) {
         std::ifstream file(path, std::ios::binary | std::ios::ate);
@@ -137,7 +144,8 @@ struct DiskPipelineCache::Impl {
             return {};
         const auto size = file.tellg();
         const auto extension = path.extension();
-        const auto limit = extension == ".dxil"      ? PayloadLimit(DiskRecordKind::Dxil)
+        const auto limit = (extension == ".dxil" || extension == ".gpso" || extension == ".cpso")
+                               ? PayloadLimit(DiskRecordKind::Dxil)
                            : extension == ".library" ? PayloadLimit(DiskRecordKind::Library)
                                                      : PayloadLimit(DiskRecordKind::Graphics);
         if (size < static_cast<std::streamoff>(HeaderSize) ||
@@ -364,6 +372,14 @@ DiskPipelineCache::DiskPipelineCache(const std::filesystem::path& local_state,
                Hex(actual->driver_version) + " emitter=" + std::to_string(actual->emitter_version) +
                " dxc=" + std::to_string(actual->dxc_version) +
                " schema=" + std::to_string(actual->schema_version));
+    D3D12_FEATURE_DATA_SHADER_CACHE native_support{};
+    impl->native_supported =
+        SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_SHADER_CACHE, &native_support,
+                                              sizeof(native_support))) &&
+        (native_support.SupportFlags & D3D12_SHADER_CACHE_SUPPORT_SINGLE_PSO) &&
+        !BisectEnabled("NXBOX_D3D12_NO_CACHED_PSO");
+    Diagnostic(impl->native_supported ? "D3D12 native per-PSO blob cache enabled"
+                                      : "D3D12 native per-PSO blob cache unsupported/disabled");
     if (BisectEnabled("NXBOX_D3D12_NO_PSO_LIBRARY")) {
         Diagnostic("D3D12 pipeline library disabled; direct PSO creation");
         return;
@@ -418,7 +434,7 @@ DiskPipelineCache::DiskPipelineCache(const std::filesystem::path& local_state,
 Microsoft::WRL::ComPtr<ID3D12PipelineState> DiskPipelineCache::LoadOrCreateGraphics(
     std::uint64_t key, const D3D12_GRAPHICS_PIPELINE_STATE_DESC& desc,
     std::span<const std::uint8_t> recipe, FrameProfile* profile) {
-    std::scoped_lock lock{impl->mutex};
+    std::unique_lock lock{impl->mutex};
     Microsoft::WRL::ComPtr<ID3D12PipelineState> pso;
     if (!impl->device)
         return pso;
@@ -430,10 +446,40 @@ Microsoft::WRL::ComPtr<ID3D12PipelineState> DiskPipelineCache::LoadOrCreateGraph
         impl->Write({DiskRecordKind::Graphics, key, DiskBytes(recipe.begin(), recipe.end())});
         return pso;
     }
+    auto cached = impl->native_supported
+                      ? impl->Read(impl->directory / Filename(DiskRecordKind::NativeGraphics, key))
+                      : std::nullopt;
+    auto cached_desc = desc;
+    if (cached)
+        cached_desc.CachedPSO = {cached->payload.data(), cached->payload.size()};
+    // Device creation is thread-safe; release the disk/library mutex during driver compilation.
+    lock.unlock();
     if (profile)
         profile->Count(FrameCount::PsoCompiles);
-    CheckPipeline(impl->device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&pso)),
-                  "CreateGraphicsPipelineState", impl->device.Get(), key);
+    auto status = impl->device->CreateGraphicsPipelineState(&cached_desc, IID_PPV_ARGS(&pso));
+    const bool rejected = FAILED(status) && cached;
+    if (rejected) {
+        Check(impl->device->GetDeviceRemovedReason(), "cached PSO rejection", impl->device.Get());
+        Diagnostic("D3D12 native PSO rejected; retry without cached blob key=" + Hex(key));
+        pso.Reset();
+        cached_desc.CachedPSO = {};
+        status = impl->device->CreateGraphicsPipelineState(&cached_desc, IID_PPV_ARGS(&pso));
+    }
+    CheckPipeline(status, "CreateGraphicsPipelineState", impl->device.Get(), key);
+    Microsoft::WRL::ComPtr<ID3DBlob> blob;
+    // This optional API may be unsupported on a console driver. A failure keeps the live PSO.
+    const auto blob_status = impl->native_supported ? pso->GetCachedBlob(&blob) : E_NOTIMPL;
+    lock.lock();
+    if (SUCCEEDED(blob_status) && blob && blob->GetBufferSize()) {
+        const auto* begin = static_cast<const u8*>(blob->GetBufferPointer());
+        impl->Write(
+            {DiskRecordKind::NativeGraphics, key, DiskBytes(begin, begin + blob->GetBufferSize())});
+    } else if (rejected && !impl->directory.empty()) {
+        // Only drop a blob the driver refused; a missing GetCachedBlob keeps the good file.
+        std::error_code error;
+        std::filesystem::remove(impl->directory / Filename(DiskRecordKind::NativeGraphics, key),
+                                error);
+    }
     if (impl->library && CacheSucceeded(impl->library->StorePipeline(name.c_str(), pso.Get()),
                                         "StorePipeline", impl->device.Get(), key))
         impl->library_dirty = true;
@@ -443,7 +489,7 @@ Microsoft::WRL::ComPtr<ID3D12PipelineState> DiskPipelineCache::LoadOrCreateGraph
 Microsoft::WRL::ComPtr<ID3D12PipelineState> DiskPipelineCache::LoadOrCreateCompute(
     std::uint64_t key, const D3D12_COMPUTE_PIPELINE_STATE_DESC& desc,
     std::span<const std::uint8_t> recipe, FrameProfile* profile) {
-    std::scoped_lock lock{impl->mutex};
+    std::unique_lock lock{impl->mutex};
     Microsoft::WRL::ComPtr<ID3D12PipelineState> pso;
     if (!impl->device)
         return pso;
@@ -455,10 +501,40 @@ Microsoft::WRL::ComPtr<ID3D12PipelineState> DiskPipelineCache::LoadOrCreateCompu
         impl->Write({DiskRecordKind::Compute, key, DiskBytes(recipe.begin(), recipe.end())});
         return pso;
     }
+    auto cached = impl->native_supported
+                      ? impl->Read(impl->directory / Filename(DiskRecordKind::NativeCompute, key))
+                      : std::nullopt;
+    auto cached_desc = desc;
+    if (cached)
+        cached_desc.CachedPSO = {cached->payload.data(), cached->payload.size()};
+    // Device creation is thread-safe; release the disk/library mutex during driver compilation.
+    lock.unlock();
     if (profile)
         profile->Count(FrameCount::PsoCompiles);
-    CheckPipeline(impl->device->CreateComputePipelineState(&desc, IID_PPV_ARGS(&pso)),
-                  "CreateComputePipelineState", impl->device.Get(), key);
+    auto status = impl->device->CreateComputePipelineState(&cached_desc, IID_PPV_ARGS(&pso));
+    const bool rejected = FAILED(status) && cached;
+    if (rejected) {
+        Check(impl->device->GetDeviceRemovedReason(), "cached PSO rejection", impl->device.Get());
+        Diagnostic("D3D12 native PSO rejected; retry without cached blob key=" + Hex(key));
+        pso.Reset();
+        cached_desc.CachedPSO = {};
+        status = impl->device->CreateComputePipelineState(&cached_desc, IID_PPV_ARGS(&pso));
+    }
+    CheckPipeline(status, "CreateComputePipelineState", impl->device.Get(), key);
+    Microsoft::WRL::ComPtr<ID3DBlob> blob;
+    // This optional API may be unsupported on a console driver. A failure keeps the live PSO.
+    const auto blob_status = impl->native_supported ? pso->GetCachedBlob(&blob) : E_NOTIMPL;
+    lock.lock();
+    if (SUCCEEDED(blob_status) && blob && blob->GetBufferSize()) {
+        const auto* begin = static_cast<const u8*>(blob->GetBufferPointer());
+        impl->Write(
+            {DiskRecordKind::NativeCompute, key, DiskBytes(begin, begin + blob->GetBufferSize())});
+    } else if (rejected && !impl->directory.empty()) {
+        // Only drop a blob the driver refused; a missing GetCachedBlob keeps the good file.
+        std::error_code error;
+        std::filesystem::remove(impl->directory / Filename(DiskRecordKind::NativeCompute, key),
+                                error);
+    }
     if (impl->library && CacheSucceeded(impl->library->StorePipeline(name.c_str(), pso.Get()),
                                         "StorePipeline", impl->device.Get(), key))
         impl->library_dirty = true;

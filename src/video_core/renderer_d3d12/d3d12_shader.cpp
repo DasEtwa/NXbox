@@ -79,6 +79,21 @@ ShaderCompiler::ShaderCompiler() : impl{std::make_unique<Impl>()} {
           "DxcCreateInstance");
 }
 ShaderCompiler::~ShaderCompiler() = default;
+std::string ShaderCompiler::Disassemble(std::span<const u8> dxil) {
+    DxcBuffer buffer{dxil.data(), dxil.size(), 0};
+    ComPtr<DxcOperationResult> result;
+    Check(impl->compiler->Disassemble(&buffer, ResultInterface,
+                                      reinterpret_cast<void**>(result.GetAddressOf())),
+          "DXC Disassemble");
+    HRESULT status{};
+    Check(result->GetStatus(&status), "DXC disassembly status");
+    Check(status, "DXC disassembly");
+    ComPtr<DxcBlob> blob;
+    Check(result->GetResult(&blob), "DXC disassembly result");
+    return blob ? std::string{static_cast<const char*>(blob->GetBufferPointer()),
+                              blob->GetBufferSize()}
+                : std::string{};
+}
 std::vector<u8> ShaderCompiler::Compile(std::string_view source, const wchar_t* entry,
                                         const wchar_t* target, u64 pipeline_hash) {
     if (!pipeline_hash)

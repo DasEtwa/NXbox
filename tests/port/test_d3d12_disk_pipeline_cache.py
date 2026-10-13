@@ -27,7 +27,8 @@ int main(int argc, char** argv) {
     const auto decoded = DeserializeDiskRecord(encoded, identity);
     assert(decoded && decoded->payload == record.payload && decoded->key == record.key);
     for (auto kind : {DiskRecordKind::Dxil, DiskRecordKind::Graphics,
-                      DiskRecordKind::Compute, DiskRecordKind::Library}) {
+                      DiskRecordKind::Compute, DiskRecordKind::Library,
+                      DiskRecordKind::NativeGraphics, DiskRecordKind::NativeCompute}) {
         auto item = record; item.kind = kind; if (kind == DiskRecordKind::Library) item.key = 0;
         assert(DeserializeDiskRecord(SerializeDiskRecord(identity, item), identity)->kind == kind);
     }

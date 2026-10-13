@@ -5,10 +5,13 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <memory>
 #include <optional>
+#include <stdexcept>
+#include <unordered_map>
 #include <utility>
 
 #include "common/assert.h"
@@ -471,6 +474,153 @@ bool ComputeEnvironment::IsTexturePixelFormatInteger(u32 handle) {
 
 u32 ComputeEnvironment::ReadViewportTransformState() {
     return viewport_transform_state;
+}
+
+// Immutable compilation inputs: no guest memory, engine or command-list pointers survive.
+class FrozenEnvironment final : public Shader::Environment {
+public:
+    explicit FrozenEnvironment(GenericEnvironment& source) {
+        sph = source.SPH();
+        gp_passthrough_mask = source.GpPassthroughMask();
+        stage = source.ShaderStage();
+        start_address = source.StartAddress();
+        is_proprietary_driver = source.IsProprietaryDriver();
+        local = source.LocalMemorySize();
+        shared = source.SharedMemorySize();
+        bound = source.TextureBoundBuffer();
+        workgroup = source.WorkgroupSize();
+        viewport = source.ReadViewportTransformState();
+        hle = source.HasHLEMacroState();
+        code.resize(source.CachedSizeWords());
+        for (size_t i = 0; i < code.size(); ++i)
+            code[i] = source.ReadInstruction(start_address + static_cast<u32>(i * sizeof(u64)));
+    }
+    u64 ReadInstruction(u32 address) override {
+        if (address < start_address || (address - start_address) % sizeof(u64))
+            throw std::runtime_error("Unaligned/out-of-range frozen shader instruction");
+        return code.at((address - start_address) / sizeof(u64));
+    }
+    u32 ReadCbufValue(u32 bank, u32 offset) override {
+        const auto& bytes = cbufs.at(bank);
+        u32 value{};
+        if (offset < bytes.size()) {
+            if (bytes.size() - offset < sizeof(value))
+                throw std::runtime_error("Truncated frozen constant buffer word");
+            std::memcpy(&value, bytes.data() + offset, sizeof(value));
+        }
+        return value;
+    }
+    Shader::TextureType ReadTextureType(u32 handle) override {
+        return ConvertTextureType(textures->at(Tegra::Texture::TexturePair(handle, linked).first));
+    }
+    Shader::TexturePixelFormat ReadTexturePixelFormat(u32 handle) override {
+        return ConvertTexturePixelFormat(
+            textures->at(Tegra::Texture::TexturePair(handle, linked).first));
+    }
+    bool IsTexturePixelFormatInteger(u32 handle) override {
+        return VideoCore::Surface::IsPixelFormatInteger(
+            static_cast<VideoCore::Surface::PixelFormat>(ReadTexturePixelFormat(handle)));
+    }
+    u32 ReadViewportTransformState() override {
+        return viewport;
+    }
+    u32 TextureBoundBuffer() const override {
+        return bound;
+    }
+    u32 LocalMemorySize() const override {
+        return local;
+    }
+    u32 SharedMemorySize() const override {
+        return shared;
+    }
+    std::array<u32, 3> WorkgroupSize() const override {
+        return workgroup;
+    }
+    bool HasHLEMacroState() const override {
+        return hle;
+    }
+    std::optional<Shader::ReplaceConstant> GetReplaceConstBuffer(u32 bank, u32 offset) override {
+        const auto it = replacements.find(MakeCbufKey(bank, offset));
+        return it == replacements.end() ? std::nullopt : std::optional{it->second};
+    }
+    void Dump(u64, u64) override {}
+    void CopyTextures(Tegra::MemoryManager& memory, GPUVAddr address, u32 limit, bool linked_) {
+        // Hardware TIC indices are 20 bits. Reject corrupt limits before allocation.
+        if (limit >= (1U << 20))
+            throw std::runtime_error("Frozen texture descriptor limit exceeds hardware range");
+        linked = linked_;
+        textures =
+            std::make_shared<std::vector<Tegra::Texture::TICEntry>>(static_cast<size_t>(limit) + 1);
+        memory.ReadBlock(address, textures->data(),
+                         textures->size() * sizeof(Tegra::Texture::TICEntry));
+    }
+    void CopyCbuf(Tegra::MemoryManager& memory, u32 bank, GPUVAddr address, u32 size) {
+        if (size > 65536)
+            throw std::runtime_error("Frozen constant buffer exceeds hardware range");
+        auto& bytes = cbufs.at(bank);
+        bytes.resize(size);
+        if (size)
+            memory.ReadBlock(address, bytes.data(), size);
+    }
+    std::unordered_map<u64, Shader::ReplaceConstant> replacements;
+
+private:
+    std::vector<u64> code;
+    std::array<std::vector<u8>, 18> cbufs;
+
+public:
+    std::shared_ptr<std::vector<Tegra::Texture::TICEntry>> textures;
+    bool linked{};
+
+private:
+    std::array<u32, 3> workgroup{};
+    u32 local{}, shared{}, bound{}, viewport{};
+    bool hle{};
+};
+
+std::unique_ptr<Shader::Environment> GraphicsEnvironment::Snapshot(
+    Shader::Environment* texture_source) {
+    auto result = std::make_unique<FrozenEnvironment>(*this);
+    const auto& buffers = maxwell3d->state.shader_stages[stage_index].const_buffers;
+    for (u32 bank = 0; bank < buffers.size(); ++bank) {
+        const auto& buffer = buffers[bank];
+        if (buffer.enabled)
+            result->CopyCbuf(*gpu_memory, bank, buffer.address, buffer.size);
+    }
+    const auto& regs = maxwell3d->regs;
+    if (texture_source) {
+        // Only Snapshot() results are accepted here; the caller owns their concrete type.
+        const auto& frozen = static_cast<const FrozenEnvironment&>(*texture_source);
+        result->textures = frozen.textures;
+        result->linked = frozen.linked;
+    } else {
+        result->CopyTextures(*gpu_memory, regs.tex_header.Address(), regs.tex_header.limit,
+                             regs.sampler_binding == Maxwell::SamplerBinding::ViaHeaderBinding);
+    }
+    if (has_hle_engine_state) {
+        for (const auto& [key, attribute] : maxwell3d->replace_table) {
+            (void)attribute;
+            const auto replacement =
+                GetReplaceConstBuffer(static_cast<u32>(key >> 32), static_cast<u32>(key));
+            if (replacement)
+                result->replacements.emplace(key, *replacement);
+        }
+    }
+    return result;
+}
+
+std::unique_ptr<Shader::Environment> ComputeEnvironment::Snapshot() {
+    auto result = std::make_unique<FrozenEnvironment>(*this);
+    const auto& launch = kepler_compute->launch_description;
+    for (u32 bank = 0; bank < launch.const_buffer_config.size(); ++bank) {
+        if ((launch.const_buffer_enable_mask.Value() >> bank) & 1) {
+            const auto& buffer = launch.const_buffer_config[bank];
+            result->CopyCbuf(*gpu_memory, bank, buffer.Address(), buffer.size);
+        }
+    }
+    const auto& regs = kepler_compute->regs;
+    result->CopyTextures(*gpu_memory, regs.tic.Address(), regs.tic.limit, launch.linked_tsc != 0);
+    return result;
 }
 
 void FileEnvironment::Deserialize(std::ifstream& file) {

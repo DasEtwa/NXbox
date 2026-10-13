@@ -124,6 +124,7 @@ class StallProfileTests(unittest.TestCase):
                     str(driver),
                     str(BACKEND / "d3d12_index_converter.cpp"),
                     str(BACKEND / "d3d12_dxc.cpp"),
+                    str(BACKEND / "d3d12_disk_pipeline_cache.cpp"),
                     "-o",
                     str(binary),
                 ],

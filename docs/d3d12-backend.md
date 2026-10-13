@@ -412,3 +412,45 @@ Host regressions exercise throwing image construction, slot reuse, the macro
 callback transport, sample-sensitive and depth-only PSO keys, and HLSL MSAA fetches
 for 2D/array color/depth textures. Console rendering and packed depth/stencil
 staging parity still require hardware validation. OpenGL remains the default.
+
+### Asynchronous guest PSOs and per-pipeline blobs
+
+`NXBOX_D3D12_ASYNC_PSO` defaults to enabled on UWP and disabled on desktop.
+Set it to `0` for the original synchronous path. One two-thread pool serves guest
+both graphics and compute compilation, with at most four outstanding jobs. The
+GPU thread snapshots guest instructions, constant buffers, TIC descriptors and
+register specialization; workers own these copies through translation, HLSL,
+DXC and native PSO creation. Active graphics stages share the captured TIC table.
+The requesting thread polls a mutex-protected result map and skips pending work;
+`draws_skipped_pending_pso` and `dispatches_skipped_pending_pso` expose this cost.
+Failed requests are negatively cached until a title reload. Shutdown cancels
+queued jobs, joins active driver calls, and retires GPU references before releasing
+results. A driver call already running cannot be safely interrupted.
+
+Async mode lazily reuses disk blobs instead of replaying synchronous PSO recipes
+at load time; recipes do not carry the guest request/runtime metadata needed to
+publish ready guest pipelines. Worker compilers are thread-local. Frame CPU phases
+still describe the GPU thread, so async translation/DXC CPU time does not appear
+there; `pso_compiles` counts completed async results when first published.
+
+Native pipeline libraries remain disabled on Xbox: earlier console evidence showed
+that even creating an empty library removed the device. Per-pipeline persistence
+uses the separate `D3D12_SHADER_CACHE_SUPPORT_SINGLE_PSO` capability,
+`ID3D12PipelineState::GetCachedBlob` and `CachedPSO`. Adapter/LUID/driver, emitter,
+DXC and schema identity plus checksums protect `.gpso`/`.cpso` files beside the DXIL
+cache in the title's LocalState shader directory. A rejected blob is retried once
+without cached data while the device is healthy. Unsupported blob retrieval leaves
+the successfully created live PSO intact. `NXBOX_D3D12_NO_CACHED_PSO=1` disables
+this alternative independently of pipeline libraries. Depth-bounds/independent
+stencil PSO streams still use direct creation and do not persist native blobs.
+Public Windows API support does not establish Xbox driver behavior; first/second
+launch console measurements remain necessary.
+
+`NXBOX_D3D12_PSO_DIAGNOSTICS=1` logs each pipeline taking at least one second once,
+including its hash, native wall time, root signature/schema and descriptor counts,
+per-stage DXIL/HLSL sizes, LLVM instruction count, allocation/indexing/switch counts,
+explicit unroll/loop markers, TEXCOORD declaration count and local/register arrays.
+LLVM counts describe the DXIL program rather than native GPU ISA. The counts expose
+possible causes without claiming that a GEP necessarily spills or that each
+TEXCOORD declaration is a live hardware interpolant. Guest structured loops now
+carry `[loop]` to prevent speculative unrolling in DXC/driver lowering.

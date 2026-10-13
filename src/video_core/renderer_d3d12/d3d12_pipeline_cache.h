@@ -12,6 +12,7 @@
 #include <unordered_map>
 
 #include "shader_recompiler/stage.h"
+#include "video_core/renderer_d3d12/d3d12_async_pso.h"
 #include "video_core/renderer_d3d12/d3d12_compute_pipeline.h"
 #include "video_core/renderer_d3d12/d3d12_context.h"
 #include "video_core/renderer_d3d12/d3d12_dxc.h"
@@ -54,7 +55,7 @@ struct GraphicsPipelineKeyHash {
 // input and topology). Actual framebuffer formats are applied by the draw path.
 void FillGraphicsState(Tegra::Engines::Maxwell3D& maxwell3d, Pso::GraphicsPsoState& state);
 
-// Pipelines are built synchronously on first use and live as long as the cache.
+// Request snapshots belong to the GPU thread; asynchronous jobs own their compilation inputs.
 class PipelineCache final : public IPipelineCache, public VideoCommon::ShaderCache {
 public:
     PipelineCache(Context& context_, Tegra::MaxwellDeviceMemoryManager& memory)
@@ -86,6 +87,13 @@ private:
         }
     };
 
+    struct AsyncResult {
+        std::shared_ptr<GraphicsPipeline> graphics;
+        std::shared_ptr<ComputePipeline> compute;
+    };
+    using AsyncCache =
+        AsyncPsoWorkerPool<GraphicsPipelineKey, AsyncResult, GraphicsPipelineKeyHash>;
+    std::unique_ptr<AsyncCache> async;
     std::recursive_mutex pipeline_mutex;
     Context& context;
     std::array<u64, 6> guest_hashes{};

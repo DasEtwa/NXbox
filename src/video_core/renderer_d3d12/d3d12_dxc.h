@@ -22,11 +22,13 @@ const wchar_t* StageTarget(Shader::Stage stage);
 // HLSL -> DXIL through the packaged dxcompiler.dll (ShaderCompiler, entry "main"), memoized by
 // a 64-bit hash of (target, source); the source is kept to rule out hash collisions.
 class FrameProfile;
+class DiskPipelineCache;
 class DxcCache {
 public:
     explicit DxcCache(FrameProfile* profile_ = nullptr) : profile{profile_} {}
     // Throws (via Check) on a compile/validation error; the DXC log goes to LOG_WARNING.
-    DxilBlob Compile(std::string_view hlsl, Shader::Stage stage, u64 pipeline_hash = 0);
+    DxilBlob Compile(std::string_view hlsl, Shader::Stage stage, u64 pipeline_hash = 0,
+                     DiskPipelineCache* disk = nullptr);
     size_t Size() const {
         return entries.size();
     }
