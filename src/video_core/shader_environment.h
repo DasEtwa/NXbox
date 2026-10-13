@@ -120,6 +120,8 @@ public:
 
     ~GraphicsEnvironment() override = default;
 
+    std::unique_ptr<Shader::Environment> Snapshot(Shader::Environment* texture_source = nullptr);
+
     u32 ReadCbufValue(u32 cbuf_index, u32 cbuf_offset) override;
 
     Shader::TextureType ReadTextureType(u32 handle) override;
@@ -145,6 +147,8 @@ public:
                                 u32 start_address_);
 
     ~ComputeEnvironment() override = default;
+
+    std::unique_ptr<Shader::Environment> Snapshot();
 
     u32 ReadCbufValue(u32 cbuf_index, u32 cbuf_offset) override;
 

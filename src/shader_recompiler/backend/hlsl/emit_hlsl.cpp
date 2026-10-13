@@ -118,7 +118,8 @@ void EmitCode(EmitContext& ctx, const IR::Program& program) {
             ctx.Add("}}");
             break;
         case Node::Type::Loop:
-            ctx.Add("while (true) {{");
+            // Guest loops must stay loops: driver unrolling can explode native PSO compilation.
+            ctx.Add("[loop] while (true) {{");
             break;
         case Node::Type::Repeat:
             ctx.Add("if (--loop{} < 0 || !({})) break; }}", loop_index++,

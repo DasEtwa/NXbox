@@ -28,7 +28,14 @@ struct DiskCacheIdentity {
     std::uint64_t adapter_luid{}, driver_version{};
     bool operator==(const DiskCacheIdentity&) const = default;
 };
-enum class DiskRecordKind : std::uint32_t { Dxil = 1, Graphics = 2, Compute = 3, Library = 4 };
+enum class DiskRecordKind : std::uint32_t {
+    Dxil = 1,
+    Graphics = 2,
+    Compute = 3,
+    Library = 4,
+    NativeGraphics = 5,
+    NativeCompute = 6
+};
 struct DiskPipelineRecord {
     DiskRecordKind kind{};
     std::uint64_t key{};

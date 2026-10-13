@@ -56,6 +56,8 @@ enum class FrameCount : size_t {
     DxcCompiles,
     DxcCacheMisses,
     NegativeCacheHits,
+    DrawsSkippedPendingPso,
+    DispatchesSkippedPendingPso,
     ExtentCopies,
     FeedbackCopies,
     IndexConversions,

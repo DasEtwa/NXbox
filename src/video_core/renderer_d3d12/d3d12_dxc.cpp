@@ -2,6 +2,7 @@
 #include <optional>
 #include <stdexcept>
 #include "video_core/renderer_d3d12/d3d12_context.h"
+#include "video_core/renderer_d3d12/d3d12_disk_pipeline_cache.h"
 #include "video_core/renderer_d3d12/d3d12_dxc.h"
 #include "video_core/renderer_d3d12/d3d12_pso_tables.h"
 
@@ -26,7 +27,8 @@ const wchar_t* StageTarget(Shader::Stage stage) {
     }
 }
 
-DxilBlob DxcCache::Compile(std::string_view hlsl, Shader::Stage stage, u64 pipeline_hash) {
+DxilBlob DxcCache::Compile(std::string_view hlsl, Shader::Stage stage, u64 pipeline_hash,
+                           DiskPipelineCache* disk) {
     const wchar_t* target = StageTarget(stage);
     u64 hash = Pso::HashBytes(hlsl.data(), hlsl.size());
     const auto stage_value = static_cast<u32>(stage);
@@ -42,6 +44,13 @@ DxilBlob DxcCache::Compile(std::string_view hlsl, Shader::Stage stage, u64 pipel
             return it->second.dxil;
         }
     }
+    if (disk) {
+        if (auto cached = disk->FindDxil(hash)) {
+            auto dxil = std::make_shared<const std::vector<u8>>(std::move(*cached));
+            entries.emplace(hash, Entry{std::string{hlsl}, target, dxil, {}});
+            return dxil;
+        }
+    }
     std::optional<FrameProfile::Scope> scope;
     if (profile) {
         scope.emplace(*profile, FramePhase::DxcCompile);
@@ -51,6 +60,8 @@ DxilBlob DxcCache::Compile(std::string_view hlsl, Shader::Stage stage, u64 pipel
     try {
         auto dxil = std::make_shared<const std::vector<u8>>(
             compiler.Compile(hlsl, L"main", target, pipeline_hash));
+        if (disk)
+            disk->StoreDxil(hash, *dxil);
         entries.emplace(hash, Entry{std::string{hlsl}, target, dxil, {}});
         return dxil;
     } catch (...) {
