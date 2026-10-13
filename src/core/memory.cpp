@@ -738,7 +738,7 @@ struct Memory::Impl {
         }
         if (auto const ptr = GetPointerImpl(
                 addr,
-                [this, addr]() {
+                [&]() {
 #ifdef NXBOX_UWP
                     LogUnmappedAccess(addr, "read", sizeof(T));
 #endif
@@ -778,7 +778,7 @@ struct Memory::Impl {
         }
         if (auto const ptr = GetPointerImpl(
                 addr,
-                [this, addr, data]() {
+                [&]() {
 #ifdef NXBOX_UWP
                     LogUnmappedAccess(addr, "write", sizeof(T));
 #endif
@@ -812,7 +812,7 @@ struct Memory::Impl {
         }
         u8* const ptr = GetPointerImpl(
             GetInteger(vaddr),
-            [this, vaddr, data]() {
+            [&]() {
 #ifdef NXBOX_UWP
                 LogUnmappedAccess(GetInteger(vaddr), "exclusive_write", sizeof(data));
 #endif
@@ -832,7 +832,7 @@ struct Memory::Impl {
         }
         u8* const ptr = GetPointerImpl(
             GetInteger(vaddr),
-            [this, vaddr, data]() {
+            [&]() {
 #ifdef NXBOX_UWP
                 LogUnmappedAccess(GetInteger(vaddr), "exclusive_write", sizeof(data));
 #endif
