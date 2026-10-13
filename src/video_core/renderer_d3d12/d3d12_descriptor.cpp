@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include <array>
 #include "video_core/renderer_d3d12/d3d12_descriptor.h"
 
 #include <algorithm>
@@ -171,6 +172,10 @@ void D3D12DescriptorAllocator::WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE type,
             throw std::invalid_argument("D3D12 unknown cached descriptor kind");
         }
         context.Profile().Count(FrameCount::DescriptorWrites);
+        constexpr std::array by_kind{FrameCount::DescriptorWritesCbv, FrameCount::DescriptorWritesSrv,
+                                     FrameCount::DescriptorWritesUav,
+                                     FrameCount::DescriptorWritesSampler};
+        context.Profile().Count(by_kind[kind]);
         found = cache.entries.emplace(key, CachedDescriptor{handle, resource}).first;
     }
     context.Device()->CopyDescriptorsSimple(1, destination, found->second.handle, type);
