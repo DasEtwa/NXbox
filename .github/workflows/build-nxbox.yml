@@ -25,8 +25,32 @@ jobs:
       # ~1700 objects with its own HTTP request, which took ~7 minutes even at 99.9% hits.
       SCCACHE_DIR: ${{ github.workspace }}\.cache\sccache
       SCCACHE_CACHE_SIZE: 4G
+      NXBOX_OPENSSL_CACHE: ${{ github.workspace }}\.cache\openssl-uwp
     steps:
       - uses: actions/checkout@v4
+      - name: Identify OpenSSL package and UWP toolchain
+        id: openssl-key
+        shell: cmd
+        run: |
+          set "PATH=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer;%PATH%"
+          for /f "usebackq delims=" %%i in (`vswhere -latest -products * -property installationPath`) do set "NXBOX_VSROOT=%%i"
+          if not defined NXBOX_VSROOT exit /b 1
+          call "%NXBOX_VSROOT%\VC\Auxiliary\Build\vcvarsall.bat" x64 uwp
+          if errorlevel 1 exit /b 1
+          echo msvc=%VCToolsVersion%>>"%GITHUB_OUTPUT%"
+          echo sdk=%WindowsSDKVersion:\=%>>"%GITHUB_OUTPUT%"
+          python -c "import json, os; p = json.load(open('cpmfile.json'))['openssl']; f = open(os.environ['GITHUB_OUTPUT'], 'a'); f.write('version=' + p['version'] + '\nhash=' + p['hash'] + '\n'); f.close()"
+      - name: Cache built OpenSSL for UWP
+        uses: actions/cache@v4
+        id: openssl-cache
+        with:
+          path: .cache/openssl-uwp
+          key:
+            uwp-openssl-v1-${{ runner.os }}-x64-MD-Release-msvc-${{ steps.openssl-key.outputs.msvc
+            }}-sdk-${{ steps.openssl-key.outputs.sdk }}-${{ steps.openssl-key.outputs.version }}-${{
+            steps.openssl-key.outputs.hash }}-${{ hashFiles('.patch/openssl/**',
+            '.patch/openssl-cmake/**', 'CMakeLists.txt', 'CMakePresets.json',
+            'tools/nxbox/build-uwp.cmd', 'cpmfile.json') }}
       - uses: actions/cache/restore@v4
         id: cpm-cache
         with:
@@ -48,6 +72,9 @@ jobs:
       - name: Configure and build
         shell: cmd
         run: tools\nxbox\build-uwp.cmd
+      - name: Stage OpenSSL headers and libraries for caching
+        if: steps.openssl-cache.outputs.cache-hit != 'true'
+        run: cmake --install build-uwp --prefix "$env:NXBOX_OPENSSL_CACHE" --component nxbox-openssl
       - uses: actions/cache/save@v4
         if: always() && steps.cpm-cache.outputs.cache-hit != 'true'
         with:
