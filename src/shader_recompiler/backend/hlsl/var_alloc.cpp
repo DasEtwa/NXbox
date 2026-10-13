@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include <cstdlib>
 #include <bit>
 #include <fmt/format.h>
 #include "shader_recompiler/backend/hlsl/var_alloc.h"
@@ -92,6 +93,18 @@ std::string VarAlloc::Consume(const IR::Value& value) {
 std::string VarAlloc::GetHlslType(IR::Type type) const {
     return GetHlslType(RegType(type));
 }
+namespace {
+// Diagnostic: BotW compute shaders carry hundreds of precise values and stall the Xbox
+// driver's DXIL compiler; NXBOX_HLSL_NO_PRECISE=1 drops the qualifier to test that.
+bool NoPrecise() {
+    static const bool value = [] {
+        const char* env = std::getenv("NXBOX_HLSL_NO_PRECISE");
+        return env && env[0] == '1';
+    }();
+    return value;
+}
+} // namespace
+
 std::string VarAlloc::GetHlslType(HlslVarType type) const {
     switch (type) {
     case HlslVarType::U1:
@@ -103,11 +116,11 @@ std::string VarAlloc::GetHlslType(HlslVarType type) const {
     case HlslVarType::F32:
         return "float";
     case HlslVarType::PrecF32:
-        return "precise float";
+        return NoPrecise() ? "float" : "precise float";
     case HlslVarType::F64:
         return "double";
     case HlslVarType::PrecF64:
-        return "precise double";
+        return NoPrecise() ? "double" : "precise double";
     case HlslVarType::F64x2:
         return "double2";
     case HlslVarType::F64x3:
