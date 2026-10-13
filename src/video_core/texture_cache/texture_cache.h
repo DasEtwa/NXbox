@@ -744,7 +744,35 @@ void TextureCache<P>::DumpPassRenderTargets() {
                                PassDump::FormatName(info.format),
                                slot_images[id].aliased_images.size());
     }
-    pass_dump_sampled.clear();
+    const std::vector<ImageId> sampled_ids = std::exchange(pass_dump_sampled, {});
+    // Tightly packed copy of one mip level, layer 0. No format conversion.
+    const auto download = [&](Image& image, s32 level, const std::filesystem::path& path) {
+        const auto& info = image.info;
+        const u32 width = (std::max)(info.size.width >> level, 1u);
+        const u32 height = (std::max)(info.size.height >> level, 1u);
+        const Extent2D block{VideoCore::Surface::DefaultBlockWidth(info.format),
+                             VideoCore::Surface::DefaultBlockHeight(info.format)};
+        const size_t bytes = static_cast<size_t>((width + block.width - 1) / block.width) *
+                             ((height + block.height - 1) / block.height) *
+                             VideoCore::Surface::BytesPerBlock(info.format);
+        const std::array copies{BufferImageCopy{
+            .buffer_offset = 0,
+            .buffer_size = bytes,
+            .buffer_row_length = width,
+            .buffer_image_height = height,
+            .image_subresource = {.base_level = level, .base_layer = 0, .num_layers = 1},
+            .image_offset = {0, 0, 0},
+            .image_extent = {width, height, 1},
+        }};
+        auto map = runtime.DownloadStagingBuffer(bytes);
+        image.DownloadMemory(map, copies);
+        runtime.Finish();
+        std::ofstream output{path, std::ios::binary};
+        output.exceptions(std::ios::failbit | std::ios::badbit);
+        output.write(reinterpret_cast<const char*>(map.mapped_span.data()),
+                     static_cast<std::streamsize>(bytes));
+        return bytes;
+    };
     try {
         std::filesystem::create_directories(directory);
         std::ofstream manifest{directory / "manifest.jsonl", std::ios::app};
@@ -759,29 +787,7 @@ void TextureCache<P>::DumpPassRenderTargets() {
             const std::string file = fmt::format("pass_{:04}_c{}.raw", seq, slot);
             size_t bytes = 0;
             if (info.num_samples <= 1) {
-                // A tightly packed copy, including for pitched guest images. No format conversion.
-                const Extent2D block{VideoCore::Surface::DefaultBlockWidth(info.format),
-                                     VideoCore::Surface::DefaultBlockHeight(info.format)};
-                bytes = static_cast<size_t>((info.size.width + block.width - 1) / block.width) *
-                        ((info.size.height + block.height - 1) / block.height) *
-                        VideoCore::Surface::BytesPerBlock(info.format);
-                const std::array copies{BufferImageCopy{
-                    .buffer_offset = 0,
-                    .buffer_size = bytes,
-                    .buffer_row_length = info.size.width,
-                    .buffer_image_height = info.size.height,
-                    .image_subresource = {.base_level = 0, .base_layer = 0, .num_layers = 1},
-                    .image_offset = {0, 0, 0},
-                    .image_extent = {info.size.width, info.size.height, 1},
-                }};
-                auto map = runtime.DownloadStagingBuffer(bytes);
-                image.DownloadMemory(map, copies);
-                runtime.Finish();
-                std::ofstream output{directory / file, std::ios::binary};
-                output.exceptions(std::ios::failbit | std::ios::badbit);
-                output.write(reinterpret_cast<const char*>(map.mapped_span.data()),
-                             static_cast<std::streamsize>(bytes));
-                output.close();
+                bytes = download(image, 0, directory / file);
             }
             manifest << fmt::format(
                 "{{\"seq\":{},\"slot\":{},\"gpu_addr\":{},\"width\":{},\"height\":{},"
@@ -791,6 +797,27 @@ void TextureCache<P>::DumpPassRenderTargets() {
                 info.num_samples > 1 ? ",\"skipped\":\"msaa\"" : "");
         }
         manifest.close();
+        // Every mip of the uncompressed textures the pass sampled, as they stand after it.
+        std::ofstream sampled_manifest{directory / "sampled.jsonl", std::ios::app};
+        sampled_manifest.exceptions(std::ios::failbit | std::ios::badbit);
+        for (size_t index = 0; index < sampled_ids.size(); ++index) {
+            Image& image = slot_images[sampled_ids[index]];
+            const auto& info = image.info;
+            if (info.num_samples > 1 || info.type != ImageType::e2D ||
+                VideoCore::Surface::DefaultBlockWidth(info.format) != 1) {
+                continue;
+            }
+            for (s32 level = 0; level < info.resources.levels; ++level) {
+                const std::string file = fmt::format("pass_{:04}_t{}_m{}.raw", seq, index, level);
+                const size_t bytes = download(image, level, directory / file);
+                sampled_manifest << fmt::format(
+                    "{{\"seq\":{},\"texture\":{},\"level\":{},\"gpu_addr\":{},\"width\":{},"
+                    "\"height\":{},\"format\":\"{}\",\"bytes\":{},\"file\":\"{}\"}}\n",
+                    seq, index, level, image.gpu_addr, (std::max)(info.size.width >> level, 1u),
+                    (std::max)(info.size.height >> level, 1u), PassDump::FormatName(info.format),
+                    bytes, file);
+            }
+        }
     } catch (const std::exception& error) {
         LOG_ERROR(Render, "Pass dump seq={} failed: {}", seq, error.what());
     }
