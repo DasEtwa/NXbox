@@ -628,6 +628,13 @@ std::shared_ptr<GraphicsPipeline> BuildAsyncGraphics(
     u32 guest_topology, const Maxwell& regs, const Pso::FramebufferFormats& formats,
     const std::array<u64, 6>& guest_hashes,
     std::array<std::unique_ptr<Shader::Environment>, 6>& environments, u64 request_hash) {
+    // Async jobs that never return jam the worker pool; this shows the phase each one is stuck in.
+    static const bool trace = BisectEnabled("NXBOX_D3D12_PSO_TRACE");
+    const auto mark = [&](std::string_view phase) {
+        if (trace)
+            Diagnostic(fmt::format("PSO_TRACE request={:016x} {}", request_hash, phase));
+    };
+    mark("start");
     TranslationState translation{device};
     std::array<Shader::IR::Program, 6> programs;
     std::array<std::string, 6> sources;
@@ -647,6 +654,7 @@ std::shared_ptr<GraphicsPipeline> BuildAsyncGraphics(
                 Shader::Maxwell::MergeDualVertexPrograms(programs[0], programs[1], env);
         }
     }
+    mark("translated");
     Shader::Backend::Bindings bindings;
     const Shader::IR::Program* previous{};
     for (size_t index = guest_hashes[0] && guest_hashes[1] ? 1 : 0; index < 6; ++index) {
@@ -713,10 +721,12 @@ std::shared_ptr<GraphicsPipeline> BuildAsyncGraphics(
     std::vector<StageProgram> compiled;
     DescriptorCounts total;
     for (const auto& stage : stages) {
+        mark(fmt::format("dxc stage={} bytes={}", static_cast<u32>(stage.stage), stage.hlsl.size()));
         compiled.push_back(
             {stage.stage, compiler.Compile(stage.hlsl, stage.stage, request_hash, disk)});
         total += stage.counts;
     }
+    mark("root_signature");
     auto signature = CreateRootSignature(device, total);
     // Stream-output declaration is pure CPU state, independent of Context and buffers.
     std::vector<D3D12_SO_DECLARATION_ENTRY> entries;
@@ -769,8 +779,10 @@ std::shared_ptr<GraphicsPipeline> BuildAsyncGraphics(
     // The immutable recipe includes source, linkage state and fixed state.
     const u64 native_key = Pso::HashBytes(recipe.data(), recipe.size(), request_hash);
     const auto native_start = std::chrono::steady_clock::now();
+    mark("native_pso");
     auto pipeline = std::make_shared<GraphicsPipeline>(
         device, signature, state, d3d_topology, compiled, disk, native_key, recipe, stream_output);
+    mark("done");
     ReportSlowPso(native_key, native_start, signature.Get(), total, stages, compiled);
     if (feedback)
         pipeline->SetTransformFeedback(*feedback);
