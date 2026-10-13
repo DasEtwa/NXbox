@@ -377,7 +377,10 @@ DiskPipelineCache::DiskPipelineCache(const std::filesystem::path& local_state,
         SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_SHADER_CACHE, &native_support,
                                               sizeof(native_support))) &&
         (native_support.SupportFlags & D3D12_SHADER_CACHE_SUPPORT_SINGLE_PSO) &&
-        !BisectEnabled("NXBOX_D3D12_NO_CACHED_PSO");
+        // Measured on Xbox Series X (build 558): feeding a stored blob back through CachedPSO
+        // makes the driver remove the device within the first frames (0x887A0020), so the
+        // per-PSO blob cache is opt-in. DXIL and pipeline recipes are still cached.
+        BisectEnabled("NXBOX_D3D12_CACHED_PSO");
     Diagnostic(impl->native_supported ? "D3D12 native per-PSO blob cache enabled"
                                       : "D3D12 native per-PSO blob cache unsupported/disabled");
     if (BisectEnabled("NXBOX_D3D12_NO_PSO_LIBRARY")) {

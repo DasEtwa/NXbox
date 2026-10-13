@@ -440,8 +440,10 @@ uses the separate `D3D12_SHADER_CACHE_SUPPORT_SINGLE_PSO` capability,
 DXC and schema identity plus checksums protect `.gpso`/`.cpso` files beside the DXIL
 cache in the title's LocalState shader directory. A rejected blob is retried once
 without cached data while the device is healthy. Unsupported blob retrieval leaves
-the successfully created live PSO intact. `NXBOX_D3D12_NO_CACHED_PSO=1` disables
-this alternative independently of pipeline libraries. Depth-bounds/independent
+the successfully created live PSO intact. The blob cache is off by default: on the
+Xbox Series X (build 558) reading a stored blob back made the driver remove the device
+(0x887A0020) within the first frames. `NXBOX_D3D12_CACHED_PSO=1` turns it on for
+experiments, independently of pipeline libraries. Depth-bounds/independent
 stencil PSO streams still use direct creation and do not persist native blobs.
 Public Windows API support does not establish Xbox driver behavior; first/second
 launch console measurements remain necessary.
