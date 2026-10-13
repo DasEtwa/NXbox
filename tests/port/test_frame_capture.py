@@ -54,6 +54,38 @@ class FrameCaptureTests(unittest.TestCase):
                 header + bytes([255, 0, 0, 10, 20, 30]),
             )
 
+    def test_frame_diff_matches_drifted_frames(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            a, b, out = root / "a", root / "b", root / "report"
+            a.mkdir()
+            b.mkdir()
+            header = b"P6\n1 1\n255\n"
+            (a / "frame_000010.ppm").write_bytes(header + bytes([0, 0, 0]))
+            (a / "frame_000012.ppm").write_bytes(header + bytes([200, 10, 10]))
+            (a / "frame_000040.ppm").write_bytes(header + bytes([200, 10, 10]))
+            (b / "frame_000011.ppm").write_bytes(header + bytes([200, 10, 10]))
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "tools/nxbox/frame_diff.py"),
+                    str(a),
+                    str(b),
+                    "--out",
+                    str(out),
+                    "--match-window",
+                    "5",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                result.stdout,
+                "frame_000011.ppm: PSNR=inf dB, pixels >16=0.0000% (A frame_000012.ppm)\n",
+            )
+
     def test_renderer_and_cli_capture_sources(self):
         renderer = (ROOT / "src/video_core/renderer_d3d12/renderer_d3d12.cpp").read_text()
         self.assertNotIn("screenshot capture is stubbed", renderer)

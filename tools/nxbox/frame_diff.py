@@ -60,11 +60,27 @@ def compare(a, b):
     return psnr, percent, heatmap
 
 
+def coarse_mse(a, b, stride=97 * 3):
+    # Every 97th pixel: enough to rank candidate frames, ~100x cheaper than compare().
+    return sum((a[i] - b[i]) ** 2 for i in range(0, len(a), stride))
+
+
+def frame_number(name):
+    return int(name.removeprefix("frame_").removesuffix(".ppm"))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("dir_a", type=Path)
     parser.add_argument("dir_b", type=Path)
     parser.add_argument("--out", type=Path, default=Path("frame_diff_report"))
+    parser.add_argument(
+        "--match-window",
+        type=int,
+        default=0,
+        help="compare each B frame with the closest-looking A frame within +-N frame numbers, "
+        "so renderers that drift a few presents apart are still compared on the same scene",
+    )
     args = parser.parse_args()
     lines = []
 
@@ -78,22 +94,38 @@ def main():
             raise ValueError("Both input directories must exist")
         names_a = {path.name for path in args.dir_a.glob("*.ppm") if path.is_file()}
         names_b = {path.name for path in args.dir_b.glob("*.ppm") if path.is_file()}
-        for name in sorted(names_a ^ names_b):
-            report(f"{name}: missing from {'B' if name in names_a else 'A'}")
-        for name in sorted(names_a & names_b):
+        window = args.match_window
+        pairs = {}
+        if window > 0:
+            for name in sorted(names_b):
+                n = frame_number(name)
+                near = [m for m in names_a if abs(frame_number(m) - n) <= window]
+                if near:
+                    pairs[name] = near
+                else:
+                    report(f"{name}: no A frame within {window}")
+        else:
+            for name in sorted(names_a ^ names_b):
+                report(f"{name}: missing from {'B' if name in names_a else 'A'}")
+            pairs = {name: [name] for name in names_a & names_b}
+        for name, candidates in sorted(pairs.items()):
             try:
-                width, height, a = read_ppm(args.dir_a / name)
                 other_width, other_height, b = read_ppm(args.dir_b / name)
+                frames = [(m, read_ppm(args.dir_a / m)) for m in candidates]
+                match, (width, height, a) = min(
+                    frames, key=lambda item: coarse_mse(item[1][2], b)
+                )
                 if (width, height) != (other_width, other_height):
                     raise ValueError("Frame dimensions differ")
                 psnr, percent, heatmap = compare(a, b)
-                report(f"{name}: PSNR={psnr:.4f} dB, pixels >16={percent:.4f}%")
+                matched = f" (A {match})" if match != name else ""
+                report(f"{name}: PSNR={psnr:.4f} dB, pixels >16={percent:.4f}%{matched}")
                 (args.out / f"diff_{name}").write_bytes(
                     f"P6\n{width} {height}\n255\n".encode("ascii") + heatmap
                 )
             except (OSError, ValueError) as error:
                 report(f"{name}: error: {error}")
-        if not names_a & names_b:
+        if not pairs:
             report("No matching PPM frames")
     except (OSError, ValueError) as error:
         report(f"Error: {error}")
