@@ -9,8 +9,9 @@
 #include <thread>
 #include <unordered_map>
 #include <vector>
-#include <tlhelp32.h>
+// windows.h must come first: tlhelp32.h uses its types.
 #include <windows.h>
+#include <tlhelp32.h>
 
 #include "common/logging.h"
 #include "common/thread.h"
