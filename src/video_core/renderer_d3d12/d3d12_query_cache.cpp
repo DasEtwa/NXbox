@@ -149,7 +149,8 @@ struct QueryCacheRuntimeImpl {
                 add(QueryType::ZPassPixelCount64, samples);
             }
             D3D12_QUERY_DATA_PIPELINE_STATISTICS p{};
-            std::memcpy(&p, base + PipelineOffset, sizeof(p));
+            if (draws[slot].pipeline)
+                std::memcpy(&p, base + PipelineOffset, sizeof(p));
             add(QueryType::VerticesGenerated, p.IAVertices);
             if (!(draws[slot].streams & 1U)) {
                 add(QueryType::PrimitivesGenerated,
@@ -225,7 +226,7 @@ struct QueryCacheRuntimeImpl {
     std::array<ComPtr<ID3D12QueryHeap>, 4> so;
     ResourcePtr results, predicate;
     struct Draw {
-        bool occlusion{}, geometry{};
+        bool occlusion{}, geometry{}, pipeline{}, recorded{};
         u32 streams{};
     };
     std::array<Draw, BankSize> draws{};
@@ -234,6 +235,10 @@ struct QueryCacheRuntimeImpl {
     std::atomic<u64> pending_reports{}, completed_reports{}, invalidated_reports{}, report_copies{};
     u32 count{};
     bool drawing{}, predicate_set{};
+    // Pipeline statistics are recorded only once the guest has read one of those counters.
+    // Recording them on every draw filled the 256-slot bank ~14 times per frame in BotW, and
+    // each full bank made the CPU wait for the GPU.
+    bool pipeline_wanted{};
 };
 
 QueryCacheRuntime::QueryCacheRuntime(Context& context, Tegra::MaxwellDeviceMemoryManager& memory,
@@ -287,10 +292,16 @@ void QueryCacheRuntime::BeginDraw(bool geometry) {
     auto& draw = impl->draws[impl->count];
     draw = {impl->enabled[static_cast<size_t>(QueryType::ZPassPixelCount)] ||
                 impl->enabled[static_cast<size_t>(QueryType::ZPassPixelCount64)],
-            geometry, impl->feedback.StreamMask()};
+            geometry, impl->pipeline_wanted, false, impl->feedback.StreamMask()};
+    draw.recorded = draw.occlusion || draw.pipeline || draw.streams;
+    impl->drawing = true;
+    if (!draw.recorded)
+        return;
     auto* commands = impl->context.Commands();
     impl->context.MarkWork("queries");
-    commands->BeginQuery(impl->pipeline.Get(), D3D12_QUERY_TYPE_PIPELINE_STATISTICS, impl->count);
+    if (draw.pipeline)
+        commands->BeginQuery(impl->pipeline.Get(), D3D12_QUERY_TYPE_PIPELINE_STATISTICS,
+                             impl->count);
     if (draw.occlusion) {
         commands->BeginQuery(impl->occlusion.Get(), D3D12_QUERY_TYPE_OCCLUSION, impl->count);
     }
@@ -299,7 +310,6 @@ void QueryCacheRuntime::BeginDraw(bool geometry) {
             commands->BeginQuery(impl->so[stream].Get(), SOType(stream), impl->count);
         }
     }
-    impl->drawing = true;
 }
 void QueryCacheRuntime::EndDraw() {
     if (BisectEnabled("NXBOX_D3D12_NO_QUERIES"))
@@ -308,6 +318,10 @@ void QueryCacheRuntime::EndDraw() {
         throw std::logic_error("D3D12 EndDraw without BeginDraw");
     }
     const auto& draw = impl->draws[impl->count];
+    if (!draw.recorded) {
+        impl->drawing = false;
+        return;
+    }
     auto& context = impl->context;
     context.Retain(impl->results);
     auto* commands = context.Commands();
@@ -316,7 +330,8 @@ void QueryCacheRuntime::EndDraw() {
         commands->ResolveQueryData(heap, type, impl->count, 1, impl->results->handle.Get(),
                                    impl->count * ResultStride + offset);
     };
-    end(impl->pipeline.Get(), D3D12_QUERY_TYPE_PIPELINE_STATISTICS, PipelineOffset);
+    if (draw.pipeline)
+        end(impl->pipeline.Get(), D3D12_QUERY_TYPE_PIPELINE_STATISTICS, PipelineOffset);
     if (draw.occlusion) {
         end(impl->occlusion.Get(), D3D12_QUERY_TYPE_OCCLUSION, 0);
     }
@@ -342,6 +357,9 @@ u64 QueryCacheRuntime::ReadCounter(QueryType type, u32 stream) {
     if (stream >= 4 || static_cast<size_t>(type) >= TypeCount) {
         throw std::out_of_range("Invalid D3D12 query counter");
     }
+    if (type != QueryType::StreamingByteCount && type != QueryType::ZPassPixelCount &&
+        type != QueryType::ZPassPixelCount64)
+        impl->pipeline_wanted = true;
     impl->Collect();
     if (type == QueryType::StreamingByteCount) {
         return impl->feedback.ReadFilledSize(stream);

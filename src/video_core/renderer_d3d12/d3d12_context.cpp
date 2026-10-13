@@ -2,6 +2,7 @@
 #include "video_core/renderer_d3d12/d3d12_context.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <mutex>
 #include <set>
@@ -27,8 +28,22 @@
 
 namespace D3D12 {
 bool BisectEnabled(const char* name) noexcept {
+    // Called several times per draw with string literals; reading the process environment each
+    // time showed up in the GPU thread's samples. No toggle changes after startup.
+    struct Cached {
+        const char* name;
+        bool value;
+    };
+    thread_local std::array<Cached, 64> cache{};
+    thread_local size_t used = 0;
+    for (size_t i = 0; i < used; ++i)
+        if (cache[i].name == name)
+            return cache[i].value;
     char value[2]{};
-    return GetEnvironmentVariableA(name, value, sizeof(value)) == 1 && value[0] == '1';
+    const bool enabled = GetEnvironmentVariableA(name, value, sizeof(value)) == 1 && value[0] == '1';
+    if (used < cache.size())
+        cache[used++] = {name, enabled};
+    return enabled;
 }
 bool AsyncPsoEnabled() noexcept {
     static const bool enabled = [] {
