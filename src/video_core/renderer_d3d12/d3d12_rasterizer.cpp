@@ -61,7 +61,7 @@ RasterizerD3D12::RasterizerD3D12(Tegra::GPU& gpu, Tegra::MaxwellDeviceMemoryMana
                default_pipeline_cache->ProfileSummary() +
                " attachment_pool_entries=" + std::to_string(attachment_pool.size()) +
                " feedback_pool_entries=" + std::to_string(feedback_pool.size()) +
-               " native_memory_bytes=" + std::to_string(context.MemoryUsage());
+               " native_memory_bytes=" + std::to_string(this->context.MemoryUsage());
     };
 }
 RasterizerD3D12::~RasterizerD3D12() {
