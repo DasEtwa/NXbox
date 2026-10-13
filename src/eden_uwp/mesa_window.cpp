@@ -131,6 +131,12 @@ struct MesaRuntime {
                 std::filesystem::remove(log_path, remove_error);
                 _putenv_s("NXBOX_DRAW_BUCKET_LOG", log_path.c_str());
             }
+            // The texture cache's per-pass dump needs an absolute, writable directory.
+            if (std::getenv("NXBOX_PASS_DUMP_FRAME") && !std::getenv("NXBOX_PASS_DUMP_DIR")) {
+                const std::string pass_dir = (env_file.parent_path() / "passdump").string();
+                _putenv_s("NXBOX_PASS_DUMP_DIR", pass_dir.c_str());
+                Diagnostic("PASS_DUMP dir=" + pass_dir);
+            }
             if (const char* dump = std::getenv("NXBOX_FRAME_DUMP"); dump && *dump == '1') {
                 const std::string dump_dir = (env_file.parent_path() / "framedump").string();
                 _putenv_s("NXBOX_FRAME_DUMP_DIR", dump_dir.c_str());
