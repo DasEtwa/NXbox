@@ -17,6 +17,7 @@ export function fixture(): Record<string, Uint8Array> {
       "libgallium_wgl.dll",
       "libglapi.dll",
       "dxil.dll",
+      "game.nro",
       "Assets/StoreLogo.png",
       "Assets/Square44x44Logo.png",
       "Assets/Square150x150Logo.png",
@@ -35,7 +36,6 @@ test("stages only runtime payload, never private or stale boot data", async () =
     ...fixture(),
     "prod.keys": new Uint8Array([1]),
     "games/private.nsp": new Uint8Array([1]),
-    "game.nro": new Uint8Array([1]),
     "skip_library.txt": new Uint8Array([1]),
     "AppxSignature.p7x": new Uint8Array([1]),
   });
@@ -45,7 +45,8 @@ test("stages only runtime payload, never private or stale boot data", async () =
     const files = await stageRuntime(artifact, temporary, "01007EF00011E000", "My Game");
     expect(files).not.toContain("prod.keys");
     expect(files).not.toContain("games/private.nsp");
-    expect(files).not.toContain("game.nro");
+    // game.nro is the runtime's own marker that boots the game session, so it must ship.
+    expect(files).toContain("game.nro");
     expect(files).not.toContain("AppxSignature.p7x");
     expect(await readFile(join(temporary, "AppxManifest.xml"), "utf8")).toContain(
       'DisplayName="My Game"',

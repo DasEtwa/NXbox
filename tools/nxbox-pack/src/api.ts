@@ -114,6 +114,7 @@ export async function runJob(job: Job, emit: Emit): Promise<void> {
       runtimeDir,
       titleId,
       name,
+      gameInfo?.iconBase64 ? Buffer.from(gameInfo.iconBase64, "base64") : undefined,
     );
     const content: string[] = [];
     for (const [i, game] of job.games.entries()) {

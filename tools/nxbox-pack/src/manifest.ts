@@ -21,6 +21,8 @@ export function generateManifest(
   titleId: string,
   name: string,
   version = packageVersion(),
+  /** Package-relative image for every tile size; the dashboard scales it. */
+  logo?: string,
 ): string {
   if (!/^\d+\.\d+\.\d+\.\d+$/.test(version) || version.split(".").some((n) => Number(n) > 65535))
     throw new Error("Invalid package version");
@@ -34,6 +36,9 @@ export function generateManifest(
       /DisplayName="NXbox"|Description="NXbox"/g,
       (attr) => `${attr.split("=")[0]}="${displayName}"`,
     );
-  if (XMLValidator.validate(result) !== true) throw new Error("Invalid manifest XML");
-  return result;
+  const tiled = logo
+    ? result.replace(/(Logo>|Logo=")Assets\\[^<"]+\.png/g, `$1${escapeXml(logo)}`)
+    : result;
+  if (XMLValidator.validate(tiled) !== true) throw new Error("Invalid manifest XML");
+  return tiled;
 }

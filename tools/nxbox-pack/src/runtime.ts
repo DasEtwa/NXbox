@@ -141,12 +141,15 @@ export function runtimePayload(data: Uint8Array): Record<string, Uint8Array> {
     Object.entries(entries).filter(
       ([n]) =>
         /^[^/]+\.(exe|dll)$/i.test(n) ||
+        // The bundled game.nro marker switches nxbox.exe into the game session (game.txt).
+        n === "game.nro" ||
         /^Assets\/[^/]+\.png$/i.test(n) ||
         /^Notices\/[^/]+\.(txt|md|rst)$/i.test(n),
     ),
   );
   for (const name of [
     "nxbox.exe",
+    "game.nro",
     "opengl32.dll",
     "libgallium_wgl.dll",
     "libglapi.dll",
@@ -176,10 +179,16 @@ export async function stageRuntime(
   directory: string,
   titleId: string,
   name: string,
+  /** The game's own JPEG icon (from its control data) becomes the dashboard tile. */
+  icon?: Uint8Array,
 ): Promise<string[]> {
   try {
     const payload = runtimePayload(data);
-    payload["AppxManifest.xml"] = new TextEncoder().encode(generateManifest(titleId, name));
+    const logo = icon?.[0] === 0xff && icon[1] === 0xd8 ? "Assets\\GameIcon.jpg" : undefined;
+    if (logo) payload["Assets/GameIcon.jpg"] = icon!;
+    payload["AppxManifest.xml"] = new TextEncoder().encode(
+      generateManifest(titleId, name, undefined, logo),
+    );
     for (const [path, content] of Object.entries(payload)) {
       await mkdir(join(directory, posix.dirname(path)), { recursive: true, mode: 0o700 });
       await writeFile(join(directory, path), content, { mode: 0o600 });

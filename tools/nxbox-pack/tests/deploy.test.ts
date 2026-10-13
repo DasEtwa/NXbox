@@ -19,6 +19,7 @@ function runtimeFixture(): Record<string, Uint8Array> {
       "libgallium_wgl.dll",
       "libglapi.dll",
       "dxil.dll",
+      "game.nro",
       "Assets/StoreLogo.png",
       "Assets/Square44x44Logo.png",
       "Assets/Square150x150Logo.png",

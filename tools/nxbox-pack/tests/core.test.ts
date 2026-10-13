@@ -98,6 +98,11 @@ describe("independent game manifest", () => {
     for (const version of ["1.0.0", "1.0.65536.0", "a.0.0.0"])
       expect(() => generateManifest(titleId, "Game", version)).toThrow();
   });
+  test("the game icon becomes every tile image", () => {
+    const xml = generateManifest(titleId, "Game", undefined, "Assets\\GameIcon.jpg");
+    expect(xml.match(/Assets\\GameIcon\.jpg/g)?.length).toBe(3);
+    expect(xml).not.toMatch(/Assets\\\w+\.png/);
+  });
   test("each pack upgrades the last one in place", () => {
     const order = (v: string) => v.split(".").reduce((a, n) => a * 65536 + Number(n), 0);
     const a = packageVersion(new Date("2026-10-13T00:00:00Z"));
