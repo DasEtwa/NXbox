@@ -9,9 +9,8 @@
 
 namespace Service::Set {
 
-SystemSettings DefaultSystemSettings() {
-    SystemSettings settings{};
-
+// Fills an already value-initialized struct in place; no SystemSettings temporary on the stack.
+void DefaultSystemSettings(SystemSettings& settings) {
     settings.version = 0x140000;
     settings.flags = 7;
 
@@ -70,8 +69,6 @@ SystemSettings DefaultSystemSettings() {
     if (key_code != language_to_layout.end()) {
         settings.keyboard_layout = key_code->second;
     }
-
-    return settings;
 }
 
 } // namespace Service::Set

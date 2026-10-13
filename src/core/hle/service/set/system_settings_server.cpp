@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <fstream>
+#include <memory>
 
 #include "common/assert.h"
 #include "common/fs/file.h"
@@ -369,7 +370,9 @@ ISystemSettingsServer::~ISystemSettingsServer() {
 }
 
 bool ISystemSettingsServer::LoadSettingsFile(std::filesystem::path& path, auto&& default_func) {
-    using settings_type = decltype(default_func());
+    // Defaults come back on the heap: SystemSettings is 0x336A0 bytes, too big for the 512 KiB
+    // fiber stacks the Xbox build uses, and first boot (no settings.dat yet) overflowed them.
+    using settings_type = typename decltype(default_func())::element_type;
 
     if (!Common::FS::CreateDirs(path)) {
         return false;
@@ -381,7 +384,7 @@ bool ISystemSettingsServer::LoadSettingsFile(std::filesystem::path& path, auto&&
                                       sizeof(SettingsHeader) + sizeof(settings_type);
 
     auto ResetToDefault = [&]() {
-        auto default_settings{default_func()};
+        const auto default_settings = default_func();
 
         SettingsHeader hdr{
             .magic = SETTINGS_MAGIC,
@@ -391,7 +394,7 @@ bool ISystemSettingsServer::LoadSettingsFile(std::filesystem::path& path, auto&&
 
         std::ofstream out_settings_file(settings_file, std::ios::out | std::ios::binary);
         out_settings_file.write(reinterpret_cast<const char*>(&hdr), sizeof(hdr));
-        out_settings_file.write(reinterpret_cast<const char*>(&default_settings),
+        out_settings_file.write(reinterpret_cast<const char*>(default_settings.get()),
                                 sizeof(settings_type));
         out_settings_file.flush();
         out_settings_file.close();
@@ -1486,22 +1489,26 @@ Result ISystemSettingsServer::GetDefaultAccountUserSettings(Out<AccountUserSetti
 
 void ISystemSettingsServer::SetupSettings() {
     auto system_dir = Common::FS::GetEdenPath(Common::FS::EdenPath::NANDDir) / "system/save/8000000000000050";
-    if (!LoadSettingsFile(system_dir, []() { return DefaultSystemSettings(); })) {
+    if (!LoadSettingsFile(system_dir, []() {
+            auto settings = std::make_unique<SystemSettings>();
+            DefaultSystemSettings(*settings);
+            return settings;
+        })) {
         ASSERT(false);
     }
 
     auto private_dir = Common::FS::GetEdenPath(Common::FS::EdenPath::NANDDir) / "system/save/8000000000000052";
-    if (!LoadSettingsFile(private_dir, []() { return DefaultPrivateSettings(); })) {
+    if (!LoadSettingsFile(private_dir, []() { return std::make_unique<PrivateSettings>(DefaultPrivateSettings()); })) {
         ASSERT(false);
     }
 
     auto device_dir = Common::FS::GetEdenPath(Common::FS::EdenPath::NANDDir) / "system/save/8000000000000053";
-    if (!LoadSettingsFile(device_dir, []() { return DefaultDeviceSettings(); })) {
+    if (!LoadSettingsFile(device_dir, []() { return std::make_unique<DeviceSettings>(DefaultDeviceSettings()); })) {
         ASSERT(false);
     }
 
     auto appln_dir = Common::FS::GetEdenPath(Common::FS::EdenPath::NANDDir) / "system/save/8000000000000054";
-    if (!LoadSettingsFile(appln_dir, []() { return DefaultApplnSettings(); })) {
+    if (!LoadSettingsFile(appln_dir, []() { return std::make_unique<ApplnSettings>(DefaultApplnSettings()); })) {
         ASSERT(false);
     }
 }
