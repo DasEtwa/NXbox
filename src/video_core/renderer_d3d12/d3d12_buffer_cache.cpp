@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <algorithm>
+#include "common/nxbox_upload_diag.h"
 #include <cstring>
 #include <stdexcept>
 #include <fmt/format.h>
@@ -80,6 +81,27 @@ void BufferCacheRuntime::RecordBufferUpload(VideoCommon::BufferUploadSource sour
 void BufferCacheRuntime::TickFrame(Common::SlotVector<Buffer>& buffers) {
     upload.Collect();
     readback.Collect();
+    if (witness_resource) {
+        // Diagnostic: re-read the watched upload destination each frame, log content changes.
+        auto probe = context.CreateBuffer(256, D3D12_HEAP_TYPE_READBACK);
+        const u64 size = std::min<u64>(256, witness_resource->handle->GetDesc().Width -
+                                                witness_offset);
+        context.Transition(witness_resource, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        context.Transition(probe, D3D12_RESOURCE_STATE_COPY_DEST);
+        context.BeforeCopyWrite(probe, 0, size);
+        context.Commands()->CopyBufferRegion(probe->handle.Get(), 0,
+                                             witness_resource->handle.Get(), witness_offset, size);
+        context.AfterCompletion([this, probe, size, frame = ++witness_frame] {
+            const u64 hash = TraceHash(probe->mapped.first(static_cast<size_t>(size)));
+            const auto nonzero =
+                std::count_if(probe->mapped.begin(), probe->mapped.begin() + size,
+                              [](u8 b) { return b != 0; });
+            if (hash != witness_hash)
+                Diagnostic(fmt::format("D3D12_WITNESS frame={} hash={:#x} nonzero={} bytes={}",
+                                       frame, hash, nonzero, TraceHex(probe->mapped, 0)));
+            witness_hash = hash;
+        });
+    }
     for (const auto [id, buffer] : buffers)
         buffer->ResetUsageTracking();
 }
@@ -128,7 +150,13 @@ void BufferCacheRuntime::CopyBuffer(ResourcePtr dst, ResourcePtr src,
     // Witness the GPU's source bytes and destination immediately around each cache copy batch.
     // Downloads (including these witnesses) do not recurse. Snapshot the CPU bytes before
     // allocation: CreateBuffer can submit/wait under pressure. Keep all probes in this list.
-    const bool trace = UploadTraceEnabled() && dst->heap == D3D12_HEAP_TYPE_DEFAULT;
+    const bool watched = NxboxUpload::trace_next_copy.exchange(false);
+    const bool trace = (UploadTraceEnabled() || watched) && dst->heap == D3D12_HEAP_TYPE_DEFAULT;
+    if (watched && copies.size() == 1) {
+        witness_resource = dst;
+        witness_offset = copies[0].dst_offset;
+        witness_hash = 0;
+    }
     ResourcePtr trace_readback;
     std::vector<u8> trace_expected;
     std::vector<VideoCommon::BufferCopy> trace_copies, trace_reads, trace_writes;

@@ -23,7 +23,7 @@ class UploadTraceTests(unittest.TestCase):
         self.assertIn('BisectEnabled("NXBOX_D3D12_UPLOAD_TRACE")', toggle)
         self.assertIn("static const bool enabled", toggle)
         self.assertIn(
-            "const bool trace = UploadTraceEnabled() && dst->heap == D3D12_HEAP_TYPE_DEFAULT;",
+            "const bool trace = (UploadTraceEnabled() || watched) && dst->heap == D3D12_HEAP_TYPE_DEFAULT;",
             self.copy,
         )
         allocation = function_body(self.copy, "if (trace)")

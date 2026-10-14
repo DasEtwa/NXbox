@@ -36,6 +36,8 @@ public:
     }
 
 private:
+    ResourcePtr witness_resource;
+    u64 witness_offset{}, witness_hash{}, witness_frame{};
     Context* context{};
     ResourcePtr resource;
     VideoCommon::UsageTracker usage{0};

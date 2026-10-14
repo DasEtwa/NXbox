@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdlib>
+#include <string_view>
 #include <memory>
 #include <numeric>
 
@@ -39,6 +40,8 @@ void WatchEvent(DeviceMemory& memory, const char* what, DAddr addr, u64 size, u6
     const auto nonzero = std::count_if(bytes.begin(), bytes.end(), [](u8 b) { return b != 0; });
     LOG_ERROR(Render, "NXBOX_WATCH {} addr={:#x} size={} extra={} page_nonzero={}", what, addr,
               size, extra, nonzero);
+    if (std::string_view{what} == "upload")
+        NxboxUpload::trace_next_copy.store(true);
 }
 
 using Core::DEVICE_PAGESIZE;

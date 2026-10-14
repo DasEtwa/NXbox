@@ -13,6 +13,8 @@ extern "C" __declspec(dllimport) int __stdcall SetEnvironmentVariableA(const cha
 #endif
 
 namespace NxboxUpload {
+// Set by the buffer-cache page watch: trace exactly the next backend copy.
+inline std::atomic<bool> trace_next_copy{false};
 enum class Event {
     AstcQueued,
     AstcUploaded,
