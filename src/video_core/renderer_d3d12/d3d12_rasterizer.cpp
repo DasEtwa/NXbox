@@ -1150,7 +1150,11 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
                                                          slot.resource->handle.Get(),
                                                          source_offset, probe);
                 }
+                const u64 resource_va = slot.resource->handle->GetGPUVirtualAddress();
+                const int resource_heap = static_cast<int>(slot.resource->heap);
+                const bool is_zero_buffer = slot.resource == zero_vertex_buffer;
                 context.AfterCompletion([source_readback, probe, i, size = slot.size,
+                                         resource_va, resource_heap, is_zero_buffer,
                                          offset = slot.offset, attr_offset = attribute.offset,
                                          width, required, available, copied, gpu_modified,
                                          cpu_modified, first_page, last_page] {
@@ -1158,11 +1162,13 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
                     for (const u8 byte : source_readback->mapped.first(static_cast<size_t>(probe)))
                         hex += fmt::format("{:02x}", byte);
                     Diagnostic(fmt::format(
-                        "D3D12_VB_SOURCE attr={} slot_size={} slot_offset={} attr_offset={} "
+                        "D3D12_VB_SOURCE resource_va={:#x} heap={} zero_buffer={} "
+                        "attr={} slot_size={} slot_offset={} attr_offset={} "
                         "width={} required={} available={} copied={} gpu_modified={} cpu_modified={} "
                         "cache={} first_page=[{}] last_page=[{}]",
-                        i, size, offset, attr_offset, width, required, available, copied,
-                        gpu_modified, cpu_modified, hex, first_page, last_page));
+                        resource_va, resource_heap, is_zero_buffer, i, size, offset, attr_offset,
+                        width, required, available, copied, gpu_modified, cpu_modified, hex,
+                        first_page, last_page));
                 });
             }
             auto zero = context.CreateBuffer(required, D3D12_HEAP_TYPE_UPLOAD);
