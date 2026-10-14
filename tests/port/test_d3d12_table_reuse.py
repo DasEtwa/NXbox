@@ -93,7 +93,7 @@ class DescriptorTableReuse(unittest.TestCase):
         for kind in ("Cbv", "Srv", "Uav", "Sampler"):
             self.assertIn("descriptors.WriteNull" + kind, self.draw)
         self.assertIn("table.first + slot", self.allocator)
-        self.assertIn("this->first + first", self.header)
+        self.assertIn("first + offset", self.header)
 
     def test_profile_name_matches_counter(self):
         header = (D3D12 / "d3d12_context.h").read_text()

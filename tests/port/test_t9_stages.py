@@ -197,7 +197,7 @@ int main() {
         self.assertIn("Pso::RenderTargetLayersOverlap", rasterizer)
         self.assertIn("failed_graphics.find(key)", cache)
         self.assertIn("failed_graphics.emplace(key, error.what())", cache)
-        self.assertIn("guest_graphics.emplace(request, nullptr)", cache)
+        self.assertIn("StoreGuestGraphics(request, nullptr)", cache)
 
 
 class LinkageTests(unittest.TestCase):

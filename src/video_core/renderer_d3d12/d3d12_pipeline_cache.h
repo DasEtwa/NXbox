@@ -82,6 +82,27 @@ public:
     ID3D12RootSignature* GetRootSignature(DescriptorCounts counts);
 
 private:
+    template <typename Data>
+    struct CachedFeature {
+        Data data{};
+        HRESULT result{};
+        bool queried{};
+    };
+    template <typename Data>
+    const CachedFeature<Data>& QueryFeature(D3D12_FEATURE feature, CachedFeature<Data>& cached) {
+        if (!cached.queried) {
+            cached.result =
+                context.Device()->CheckFeatureSupport(feature, &cached.data, sizeof(cached.data));
+            cached.queried = true;
+        }
+        return cached;
+    }
+    const CachedFeature<D3D12_FEATURE_DATA_FORMAT_SUPPORT>& QueryFormatSupport(DXGI_FORMAT format);
+    void InvalidateLastGraphicsPipeline();
+    void StoreGuestGraphics(const GraphicsPipelineKey& request, GraphicsPipeline* pipeline);
+    IGraphicsPipeline* RememberGraphicsPipeline(const GraphicsPipelineKey& request,
+                                                IGraphicsPipeline* pipeline);
+
     struct CountsLess {
         bool operator()(const std::pair<DescriptorCounts, bool>& a,
                         const std::pair<DescriptorCounts, bool>& b) const {
@@ -99,6 +120,15 @@ private:
     std::unique_ptr<AsyncCache> async;
     std::recursive_mutex pipeline_mutex;
     Context& context;
+    // Device capabilities are immutable for this cache's lifetime, including query failures.
+    CachedFeature<D3D12_FEATURE_DATA_D3D12_OPTIONS> graphics_options;
+    CachedFeature<D3D12_FEATURE_DATA_D3D12_OPTIONS2> graphics_options2;
+    CachedFeature<D3D12_FEATURE_DATA_D3D12_OPTIONS13> graphics_options13;
+    CachedFeature<D3D12_FEATURE_DATA_D3D12_OPTIONS14> graphics_options14;
+    std::unordered_map<DXGI_FORMAT, CachedFeature<D3D12_FEATURE_DATA_FORMAT_SUPPORT>>
+        format_support;
+    GraphicsPipelineKey last_graphics_request{};
+    IGraphicsPipeline* last_graphics_pipeline{};
     std::array<u64, 6> guest_hashes{};
     DxcCache dxc{&context.Profile()};
     std::unique_ptr<DiskPipelineCache> disk;

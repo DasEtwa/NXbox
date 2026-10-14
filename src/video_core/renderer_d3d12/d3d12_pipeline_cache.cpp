@@ -440,6 +440,7 @@ GraphicsPipeline& PipelineCache::GetGraphics(const Pso::GraphicsPsoState& state,
         context.Profile().Count(FrameCount::NegativeCacheHits);
         throw std::runtime_error(failed->second);
     }
+    InvalidateLastGraphicsPipeline();
     context.Profile().Count(FrameCount::PsoCacheMisses);
     const FrameProfile::Scope profile_pso{context.Profile(), FramePhase::Pso};
     try {
@@ -487,6 +488,7 @@ ComputePipeline& PipelineCache::GetCompute(const StageInput& stage) {
     if (const auto it = compute.find(key); it != compute.end()) {
         return *it->second;
     }
+    InvalidateLastGraphicsPipeline();
     context.Profile().Count(FrameCount::PsoCacheMisses);
     const FrameProfile::Scope profile_pso{context.Profile(), FramePhase::Pso};
     auto dxil = dxc.Compile(stage.hlsl, Shader::Stage::Compute, key, disk.get());
@@ -821,6 +823,33 @@ std::shared_ptr<GraphicsPipeline> BuildAsyncGraphics(
 }
 } // namespace
 
+const PipelineCache::CachedFeature<D3D12_FEATURE_DATA_FORMAT_SUPPORT>&
+PipelineCache::QueryFormatSupport(DXGI_FORMAT format) {
+    auto& cached = format_support[format];
+    cached.data.Format = format;
+    return QueryFeature(D3D12_FEATURE_FORMAT_SUPPORT, cached);
+}
+
+void PipelineCache::InvalidateLastGraphicsPipeline() {
+    last_graphics_pipeline = nullptr;
+}
+
+void PipelineCache::StoreGuestGraphics(const GraphicsPipelineKey& request,
+                                       GraphicsPipeline* pipeline) {
+    InvalidateLastGraphicsPipeline();
+    guest_graphics.emplace(request, pipeline);
+}
+
+IGraphicsPipeline* PipelineCache::RememberGraphicsPipeline(const GraphicsPipelineKey& request,
+                                                           IGraphicsPipeline* pipeline) {
+    // Pending asynchronous requests must be looked up again until compilation finishes.
+    if (pipeline) {
+        last_graphics_request = request;
+        last_graphics_pipeline = pipeline;
+    }
+    return pipeline;
+}
+
 IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(
     const Pso::FramebufferFormats& formats) try {
     const FrameProfile::Scope profile_lookup{context.Profile(), FramePhase::PipelineLookup};
@@ -841,30 +870,25 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(
     if (!Pso::DsvHasStencil(state.dsv_format))
         state.stencil_enable = 0;
     if (state.stencil_enable & 2) {
-        D3D12_FEATURE_DATA_D3D12_OPTIONS14 options{};
-        if (FAILED(context.Device()->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS14, &options,
-                                                         sizeof(options))) ||
-            !options.IndependentFrontAndBackStencilRefMaskSupported) {
+        const auto& options = QueryFeature(D3D12_FEATURE_D3D12_OPTIONS14, graphics_options14);
+        if (FAILED(options.result) ||
+            !options.data.IndependentFrontAndBackStencilRefMaskSupported) {
             ReportUnsupported("stencil_back_ref/stencil_back_mask/stencil_back_func_mask differ; "
                               "host lacks IndependentFrontAndBackStencilRefMaskSupported");
             return nullptr;
         }
     }
     if (state.depth_bounds) {
-        D3D12_FEATURE_DATA_D3D12_OPTIONS2 options{};
-        if (FAILED(context.Device()->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS2, &options,
-                                                         sizeof(options))) ||
-            !options.DepthBoundsTestSupported) {
+        const auto& options = QueryFeature(D3D12_FEATURE_D3D12_OPTIONS2, graphics_options2);
+        if (FAILED(options.result) || !options.data.DepthBoundsTestSupported) {
             ReportUnsupported("depth_bounds_enable/depth_bounds unsupported by host device");
             return nullptr;
         }
     }
     const u32 constant_factors = Pso::ConstantBlendFactors(state);
     if (constant_factors & 2) {
-        D3D12_FEATURE_DATA_D3D12_OPTIONS13 options{};
-        if (FAILED(context.Device()->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS13, &options,
-                                                         sizeof(options))) ||
-            !options.AlphaBlendFactorSupported) {
+        const auto& options = QueryFeature(D3D12_FEATURE_D3D12_OPTIONS13, graphics_options13);
+        if (FAILED(options.result) || !options.data.AlphaBlendFactorSupported) {
             if (constant_factors & 1) {
                 ReportUnsupported(
                     "blend mixes constant-color and constant-alpha RGB factors; host lacks "
@@ -877,12 +901,10 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(
         }
     }
     if (state.logic_enable || state.conservative_raster) {
-        D3D12_FEATURE_DATA_D3D12_OPTIONS options{};
-        if (FAILED(context.Device()->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &options,
-                                                         sizeof(options))) ||
-            (state.logic_enable && !options.OutputMergerLogicOp) ||
+        const auto& options = QueryFeature(D3D12_FEATURE_D3D12_OPTIONS, graphics_options);
+        if (FAILED(options.result) || (state.logic_enable && !options.data.OutputMergerLogicOp) ||
             (state.conservative_raster &&
-             options.ConservativeRasterizationTier ==
+             options.data.ConservativeRasterizationTier ==
                  D3D12_CONSERVATIVE_RASTERIZATION_TIER_NOT_SUPPORTED)) {
             ReportUnsupported("logic_op/conservative_raster_enable unsupported by host device");
             return nullptr;
@@ -899,10 +921,9 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(
                 return nullptr;
             }
             mask = state.blend[i].write_mask;
-            D3D12_FEATURE_DATA_FORMAT_SUPPORT support{static_cast<DXGI_FORMAT>(formats.colors[i])};
-            if (FAILED(context.Device()->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &support,
-                                                             sizeof(support))) ||
-                !(support.Support2 & D3D12_FORMAT_SUPPORT2_OUTPUT_MERGER_LOGIC_OP)) {
+            const auto& support = QueryFormatSupport(static_cast<DXGI_FORMAT>(formats.colors[i]));
+            if (FAILED(support.result) ||
+                !(support.data.Support2 & D3D12_FORMAT_SUPPORT2_OUTPUT_MERGER_LOGIC_OP)) {
                 ReportUnsupported("logic_op RTV format lacks OUTPUT_MERGER_LOGIC_OP; requires "
                                   "programmable blend emulation");
                 return nullptr;
@@ -945,10 +966,12 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(
     }
     request.stage_hashes[0] =
         Pso::HashBytes(&specialization, sizeof(specialization), request.stage_hashes[0]);
+    if (last_graphics_pipeline && request == last_graphics_request)
+        return last_graphics_pipeline;
     if (const auto found = guest_graphics.find(request); found != guest_graphics.end()) {
         if (!found->second)
             context.Profile().Count(FrameCount::NegativeCacheHits);
-        return found->second;
+        return RememberGraphicsPipeline(request, found->second);
     }
     if (AsyncPsoEnabled()) {
         try {
@@ -956,19 +979,19 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(
                 async = std::make_unique<AsyncCache>();
             const u64 request_hash = Pso::HashBytes(&request, sizeof(request));
             if (CheckStalled(request, request_hash)) {
-                guest_graphics.emplace(request, nullptr);
+                StoreGuestGraphics(request, nullptr);
                 return nullptr;
             }
             const auto entry = async->Lookup(request);
             if (entry.status == AsyncCache::Status::Ready) {
-                guest_graphics.emplace(request, entry.result->graphics.get());
+                StoreGuestGraphics(request, entry.result->graphics.get());
                 context.Profile().Count(FrameCount::PsoCompiles);
-                return entry.result->graphics.get();
+                return RememberGraphicsPipeline(request, entry.result->graphics.get());
             }
             if (entry.status == AsyncCache::Status::Failed) {
                 Diagnostic(fmt::format("D3D12 async graphics request={:016x} failed={}",
                                        Pso::HashBytes(&request, sizeof(request)), entry.error));
-                guest_graphics.emplace(request, nullptr);
+                StoreGuestGraphics(request, nullptr);
                 context.Profile().Count(FrameCount::NegativeCacheHits);
                 return nullptr;
             }
@@ -1007,7 +1030,7 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(
         } catch (const std::exception& error) {
             Diagnostic(fmt::format("D3D12 async graphics snapshot={:016x} failed={}",
                                    Pso::HashBytes(&request, sizeof(request)), error.what()));
-            guest_graphics.emplace(request, nullptr);
+            StoreGuestGraphics(request, nullptr);
             return nullptr;
         }
     }
@@ -1069,7 +1092,7 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(
                         program.info.interpolation[attribute] == Shader::Interpolation::Flat) {
                         ReportUnsupported("provoking_vertex=Last for flat quads requires "
                                           "flat-value replication without changing diagonal");
-                        guest_graphics.emplace(request, nullptr);
+                        StoreGuestGraphics(request, nullptr);
                         return nullptr;
                     }
                 }
@@ -1103,7 +1126,7 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(
                                 "requires vertex pulling/component conversion native_conversion={}",
                                 index, size, static_cast<u32>(input.type.Value()), input.bgra != 0,
                                 component_conversion));
-                guest_graphics.emplace(request, nullptr);
+                StoreGuestGraphics(request, nullptr);
                 return nullptr;
             }
         }
@@ -1116,8 +1139,8 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(
         }
         if (guest_hashes[0] && !guest_hashes[1])
             pipeline.SetStageInfo(0, &programs[0].info);
-        guest_graphics.emplace(request, &pipeline);
-        return &pipeline;
+        StoreGuestGraphics(request, &pipeline);
+        return RememberGraphicsPipeline(request, &pipeline);
     } catch (const Shader::Exception& error) {
         ReportUnsupported(error.what());
     } catch (const std::exception& error) {
@@ -1126,7 +1149,7 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(
         if (FAILED(context.Device()->GetDeviceRemovedReason()))
             context.ReportFailure(error);
     }
-    guest_graphics.emplace(request, nullptr);
+    StoreGuestGraphics(request, nullptr);
     return nullptr;
 } catch (const std::exception& error) {
     ReportUnsupported(error.what());
@@ -1165,11 +1188,13 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() try {
             async_key.state.sample_count =
                 0; // Graphics requests always have a nonzero sample count.
             if (CheckStalled(async_key, request)) {
+                InvalidateLastGraphicsPipeline();
                 guest_compute.emplace(request, nullptr);
                 return nullptr;
             }
             const auto entry = async->Lookup(async_key);
             if (entry.status == AsyncCache::Status::Ready) {
+                InvalidateLastGraphicsPipeline();
                 guest_compute.emplace(request, entry.result->compute.get());
                 context.Profile().Count(FrameCount::PsoCompiles);
                 return entry.result->compute.get();
@@ -1177,6 +1202,7 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() try {
             if (entry.status == AsyncCache::Status::Failed) {
                 Diagnostic(fmt::format("D3D12 async compute request={:016x} failed={}", request,
                                        entry.error));
+                InvalidateLastGraphicsPipeline();
                 guest_compute.emplace(request, nullptr);
                 context.Profile().Count(FrameCount::NegativeCacheHits);
                 return nullptr;
@@ -1250,6 +1276,7 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() try {
         } catch (const std::exception& error) {
             Diagnostic(fmt::format("D3D12 async compute snapshot={:016x} failed={}", request,
                                    error.what()));
+            InvalidateLastGraphicsPipeline();
             guest_compute.emplace(request, nullptr);
             return nullptr;
         }
@@ -1276,6 +1303,7 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() try {
                                      source,
                                      {counts.cbv, counts.srv, counts.uav, counts.sampler}});
         pipeline.info = program.info;
+        InvalidateLastGraphicsPipeline();
         guest_compute.emplace(request, &pipeline);
         return &pipeline;
     } catch (const std::exception& error) {
@@ -1283,6 +1311,7 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() try {
             fmt::format("D3D12 compute HLSL/PSO pipeline={:016x} what={}", request, error.what()));
         if (FAILED(context.Device()->GetDeviceRemovedReason()))
             context.ReportFailure(error);
+        InvalidateLastGraphicsPipeline();
         guest_compute.emplace(request, nullptr);
         return nullptr;
     }
@@ -1305,6 +1334,7 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
     }
     std::unique_lock lock{pipeline_mutex};
     context.Finish(); // Retire PSOs referenced by the previous title before replacing the maps.
+    InvalidateLastGraphicsPipeline();
     async.reset();
     guest_graphics.clear();
     guest_compute.clear();
@@ -1408,6 +1438,8 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
     disk->WaitWarmup();
 }
 void PipelineCache::BindToChannel(s32 id) {
+    std::scoped_lock lock{pipeline_mutex};
+    InvalidateLastGraphicsPipeline();
     VideoCommon::ShaderCache::BindToChannel(id);
     if (maxwell3d)
         maxwell3d->dirty.flags[VideoCommon::Dirty::Shaders] = true;
