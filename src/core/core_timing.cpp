@@ -13,6 +13,7 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#undef CreateEvent
 #include "common/windows/timer_resolution.h"
 #endif
 
