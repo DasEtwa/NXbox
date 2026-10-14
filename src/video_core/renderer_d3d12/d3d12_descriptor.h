@@ -8,6 +8,7 @@
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace D3D12 {
@@ -100,17 +101,39 @@ struct BindingState {
 DXGI_FORMAT DsvFormat(DXGI_FORMAT view_format);
 D3D12_SAMPLER_DESC MakeSamplerDesc(const Tegra::Texture::TSCEntry& entry);
 
+struct DescriptorKey {
+    std::array<u8, 64> description{};
+    std::uintptr_t resource{};
+    u32 kind{}, size{};
+    bool operator==(const DescriptorKey&) const = default;
+};
+// Planning uses the same writers and full keys as the CPU descriptor cache.
+struct DescriptorPlan {
+    std::array<u32, 3> sizes{};
+    std::vector<DescriptorKey> keys;
+    std::vector<ResourcePtr> resources;
+    explicit DescriptorPlan(std::array<u32, 3> sizes_) : sizes{sizes_} {
+        const u32 count = sizes[0] + sizes[1] + sizes[2];
+        keys.resize(count);
+        resources.resize(count);
+    }
+};
+
 struct DescriptorTable {
     D3D12_CPU_DESCRIPTOR_HANDLE cpu{};
     D3D12_GPU_DESCRIPTOR_HANDLE gpu{};
     u32 count{};
     u32 stride{};
+    DescriptorPlan* plan{};
+    u32 first{};
     D3D12_CPU_DESCRIPTOR_HANDLE Slot(u32 index) const {
         return {cpu.ptr + static_cast<SIZE_T>(index) * stride};
     }
     // Sub-range of a larger allocation (one ring allocation feeds the three view tables).
     DescriptorTable Slice(u32 first, u32 n) const {
-        return {Slot(first), {gpu.ptr + static_cast<UINT64>(first) * stride}, n, stride};
+        return {Slot(first), {gpu.ptr + static_cast<UINT64>(first) * stride},
+                n,           stride,
+                plan,        this->first + first};
     }
 };
 
@@ -132,6 +155,9 @@ public:
     // Reserve the whole draw/dispatch before allocating from any ring. Reclaiming
     // another heap must never submit tables already reserved for this operation.
     void Reserve(u32 view_count, u32 sampler_count, u32 rtv_count = 0, u32 dsv_count = 0);
+    // Reserve only missing tables, then recheck after Reserve (it may change the tick).
+    bool CanReuseDrawTable(const DescriptorPlan& plan, bool sampler = false) const;
+    DescriptorTable FinishDrawTable(DescriptorPlan& plan, bool sampler = false);
     void SetHeaps(ID3D12GraphicsCommandList* commands);
     DescriptorTable AllocateViews(u32 count);
     DescriptorTable AllocateSamplers(u32 count);
@@ -201,12 +227,6 @@ public:
     void Init(Ring& ring, D3D12_DESCRIPTOR_HEAP_TYPE type, u32 capacity, bool visible);
     DescriptorTable Allocate(Ring& ring, u32 count);
 
-    struct DescriptorKey {
-        std::array<u8, 64> description{};
-        std::uintptr_t resource{};
-        u32 kind{}, size{};
-        bool operator==(const DescriptorKey&) const = default;
-    };
     struct DescriptorKeyHash {
         size_t operator()(const DescriptorKey& key) const noexcept {
             const std::string_view bytes{reinterpret_cast<const char*>(key.description.data()),
@@ -228,6 +248,16 @@ public:
     void RefreshCaches();
     void WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE type, const ResourcePtr& resource, u32 kind,
                      const void* desc, size_t size, D3D12_CPU_DESCRIPTOR_HANDLE destination);
+    static DescriptorKey MakeDescriptorKey(const ResourcePtr& resource, u32 kind, const void* desc,
+                                           size_t size);
+    void WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE type, const ResourcePtr& resource, u32 kind,
+                     const void* desc, size_t size, const DescriptorTable& table, u32 slot);
+    struct PreviousDrawTable {
+        u64 tick{};
+        DescriptorPlan plan{{0, 0, 0}};
+        DescriptorTable table;
+    };
+    std::array<PreviousDrawTable, 2> previous_draw_tables;
     u64 cache_tick{};
     bool new_frame{true};
     DescriptorCache view_cache, sampler_cache;

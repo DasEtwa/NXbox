@@ -1001,7 +1001,7 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
             need(resource, D3D12_RESOURCE_STATE_STREAM_OUT);
         }
     }
-    // ---- 2. Allocate every descriptor this draw needs (may submit the command list) ----
+    // ---- 2. Plan every descriptor this draw needs ----
     const bool root_cbvs = pipeline->UsesRootCbvs();
     if (root_cbvs)
         PrepareZeroUniformBuffer();
@@ -1010,22 +1010,18 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     const u32 cbv_size = root_cbvs ? 0u : TableSize(totals.cbv);
     const u32 srv_size = TableSize(totals.srv);
     const u32 uav_size = TableSize(totals.uav);
-    descriptors.Reserve(cbv_size + srv_size + uav_size, TableSize(totals.sampler));
-    const auto view_block = descriptors.AllocateViews(cbv_size + srv_size + uav_size);
-    const auto cbv_table = view_block.Slice(0, cbv_size);
-    const auto srv_table = view_block.Slice(cbv_size, srv_size);
-    const auto uav_table = view_block.Slice(cbv_size + srv_size, uav_size);
-    const auto sampler_table = descriptors.AllocateSamplers(TableSize(totals.sampler));
+    const u32 sampler_size = TableSize(totals.sampler);
+    DescriptorPlan view_plan{{cbv_size, srv_size, uav_size}};
+    DescriptorPlan sampler_plan{{sampler_size, 0, 0}};
+    DescriptorTable view_block{{}, {}, cbv_size + srv_size + uav_size, 0, &view_plan};
+    auto cbv_table = view_block.Slice(0, cbv_size);
+    auto srv_table = view_block.Slice(cbv_size, srv_size);
+    auto uav_table = view_block.Slice(cbv_size + srv_size, uav_size);
+    DescriptorTable sampler_table{{}, {}, sampler_size, 0, &sampler_plan};
     const auto rtv_base = descriptors.BoundRtvs();
     const auto dsv_handle = has_depth ? descriptors.BoundDsv() : D3D12_CPU_DESCRIPTOR_HANDLE{};
 
-    if (!injected_draw_skip && BisectEnabled("NXBOX_D3D12_INJECT_DRAW_SKIP")) {
-        injected_draw_skip = true;
-        SkipDraw("injected descriptor recording failure");
-        return;
-    }
-
-    // ---- 3. Fill the tables and collect resource states ----
+    // ---- 3. Build full descriptor keys and collect resource states for every draw ----
     u32 cbv_i = 0, srv_i = 0, uav_i = 0, smp_i = 0;
     const VideoCommon::ImageViewInOut* view_it = view_scratch.data();
     const VideoCommon::SamplerId* sampler_it = sampler_scratch.data();
@@ -1169,6 +1165,20 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     for (u32 i = smp_i; i < sampler_table.count; ++i)
         descriptors.WriteNullSampler(sampler_table, i);
 
+    // Reserve after feedback/uniform copies. A submission invalidates both remembered tables.
+    const u64 table_tick = context.CurrentTick();
+    const bool reuse_views = descriptors.CanReuseDrawTable(view_plan);
+    const bool reuse_samplers = descriptors.CanReuseDrawTable(sampler_plan, true);
+    descriptors.Reserve(reuse_views ? 0u : view_block.count, reuse_samplers ? 0u : sampler_size);
+    if (context.CurrentTick() != table_tick)
+        descriptors.Reserve(view_block.count, sampler_size);
+
+    if (!injected_draw_skip && BisectEnabled("NXBOX_D3D12_INJECT_DRAW_SKIP")) {
+        injected_draw_skip = true;
+        SkipDraw("injected descriptor recording failure");
+        return;
+    }
+
     // Render targets: rewrite the fixed RTV/DSV slots only when the attachments change.
     auto dsv_flags = D3D12_DSV_FLAG_NONE;
     if (has_depth && readonly_depth) {
@@ -1225,6 +1235,12 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     }
     if (readonly_depth)
         ++feedback_readonly_depth;
+
+    view_block = descriptors.FinishDrawTable(view_plan);
+    cbv_table = view_block.Slice(0, cbv_size);
+    srv_table = view_block.Slice(cbv_size, srv_size);
+    uav_table = view_block.Slice(cbv_size + srv_size, uav_size);
+    sampler_table = descriptors.FinishDrawTable(sampler_plan, true);
 
     // ---- 4. Record state (no more allocations from here on) ----
     auto* const commands = context.Commands();

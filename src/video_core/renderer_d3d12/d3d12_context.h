@@ -46,6 +46,7 @@ enum class FrameCount : size_t {
     Dispatches,
     Barriers,
     DescriptorCopies,
+    DescriptorTableReuses,
     DescriptorWrites,
     RootCbvBinds,
     DescriptorWritesCbv,

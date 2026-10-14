@@ -351,6 +351,7 @@ void FrameProfile::EndFrame(bool presented) {
                                       "dispatches",
                                       "barriers",
                                       "descriptor_copies",
+                                      "descriptor_table_reuses",
                                       "descriptor_writes",
                                       "root_cbv_binds",
                                       "descriptor_writes_cbv",
