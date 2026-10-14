@@ -60,7 +60,7 @@ class PageWatchTests(unittest.TestCase):
         ].split("void Memory::MapMemoryRegion", 1)[0]
         self.assertIn("impl->owning_process->GetPageTable().GetImpl()", block)
         self.assertIn("page >= page_table.entries.size()", block)
-        self.assertEqual(block.count(".Raw()"), 1)
+        self.assertEqual(block.count(".Raw()"), 2)  # bitmap view + raw storage view
         self.assertIn("static_cast<Common::PageType>(raw.type)", block)
         self.assertIn("raw.marked != 0", block)
         self.assertIn("PageEntryData::ExtractPointer(raw) == 0", block)
