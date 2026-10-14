@@ -2724,6 +2724,9 @@ VideoCore::RasterizerDownloadArea RasterizerD3D12::GetFlushArea(PAddr addr, u64 
     return new_area;
 }
 void RasterizerD3D12::InvalidateGPUCache() {
+    // invalidate_texture_data_cache and fence signals make attachment writes visible to
+    // texture reads: later feedback samples need a fresh copy.
+    ++feedback_epoch;
     m_gpu.InvalidateGPUCache();
 }
 void RasterizerD3D12::UnmapMemory(DAddr addr, u64 size) {
@@ -2758,6 +2761,7 @@ void RasterizerD3D12::FlushAndInvalidateRegion(DAddr addr, u64 size, VideoCommon
     InvalidateRegion(addr, size, which);
 }
 void RasterizerD3D12::WaitForIdle() {
+    ++feedback_epoch;
     query_cache.NotifyWFI();
     // Guest WFI is a GPU-side ordering point, as in the Vulkan backend. Waiting on the CPU here
     // ran ~34 times per frame in SM3DW and serialized the GPU thread with the GPU.
