@@ -81,9 +81,12 @@ class RedundantStateTests(unittest.TestCase):
         targets = self.rasterizer.split("if (targets != bound_targets)", 1)[1]
         self.assertLess(targets.index("InvalidateRecordedState();"), targets.index("CreateRtv("))
 
-    def test_non_draw_work_always_invalidates_even_for_repeated_labels(self):
+    def test_state_changing_work_always_invalidates_even_for_repeated_labels(self):
         work = self.context.split("Context::MarkWork", 1)[1].split("Context::Submit", 1)[0]
-        self.assertIn('if (label != "guest draws")', work)
+        # Copies, uploads and queries leave graphics state alone and must not reset the cache.
+        for label in ("guest draws", "upload/copy", "queries"):
+            self.assertIn(f'"{label}"', work.split("InvalidateRecordedState();", 1)[0])
+        self.assertNotIn('"guest compute"', work.split("InvalidateRecordedState();", 1)[0])
         self.assertLess(
             work.index("InvalidateRecordedState();"), work.index("std::find(work.begin()")
         )

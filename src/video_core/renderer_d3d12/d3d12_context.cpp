@@ -718,8 +718,14 @@ ID3D12GraphicsCommandList* Context::Commands() {
 }
 void Context::MarkWork(std::string_view label) {
     Commands();
+    // Copies, uploads and queries never touch graphics pipeline state; every other
+    // non-draw path may (compute shares the current PSO, clears and blits draw).
     // Do this even for a label already seen on this recording.
-    if (label != "guest draws")
+    constexpr std::array<std::string_view, 7> state_neutral{
+        "guest draws",         "upload/copy",          "vertex binding padding",
+        "query readback/copy", "queries",              "query report/predicate copy",
+        "timestamp query"};
+    if (std::find(state_neutral.begin(), state_neutral.end(), label) == state_neutral.end())
         InvalidateRecordedState();
     if (label == "guest draws")
         profile.Count(FrameCount::Draws);
