@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <algorithm>
 #include "common/nxbox_upload_diag.h"
+#include <cstdlib>
 #include <cstring>
+#include <span>
 #include <stdexcept>
 #include <fmt/format.h>
 #include "common/alignment.h"
@@ -78,13 +80,25 @@ void BufferCacheRuntime::RecordBufferUpload(VideoCommon::BufferUploadSource sour
     upload_source = counter;
     (void)bytes; // The staging allocation records the actual transferred bytes.
 }
+namespace {
+// Matches VideoCommon::WatchWindowOffset: NXBOX_WATCH_WINDOW (hex), 216 bytes from 0x958.
+u32 WitnessWindowNonzero(std::span<const u8> page) {
+    static const u32 offset = [] {
+        const char* value = std::getenv("NXBOX_WATCH_WINDOW");
+        return value ? static_cast<u32>(std::strtoul(value, nullptr, 16)) & 0xfffu : 0x958u;
+    }();
+    const u32 end = std::min<u32>(offset + 216, static_cast<u32>(page.size()));
+    return static_cast<u32>(
+        std::count_if(page.begin() + offset, page.begin() + end, [](u8 b) { return b != 0; }));
+}
+} // namespace
 void BufferCacheRuntime::TickFrame(Common::SlotVector<Buffer>& buffers) {
     upload.Collect();
     readback.Collect();
     if (witness_resource) {
         // Diagnostic: re-read the watched upload destination each frame, log content changes.
-        auto probe = context.CreateBuffer(256, D3D12_HEAP_TYPE_READBACK);
-        const u64 size = std::min<u64>(256, witness_resource->handle->GetDesc().Width -
+        auto probe = context.CreateBuffer(4096, D3D12_HEAP_TYPE_READBACK);
+        const u64 size = std::min<u64>(4096, witness_resource->handle->GetDesc().Width -
                                                 witness_offset);
         context.Transition(witness_resource, D3D12_RESOURCE_STATE_COPY_SOURCE);
         context.Transition(probe, D3D12_RESOURCE_STATE_COPY_DEST);
@@ -97,8 +111,11 @@ void BufferCacheRuntime::TickFrame(Common::SlotVector<Buffer>& buffers) {
                 std::count_if(probe->mapped.begin(), probe->mapped.begin() + size,
                               [](u8 b) { return b != 0; });
             if (hash != witness_hash)
-                Diagnostic(fmt::format("D3D12_WITNESS frame={} hash={:#x} nonzero={} bytes={}",
-                                       frame, hash, nonzero, TraceHex(probe->mapped, 0)));
+                Diagnostic(fmt::format(
+                    "D3D12_WITNESS frame={} hash={:#x} nonzero={} window_nonzero={} bytes={}",
+                    frame, hash, nonzero,
+                    size >= 0x1000 ? WitnessWindowNonzero(probe->mapped.first(0x1000)) : 0u,
+                    TraceHex(probe->mapped, 0)));
             witness_hash = hash;
         });
     }

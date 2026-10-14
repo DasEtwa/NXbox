@@ -38,10 +38,25 @@ void WatchEvent(DeviceMemory& memory, const char* what, DAddr addr, u64 size, u6
     std::array<u8, 0x1000> bytes{};
     memory.ReadBlockUnsafe(page, bytes.data(), bytes.size());
     const auto nonzero = std::count_if(bytes.begin(), bytes.end(), [](u8 b) { return b != 0; });
-    LOG_ERROR(Render, "NXBOX_WATCH {} addr={:#x} size={} extra={} page_nonzero={}", what, addr,
-              size, extra, nonzero);
+    LOG_ERROR(Render, "NXBOX_WATCH {} addr={:#x} size={} extra={} page_nonzero={} window_nonzero={}",
+              what, addr, size, extra, nonzero, WatchWindowNonzero(bytes));
     if (std::string_view{what} == "upload")
         NxboxUpload::trace_next_copy.store(true);
+}
+
+// Diagnostic window inside the watched page (NXBOX_WATCH_WINDOW=<hex offset>, 0x958 default).
+inline u32 WatchWindowOffset() {
+    static const u32 offset = [] {
+        const char* value = std::getenv("NXBOX_WATCH_WINDOW");
+        return value ? static_cast<u32>(std::strtoul(value, nullptr, 16)) & 0xfffu : 0x958u;
+    }();
+    return offset;
+}
+inline u32 WatchWindowNonzero(std::span<const u8> page) {
+    const u32 begin = WatchWindowOffset();
+    const u32 end = std::min<u32>(begin + 216, static_cast<u32>(page.size()));
+    return static_cast<u32>(std::count_if(page.begin() + begin, page.begin() + end,
+                                          [](u8 b) { return b != 0; }));
 }
 
 using Core::DEVICE_PAGESIZE;
@@ -104,6 +119,22 @@ void BufferCache<P>::TickFrame() {
         return;
     }
     runtime.TickFrame(slot_buffers);
+    if (const DAddr page = WatchedDevicePage()) {
+        // Diagnostic: report when the guest bytes of the watch window change, notified or not.
+        static u64 last_hash{};
+        std::array<u8, 0x1000> bytes{};
+        device_memory.ReadBlockUnsafe(page, bytes.data(), bytes.size());
+        const auto window = std::span{bytes}.subspan(WatchWindowOffset(),
+                                                     std::min<u32>(216, 0x1000 - WatchWindowOffset()));
+        u64 hash = 0xcbf29ce484222325ULL;
+        for (const u8 b : window)
+            hash = (hash ^ b) * 0x100000001b3ULL;
+        if (hash != last_hash) {
+            last_hash = hash;
+            LOG_ERROR(Render, "NXBOX_WATCH guest_window_change hash={:#x} window_nonzero={}", hash,
+                      WatchWindowNonzero(bytes));
+        }
+    }
 
     // Calculate hits and shots and move hit bits to the right
     const u32 hits = std::reduce(channel_state->uniform_cache_hits.begin(),
