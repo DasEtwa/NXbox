@@ -560,8 +560,10 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         color_resources[slot] = color->ImageHandle();
         const FrameProfile::Scope profile_extent{context.Profile(), FramePhase::ExtentCopies};
         const auto original_extent = extent(*color);
-        if (original_extent.width == matching_extent.width &&
-            original_extent.height == matching_extent.height)
+        // Diagnostic: bind mismatched extents directly; hardware renders the intersection.
+        static const bool no_extent_copy = BisectEnabled("NXBOX_D3D12_NO_EXTENT_COPY");
+        if (no_extent_copy || (original_extent.width == matching_extent.width &&
+                               original_extent.height == matching_extent.height))
             continue;
         auto desc = color_resources[slot]->handle->GetDesc();
         if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D) {
@@ -811,6 +813,21 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         bool feedback = false;
         for (const auto& color : color_resources)
             feedback |= color == sampled;
+        if (feedback && context.Profile().Enabled()) {
+            // Count copies whose sampled mips/layers never overlap the bound color views.
+            const auto& range = texture_cache.GetImageView(item.id).range;
+            const auto overlaps = [&](const auto& other) {
+                return range.base.level < other.base.level + other.extent.levels &&
+                       other.base.level < range.base.level + range.extent.levels &&
+                       range.base.layer < other.base.layer + other.extent.layers &&
+                       other.base.layer < range.base.layer + range.extent.layers;
+            };
+            bool disjoint = true;
+            for (const auto* color : color_views)
+                disjoint &= !color || color->ImageHandle() != sampled || !overlaps(color->range);
+            if (disjoint)
+                context.Profile().Count(FrameCount::FeedbackDisjoint);
+        }
         const bool depth_feedback = has_depth && depth_view->ImageHandle() == sampled;
         const bool stencil_writes =
             regs.stencil_enable &&

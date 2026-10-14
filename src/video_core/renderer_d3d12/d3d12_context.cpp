@@ -452,7 +452,8 @@ void FrameProfile::EndFrame(bool presented) {
                                       "forced_submits_lifecycle",
                                       "forced_submits_present",
                                       "redundant_state_skips",
-                                      "copy_hazard_barriers"};
+                                      "copy_hazard_barriers",
+                                      "feedback_disjoint"};
         static_assert(names.size() == static_cast<size_t>(FramePhase::Count));
         static_assert(counters.size() == static_cast<size_t>(FrameCount::Count));
         const double elapsed = static_cast<double>(wall - start_wall);

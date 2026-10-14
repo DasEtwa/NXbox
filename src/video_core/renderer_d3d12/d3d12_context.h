@@ -123,6 +123,7 @@ enum class FrameCount : size_t {
     ForcedSubmitPresent,
     RedundantStateSkips,
     CopyHazardBarriers,
+    FeedbackDisjoint,
     Count
 };
 // Monotonic CPU samples, independent of the host clock API, for exclusive phases.
