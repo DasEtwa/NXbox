@@ -367,7 +367,14 @@ ResourcePtr RasterizerD3D12::CopyFeedback(const ResourcePtr& source) {
 // happens BEFORE any per-draw state is recorded.
 template <typename Func>
 void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
+    const FrameProfile::Scope profile_setup{context.Profile(), FramePhase::DrawSetup};
+    // Re-emplacing ends the previous RAII scope before starting the next one. Keep
+    // these boundaries outside descriptor/stage/attribute loops; nested runtime
+    // scopes still subtract uploads, barriers and submissions exclusively.
+    std::optional<FrameProfile::Scope> draw_phase;
+    draw_phase.emplace(context.Profile(), FramePhase::DrawMemory);
     SCOPE_EXIT {
+        const FrameProfile::Scope profile_cleanup{context.Profile(), FramePhase::DrawCleanup};
         for (auto& stage : bindings.stages)
             stage.Clear();
         state_scratch.clear();
@@ -382,11 +389,11 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     }
     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
     const auto& regs = maxwell3d->regs;
-    {
-        const FrameProfile::Scope profile_cache{context.Profile(), FramePhase::TextureCache};
-        texture_cache.SynchronizeDescriptors(false);
-        texture_cache.UpdateRenderTargets(false);
-    }
+    draw_phase.emplace(context.Profile(), FramePhase::GraphicsDescriptors);
+    texture_cache.SynchronizeDescriptors(false);
+    draw_phase.emplace(context.Profile(), FramePhase::RenderTargets);
+    texture_cache.UpdateRenderTargets(false);
+    draw_phase.emplace(context.Profile(), FramePhase::AttachmentSetup);
     auto* const cached_framebuffer = texture_cache.GetFramebuffer();
     if (!cached_framebuffer)
         return;
@@ -461,7 +468,10 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     Pso::GraphicsPsoState attachment_state{};
     Pso::ApplyFramebufferFormats(attachment_state, formats);
     const u32 num_rts = attachment_state.num_render_targets;
-    query_runtime.PrepareDraw();
+    {
+        const FrameProfile::Scope profile_query{context.Profile(), FramePhase::QueryState};
+        query_runtime.PrepareDraw();
+    }
     IGraphicsPipeline* const pipeline = pipeline_cache->CurrentGraphicsPipeline(formats);
     if (!pipeline)
         return;
@@ -473,6 +483,7 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         if (!PrepareDrawIndices(is_indexed, draw.params, *pipeline))
             return;
     }
+    draw_phase.emplace(context.Profile(), FramePhase::GraphicsState);
     FillGraphicsState(*maxwell3d, attachment_state);
     Pso::ApplyFramebufferFormats(attachment_state, formats);
     if (attachment_diagnostics < 8) {
@@ -488,6 +499,7 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         Diagnostic(message);
     }
 
+    draw_phase.emplace(context.Profile(), FramePhase::AttachmentSetup);
     ++feedback_draw;
     const auto extent = [](const ImageView& view) {
         const auto desc = view.ImageHandle()->handle->GetDesc();
@@ -601,6 +613,7 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
                                matching_extent.width, matching_extent.height, color_copies.size()));
     }
 
+    draw_phase.emplace(context.Profile(), FramePhase::ResourceBindings);
     // ---- 1. Gather views/samplers and tell the buffer cache what the shaders use ----
     StageTableCounts totals{};
     bool has_images = false;
@@ -674,17 +687,17 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
                     {.index = read_handle(desc, i).first, .blacklist = desc.is_written, .id = {}});
         }
     }
-    {
-        const FrameProfile::Scope profile_cache{context.Profile(), FramePhase::TextureCache};
-        texture_cache.FillImageViews(std::span(view_scratch.data(), view_scratch.size()), false,
-                                     has_images);
-        // Mark the render targets modified again, after the sampled textures synchronized their
-        // aliases. Vulkan prepares textures first; here the targets were marked earlier, so a
-        // texture aliasing a target (SM3DW's bloom mip chain) copied the target's pre-draw
-        // contents and took its modification tick, and never picked up what this draw writes.
-        texture_cache.UpdateRenderTargets(false);
-    }
+    draw_phase.emplace(context.Profile(), FramePhase::ImageViews);
+    texture_cache.FillImageViews(std::span(view_scratch.data(), view_scratch.size()), false,
+                                 has_images);
+    // Mark the render targets modified again, after the sampled textures synchronized their
+    // aliases. Vulkan prepares textures first; here the targets were marked earlier, so a
+    // texture aliasing a target (SM3DW's bloom mip chain) copied the target's pre-draw
+    // contents and took its modification tick, and never picked up what this draw writes.
+    draw_phase.emplace(context.Profile(), FramePhase::RenderTargets);
+    texture_cache.UpdateRenderTargets(false);
 
+    draw_phase.emplace(context.Profile(), FramePhase::ResourceBindings);
     // Texel/image buffers are bound through the buffer cache from the resolved views.
     {
         const VideoCommon::ImageViewInOut* it = view_scratch.data();
@@ -719,11 +732,11 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         }
     }
 
-    {
-        const FrameProfile::Scope profile_cache{context.Profile(), FramePhase::BufferCache};
-        buffer_cache.UpdateGraphicsBuffers(is_indexed);
-        buffer_cache.BindHostGeometryBuffers(is_indexed, !converted_indices.has_value());
-    }
+    draw_phase.emplace(context.Profile(), FramePhase::GraphicsBuffers);
+    buffer_cache.UpdateGraphicsBuffers(is_indexed);
+    draw_phase.emplace(context.Profile(), FramePhase::GeometryBuffers);
+    buffer_cache.BindHostGeometryBuffers(is_indexed, !converted_indices.has_value());
+    draw_phase.emplace(context.Profile(), FramePhase::StageBuffers);
     for (size_t stage = 0; stage < NUM_GRAPHICS_STAGES; ++stage) {
         bindings.stages[stage].Clear();
         if (!pipeline->StageInfo(stage))
@@ -736,6 +749,7 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         buffer_cache.any_buffer_uploaded = false;
     }
 
+    draw_phase.emplace(context.Profile(), FramePhase::BufferValidation);
     // Guest mappings can shrink between cache bindings. Do not hand invalid
     // buffer ranges to the descriptor API or poison the whole GPU thread.
     for (const auto& stage : bindings.stages) {
@@ -768,6 +782,7 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         }
     }
 
+    draw_phase.emplace(context.Profile(), FramePhase::FeedbackSetup);
     // Resource creation can drain the queue under memory pressure. Do it before
     // reserving descriptor slots, whose lifetime is tied to the recording tick.
     for (const auto& item : view_scratch) {
@@ -790,6 +805,7 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         }
     }
 
+    draw_phase.emplace(context.Profile(), FramePhase::GeometrySetup);
     bool invalid_states = false;
     bool readonly_depth = false;
     state_scratch.clear();
@@ -893,6 +909,9 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
             SkipDraw("vertex binding exceeds 64 MiB draw budget");
             return;
         }
+        // Only instrument the slow copy/repack path, never each native attribute binding.
+        const FrameProfile::Scope profile_vertex_copies{context.Profile(),
+                                                        FramePhase::VertexCopies};
         if (!realign) {
             // Preserve hardware zero reads beyond the inclusive Maxwell limit.
             context.Profile().Count(FrameCount::BufferUploadBytes, required);
@@ -1001,6 +1020,7 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
             need(resource, D3D12_RESOURCE_STATE_STREAM_OUT);
         }
     }
+    draw_phase.emplace(context.Profile(), FramePhase::DescriptorSetup);
     // ---- 2. Plan every descriptor this draw needs ----
     const bool root_cbvs = pipeline->UsesRootCbvs();
     if (root_cbvs)
@@ -1242,6 +1262,7 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     uav_table = view_block.Slice(cbv_size + srv_size, uav_size);
     sampler_table = descriptors.FinishDrawTable(sampler_plan, true);
 
+    draw_phase.emplace(context.Profile(), FramePhase::DrawRecording);
     // ---- 4. Record state (no more allocations from here on) ----
     auto* const commands = context.Commands();
     descriptors.SetHeaps(commands);
@@ -1337,6 +1358,7 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     }
     commands->SetGraphicsRoot32BitConstants(0, static_cast<UINT>(words.size()), words.data(), 0);
 
+    draw_phase.emplace(context.Profile(), FramePhase::QueryState);
     query_cache.CounterEnable(VideoCommon::QueryType::ZPassPixelCount64,
                               regs.zpass_pixel_count_enable != 0);
     if (feedback_info)
@@ -1344,10 +1366,14 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     else
         transform_feedback.Unbind(regs.transform_feedback_enabled == 0);
     query_runtime.BeginDraw(pipeline->StageInfo(3) != nullptr);
-    context.MarkWork("guest draws");
-    draw(commands);
+    {
+        const FrameProfile::Scope profile_record{context.Profile(), FramePhase::DrawRecording};
+        context.MarkWork("guest draws");
+        draw(commands);
+    }
     query_runtime.EndDraw();
     query_runtime.PauseHostConditionalRendering();
+    draw_phase.emplace(context.Profile(), FramePhase::DrawCleanup);
     for (const auto& copy : color_copies) {
         const FrameProfile::Scope profile_extent{context.Profile(), FramePhase::ExtentCopies};
         context.Profile().Count(FrameCount::ExtentCopies, copy.region.src_subresource.num_layers);
@@ -1364,6 +1390,7 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
 
 bool RasterizerD3D12::PrepareDrawIndices(bool is_indexed, DrawParams& params,
                                          const IGraphicsPipeline& pipeline) {
+    const FrameProfile::Scope profile_indices{context.Profile(), FramePhase::IndexConversion};
     const auto& state = maxwell3d->draw_manager.draw_state;
     const auto topology = static_cast<IndexConversion::Topology>(state.topology);
     const auto& regs = maxwell3d->regs;
@@ -1409,7 +1436,6 @@ bool RasterizerD3D12::PrepareDrawIndices(bool is_indexed, DrawParams& params,
             SkipDraw("index conversion exceeds 64 MiB draw budget");
             return false;
         }
-        const FrameProfile::Scope profile_index{context.Profile(), FramePhase::IndexConversion};
         context.Profile().Count(FrameCount::IndexConversions);
         context.Profile().Count(FrameCount::IndexConversionBytes,
                                 u64{state.index_buffer.count} * width);
@@ -1440,7 +1466,6 @@ bool RasterizerD3D12::PrepareDrawIndices(bool is_indexed, DrawParams& params,
                 (vertex_only && static_cast<u32>(topology) <= 9)) &&
                IndexConversion::NeedsConversion(topology, IndexConversion::Format::Uint32, {},
                                                 provoking)) {
-        const FrameProfile::Scope profile_index{context.Profile(), FramePhase::IndexConversion};
         context.Profile().Count(FrameCount::IndexConversions);
         converted_indices =
             index_converter.Generate(topology, state.vertex_buffer.count, 0, provoking);
@@ -1461,6 +1486,7 @@ bool RasterizerD3D12::PrepareDrawIndices(bool is_indexed, DrawParams& params,
 }
 
 void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) try {
+    const FrameProfile::Scope profile_dispatch{context.Profile(), FramePhase::DrawDispatch};
     if (BisectEnabled("NXBOX_D3D12_NO_DRAWS")) {
         m_gpu.TickWork();
         return;
@@ -1473,10 +1499,12 @@ void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) try {
     converted_indices.reset();
     m_gpu.TickWork();
 } catch (const std::exception& error) {
+    const FrameProfile::Scope profile_failure{context.Profile(), FramePhase::DrawCleanup};
     converted_indices.reset();
     SkipDraw(error.what());
     m_gpu.TickWork();
 } catch (...) {
+    const FrameProfile::Scope profile_failure{context.Profile(), FramePhase::DrawCleanup};
     converted_indices.reset();
     SkipDraw("unknown exception in direct draw");
     m_gpu.TickWork();
@@ -1500,6 +1528,7 @@ ID3D12CommandSignature* RasterizerD3D12::IndirectSignature(bool indexed) {
 }
 
 void RasterizerD3D12::DrawIndirect() try {
+    const FrameProfile::Scope profile_dispatch{context.Profile(), FramePhase::DrawDispatch};
     if (BisectEnabled("NXBOX_D3D12_NO_DRAWS")) {
         m_gpu.TickWork();
         return;
@@ -1571,9 +1600,11 @@ void RasterizerD3D12::DrawIndirect() try {
     }
     m_gpu.TickWork();
 } catch (const std::exception& error) {
+    const FrameProfile::Scope profile_failure{context.Profile(), FramePhase::DrawCleanup};
     SkipDraw(error.what());
     m_gpu.TickWork();
 } catch (...) {
+    const FrameProfile::Scope profile_failure{context.Profile(), FramePhase::DrawCleanup};
     SkipDraw("unknown exception in indirect draw");
     m_gpu.TickWork();
 }

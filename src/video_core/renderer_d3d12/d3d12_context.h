@@ -39,6 +39,26 @@ enum class FramePhase : size_t {
     TextureCache,
     BufferDownload,
     TextureDownload,
+    DrawDispatch,
+    DrawMemory,
+    GraphicsDescriptors,
+    RenderTargets,
+    AttachmentSetup,
+    QueryState,
+    GraphicsState,
+    ResourceBindings,
+    ImageViews,
+    GraphicsBuffers,
+    GeometryBuffers,
+    StageBuffers,
+    BufferValidation,
+    FeedbackSetup,
+    GeometrySetup,
+    VertexCopies,
+    DescriptorSetup,
+    DrawRecording,
+    DrawCleanup,
+    BetweenDraws,
     Count
 };
 enum class FrameCount : size_t {
@@ -106,7 +126,9 @@ enum class FrameCount : size_t {
 // Monotonic CPU samples, independent of the host clock API, for exclusive phases.
 struct FrameTiming {
     std::array<std::uint64_t, static_cast<size_t>(FramePhase::Count)> cpu{};
-    FramePhase active{FramePhase::DrawSetup};
+    // Residual recording-thread work (guest commands and housekeeping) outside
+    // draw scopes. Nested upload/submit/wait scopes keep their own attribution.
+    FramePhase active{FramePhase::BetweenDraws};
     std::uint64_t last{};
     void Switch(FramePhase phase, std::uint64_t now) {
         if (now >= last)

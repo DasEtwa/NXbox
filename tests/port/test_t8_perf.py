@@ -38,7 +38,8 @@ int main(int argc, char** argv) {
         timing.Switch(FramePhase::FenceWait, 160);
         timing.Switch(FramePhase::DrawSetup, 160); // Sleeping consumes no CPU.
         timing.Switch(FramePhase::DrawSetup, 180);
-        assert(timing.cpu[static_cast<size_t>(FramePhase::DrawSetup)] == 40);
+        assert(timing.cpu[static_cast<size_t>(FramePhase::DrawSetup)] == 30);
+        assert(timing.cpu[static_cast<size_t>(FramePhase::BetweenDraws)] == 10);
         assert(timing.cpu[static_cast<size_t>(FramePhase::DescriptorWrites)] == 35);
         assert(timing.cpu[static_cast<size_t>(FramePhase::Barriers)] == 5);
         assert(timing.cpu[static_cast<size_t>(FramePhase::FenceWait)] == 0);
