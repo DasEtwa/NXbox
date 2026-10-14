@@ -93,6 +93,9 @@ public:
 
     // Inspect the owning process's entry without resolving a pointer or invoking GPU callbacks.
     [[nodiscard]] std::optional<PageEntryInfo> GetPageEntryInfo(Common::ProcessAddress vaddr) const;
+    // Diagnostic (NXBOX_WATCH_DADDR): every recorded mapping of the physical page behind host_page,
+    // as "vaddr/marked/pointer_matches" entries, to find aliases that bypass write tracking.
+    [[nodiscard]] std::string DescribePhysicalAliases(const u8* host_page) const;
 
     /**
      * Maps an allocated buffer onto a region of the emulated process address space.

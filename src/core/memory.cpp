@@ -6,6 +6,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <cstdlib>
+#include <string>
 #include <bit>
 #include <cstring>
 #include <mutex>
@@ -77,6 +79,10 @@ struct Memory::Impl {
                    GetInteger(target));
         MapPages(page_table, base / YUZU_PAGESIZE, size / YUZU_PAGESIZE, target,
                  Common::PageType::Memory);
+        if (std::getenv("NXBOX_WATCH_DADDR")) {
+            std::scoped_lock lock{mapping_log_guard};
+            mapping_log.push_back({&page_table, GetInteger(base), size, GetInteger(target)});
+        }
 
         if (current_page_table->fastmem_arena) {
             host_buffer->Map(GetInteger(base), GetInteger(target) - DramMemoryMap::Base, size, perms, separate_heap);
@@ -936,6 +942,12 @@ struct Memory::Impl {
     Core::System& system;
     Tegra::MaxwellDeviceMemoryManager* gpu_device_memory{};
     const Kernel::KProcess* owning_process = nullptr;
+    struct MappingRecord {
+        const Common::PageTable* page_table;
+        u64 base, size, target;
+    };
+    mutable std::mutex mapping_log_guard;
+    std::vector<MappingRecord> mapping_log;
     Common::PageTable* current_page_table = nullptr;
 
     std::array<VideoCore::RasterizerDownloadArea, Core::Hardware::NUM_CPU_CORES> rasterizer_read_areas{};
@@ -969,6 +981,30 @@ void Memory::Reset() {
 
 void Memory::SetCurrentPageTable(Kernel::KProcess& process) {
     impl->SetCurrentPageTable(process);
+}
+
+std::string Memory::DescribePhysicalAliases(const u8* host_page) const {
+    const u8* const backing = impl->system.DeviceMemory().buffer.BackingBasePointer();
+    const u64 paddr = static_cast<u64>(host_page - backing) + DramMemoryMap::Base;
+    std::string out;
+    std::scoped_lock lock{impl->mapping_log_guard};
+    for (const auto& record : impl->mapping_log) {
+        if (paddr < record.target || paddr - record.target >= record.size)
+            continue;
+        const u64 vaddr = record.base + ((paddr - record.target) & ~YUZU_PAGEMASK);
+        const auto page = vaddr >> YUZU_PAGEBITS;
+        int marked = -1, matches = -1;
+        if (page < record.page_table->entries.size()) {
+            const auto raw = record.page_table->entries[page].Raw();
+            marked = raw.marked != 0;
+            const auto pointer = Common::PageTable::PageEntryData::ExtractPointer(raw, true);
+            matches = pointer != 0 && reinterpret_cast<const u8*>(pointer + vaddr) ==
+                                          host_page - (reinterpret_cast<uintptr_t>(host_page) & YUZU_PAGEMASK);
+        }
+        out += fmt::format("{:#x}/{}/{}/{};", vaddr, marked, matches,
+                           record.page_table == impl->current_page_table ? "cur" : "other");
+    }
+    return out.empty() ? "none" : out;
 }
 
 std::optional<Memory::PageEntryInfo> Memory::GetPageEntryInfo(Common::ProcessAddress vaddr) const {

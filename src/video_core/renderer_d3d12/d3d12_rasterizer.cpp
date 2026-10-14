@@ -1003,14 +1003,19 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
                                            : std::nullopt;
                     return fmt::format(
                         "daddr={:#x},asid={},cpu_vaddr={:#x},cached_count={},entry_valid={},"
-                        "raw={:#x},storage_raw={:#x},type={},marked={},pointer_null={},is_current={}",
+                        "raw={:#x},storage_raw={:#x},type={},marked={},pointer_null={},is_current={},"
+                        "aliases={}",
                         *address & ~Core::DEVICE_PAGEMASK, info->asid.id, info->cpu_vaddr,
                         info->cached_count, entry.has_value(), entry ? entry->raw : 0,
                         entry ? entry->storage_raw : 0,
                         entry ? static_cast<int>(entry->type) : -1,
                         entry ? static_cast<int>(entry->marked) : -1,
                         entry ? static_cast<int>(entry->pointer_null) : -1,
-                        entry ? static_cast<int>(entry->is_current) : -1);
+                        entry ? static_cast<int>(entry->is_current) : -1,
+                        info->memory ? info->memory->DescribePhysicalAliases(
+                                           device_memory.GetPointer<u8>(*address &
+                                                                        ~Core::DEVICE_PAGEMASK))
+                                     : std::string{"unavailable"});
                 };
                 const auto first_page = trace_page(copied ? device_address : std::nullopt);
                 const auto last_page =
