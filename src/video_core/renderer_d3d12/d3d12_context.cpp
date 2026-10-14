@@ -332,6 +332,10 @@ void FrameProfile::Count(FrameCount counter, u64 amount) {
     if (OnOwner())
         counts[static_cast<size_t>(counter)] += amount;
 }
+void FrameProfile::NoteTransition(u32 before, u32 after, bool buffer) {
+    if (enabled && OnOwner())
+        ++transitions[(u64{buffer} << 63) | (u64{before} << 32) | after];
+}
 void FrameProfile::EndFrame(bool presented) {
     if (!enabled)
         return;
@@ -465,6 +469,14 @@ void FrameProfile::EndFrame(bool presented) {
             line += fmt::format(
                 " {}={} {}_per_frame={:.2f}", counters[i], counts[i], counters[i],
                 frames ? static_cast<double>(counts[i]) / static_cast<double>(frames) : 0.0);
+        std::vector<std::pair<u64, u64>> top(transitions.begin(), transitions.end());
+        std::sort(top.begin(), top.end(),
+                  [](const auto& a, const auto& b) { return a.second > b.second; });
+        line += " transitions_top=";
+        for (size_t i = 0; i < std::min<size_t>(top.size(), 12); ++i)
+            line += fmt::format("{}{:#x}>{:#x}:{}", top[i].first >> 63 ? "b" : "t",
+                                (top[i].first >> 32) & 0x7fffffff, top[i].first & 0xffffffff,
+                                top[i].second) + ",";
         if (guest_visibility)
             line += guest_visibility();
         Diagnostic(line);
@@ -473,6 +485,7 @@ void FrameProfile::EndFrame(bool presented) {
     }
     timing.cpu.fill(0);
     counts.fill(0);
+    transitions.clear();
     frames = fence_wall = 0;
     initial_cpu = ProfileCpuTime();
     start_wall = ProfileWallTime();
@@ -869,6 +882,9 @@ void Context::Transition(const ResourcePtr& resource, D3D12_RESOURCE_STATES stat
     barrier.Transition.StateAfter = state;
     commands->ResourceBarrier(1, &barrier);
     profile.Count(FrameCount::Barriers);
+    if (profile.Enabled())
+        profile.NoteTransition(resource->state, state,
+                           resource->handle->GetDesc().Dimension == D3D12_RESOURCE_DIMENSION_BUFFER);
     copy_writes.erase(resource->handle.Get());
     resource->state = state;
 }
@@ -935,6 +951,10 @@ void Context::TransitionBatch(std::span<const std::pair<ResourcePtr, D3D12_RESOU
         barrier.Transition = {resource->handle.Get(), D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
                               resource->state, state};
         barriers.push_back(barrier);
+        if (profile.Enabled())
+            profile.NoteTransition(resource->state, state,
+                               resource->handle->GetDesc().Dimension ==
+                                   D3D12_RESOURCE_DIMENSION_BUFFER);
         resource->state = state;
     }
     if (!barriers.empty()) {

@@ -351,6 +351,8 @@ public:
         return enabled;
     }
     void Count(FrameCount counter, u64 amount = 1);
+    // Diagnostic: histogram of transition barriers by before/after state and resource kind.
+    void NoteTransition(u32 before, u32 after, bool buffer);
     void EndFrame(bool presented = true);
     std::function<std::string()> guest_visibility;
     void BindRecordingThread();
@@ -364,6 +366,7 @@ private:
     std::atomic<DWORD> owner{};
     FrameTiming timing;
     std::array<u64, static_cast<size_t>(FrameCount::Count)> counts{};
+    std::unordered_map<u64, u64> transitions;
     u64 initial_cpu{}, start_wall{}, fence_wall{}, frames{};
 };
 

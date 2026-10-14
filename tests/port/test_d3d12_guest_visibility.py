@@ -183,6 +183,9 @@ int main() {
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <unordered_map>
+#include <vector>
+#include <algorithm>
 using u64=std::uint64_t; using DWORD=unsigned;
 DWORD GetCurrentThreadId() { return 1; }
 u64 ProfileWallTime() { return 60000000; }
@@ -210,6 +213,7 @@ struct FrameProfile {
     std::array<u64,static_cast<size_t>(FrameCount::Count)> counts{};
     u64 frames=0,fence_wall=0,start_wall=0,initial_cpu=0;
     std::atomic<u64> gpu_busy{};
+    std::unordered_map<u64,u64> transitions;
     std::function<std::string()> guest_visibility;
     void BindRecordingThread() {}
     void Switch(int) {}
