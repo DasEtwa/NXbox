@@ -166,7 +166,7 @@ int main() {
             "transform_feedback.BindBuffer(",
         ]:
             self.assertLess(prepare.rindex(allocating), reserve, allocating)
-        self.assertIn("CopyFeedback(sampled)", prepare[:reserve])
+        self.assertIn("CopyFeedback(sampled, &texture_cache.GetImageView(item.id).range)", prepare[:reserve])
         injection = prepare.index('SkipDraw("injected descriptor recording failure")')
         self.assertLess(reserve, injection)
         self.assertLess(injection, prepare.index("commands->OMSetRenderTargets("))

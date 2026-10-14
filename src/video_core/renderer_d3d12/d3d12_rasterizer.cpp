@@ -300,14 +300,67 @@ void RasterizerD3D12::SkipDraw(const char* reason) {
     }
 }
 
-ResourcePtr RasterizerD3D12::CopyFeedback(const ResourcePtr& source) {
+ResourcePtr RasterizerD3D12::CopyFeedback(const ResourcePtr& source,
+                                          const VideoCommon::SubresourceRange* range) {
     const FrameProfile::Scope profile_feedback{context.Profile(), FramePhase::FeedbackCopies};
     auto desc = source->handle->GetDesc();
     desc.Flags &= ~D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
     FeedbackTexture* selected{};
+    const bool partial = range && desc.SampleDesc.Count == 1 &&
+                         !(desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL);
+    const u32 array_size =
+        desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D ? 1u : desc.DepthOrArraySize;
+    const u32 subresource_count = desc.MipLevels * array_size;
+    // Copies the missing subresources of the view (or everything) into entry.
+    const auto copy_into = [&](FeedbackTexture& entry) {
+        if (entry.copied.size() != subresource_count)
+            entry.copied.assign(subresource_count, false);
+        std::vector<u32> missing;
+        if (!partial) {
+            for (u32 index = 0; index < subresource_count; ++index)
+                if (!entry.copied[index])
+                    missing.push_back(index);
+        } else {
+            const u32 first_layer = array_size == 1 ? 0u : static_cast<u32>(range->base.layer);
+            const u32 layers = array_size == 1 ? 1u : static_cast<u32>(range->extent.layers);
+            for (u32 layer = first_layer; layer < std::min(first_layer + layers, array_size);
+                 ++layer) {
+                for (u32 mip = static_cast<u32>(range->base.level);
+                     mip < std::min<u32>(range->base.level + range->extent.levels, desc.MipLevels);
+                     ++mip) {
+                    if (!entry.copied[mip + layer * desc.MipLevels])
+                        missing.push_back(mip + layer * desc.MipLevels);
+                }
+            }
+        }
+        if (missing.empty())
+            return;
+        context.Transition(source, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        context.Transition(entry.resource, D3D12_RESOURCE_STATE_COPY_DEST);
+        if (!partial) {
+            context.Commands()->CopyResource(entry.resource->handle.Get(), source->handle.Get());
+            entry.copied.assign(subresource_count, true);
+            context.Profile().Count(FrameCount::FeedbackCopyBytes, source->allocation_size);
+            return;
+        }
+        for (const u32 index : missing) {
+            D3D12_TEXTURE_COPY_LOCATION dst{entry.resource->handle.Get(),
+                                            D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
+            dst.SubresourceIndex = index;
+            D3D12_TEXTURE_COPY_LOCATION src{source->handle.Get(),
+                                            D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
+            src.SubresourceIndex = index;
+            context.Commands()->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+            entry.copied[index] = true;
+        }
+        context.Profile().Count(FrameCount::FeedbackCopyBytes,
+                                source->allocation_size * missing.size() / subresource_count);
+    };
     for (auto& entry : feedback_pool) {
-        if (entry.draw == feedback_draw && entry.source == source.get())
+        if (entry.draw == feedback_draw && entry.source == source.get()) {
+            copy_into(entry);
             return entry.resource;
+        }
         const auto other = entry.resource->handle->GetDesc();
         if (entry.draw != feedback_draw && desc.Dimension == other.Dimension &&
             desc.Alignment == other.Alignment && desc.Width == other.Width &&
@@ -355,11 +408,10 @@ ResourcePtr RasterizerD3D12::CopyFeedback(const ResourcePtr& source) {
     selected->source = source.get();
     selected->draw = feedback_draw;
     selected->frame = feedback_frame;
-    context.Transition(source, D3D12_RESOURCE_STATE_COPY_SOURCE);
-    context.Transition(selected->resource, D3D12_RESOURCE_STATE_COPY_DEST);
-    // Preserve every mip, layer and depth/stencil plane: SRVs can span more
-    // subresources than the attachment view (including mip-generation feedback).
-    context.Commands()->CopyResource(selected->resource->handle.Get(), source->handle.Get());
+    selected->copied.assign(subresource_count, false);
+    // Without a range, preserve every mip, layer and depth/stencil plane. With one,
+    // the SRV reads only those subresources, so copy just them.
+    copy_into(*selected);
     context.MarkWork("attachment feedback copies");
     ++feedback_copies;
     context.Profile().Count(FrameCount::FeedbackCopies);
@@ -861,7 +913,7 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
              (regs.stencil_two_side_enable && (regs.stencil_back_mask & 0xff)));
         feedback |= depth_feedback && SelectFeedbackMode(true, regs.depth_write_enabled != 0,
                                                          stencil_writes) == FeedbackMode::Copy;
-        if (feedback && !CopyFeedback(sampled)) {
+        if (feedback && !CopyFeedback(sampled, &texture_cache.GetImageView(item.id).range)) {
             SkipDraw("feedback allocation failed");
             return;
         }
@@ -1283,7 +1335,7 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
                                            stencil_writes) == FeedbackMode::ReadOnlyDepth) {
                         readonly_depth = true;
                     } else {
-                        sampled = CopyFeedback(sampled);
+                        sampled = CopyFeedback(sampled, &view.range);
                         if (!sampled) {
                             SkipDraw("feedback memory budget");
                             return;
@@ -2079,7 +2131,7 @@ void RasterizerD3D12::DrawTexture() {
         }
         texture_cache.PrepareImage(source.image_id, false, false);
         if (sampled == target->ImageHandle()) {
-            sampled = CopyFeedback(sampled);
+            sampled = CopyFeedback(sampled, &source.range);
             if (!sampled) {
                 SkipDraw("DrawTexture feedback copy budget");
                 return;

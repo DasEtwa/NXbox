@@ -162,13 +162,16 @@ private:
     VideoCommon::ComputeUniformBufferSizes compute_uniform_sizes{};
     std::vector<VideoCommon::ImageViewInOut> view_scratch;
     std::vector<VideoCommon::SamplerId> sampler_scratch;
-    ResourcePtr CopyFeedback(const ResourcePtr& source);
+    // Copies only the sampled view's subresources when a range is given (color, single-sample).
+    ResourcePtr CopyFeedback(const ResourcePtr& source,
+                             const VideoCommon::SubresourceRange* range = nullptr);
     void SkipDraw(const char* reason);
     struct FeedbackTexture {
         ResourcePtr resource;
         const Resource* source{};
         u64 draw{};
         u64 frame{};
+        std::vector<bool> copied; // per subresource, for the current draw
     };
     std::vector<FeedbackTexture> feedback_pool;
     std::vector<FeedbackTexture> attachment_pool;

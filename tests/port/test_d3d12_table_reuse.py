@@ -59,7 +59,7 @@ class DescriptorTableReuse(unittest.TestCase):
         self.assertIn("reuse_samplers ? 0u : sampler_size", window)
         self.assertIn("if (context.CurrentTick() != table_tick)", window)
         self.assertIn("descriptors.Reserve(view_block.count, sampler_size)", window)
-        self.assertLess(self.draw.index("CopyFeedback(sampled)"), reserve)
+        self.assertLess(self.draw.index("CopyFeedback(sampled, &texture_cache.GetImageView(item.id).range)"), reserve)
         self.assertLess(self.draw.index("buffer_runtime.CopyUniform(buffer)"), reserve)
 
     def test_states_and_retention_run_even_when_tables_are_reused(self):
