@@ -9,6 +9,25 @@
 
 namespace D3D12 {
 namespace {
+bool UploadTraceEnabled() {
+    static const bool enabled = BisectEnabled("NXBOX_D3D12_UPLOAD_TRACE");
+    return enabled;
+}
+u64 TraceHash(std::span<const u8> bytes) {
+    u64 hash = 14695981039346656037ULL;
+    for (const u8 byte : bytes)
+        hash = (hash ^ byte) * 1099511628211ULL;
+    return hash;
+}
+size_t TraceDifference(std::span<const u8> expected, std::span<const u8> actual) {
+    return std::mismatch(expected.begin(), expected.end(), actual.begin()).first - expected.begin();
+}
+std::string TraceHex(std::span<const u8> bytes, size_t offset) {
+    std::string hex;
+    for (const u8 byte : bytes.subspan(offset, std::min(size_t{32}, bytes.size() - offset)))
+        hex += fmt::format("{:02x}", byte);
+    return hex;
+}
 void InvalidRange(u32 kind, const char* label, u64 offset, u64 size, u64 width) {
     static std::array<std::atomic_flag, 8> reported{};
     if (!reported[kind].test_and_set())
@@ -21,7 +40,12 @@ void InvalidRange(u32 kind, const char* label, u64 offset, u64 size, u64 width) 
 Buffer::Buffer(BufferCacheRuntime&, VideoCommon::NullBufferParams params) : BufferBase{params} {}
 Buffer::Buffer(BufferCacheRuntime& runtime, VAddr address, u64 size, bool)
     : BufferBase{address, size}, context{&runtime.context},
-      resource{context->CreateBuffer(size, D3D12_HEAP_TYPE_DEFAULT)}, usage{size} {}
+      resource{context->CreateBuffer(size, D3D12_HEAP_TYPE_DEFAULT)}, usage{size} {
+    if (UploadTraceEnabled())
+        Diagnostic(fmt::format(
+            "D3D12_UPLOAD_CREATE resource={:#x} guest_base={:#x} size={} tick={}",
+            resource->handle->GetGPUVirtualAddress(), address, size, context->CurrentTick()));
+}
 void Buffer::MarkUsage(u64 offset, u64 size) {
     if (!context || !resource)
         return;
@@ -101,9 +125,54 @@ void BufferCacheRuntime::CopyBuffer(ResourcePtr dst, ResourcePtr src,
         CopyBuffer(dst, scratch, writes, false);
         return;
     }
+    // Witness the GPU's source bytes and destination immediately around each cache copy batch.
+    // Downloads (including these witnesses) do not recurse. Snapshot the CPU bytes before
+    // allocation: CreateBuffer can submit/wait under pressure. Keep all probes in this list.
+    const bool trace = UploadTraceEnabled() && dst->heap == D3D12_HEAP_TYPE_DEFAULT;
+    ResourcePtr trace_readback;
+    std::vector<u8> trace_expected;
+    std::vector<VideoCommon::BufferCopy> trace_copies, trace_reads, trace_writes;
+    size_t trace_size{};
+    u64 trace_id{};
+    if (trace) {
+        static u64 sequence{};
+        trace_id = ++sequence;
+        trace_copies.assign(copies.begin(), copies.end());
+        for (const auto& copy : copies)
+            trace_size = CheckedAdd(trace_size, copy.size);
+        if (src->heap == D3D12_HEAP_TYPE_UPLOAD) {
+            trace_expected.resize(trace_size);
+            size_t cursor{};
+            for (const auto& copy : copies) {
+                std::memcpy(trace_expected.data() + cursor, src->mapped.data() + copy.src_offset,
+                            copy.size);
+                cursor += copy.size;
+            }
+        }
+        if (trace_size) {
+            trace_readback =
+                context.CreateBuffer(CheckedMultiply(trace_size, 2), D3D12_HEAP_TYPE_READBACK);
+            size_t cursor{};
+            for (const auto& copy : copies) {
+                trace_reads.push_back({copy.src_offset, cursor, copy.size});
+                trace_writes.push_back({copy.dst_offset, trace_size + cursor, copy.size});
+                cursor += copy.size;
+            }
+        }
+    }
     context.Transition(src, D3D12_RESOURCE_STATE_COPY_SOURCE);
     context.Transition(dst, D3D12_RESOURCE_STATE_COPY_DEST);
+    if (trace_readback)
+        CopyBuffer(trace_readback, src, trace_reads, true);
+    const u64 trace_tick = trace ? context.CurrentTick() : 0;
     for (const auto& copy : copies) {
+        if (trace)
+            Diagnostic(fmt::format(
+                "D3D12_UPLOAD_COPY id={} tick={} source={:#x} source_heap={} src_offset={} "
+                "destination={:#x} dst_offset={} size={}",
+                trace_id, trace_tick, src->handle->GetGPUVirtualAddress(),
+                static_cast<u32>(src->heap), copy.src_offset, dst->handle->GetGPUVirtualAddress(),
+                copy.dst_offset, copy.size));
         context.Profile().Count(src->heap == D3D12_HEAP_TYPE_UPLOAD
                                     ? FrameCount::StagingCopyBytes
                                     : FrameCount::GpuBufferCopyBytes,
@@ -113,6 +182,53 @@ void BufferCacheRuntime::CopyBuffer(ResourcePtr dst, ResourcePtr src,
         context.Commands()->CopyBufferRegion(dst->handle.Get(), copy.dst_offset, src->handle.Get(),
                                              copy.src_offset, copy.size);
     }
+    if (trace_readback) {
+        CopyBuffer(trace_readback, dst, trace_writes, true);
+        context.Transition(dst, D3D12_RESOURCE_STATE_COPY_DEST);
+        context.AfterCompletion([trace_readback, src, trace_id, trace_tick, trace_size,
+                                 destination = dst->handle->GetGPUVirtualAddress(),
+                                 copies = std::move(trace_copies),
+                                 expected = std::move(trace_expected)] {
+            size_t cursor{};
+            for (const auto& copy : copies) {
+                const auto gpu_source = trace_readback->mapped.subspan(cursor, copy.size);
+                const auto gpu_destination =
+                    trace_readback->mapped.subspan(trace_size + cursor, copy.size);
+                const bool upload = src->heap == D3D12_HEAP_TYPE_UPLOAD;
+                const std::span<const u8> cpu =
+                    upload ? std::span<const u8>{expected}.subspan(cursor, copy.size) : gpu_source;
+                const size_t source_diff = TraceDifference(cpu, gpu_source);
+                const size_t destination_diff = TraceDifference(gpu_source, gpu_destination);
+                const size_t staging_diff =
+                    upload ? TraceDifference(cpu, src->mapped.subspan(copy.src_offset, copy.size))
+                           : copy.size;
+                const size_t first_diff = std::min(source_diff, destination_diff);
+                const size_t window = first_diff == copy.size ? 0 : first_diff;
+                Diagnostic(fmt::format(
+                    "D3D12_UPLOAD_RESULT id={} tick={} destination={:#x} dst_offset={} size={} "
+                    "upload={} cpu_hash={:#x} gpu_source_hash={:#x} gpu_destination_hash={:#x} "
+                    "source_diff={} destination_diff={} staging_diff={} window={} "
+                    "cpu={} gpu_source={} gpu_destination={}",
+                    trace_id, trace_tick, destination, copy.dst_offset, copy.size, upload,
+                    TraceHash(cpu), TraceHash(gpu_source), TraceHash(gpu_destination), source_diff,
+                    destination_diff, staging_diff, window, TraceHex(cpu, window),
+                    TraceHex(gpu_source, window), TraceHex(gpu_destination, window)));
+                // Keep the measured fullscreen-stream offsets visible even when every
+                // byte matches: a hash or a prefix cannot show an earlier zero snapshot.
+                for (const u64 probe : {u64{72}, u64{26968}}) {
+                    if (probe < copy.dst_offset || probe - copy.dst_offset >= copy.size)
+                        continue;
+                    const size_t relative = probe - copy.dst_offset;
+                    Diagnostic(fmt::format("D3D12_UPLOAD_PROBE id={} destination={:#x} offset={} "
+                                           "cpu={} gpu_source={} gpu_destination={}",
+                                           trace_id, destination, probe, TraceHex(cpu, relative),
+                                           TraceHex(gpu_source, relative),
+                                           TraceHex(gpu_destination, relative)));
+                }
+                cursor += copy.size;
+            }
+        });
+    }
 }
 void BufferCacheRuntime::ClearBuffer(ResourcePtr dst, u32 offset, size_t size, u32 value) {
     // Copy-based fill also handles buffers without UAV flags. Chunk large clears.
@@ -121,6 +237,10 @@ void BufferCacheRuntime::ClearBuffer(ResourcePtr dst, u32 offset, size_t size, u
         InvalidRange(2, "unaligned or out-of-bounds buffer clear", offset, size, width);
         return;
     }
+    if (UploadTraceEnabled())
+        Diagnostic(fmt::format(
+            "D3D12_UPLOAD_CLEAR resource={:#x} offset={} size={} value={} tick={}",
+            dst->handle->GetGPUVirtualAddress(), offset, size, value, context.CurrentTick()));
     while (size) {
         const size_t count = std::min(size, size_t{1 << 20});
         const FrameProfile::Scope profile_upload{context.Profile(), FramePhase::BufferUpload};
@@ -193,6 +313,11 @@ void BufferCacheRuntime::BindVertexBuffer(u32 index, ResourcePtr buffer, u32 off
     }
     // Size is the inclusive Maxwell limit minus start supplied by the shared cache.
     // Preserve stride zero (constant attributes) and the synchronized guest extent.
+    if (UploadTraceEnabled())
+        Diagnostic(fmt::format(
+            "D3D12_UPLOAD_BIND slot={} resource={:#x} offset={} size={} stride={} tick={}", index,
+            buffer ? buffer->handle->GetGPUVirtualAddress() : 0, offset, size, stride,
+            context.CurrentTick()));
     bindings.geometry.vertex[index] = {std::move(buffer), offset, size, stride};
 }
 void BufferCacheRuntime::BindVertexBuffers(VideoCommon::HostBindings<Buffer>& host) {

@@ -133,10 +133,14 @@ BINDINGS_DRIVER = r"""
 #include <cstring>
 #include <memory>
 #include <span>
+#include <string>
 #include <vector>
 #include "video_core/renderer_d3d12/d3d12_upload_cache.h"
 using namespace D3D12;
 using u64=std::uint64_t; using u32=std::uint32_t; using u8=std::uint8_t;
+namespace fmt { template<class... T> std::string format(const char*, T...) { return {}; } }
+bool UploadTraceEnabled() { return false; }
+void Diagnostic(const std::string&) {}
 namespace Common {
 template<class T> T AlignUp(T value, T alignment) { return (value+alignment-1)&~(alignment-1); }
 }
@@ -149,6 +153,7 @@ struct Resource {
         Resource* owner;
         struct Desc { u64 Width; };
         Desc GetDesc() const { return {owner->bytes.size()}; }
+        u64 GetGPUVirtualAddress() const { return reinterpret_cast<u64>(owner); }
         Handle* operator->() { return this; }
     } handle{this};
 };
@@ -167,6 +172,7 @@ struct FrameProfile {
 struct Context {
     FrameProfile profile;
     FrameProfile& Profile() { return profile; }
+    u64 CurrentTick() const { return 1; }
     ResourcePtr CreateBuffer(size_t size, int) {
         auto r=std::make_shared<Resource>(); r->bytes.resize(size,0xcc); return r;
     }
