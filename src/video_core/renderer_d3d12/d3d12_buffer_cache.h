@@ -36,8 +36,6 @@ public:
     }
 
 private:
-    ResourcePtr witness_resource;
-    u64 witness_offset{}, witness_hash{}, witness_frame{};
     Context* context{};
     ResourcePtr resource;
     VideoCommon::UsageTracker usage{0};
@@ -132,6 +130,8 @@ private:
     const u64 memory_target{NativeBufferMemoryTarget(context.MemoryUsage())};
     StagingRing upload;
     StagingRing readback;
+    ResourcePtr witness_resource;
+    u64 witness_offset{}, witness_hash{}, witness_frame{};
 };
 struct BufferCacheParams {
     using Runtime = BufferCacheRuntime;
