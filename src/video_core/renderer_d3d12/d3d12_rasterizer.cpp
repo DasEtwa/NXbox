@@ -735,6 +735,21 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         }
     }
 
+    // Diagnostic: re-dirty small vertex streams so the cache re-reads guest memory every draw.
+    static const bool vertex_resync = BisectEnabled("NXBOX_D3D12_VB_RESYNC");
+    if (vertex_resync) {
+        for (u32 index = 0; index < Maxwell::NumVertexArrays; ++index) {
+            const auto& stream = regs.vertex_streams[index];
+            if (!stream.enable)
+                continue;
+            const GPUVAddr begin = stream.Address();
+            const GPUVAddr end = regs.vertex_stream_limits[index].Address() + 1;
+            if (end <= begin || end - begin > 4096)
+                continue;
+            if (const auto device_address = gpu_memory->GpuToCpuAddress(begin))
+                buffer_cache.WriteMemory(*device_address, end - begin);
+        }
+    }
     draw_phase.emplace(context.Profile(), FramePhase::GraphicsBuffers);
     buffer_cache.UpdateGraphicsBuffers(is_indexed);
     draw_phase.emplace(context.Profile(), FramePhase::GeometryBuffers);
