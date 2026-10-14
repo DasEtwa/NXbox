@@ -12,6 +12,7 @@
 #include "common/cpu_features.h"
 
 #ifdef _WIN32
+#include <windows.h>
 #include "common/windows/timer_resolution.h"
 #endif
 
@@ -86,6 +87,21 @@ void CoreTiming::Initialize(std::function<void()>&& on_thread_init_) {
                         // There are more events left in the queue, wait until the next event.
                         auto const wait_time = *next_time - GetGlobalTimeNs().count();
                         if (wait_time > 0) {
+#ifdef _WIN32
+                            // Sub-millisecond condition-variable waits round to zero on
+                            // Windows and spin a whole core; sleep on a high-resolution timer.
+                            static thread_local HANDLE timer = CreateWaitableTimerExW(
+                                nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                                TIMER_ALL_ACCESS);
+                            if (timer && wait_time < 1'000'000) {
+                                LARGE_INTEGER due{};
+                                due.QuadPart = -std::max<s64>(1, wait_time / 100);
+                                if (SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE)) {
+                                    WaitForSingleObject(timer, INFINITE);
+                                    continue;
+                                }
+                            }
+#endif
                             event.WaitFor(std::chrono::nanoseconds(wait_time));
                         }
                     } else {
