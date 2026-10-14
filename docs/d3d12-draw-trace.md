@@ -48,3 +48,55 @@ ps_hash=HEX16 vs_hash=HEX16
   retained through synchronous and asynchronous compilation. Absent stages use
   zero. For a merged VertexA/VertexB program, the vertex hash matches the emitted
   merged shader's dump name.
+
+## Vertex byte trace
+
+The same frame selector also captures the first 64 recorded non-indexed draws
+with at most 64 submitted vertices. Indexed draws, including generated quad
+indices, do not consume this additional cap. Each qualifying draw samples guest
+stream 0 and the first other stream referenced by an enabled native attribute,
+for at most two streams. When several attributes use a stream, its first enabled
+attribute supplies the representative IA view; D3D12 binds one IA slot per
+attribute, not per guest stream.
+
+A small READBACK buffer is allocated before descriptor reservation. Immediately
+before the draw, `CopyBufferRegion` samples up to 48 bytes from the actual bound
+resource, then restores its complete draw state (including
+`VERTEX_AND_CONSTANT_BUFFER` for DEFAULT vertex buffers). UPLOAD resources stay
+in `GENERIC_READ`. Predication is paused around the copies and restored for the
+draw. No wait or forced submission is added by the capture; ordinary allocation
+pressure can still submit before state recording.
+
+Once that submission's fence completes, `Context::AfterCompletion` emits:
+
+```text
+D3D12_VB_TRACE draw=N slot=S guest=HEX host=HEX heap=N source=cache|zero|padded guest_gpu=HEX16 ia_slot=N used=BOOL host_offset=N host_size=N
+```
+
+- `draw` matches `D3D12_DRAW_TRACE`; completion messages can appear later.
+- `slot` is the Tegra stream; `ia_slot` is the representative D3D12 attribute
+  binding. `used` says whether an enabled attribute consumes that stream.
+- `guest_gpu` is the guest stream address plus attribute offset and the first
+  element times guest stride. The first element is the submitted base vertex,
+  or the base instance for an instanced attribute (zero for divisor zero).
+  `guest` contains 48 bytes read with `ReadBlockUnsafe`, without flushing or
+  changing the cache. GPU-written guest data can therefore differ from RAM.
+- `host_offset` is relative to the backing resource: bound view offset plus the
+  first element times the actual IA stride, including repacking. `host` is the
+  GPU copy's bytes, not the CPU mapping of a cache/upload buffer. Hex strings
+  use two lowercase digits per byte with no separators.
+- `host_size` is at most 48, clipped to the remaining view extent; bytes beyond
+  the view are not copied or invented. A fully out-of-view range has empty
+  `host` and `host_size=0`.
+- `heap` is the numeric D3D12 heap type: DEFAULT=1, UPLOAD=2, READBACK=3.
+  `source=cache` identifies the geometry buffer-cache binding, `zero` the
+  fallback zero buffer, and `padded` either a padded DEFAULT copy or a realigned
+  UPLOAD copy.
+- If stream 0 is unused, an unused IA slot's bound zero view is sampled with
+  `used=false`. If every IA slot is consumed by other streams, there is no
+  representative view: `ia_slot=32`, `heap=0`, and `host_size=0`.
+
+Readback owners and snapshot metadata survive until completion; the callback
+never accesses guest memory or the rasterizer. Unset/invalid/zero frame selectors
+perform no vertex sampling, resource tracking, readback allocation, or byte
+formatting.

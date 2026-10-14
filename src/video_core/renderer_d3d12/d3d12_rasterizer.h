@@ -173,6 +173,7 @@ private:
     std::vector<FeedbackTexture> attachment_pool;
     u64 feedback_draw{};
     u32 draw_trace_lines{};
+    u32 vb_trace_draws{};
     u64 feedback_frame{};
     u64 feedback_copies{};
     u64 feedback_readonly_depth{};

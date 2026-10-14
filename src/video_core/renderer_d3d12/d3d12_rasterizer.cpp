@@ -861,6 +861,33 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     const auto& submitted = draw.params;
     if (!submitted.num_vertices || !submitted.num_instances)
         return;
+    static const u64 draw_trace_frame = [] {
+        u64 selected_frame = 0;
+        if (const char* value = std::getenv("NXBOX_D3D12_DRAW_TRACE_FRAME")) {
+            const std::string_view text{value};
+            const auto parsed =
+                std::from_chars(text.data(), text.data() + text.size(), selected_frame);
+            if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size())
+                return u64{0};
+        }
+        return selected_frame;
+    }();
+    static const bool draw_trace_enabled = draw_trace_frame != 0;
+    const bool trace_vertex_bytes = draw_trace_enabled &&
+                                    texture_cache.CaptureFrame() == draw_trace_frame &&
+                                    draw_trace_lines < 3000 && vb_trace_draws < 64 &&
+                                    !submitted.is_indexed && submitted.num_vertices <= 64;
+    // Keep the actual per-attribute IA resources, including temporary copies.
+    std::array<ResourcePtr, Pso::kNumVertexAttributes> trace_vertex_resources{};
+    constexpr size_t VertexTraceBytes = 48;
+    constexpr u32 MaxTraceStreams = 2;
+    ResourcePtr vertex_trace_readback;
+    if (trace_vertex_bytes) {
+        // CreateBuffer may submit under pressure. Allocate before descriptor reservation
+        // and state recording, never between the copy and its draw.
+        vertex_trace_readback =
+            context.CreateBuffer(VertexTraceBytes * MaxTraceStreams, D3D12_HEAP_TYPE_READBACK);
+    }
     const auto& guest_draw = maxwell3d->draw_manager.draw_state;
     // Index expansion increases submitted index count, not the maximum guest
     // vertex. Use the original vertex range for generated fans/strips/quads.
@@ -877,6 +904,8 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     for (u32 i = 0; i < Pso::kNumVertexAttributes; ++i) {
         const auto& attribute = native_pipeline->State().attributes[i];
         vertex_views[i] = {zero_vertex_buffer->handle->GetGPUVirtualAddress(), 65536, 0};
+        if (trace_vertex_bytes)
+            trace_vertex_resources[i] = zero_vertex_buffer;
         if (!attribute.enabled || attribute.enabled == 2)
             continue;
         const auto& slot = geometry.vertex[attribute.slot];
@@ -908,6 +937,8 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         if (!realign && required <= available) {
             vertex_views[i] = {slot.resource->handle->GetGPUVirtualAddress() + source_offset,
                                static_cast<UINT>(available), slot.stride};
+            if (trace_vertex_bytes)
+                trace_vertex_resources[i] = slot.resource;
             need(slot.resource, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
             continue;
         }
@@ -942,6 +973,8 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
             context.Retain(padded);
             vertex_views[i] = {padded->handle->GetGPUVirtualAddress(), static_cast<UINT>(required),
                                slot.stride};
+            if (trace_vertex_bytes)
+                trace_vertex_resources[i] = padded;
             need(padded, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
             continue;
         }
@@ -967,6 +1000,8 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
                                 source, slot.stride, vertex_size,
                                 static_cast<u32>(input.type.Value()), attribute.swap_rb != 0);
         context.Retain(packed);
+        if (trace_vertex_bytes)
+            trace_vertex_resources[i] = packed;
         vertex_views[i] = {packed->handle->GetGPUVirtualAddress(),
                            static_cast<UINT>(elements * storage_bytes),
                            slot.stride ? storage_bytes : 0};
@@ -1422,18 +1457,6 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     {
         const FrameProfile::Scope profile_record{context.Profile(), FramePhase::DrawRecording};
         context.MarkWork("guest draws");
-        static const u64 draw_trace_frame = [] {
-            u64 selected_frame = 0;
-            if (const char* value = std::getenv("NXBOX_D3D12_DRAW_TRACE_FRAME")) {
-                const std::string_view text{value};
-                const auto parsed =
-                    std::from_chars(text.data(), text.data() + text.size(), selected_frame);
-                if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size())
-                    return u64{0};
-            }
-            return selected_frame;
-        }();
-        static const bool draw_trace_enabled = draw_trace_frame != 0;
         if (draw_trace_enabled) {
             if (texture_cache.CaptureFrame() == draw_trace_frame && draw_trace_lines < 3000) {
                 std::string trace_rtvs;
@@ -1472,6 +1495,129 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
                     trace_vertex.SizeInBytes, trace_vertex.StrideInBytes, index_view.SizeInBytes,
                     static_cast<u32>(index_view.Format), native_pipeline->PixelGuestHash(),
                     native_pipeline->VertexGuestHash()));
+                if (trace_vertex_bytes) {
+                    ++vb_trace_draws;
+                    std::array<u32, MaxTraceStreams> trace_streams{0, 0};
+                    u32 trace_stream_count = 1;
+                    const auto& trace_attributes = native_pipeline->State().attributes;
+                    for (const auto& trace_attribute : trace_attributes) {
+                        if (trace_attribute.enabled == 1 && trace_attribute.slot != 0) {
+                            trace_streams[trace_stream_count++] = trace_attribute.slot;
+                            break;
+                        }
+                    }
+                    // Copies must not be suppressed by the guest's conditional rendering.
+                    query_runtime.PauseHostConditionalRendering();
+                    context.Transition(vertex_trace_readback, D3D12_RESOURCE_STATE_COPY_DEST);
+                    for (u32 trace_stream_index = 0; trace_stream_index < trace_stream_count;
+                         ++trace_stream_index) {
+                        const u32 trace_stream_slot = trace_streams[trace_stream_index];
+                        // A stream can feed several IA slots. Prefer its first enabled attribute.
+                        u32 trace_input_slot = static_cast<u32>(trace_attributes.size());
+                        for (u32 trace_input = 0; trace_input < trace_attributes.size();
+                             ++trace_input) {
+                            if (trace_attributes[trace_input].enabled == 1 &&
+                                trace_attributes[trace_input].slot == trace_stream_slot) {
+                                trace_input_slot = trace_input;
+                                break;
+                            }
+                        }
+                        if (trace_input_slot == trace_attributes.size()) {
+                            // Unused stream 0 has no consumed IA binding. A disabled IA slot
+                            // still has a bound zero view; report it explicitly when available.
+                            for (u32 trace_input = 0; trace_input < trace_attributes.size();
+                                 ++trace_input) {
+                                if (trace_attributes[trace_input].enabled != 1) {
+                                    trace_input_slot = trace_input;
+                                    break;
+                                }
+                            }
+                        }
+                        const bool trace_bound = trace_input_slot < trace_attributes.size();
+                        const bool trace_used =
+                            trace_bound && trace_attributes[trace_input_slot].enabled == 1;
+                        const u32 trace_first =
+                            trace_used && trace_attributes[trace_input_slot].instanced
+                                ? (trace_attributes[trace_input_slot].divisor == 0
+                                       ? 0u
+                                       : submitted.base_instance)
+                                : submitted.base_vertex;
+                        const auto& trace_guest_stream = regs.vertex_streams[trace_stream_slot];
+                        const u32 trace_attribute_offset =
+                            trace_used ? trace_attributes[trace_input_slot].offset : 0u;
+                        const GPUVAddr trace_guest_address =
+                            trace_guest_stream.Address() + trace_attribute_offset +
+                            u64{trace_first} * trace_guest_stream.stride.Value();
+                        std::array<u8, VertexTraceBytes> trace_guest_bytes{};
+                        gpu_memory->ReadBlockUnsafe(trace_guest_address, trace_guest_bytes.data(),
+                                                    trace_guest_bytes.size());
+                        const auto trace_hex = [](std::span<const u8> trace_bytes) {
+                            std::string trace_result;
+                            trace_result.reserve(trace_bytes.size() * 2);
+                            for (const u8 trace_byte : trace_bytes)
+                                trace_result += fmt::format("{:02x}", trace_byte);
+                            return trace_result;
+                        };
+                        const std::string trace_guest_hex = trace_hex(trace_guest_bytes);
+                        const ResourcePtr trace_resource =
+                            trace_bound ? trace_vertex_resources[trace_input_slot] : ResourcePtr{};
+                        const char* trace_source =
+                            !trace_resource || trace_resource == zero_vertex_buffer ? "zero"
+                            : trace_resource == geometry.vertex[trace_stream_slot].resource
+                                ? "cache"
+                                : "padded";
+                        const u32 trace_heap =
+                            trace_resource ? static_cast<u32>(trace_resource->heap) : 0u;
+                        u64 trace_copy_bytes = 0;
+                        u64 trace_host_offset = 0;
+                        if (trace_resource) {
+                            const auto& trace_host_view = vertex_views[trace_input_slot];
+                            const u64 trace_view_first =
+                                u64{trace_first} * trace_host_view.StrideInBytes;
+                            trace_host_offset = trace_host_view.BufferLocation -
+                                                trace_resource->handle->GetGPUVirtualAddress() +
+                                                trace_view_first;
+                            trace_copy_bytes =
+                                trace_view_first < trace_host_view.SizeInBytes
+                                    ? std::min<u64>(VertexTraceBytes,
+                                                    trace_host_view.SizeInBytes - trace_view_first)
+                                    : 0;
+                            if (trace_copy_bytes) {
+                                // Restore the full combined draw state (VB plus any SRV/index
+                                // uses). Upload heaps remain GENERIC_READ via Transition.
+                                const auto trace_previous_state = trace_resource->state;
+                                context.Transition(trace_resource,
+                                                   D3D12_RESOURCE_STATE_COPY_SOURCE);
+                                commands->CopyBufferRegion(vertex_trace_readback->handle.Get(),
+                                                           u64{trace_stream_index} *
+                                                               VertexTraceBytes,
+                                                           trace_resource->handle.Get(),
+                                                           trace_host_offset, trace_copy_bytes);
+                                context.Transition(trace_resource, trace_previous_state);
+                            }
+                        }
+                        // Capture values and the readback owner only: completion never touches
+                        // the rasterizer, guest memory, or command recording state.
+                        context.AfterCompletion(
+                            [trace_readback = vertex_trace_readback, trace_draw = draw_trace_lines,
+                             trace_stream_slot, trace_input_slot, trace_used, trace_guest_address,
+                             trace_guest_hex, trace_heap, trace_source, trace_copy_bytes,
+                             trace_host_offset, trace_stream_index, trace_hex] {
+                                const auto trace_host_bytes = trace_readback->mapped.subspan(
+                                    static_cast<size_t>(trace_stream_index) * VertexTraceBytes,
+                                    static_cast<size_t>(trace_copy_bytes));
+                                Diagnostic(fmt::format(
+                                    "D3D12_VB_TRACE draw={} slot={} guest={} host={} heap={} "
+                                    "source={} guest_gpu={:016x} ia_slot={} used={} "
+                                    "host_offset={} host_size={}",
+                                    trace_draw, trace_stream_slot, trace_guest_hex,
+                                    trace_hex(trace_host_bytes), trace_heap, trace_source,
+                                    trace_guest_address, trace_input_slot, trace_used,
+                                    trace_host_offset, trace_copy_bytes));
+                            });
+                    }
+                    query_runtime.ResumeHostConditionalRendering();
+                }
             }
         }
         draw(commands);
