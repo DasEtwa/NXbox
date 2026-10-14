@@ -7,6 +7,8 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
+#include <cstdlib>
 #include <memory>
 #include <numeric>
 
@@ -18,6 +20,26 @@
 #include "video_core/texture_cache/util.h"
 
 namespace VideoCommon {
+
+// Diagnostic: NXBOX_WATCH_DADDR=<hex device page> logs every buffer-cache event touching it.
+inline DAddr WatchedDevicePage() {
+    static const DAddr page = [] {
+        const char* value = std::getenv("NXBOX_WATCH_DADDR");
+        return value ? static_cast<DAddr>(std::strtoull(value, nullptr, 16)) & ~DAddr{0xfff} : 0;
+    }();
+    return page;
+}
+template <typename DeviceMemory>
+void WatchEvent(DeviceMemory& memory, const char* what, DAddr addr, u64 size, u64 extra = 0) {
+    const DAddr page = WatchedDevicePage();
+    if (!page || addr >= page + 0x1000 || addr + size <= page)
+        return;
+    std::array<u8, 0x1000> bytes{};
+    memory.ReadBlockUnsafe(page, bytes.data(), bytes.size());
+    const auto nonzero = std::count_if(bytes.begin(), bytes.end(), [](u8 b) { return b != 0; });
+    LOG_ERROR(Render, "NXBOX_WATCH {} addr={:#x} size={} extra={} page_nonzero={}", what, addr,
+              size, extra, nonzero);
+}
 
 using Core::DEVICE_PAGESIZE;
 
@@ -123,6 +145,8 @@ void BufferCache<P>::UnmapGPUMemory(size_t as_id, GPUVAddr gpu_addr, size_t size
 template <class P>
 void BufferCache<P>::WriteMemory(DAddr device_addr, u64 size) {
     NxboxUpload::Record(NxboxUpload::Event::BufferInvalidation);
+    WatchEvent(device_memory, "write_memory", device_addr, size,
+               IsRegionGpuModified(device_addr, size));
     if (IsRegionGpuModified(device_addr, size)) {
         ClearDownload(device_addr, size);
         gpu_modified_ranges.Subtract(device_addr, size);
@@ -152,6 +176,7 @@ void BufferCache<P>::CachedWriteMemory(DAddr device_addr, u64 size) {
 template <class P>
 bool BufferCache<P>::OnCPUWrite(DAddr device_addr, u64 size) {
     const bool is_dirty = IsRegionRegistered(device_addr, size);
+    WatchEvent(device_memory, "on_cpu_write", device_addr, size, is_dirty);
     if (!is_dirty) {
         return false;
     }
@@ -1696,6 +1721,7 @@ BufferId BufferCache<P>::CreateBuffer(DAddr device_addr, u32 wanted_size,
                                       bool sparse_compatible) {
     DAddr device_addr_end = Common::AlignUp(device_addr + wanted_size, CACHING_PAGESIZE);
     device_addr = Common::AlignDown(device_addr, CACHING_PAGESIZE);
+    WatchEvent(device_memory, "create_buffer", device_addr, device_addr_end - device_addr);
     wanted_size = static_cast<u32>(device_addr_end - device_addr);
     const OverlapResult overlap = ResolveOverlaps(device_addr, wanted_size);
     const u32 size = static_cast<u32>(overlap.end - overlap.begin);
@@ -1841,6 +1867,7 @@ void BufferCache<P>::MappedUploadMemory([[maybe_unused]] Buffer& buffer,
             u8* const src_pointer = staging_pointer.data() + copy.src_offset;
             const DAddr device_addr = buffer.CpuAddr() + copy.dst_offset;
             device_memory.ReadBlockUnsafe(device_addr, src_pointer, copy.size);
+            WatchEvent(device_memory, "upload", device_addr, copy.size, buffer.CpuAddr());
             // Apply the staging offset
             copy.src_offset += upload_staging.offset;
         }
@@ -1853,6 +1880,7 @@ template <class P>
 bool BufferCache<P>::InlineMemory(DAddr dest_address, size_t copy_size,
                                   std::span<const u8> inlined_buffer) {
     const bool is_dirty = IsRegionRegistered(dest_address, copy_size);
+    WatchEvent(device_memory, "inline", dest_address, copy_size, is_dirty);
     if (!is_dirty) {
         return false;
     }
