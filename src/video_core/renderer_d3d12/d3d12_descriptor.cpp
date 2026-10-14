@@ -164,9 +164,11 @@ D3D12_SAMPLER_DESC MakeSamplerDesc(const Tegra::Texture::TSCEntry& entry) {
                               : D3D12_COMPARISON_FUNC_NEVER;
     const auto border = entry.srgb_conversion ? entry.SrgbBorderColor() : entry.BorderColor();
     std::copy(border.begin(), border.end(), desc.BorderColor);
-    desc.MinLOD = entry.MinLod();
-    // yuzu convention: no mip filter means "sample level 0 only".
-    desc.MaxLOD = entry.mipmap_filter == TextureMipmapFilter::None ? 0.25f : entry.MaxLod();
+    // yuzu convention: no mip filter means "sample level 0 only". Match Vulkan and zero
+    // MinLOD too; MinLOD > MaxLOD is undefined and AMD drivers sample zeros.
+    const bool no_mips = entry.mipmap_filter == TextureMipmapFilter::None;
+    desc.MaxLOD = no_mips ? 0.25f : entry.MaxLod();
+    desc.MinLOD = no_mips ? 0.0f : std::min(entry.MinLod(), desc.MaxLOD);
     return desc;
 }
 
