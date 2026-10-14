@@ -418,12 +418,10 @@ void Image::Transfer(const StagingBufferRef& input,
         const auto slice_stride =
             CheckedMultiply(row_stride, (u64{image_height} + host_format.block_height - 1) /
                                             host_format.block_height);
-        // Use the SDK's layout for each transfer extent, then repack guest rows. Block
-        // formats need whole blocks: the D3D12 runtime rejects a 2x2 or 1x1 BC footprint
-        // (vkd3d accepts it), which left the small mips of BC textures never uploaded.
+        // Use the SDK's layout for each transfer extent, then repack guest rows.
         auto desc = resource->handle->GetDesc();
-        desc.Width = Common::AlignUp(u64{extent.width}, host_format.block_width);
-        desc.Height = static_cast<UINT>(Common::AlignUp(extent.height, host_format.block_height));
+        desc.Width = extent.width;
+        desc.Height = extent.height;
         desc.DepthOrArraySize =
             static_cast<UINT16>(info.type == VideoCommon::ImageType::e3D ? extent.depth : 1);
         desc.MipLevels = 1;
