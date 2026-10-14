@@ -512,6 +512,11 @@ void D3D12DescriptorAllocator::WriteCbv(const DescriptorTable& table, u32 slot,
     }
     const u64 width = buffer.resource->handle->GetDesc().Width;
     u64 size = Common::AlignUp<u64>(buffer.size, 256);
+    // Diagnostic: view the whole 64 KiB the HLSL cbuffer declares, so reads past the guest
+    // size see memory instead of the zeros AMD returns for out-of-bounds CBV reads.
+    static const bool full_cbv = BisectEnabled("NXBOX_D3D12_CBV_FULL");
+    if (full_cbv)
+        size = 65536;
     if (buffer.offset >= width) {
         size = 0;
     } else if (buffer.offset + size > width) {
