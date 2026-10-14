@@ -965,6 +965,13 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
                 const u64 probe = source_offset < width
                                       ? std::min<u64>(VertexTraceBytes, width - source_offset)
                                       : 0;
+                const GPUVAddr guest_address =
+                    regs.vertex_streams[attribute.slot].Address() + attribute.offset;
+                const auto device_address = gpu_memory->GpuToCpuAddress(guest_address);
+                const int gpu_modified =
+                    device_address ? buffer_cache.IsRegionGpuModified(*device_address, copied) : -1;
+                const int cpu_modified =
+                    device_address ? buffer_cache.IsRegionCpuModified(*device_address, copied) : -1;
                 auto source_readback =
                     context.CreateBuffer(VertexTraceBytes, D3D12_HEAP_TYPE_READBACK);
                 if (probe) {
@@ -976,14 +983,17 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
                 }
                 context.AfterCompletion([source_readback, probe, i, size = slot.size,
                                          offset = slot.offset, attr_offset = attribute.offset,
-                                         width, required, available, copied] {
+                                         width, required, available, copied, gpu_modified,
+                                         cpu_modified] {
                     std::string hex;
                     for (const u8 byte : source_readback->mapped.first(static_cast<size_t>(probe)))
                         hex += fmt::format("{:02x}", byte);
                     Diagnostic(fmt::format(
                         "D3D12_VB_SOURCE attr={} slot_size={} slot_offset={} attr_offset={} "
-                        "width={} required={} available={} copied={} cache={}",
-                        i, size, offset, attr_offset, width, required, available, copied, hex));
+                        "width={} required={} available={} copied={} gpu_modified={} cpu_modified={} "
+                        "cache={}",
+                        i, size, offset, attr_offset, width, required, available, copied,
+                        gpu_modified, cpu_modified, hex));
                 });
             }
             auto zero = context.CreateBuffer(required, D3D12_HEAP_TYPE_UPLOAD);
