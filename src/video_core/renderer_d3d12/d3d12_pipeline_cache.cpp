@@ -514,6 +514,8 @@ struct TranslationState {
     explicit TranslationState(ID3D12Device* device) {
         static const bool cube_one = BisectEnabled("NXBOX_D3D12_CUBE_ONE");
         profile.hlsl_cube_one = cube_one;
+        static const bool shadow_one = BisectEnabled("NXBOX_D3D12_SHADOW_ONE");
+        profile.hlsl_shadow_one = shadow_one;
         D3D12_FEATURE_DATA_D3D12_OPTIONS options{};
         Check(device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &options, sizeof(options)),
               "D3D12 shader options");

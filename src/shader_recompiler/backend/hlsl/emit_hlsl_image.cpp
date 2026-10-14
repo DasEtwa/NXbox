@@ -59,9 +59,10 @@ std::string Texture(EmitContext& ctx, const IR::TextureInstInfo& info, const IR:
     return ctx.Resource(index, info.descriptor_index, image, info.type == TextureType::Buffer);
 }
 bool EmitCubeOne(EmitContext& ctx, IR::Inst& inst, const IR::TextureInstInfo& info,
-                 bool scalar = false) {
-    if (!ctx.profile.hlsl_cube_one ||
-        (info.type != TextureType::ColorCube && info.type != TextureType::ColorArrayCube))
+                 bool scalar = false, bool depth_compare = false) {
+    const bool cube =
+        info.type == TextureType::ColorCube || info.type == TextureType::ColorArrayCube;
+    if (!(ctx.profile.hlsl_cube_one && cube) && !(ctx.profile.hlsl_shadow_one && depth_compare))
         return false;
     if (scalar)
         ctx.AddF32("{} = 1.0f;", inst);
@@ -73,7 +74,7 @@ void Sample(EmitContext& ctx, IR::Inst& inst, const IR::Value& index, std::strin
             std::string_view lod, const IR::Value& offset, bool explicit_lod,
             std::string_view dref = {}) {
     const auto info = TextureInfo(ctx, inst);
-    if (EmitCubeOne(ctx, inst, info, !dref.empty()))
+    if (EmitCubeOne(ctx, inst, info, !dref.empty(), !dref.empty()))
         return;
     const auto tex = Texture(ctx, info, index);
     if (info.type == TextureType::Buffer)
@@ -113,7 +114,7 @@ void Sample(EmitContext& ctx, IR::Inst& inst, const IR::Value& index, std::strin
 void Gather(EmitContext& ctx, IR::Inst& inst, const IR::Value& index, std::string_view coords,
             const IR::Value& offset, const IR::Value& offset2, std::string_view dref = {}) {
     const auto info = TextureInfo(ctx, inst);
-    if (EmitCubeOne(ctx, inst, info))
+    if (EmitCubeOne(ctx, inst, info, false, !dref.empty()))
         return;
     const auto tex = Texture(ctx, info, index);
     const auto sampler = ctx.Sampler(index, info.descriptor_index);
