@@ -959,6 +959,33 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
             // The data and zero-tail copies must not overlap: D3D12 does not order two copies
             // into the same range without a barrier, and AMD let the zero fill land last.
             const u64 copied = std::min(available, required);
+            if (trace_vertex_bytes) {
+                // Diagnostic: the cached source bytes and extent behind a padded binding.
+                const u64 width = slot.resource->handle->GetDesc().Width;
+                const u64 probe = source_offset < width
+                                      ? std::min<u64>(VertexTraceBytes, width - source_offset)
+                                      : 0;
+                auto source_readback =
+                    context.CreateBuffer(VertexTraceBytes, D3D12_HEAP_TYPE_READBACK);
+                if (probe) {
+                    context.Transition(source_readback, D3D12_RESOURCE_STATE_COPY_DEST);
+                    context.Transition(slot.resource, D3D12_RESOURCE_STATE_COPY_SOURCE);
+                    context.Commands()->CopyBufferRegion(source_readback->handle.Get(), 0,
+                                                         slot.resource->handle.Get(),
+                                                         source_offset, probe);
+                }
+                context.AfterCompletion([source_readback, probe, i, size = slot.size,
+                                         offset = slot.offset, attr_offset = attribute.offset,
+                                         width, required, available, copied] {
+                    std::string hex;
+                    for (const u8 byte : source_readback->mapped.first(static_cast<size_t>(probe)))
+                        hex += fmt::format("{:02x}", byte);
+                    Diagnostic(fmt::format(
+                        "D3D12_VB_SOURCE attr={} slot_size={} slot_offset={} attr_offset={} "
+                        "width={} required={} available={} copied={} cache={}",
+                        i, size, offset, attr_offset, width, required, available, copied, hex));
+                });
+            }
             auto zero = context.CreateBuffer(required, D3D12_HEAP_TYPE_UPLOAD);
             std::fill(zero->mapped.begin(), zero->mapped.end(), u8{0});
             auto padded = context.CreateBuffer(required, D3D12_HEAP_TYPE_DEFAULT);
