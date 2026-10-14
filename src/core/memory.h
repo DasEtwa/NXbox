@@ -20,6 +20,7 @@
 
 namespace Common {
 enum class MemoryPermission : u32;
+enum class PageType : u8;
 struct PageTable;
 } // namespace Common
 
@@ -80,6 +81,18 @@ public:
      * @param process The process to use the page table of.
      */
     void SetCurrentPageTable(Kernel::KProcess& process);
+
+    struct PageEntryInfo {
+        u64 raw;
+        u64 storage_raw; // what the JIT reads, bypassing the commit bitmap
+        Common::PageType type;
+        bool marked;
+        bool pointer_null;
+        bool is_current;
+    };
+
+    // Inspect the owning process's entry without resolving a pointer or invoking GPU callbacks.
+    [[nodiscard]] std::optional<PageEntryInfo> GetPageEntryInfo(Common::ProcessAddress vaddr) const;
 
     /**
      * Maps an allocated buffer onto a region of the emulated process address space.

@@ -536,6 +536,21 @@ void DeviceMemoryManager<Traits>::UnregisterProcess(Asid asid) {
 }
 
 template <typename Traits>
+std::optional<typename DeviceMemoryManager<Traits>::PageCacheInfo>
+DeviceMemoryManager<Traits>::GetPageCacheInfo(DAddr address) const {
+    if (address >= device_as_size) {
+        return std::nullopt;
+    }
+    const size_t page = address >> page_bits;
+    const auto [asid, cpu_vaddr] = ExtractCPUBacking(page);
+    const u8 cached_count =
+        cached_pages->at(page >> subentries_shift).Count(page).load(std::memory_order_relaxed);
+    const auto* memory =
+        asid.id < registered_processes.size() ? registered_processes[asid.id] : nullptr;
+    return PageCacheInfo{asid, cpu_vaddr, cached_count, memory};
+}
+
+template <typename Traits>
 void DeviceMemoryManager<Traits>::UpdatePagesCachedCountNoLock(DAddr addr, size_t size, s32 delta) {
     u64 uncache_begin = 0;
     u64 cache_begin = 0;

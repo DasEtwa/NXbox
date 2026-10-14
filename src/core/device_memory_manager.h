@@ -12,6 +12,7 @@
 #include <deque>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <vector>
 #include <span>
 
@@ -121,6 +122,16 @@ public:
     Asid RegisterProcess(Memory::Memory* memory);
     void UnregisterProcess(Asid id);
 
+    struct PageCacheInfo {
+        Asid asid;
+        VAddr cpu_vaddr;
+        u8 cached_count;
+        const Memory::Memory* memory;
+    };
+
+    // Read-only diagnostic snapshot; CPU backing is the stored page base, not an access offset.
+    [[nodiscard]] std::optional<PageCacheInfo> GetPageCacheInfo(DAddr address) const;
+
     void UpdatePagesCachedCount(DAddr addr, size_t size, s32 delta);
 
     // New batch API to update multiple ranges with a single lock acquisition.
@@ -193,7 +204,7 @@ private:
     static constexpr size_t guest_mask = guest_as_size - 1ULL;
     static constexpr size_t asid_start_bit = guest_max_as_bits;
 
-    std::pair<Asid, VAddr> ExtractCPUBacking(size_t page_index) {
+    std::pair<Asid, VAddr> ExtractCPUBacking(size_t page_index) const {
         auto content = tracked_entries[page_index].cpu_backing_address;
         const VAddr address = content & guest_mask;
         const Asid asid{static_cast<size_t>(content >> asid_start_bit)};

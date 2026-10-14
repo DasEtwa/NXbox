@@ -18,6 +18,7 @@
 #include "common/alignment.h"
 #include "common/logging.h"
 #include "common/scope_exit.h"
+#include "core/memory.h"
 #include "shader_recompiler/backend/hlsl/hlsl_draw_texture.h"
 #include "video_core/control/channel_state.h"
 #include "video_core/dirty_flags.h"
@@ -987,6 +988,34 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
                     device_address ? buffer_cache.IsRegionGpuModified(*device_address, copied) : -1;
                 const int cpu_modified =
                     device_address ? buffer_cache.IsRegionCpuModified(*device_address, copied) : -1;
+                // Snapshot at draw time, before the deferred readback callback. Translate each
+                // endpoint independently: adjacent GPU pages need not be adjacent device pages.
+                const auto trace_page = [&](std::optional<DAddr> address) -> std::string {
+                    if (!address) {
+                        return "unavailable";
+                    }
+                    const auto info = device_memory.GetPageCacheInfo(*address);
+                    if (!info) {
+                        return "unavailable";
+                    }
+                    const auto entry = info->memory
+                                           ? info->memory->GetPageEntryInfo(info->cpu_vaddr)
+                                           : std::nullopt;
+                    return fmt::format(
+                        "daddr={:#x},asid={},cpu_vaddr={:#x},cached_count={},entry_valid={},"
+                        "raw={:#x},storage_raw={:#x},type={},marked={},pointer_null={},is_current={}",
+                        *address & ~Core::DEVICE_PAGEMASK, info->asid.id, info->cpu_vaddr,
+                        info->cached_count, entry.has_value(), entry ? entry->raw : 0,
+                        entry ? entry->storage_raw : 0,
+                        entry ? static_cast<int>(entry->type) : -1,
+                        entry ? static_cast<int>(entry->marked) : -1,
+                        entry ? static_cast<int>(entry->pointer_null) : -1,
+                        entry ? static_cast<int>(entry->is_current) : -1);
+                };
+                const auto first_page = trace_page(copied ? device_address : std::nullopt);
+                const auto last_page =
+                    trace_page(copied ? gpu_memory->GpuToCpuAddress(guest_address + copied - 1)
+                                      : std::nullopt);
                 auto source_readback =
                     context.CreateBuffer(VertexTraceBytes, D3D12_HEAP_TYPE_READBACK);
                 if (probe) {
@@ -1000,16 +1029,16 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
                 context.AfterCompletion([source_readback, probe, i, size = slot.size,
                                          offset = slot.offset, attr_offset = attribute.offset,
                                          width, required, available, copied, gpu_modified,
-                                         cpu_modified] {
+                                         cpu_modified, first_page, last_page] {
                     std::string hex;
                     for (const u8 byte : source_readback->mapped.first(static_cast<size_t>(probe)))
                         hex += fmt::format("{:02x}", byte);
                     Diagnostic(fmt::format(
                         "D3D12_VB_SOURCE attr={} slot_size={} slot_offset={} attr_offset={} "
                         "width={} required={} available={} copied={} gpu_modified={} cpu_modified={} "
-                        "cache={}",
+                        "cache={} first_page=[{}] last_page=[{}]",
                         i, size, offset, attr_offset, width, required, available, copied,
-                        gpu_modified, cpu_modified, hex));
+                        gpu_modified, cpu_modified, hex, first_page, last_page));
                 });
             }
             auto zero = context.CreateBuffer(required, D3D12_HEAP_TYPE_UPLOAD);

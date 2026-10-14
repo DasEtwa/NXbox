@@ -51,6 +51,7 @@ struct Memory::Impl {
     explicit Impl(Core::System& system_) : system{system_} {}
 
     void SetCurrentPageTable(Kernel::KProcess& process) {
+        owning_process = &process;
         current_page_table = &process.GetPageTable().GetImpl();
 
         if (process.IsApplication() && Settings::IsFastmemEnabled()) {
@@ -930,6 +931,7 @@ struct Memory::Impl {
 
     Core::System& system;
     Tegra::MaxwellDeviceMemoryManager* gpu_device_memory{};
+    const Kernel::KProcess* owning_process = nullptr;
     Common::PageTable* current_page_table = nullptr;
 
     std::array<VideoCore::RasterizerDownloadArea, Core::Hardware::NUM_CPU_CORES> rasterizer_read_areas{};
@@ -963,6 +965,23 @@ void Memory::Reset() {
 
 void Memory::SetCurrentPageTable(Kernel::KProcess& process) {
     impl->SetCurrentPageTable(process);
+}
+
+std::optional<Memory::PageEntryInfo> Memory::GetPageEntryInfo(Common::ProcessAddress vaddr) const {
+    if (!impl->owning_process) {
+        return std::nullopt;
+    }
+    const auto& page_table = impl->owning_process->GetPageTable().GetImpl();
+    const auto page = GetInteger(vaddr) >> YUZU_PAGEBITS;
+    if (page >= page_table.entries.size()) {
+        return std::nullopt;
+    }
+    const auto raw = page_table.entries[page].Raw();
+    const u64 storage_raw = std::bit_cast<u64>(page_table.entries.data()[page].Raw());
+    return PageEntryInfo{std::bit_cast<u64>(raw), storage_raw, static_cast<Common::PageType>(raw.type),
+                         raw.marked != 0,
+                         Common::PageTable::PageEntryData::ExtractPointer(raw) == 0,
+                         &page_table == impl->current_page_table};
 }
 
 void Memory::MapMemoryRegion(Common::PageTable& page_table, Common::ProcessAddress base, u64 size,
