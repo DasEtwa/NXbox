@@ -95,7 +95,6 @@ class RedundantStateTests(unittest.TestCase):
             "d3d12_clear.cpp",
             "d3d12_dispatch.cpp",
             "d3d12_present/present.cpp",
-            "d3d12_query_cache.cpp",
         ):
             with self.subTest(path=filename):
                 self.assertIn(

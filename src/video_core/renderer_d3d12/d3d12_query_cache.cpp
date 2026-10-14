@@ -359,7 +359,7 @@ void QueryCacheRuntime::EndDraw() {
     }
     auto& context = impl->context;
     context.Retain(impl->results);
-    context.InvalidateRecordedState();
+    // EndQuery and ResolveQueryData leave graphics state alone; keep the draw cache.
     auto* commands = context.Commands();
     const auto end = [&](ID3D12QueryHeap* heap, D3D12_QUERY_TYPE type, u64 offset) {
         commands->EndQuery(heap, type, slot);
