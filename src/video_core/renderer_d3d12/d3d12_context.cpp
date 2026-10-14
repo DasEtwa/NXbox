@@ -954,7 +954,11 @@ struct BufferHeapPool {
         if (allocation.SizeInBytes == UINT64_MAX || allocation.SizeInBytes > BufferHeapPage::Size)
             return {};
         auto pending = std::make_unique<Resource>();
-        const auto count = static_cast<u32>(allocation.SizeInBytes / BufferHeapSlots::Alignment);
+        // Round up: a truncated count let the next placed buffer overlap this one's tail, and
+        // its zero clear erased live data. A zero count also dereferenced an empty slot.
+        const auto count = static_cast<u32>(
+            std::max<u64>(1, (allocation.SizeInBytes + BufferHeapSlots::Alignment - 1) /
+                                 BufferHeapSlots::Alignment));
         std::shared_ptr<BufferHeapPage> page;
         std::optional<u32> start;
         for (const auto& candidate : pages) {
@@ -982,6 +986,8 @@ struct BufferHeapPool {
             budget->used += BufferHeapPage::Size;
             pages.push_back(page);
             start = page->slots.Allocate(count);
+            if (!start)
+                return {};
         }
         ResourcePtr resource{
             pending.release(), [page, start = *start, count, owner](Resource* value) {
