@@ -5,6 +5,7 @@
 #include <cstring>
 #include <optional>
 #include <span>
+#include <string>
 
 #include <d3d12.h>
 #include <wrl/client.h>
@@ -23,6 +24,7 @@ namespace D3D12 {
 struct StageProgram {
     Shader::Stage stage;
     DxilBlob dxil;
+    u64 guest_hash{};
 };
 
 class GraphicsPipeline final : public IGraphicsPipeline {
@@ -85,6 +87,15 @@ public:
     const Pso::GraphicsPsoState& State() const {
         return state;
     }
+    const std::string& DrawTracePso() const {
+        return draw_trace_pso;
+    }
+    u64 VertexGuestHash() const {
+        return vertex_guest_hash;
+    }
+    u64 PixelGuestHash() const {
+        return pixel_guest_hash;
+    }
     const GraphicsPipeline* AsNative() const override {
         return this;
     }
@@ -94,6 +105,9 @@ public:
     }
 
 private:
+    std::string draw_trace_pso;
+    u64 vertex_guest_hash{};
+    u64 pixel_guest_hash{};
     bool root_cbvs{};
     Pso::GraphicsPsoState state;
     u32 topology{};

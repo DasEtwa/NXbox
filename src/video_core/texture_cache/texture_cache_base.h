@@ -161,6 +161,14 @@ public:
     /// Notify the cache that a new frame has been queued
     void TickFrame();
 
+    // Capture numbering matches NXBOX_PASS_DUMP_FRAME (the queued frame is one-based).
+    u64 CaptureFrame() const noexcept {
+        return frame_tick + 1;
+    }
+    u64 CapturePassSequence() const noexcept {
+        return pass_dump_has_set ? pass_dump_sequence + 1 : 0;
+    }
+
     /// Return a constant reference to the given image view id
     [[nodiscard]] const ImageView& GetImageView(ImageViewId id) const noexcept;
 

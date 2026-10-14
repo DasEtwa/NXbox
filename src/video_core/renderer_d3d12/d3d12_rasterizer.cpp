@@ -2,14 +2,17 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
-#include <bit>
-#include <cmath>
 #include <atomic>
+#include <bit>
+#include <charconv>
+#include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <mutex>
 #include <optional>
 #include <set>
+#include <string_view>
 #include <type_traits>
 #include <fmt/format.h>
 #include "common/alignment.h"
@@ -1419,6 +1422,58 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     {
         const FrameProfile::Scope profile_record{context.Profile(), FramePhase::DrawRecording};
         context.MarkWork("guest draws");
+        static const u64 draw_trace_frame = [] {
+            u64 selected_frame = 0;
+            if (const char* value = std::getenv("NXBOX_D3D12_DRAW_TRACE_FRAME")) {
+                const std::string_view text{value};
+                const auto parsed =
+                    std::from_chars(text.data(), text.data() + text.size(), selected_frame);
+                if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size())
+                    return u64{0};
+            }
+            return selected_frame;
+        }();
+        static const bool draw_trace_enabled = draw_trace_frame != 0;
+        if (draw_trace_enabled) {
+            if (texture_cache.CaptureFrame() == draw_trace_frame && draw_trace_lines < 3000) {
+                std::string trace_rtvs;
+                for (u32 trace_slot = 0; trace_slot < num_rts; ++trace_slot) {
+                    trace_rtvs += fmt::format("{}{}", trace_slot ? "," : "",
+                                              color_views[trace_slot]
+                                                  ? formats.colors[trace_slot]
+                                                  : static_cast<u32>(DXGI_FORMAT_R8G8B8A8_UNORM));
+                }
+                const auto& trace_viewport = viewports[0];
+                const auto& trace_scissor = scissors[0];
+                const auto& trace_vertex = vertex_views[0];
+                const auto trace_float = [&words](size_t offset) {
+                    return std::bit_cast<float>(words[offset]);
+                };
+                Diagnostic(fmt::format(
+                    "D3D12_DRAW_TRACE frame={} draw={} pass={} rt0_gpu={:x} topology={} "
+                    "count={} instances={} is_indexed={} guest_indexed={} generated_index={} "
+                    "num_rts={} rtv=[{}] has_depth={} dsv={} readonly_depth={} {} "
+                    "viewport=[{},{},{},{},{},{}] scissor=[{},{},{},{}] render_area=[{},{},{}] "
+                    "nx_render_area=[{},{},{},{}] nx_y_direction={} nx_resolution_down_factor={} "
+                    "vb0_addr_lo={:08x} vb0_size={} vb0_stride={} ib_size={} ib_format={} "
+                    "ps_hash={:016x} vs_hash={:016x}",
+                    draw_trace_frame, ++draw_trace_lines, texture_cache.CapturePassSequence(),
+                    color_views[0] ? color_views[0]->gpu_addr : GPUVAddr{0},
+                    static_cast<u32>(draw_state.topology), submitted.num_vertices,
+                    submitted.num_instances, submitted.is_indexed, is_indexed,
+                    quads && converted_indices.has_value(), num_rts, trace_rtvs, has_depth,
+                    formats.depth, readonly_depth, native_pipeline->DrawTracePso(),
+                    trace_viewport.TopLeftX, trace_viewport.TopLeftY, trace_viewport.Width,
+                    trace_viewport.Height, trace_viewport.MinDepth, trace_viewport.MaxDepth,
+                    trace_scissor.left, trace_scissor.top, trace_scissor.right,
+                    trace_scissor.bottom, render_area.width, render_area.height, render_area.layers,
+                    trace_float(0), trace_float(1), trace_float(2), trace_float(3), trace_float(5),
+                    trace_float(4), static_cast<u32>(trace_vertex.BufferLocation & 0xffffffffULL),
+                    trace_vertex.SizeInBytes, trace_vertex.StrideInBytes, index_view.SizeInBytes,
+                    static_cast<u32>(index_view.Format), native_pipeline->PixelGuestHash(),
+                    native_pipeline->VertexGuestHash()));
+            }
+        }
         draw(commands);
     }
     query_runtime.EndDraw();

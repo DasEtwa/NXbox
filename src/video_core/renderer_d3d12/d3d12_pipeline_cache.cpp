@@ -450,9 +450,10 @@ GraphicsPipeline& PipelineCache::GetGraphics(const Pso::GraphicsPsoState& state,
     try {
         std::vector<StageProgram> programs;
         for (const auto& stage : stages) {
-            programs.push_back(
-                {stage.stage, dxc.Compile(stage.hlsl, stage.stage,
-                                          Pso::HashBytes(&key, sizeof(key)), disk.get())});
+            programs.push_back({stage.stage,
+                                dxc.Compile(stage.hlsl, stage.stage,
+                                            Pso::HashBytes(&key, sizeof(key)), disk.get()),
+                                stage.hash});
         }
         ID3D12RootSignature* signature = GetRootSignature(total);
         const Shader::RuntimeInfo* feedback_info = nullptr;
@@ -757,8 +758,9 @@ std::shared_ptr<GraphicsPipeline> BuildAsyncGraphics(
     DescriptorCounts total;
     for (const auto& stage : stages) {
         mark(fmt::format("dxc stage={} bytes={}", static_cast<u32>(stage.stage), stage.hlsl.size()));
-        compiled.push_back(
-            {stage.stage, compiler.Compile(stage.hlsl, stage.stage, request_hash, disk)});
+        compiled.push_back({stage.stage,
+                            compiler.Compile(stage.hlsl, stage.stage, request_hash, disk),
+                            stage.hash});
         total += stage.counts;
     }
     mark("root_signature");

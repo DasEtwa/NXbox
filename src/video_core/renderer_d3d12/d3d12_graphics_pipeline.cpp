@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <algorithm>
 #include <array>
+#include <cstdlib>
 #include <cstring>
 #include <vector>
+#include <fmt/format.h>
 #include "shader_recompiler/backend/hlsl/hlsl_vertex_semantic.h"
 
 #include "video_core/renderer_d3d12/d3d12_context.h"
@@ -102,6 +104,7 @@ GraphicsPipeline::GraphicsPipeline(ID3D12Device* device, ComPtr<ID3D12RootSignat
         case Shader::Stage::VertexA:
         case Shader::Stage::VertexB:
             desc.VS = Bytecode(program);
+            vertex_guest_hash = program.guest_hash;
             break;
         case Shader::Stage::TessellationControl:
             desc.HS = Bytecode(program);
@@ -114,6 +117,7 @@ GraphicsPipeline::GraphicsPipeline(ID3D12Device* device, ComPtr<ID3D12RootSignat
             break;
         case Shader::Stage::Fragment:
             desc.PS = Bytecode(program);
+            pixel_guest_hash = program.guest_hash;
             break;
         default:
             break;
@@ -190,6 +194,35 @@ GraphicsPipeline::GraphicsPipeline(ID3D12Device* device, ComPtr<ID3D12RootSignat
     desc.DSVFormat = static_cast<DXGI_FORMAT>(state.dsv_format);
     desc.SampleDesc = {state.sample_count ? state.sample_count : 1u, 0};
     desc.RasterizerState.MultisampleEnable = desc.SampleDesc.Count > 1;
+
+    // Snapshot scalar state from the final descriptor, before any creation/cache return.
+    // Advanced depth-stencil streams copy these same depth/stencil fields.
+    static const bool trace_summary_enabled =
+        std::getenv("NXBOX_D3D12_DRAW_TRACE_FRAME") != nullptr;
+    if (trace_summary_enabled) {
+        std::string trace_formats;
+        for (UINT trace_slot = 0; trace_slot < desc.NumRenderTargets; ++trace_slot) {
+            trace_formats += fmt::format("{}{}", trace_slot ? "," : "",
+                                         static_cast<u32>(desc.RTVFormats[trace_slot]));
+        }
+        const auto& trace_blend = desc.BlendState.RenderTarget[0];
+        const auto& trace_raster = desc.RasterizerState;
+        draw_trace_pso = fmt::format(
+            "pso_num_rts={} pso_rtv=[{}] pso_dsv={} pso_samples={} pso_sample_mask={:08x} "
+            "pso_depth_enable={} pso_depth_write={} pso_depth_func={} pso_stencil_enable={} "
+            "pso_rt0_blend={} pso_rt0_src={} pso_rt0_dst={} pso_rt0_op={} pso_rt0_write_mask={} "
+            "pso_independent_blend={} pso_alpha_to_coverage={} pso_cull={} pso_front_ccw={} "
+            "pso_depth_clip={} pso_fill={} pso_topology_type={}",
+            desc.NumRenderTargets, trace_formats, static_cast<u32>(desc.DSVFormat),
+            desc.SampleDesc.Count, desc.SampleMask, ds.DepthEnable,
+            static_cast<u32>(ds.DepthWriteMask), static_cast<u32>(ds.DepthFunc), ds.StencilEnable,
+            trace_blend.BlendEnable, static_cast<u32>(trace_blend.SrcBlend),
+            static_cast<u32>(trace_blend.DestBlend), static_cast<u32>(trace_blend.BlendOp),
+            trace_blend.RenderTargetWriteMask, desc.BlendState.IndependentBlendEnable,
+            desc.BlendState.AlphaToCoverageEnable, static_cast<u32>(trace_raster.CullMode),
+            trace_raster.FrontCounterClockwise, trace_raster.DepthClipEnable,
+            static_cast<u32>(trace_raster.FillMode), static_cast<u32>(desc.PrimitiveTopologyType));
+    }
 
     if (state.stencil_enable & 2) {
         D3D12_DEPTH_STENCIL_DESC2 depth{};
