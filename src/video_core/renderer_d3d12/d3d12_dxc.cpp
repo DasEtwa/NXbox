@@ -33,6 +33,11 @@ DxilBlob DxcCache::Compile(std::string_view hlsl, Shader::Stage stage, u64 pipel
     u64 hash = Pso::HashBytes(hlsl.data(), hlsl.size());
     const auto stage_value = static_cast<u32>(stage);
     hash = Pso::HashBytes(&stage_value, sizeof(stage_value), hash);
+    if (DxcStrictEnabled()) {
+        // Separate strict IEEE DXIL in both the memory and disk caches.
+        constexpr u64 strict_salt = 0x4458435F47495331ULL;
+        hash = Pso::HashBytes(&strict_salt, sizeof(strict_salt), hash);
+    }
     const auto [begin, end] = entries.equal_range(hash);
     for (auto it = begin; it != end; ++it) {
         if (it->second.target == target && it->second.source == hlsl) {

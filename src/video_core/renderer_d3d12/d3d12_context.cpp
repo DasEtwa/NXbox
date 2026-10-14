@@ -45,6 +45,10 @@ bool BisectEnabled(const char* name) noexcept {
         cache[used++] = {name, enabled};
     return enabled;
 }
+bool DxcStrictEnabled() noexcept {
+    static const bool enabled = BisectEnabled("NXBOX_D3D12_DXC_STRICT");
+    return enabled;
+}
 bool AsyncPsoEnabled() noexcept {
     static const bool enabled = [] {
         char value[2]{};

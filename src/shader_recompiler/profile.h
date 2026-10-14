@@ -73,6 +73,8 @@ struct Profile {
     bool need_declared_frag_colors{};
     /// Prevents fast math optimizations that may cause inaccuracies
     bool need_fastmath_off{};
+    /// Diagnostic HLSL override for cube sampling; configured by the D3D12 backend.
+    bool hlsl_cube_one{};
     /// Some GPU vendors use a different rounding precision when calculating texture pixel
     /// coordinates with the 16.8 format in the ImageGather instruction than the Maxwell
     /// architecture. Applying an offset does fix this mismatching rounding behaviour.

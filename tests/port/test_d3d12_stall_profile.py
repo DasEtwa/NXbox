@@ -89,6 +89,7 @@ PROFILE_STUB = r"""
 namespace D3D12 {
 enum class FramePhase { DxcCompile };
 enum class FrameCount { NegativeCacheHits, DxcCacheMisses, DxcCompiles };
+inline bool DxcStrictEnabled() noexcept { return false; }
 class FrameProfile {
 public:
     struct Scope { Scope(FrameProfile&, FramePhase) {} };

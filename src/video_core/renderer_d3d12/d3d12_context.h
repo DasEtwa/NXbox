@@ -281,6 +281,7 @@ namespace D3D12 {
 using Microsoft::WRL::ComPtr;
 void Diagnostic(std::string_view message) noexcept;
 bool BisectEnabled(const char* name) noexcept;
+bool DxcStrictEnabled() noexcept;
 bool AsyncPsoEnabled() noexcept;
 void Check(HRESULT result, const char* operation, ID3D12Device* device = nullptr);
 void CheckPipeline(HRESULT result, const char* operation, ID3D12Device* device, u64 hash);

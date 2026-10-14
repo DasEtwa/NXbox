@@ -58,10 +58,23 @@ std::string Texture(EmitContext& ctx, const IR::TextureInstInfo& info, const IR:
                     bool image = false) {
     return ctx.Resource(index, info.descriptor_index, image, info.type == TextureType::Buffer);
 }
+bool EmitCubeOne(EmitContext& ctx, IR::Inst& inst, const IR::TextureInstInfo& info,
+                 bool scalar = false) {
+    if (!ctx.profile.hlsl_cube_one ||
+        (info.type != TextureType::ColorCube && info.type != TextureType::ColorArrayCube))
+        return false;
+    if (scalar)
+        ctx.AddF32("{} = 1.0f;", inst);
+    else
+        ctx.AddF32x4("{} = float4(1, 1, 1, 1);", inst);
+    return true;
+}
 void Sample(EmitContext& ctx, IR::Inst& inst, const IR::Value& index, std::string_view coords,
             std::string_view lod, const IR::Value& offset, bool explicit_lod,
             std::string_view dref = {}) {
     const auto info = TextureInfo(ctx, inst);
+    if (EmitCubeOne(ctx, inst, info, !dref.empty()))
+        return;
     const auto tex = Texture(ctx, info, index);
     if (info.type == TextureType::Buffer)
         throw NotImplementedException("HLSL buffer sampling must use fetch");
@@ -100,6 +113,8 @@ void Sample(EmitContext& ctx, IR::Inst& inst, const IR::Value& index, std::strin
 void Gather(EmitContext& ctx, IR::Inst& inst, const IR::Value& index, std::string_view coords,
             const IR::Value& offset, const IR::Value& offset2, std::string_view dref = {}) {
     const auto info = TextureInfo(ctx, inst);
+    if (EmitCubeOne(ctx, inst, info))
+        return;
     const auto tex = Texture(ctx, info, index);
     const auto sampler = ctx.Sampler(index, info.descriptor_index);
     const auto type = info.type.Value();
@@ -229,6 +244,8 @@ void EmitImageGradient(EmitContext& ctx, IR::Inst& inst, const IR::Value& index,
                        std::string_view coords, const IR::Value& derivatives,
                        const IR::Value& offset, const IR::Value&) {
     const auto info = TextureInfo(ctx, inst);
+    if (EmitCubeOne(ctx, inst, info))
+        return;
     const auto tex = Texture(ctx, info, index);
     const auto sampler = ctx.Sampler(index, info.descriptor_index);
     const auto deriv = ctx.var_alloc.Consume(derivatives);

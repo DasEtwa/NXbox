@@ -100,11 +100,14 @@ std::vector<u8> ShaderCompiler::Compile(std::string_view source, const wchar_t* 
         pipeline_hash = Pso::HashBytes(source.data(), source.size());
     try {
         DxcBuffer buffer{source.data(), source.size(), CP_UTF8};
-        LPCWSTR arguments[]{L"-E", entry, L"-T", target, L"-HV", L"2021", L"-Ges", L"-O3"};
+        std::vector<LPCWSTR> arguments{L"-E",  entry,   L"-T",   target,
+                                       L"-HV", L"2021", L"-Ges", L"-O3"};
+        if (DxcStrictEnabled())
+            arguments.push_back(L"-Gis");
         ComPtr<DxcOperationResult> result;
-        Check(impl->compiler->Compile(&buffer, arguments, static_cast<UINT32>(std::size(arguments)),
-                                      nullptr, ResultInterface,
-                                      reinterpret_cast<void**>(result.GetAddressOf())),
+        Check(impl->compiler->Compile(
+                  &buffer, arguments.data(), static_cast<UINT32>(arguments.size()), nullptr,
+                  ResultInterface, reinterpret_cast<void**>(result.GetAddressOf())),
               "DXC Compile");
         HRESULT status{};
         Check(result->GetStatus(&status), "DXC GetStatus");
