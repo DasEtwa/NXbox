@@ -1224,7 +1224,11 @@ ResourcePtr Context::CreateBuffer(u64 size, D3D12_HEAP_TYPE heap) {
         pool->Trim();
     }
     try {
-        if (auto resource = pool->Allocate(device.Get(), budget, desc, heap, state, pool)) {
+        // Diagnostic: committed buffers only, to rule out placed-heap aliasing.
+        static const bool no_placed = BisectEnabled("NXBOX_D3D12_NO_PLACED");
+        if (auto resource = no_placed ? ResourcePtr{}
+                                      : pool->Allocate(device.Get(), budget, desc, heap, state,
+                                                       pool)) {
             const FrameProfile::Scope profile_alias{profile, FramePhase::Barriers};
             D3D12_RESOURCE_BARRIER barrier{};
             barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_ALIASING;

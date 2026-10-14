@@ -223,6 +223,14 @@ void BufferCacheRuntime::CopyBuffer(ResourcePtr dst, ResourcePtr src,
                                     : FrameCount::GpuBufferCopyBytes,
                                 copy.size);
         context.MarkWork("upload/copy");
+        // Diagnostic: order every buffer copy after all prior GPU work.
+        static const bool copy_barrier = BisectEnabled("NXBOX_D3D12_COPY_BARRIER");
+        if (copy_barrier) {
+            D3D12_RESOURCE_BARRIER barrier{};
+            barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_ALIASING;
+            context.Commands()->ResourceBarrier(1, &barrier);
+            context.Profile().Count(FrameCount::Barriers);
+        }
         context.BeforeCopyWrite(dst, copy.dst_offset, copy.size);
         context.Commands()->CopyBufferRegion(dst->handle.Get(), copy.dst_offset, src->handle.Get(),
                                              copy.src_offset, copy.size);
