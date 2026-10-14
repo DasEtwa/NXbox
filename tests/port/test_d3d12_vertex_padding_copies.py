@@ -17,7 +17,7 @@ class VertexPaddingCopies(unittest.TestCase):
         block = block[: block.index("context.Retain(zero);")]
         self.assertIn("copied);", block)
         self.assertIn("if (required > copied)", block)
-        self.assertIn("zero->handle.Get(), 0, required - copied);", block)
+        self.assertIn("zero->handle.Get(), copied, required - copied);", block)
         self.assertLess(block.index("slot.resource->handle.Get()"), block.index("zero->handle.Get()"))
 
 

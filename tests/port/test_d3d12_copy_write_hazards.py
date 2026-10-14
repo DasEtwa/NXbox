@@ -83,6 +83,7 @@ class CopyWriteHazards(unittest.TestCase):
             "d3d12_rasterizer.cpp": [
                 "source_readback, 0, probe",
                 "padded, 0, copied",
+                "padded, 0, copied",
                 "padded, copied, required - copied",
             ],
             "d3d12_query_cache.cpp": [

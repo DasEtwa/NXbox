@@ -1002,7 +1002,16 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
             auto padded = context.CreateBuffer(required, D3D12_HEAP_TYPE_DEFAULT);
             context.MarkWork("vertex binding padding");
             context.Transition(padded, D3D12_RESOURCE_STATE_COPY_DEST);
-            if (copied) {
+            // Diagnostic: source the bytes from guest memory instead of the buffer cache.
+            static const bool guest_upload = BisectEnabled("NXBOX_D3D12_VB_GUEST_UPLOAD");
+            if (guest_upload && copied) {
+                gpu_memory->ReadBlockUnsafe(regs.vertex_streams[attribute.slot].Address() +
+                                                attribute.offset,
+                                            zero->mapped.data(), copied);
+                context.BeforeCopyWrite(padded, 0, copied);
+                context.Commands()->CopyBufferRegion(padded->handle.Get(), 0, zero->handle.Get(),
+                                                     0, copied);
+            } else if (copied) {
                 context.Transition(slot.resource, D3D12_RESOURCE_STATE_COPY_SOURCE);
                 context.BeforeCopyWrite(padded, 0, copied);
                 context.Commands()->CopyBufferRegion(padded->handle.Get(), 0,
@@ -1012,7 +1021,7 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
             if (required > copied) {
                 context.BeforeCopyWrite(padded, copied, required - copied);
                 context.Commands()->CopyBufferRegion(padded->handle.Get(), copied,
-                                                     zero->handle.Get(), 0, required - copied);
+                                                     zero->handle.Get(), copied, required - copied);
             }
             context.Retain(zero);
             context.Retain(padded);
