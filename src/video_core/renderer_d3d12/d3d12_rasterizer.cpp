@@ -356,9 +356,19 @@ ResourcePtr RasterizerD3D12::CopyFeedback(const ResourcePtr& source,
         context.Profile().Count(FrameCount::FeedbackCopyBytes,
                                 source->allocation_size * missing.size() / subresource_count);
     };
+    static const bool reuse = BisectEnabled("NXBOX_D3D12_FEEDBACK_REUSE");
     for (auto& entry : feedback_pool) {
         if (entry.draw == feedback_draw && entry.source == source.get()) {
             copy_into(entry);
+            return entry.resource;
+        }
+        // Maxwell only orders texture reads after earlier draws' attachment writes across
+        // a texture barrier, so a copy stays valid until the next coherence point.
+        if (reuse && entry.source == source.get() && entry.frame == feedback_frame &&
+            entry.epoch == feedback_epoch && entry.source_version == source->content_version) {
+            entry.draw = feedback_draw;
+            copy_into(entry);
+            context.Profile().Count(FrameCount::FeedbackReused);
             return entry.resource;
         }
         const auto other = entry.resource->handle->GetDesc();
@@ -409,6 +419,8 @@ ResourcePtr RasterizerD3D12::CopyFeedback(const ResourcePtr& source,
     selected->draw = feedback_draw;
     selected->frame = feedback_frame;
     selected->copied.assign(subresource_count, false);
+    selected->epoch = feedback_epoch;
+    selected->source_version = source->content_version;
     // Without a range, preserve every mip, layer and depth/stencil plane. With one,
     // the SRV reads only those subresources, so copy just them.
     copy_into(*selected);
@@ -891,6 +903,17 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         }
         return true;
     };
+    {
+        // A different attachment set is a coherence point for feedback copies.
+        std::array<const Resource*, VideoCommon::NUM_RT + 1> targets{};
+        for (u32 slot = 0; slot < VideoCommon::NUM_RT; ++slot)
+            targets[slot] = color_views[slot] ? color_views[slot]->ImageHandle().get() : nullptr;
+        targets[VideoCommon::NUM_RT] = has_depth ? depth_view->ImageHandle().get() : nullptr;
+        if (targets != feedback_targets) {
+            feedback_targets = targets;
+            ++feedback_epoch;
+        }
+    }
     draw_phase.emplace(context.Profile(), FramePhase::FeedbackSetup);
     // Resource creation can drain the queue under memory pressure. Do it before
     // reserving descriptor slots, whose lifetime is tied to the recording tick.
@@ -2095,6 +2118,7 @@ void RasterizerD3D12::PreparePresentation() {
 void RasterizerD3D12::DrawTexture() {
     const auto execute_blit = [this] {
         ++feedback_draw;
+        ++feedback_epoch;
         gpu_memory->FlushCaching();
         query_runtime.PauseHostConditionalRendering();
         std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
@@ -2241,6 +2265,7 @@ void RasterizerD3D12::DrawTexture() {
     m_gpu.TickWork();
 }
 void RasterizerD3D12::Clear(u32 layer_count) try {
+    ++feedback_epoch;
     transform_feedback.Unbind();
     gpu_memory->FlushCaching();
     query_runtime.PauseHostConditionalRendering();
@@ -2740,6 +2765,7 @@ void RasterizerD3D12::WaitForIdle() {
     fence_manager.SignalOrdering();
 }
 void RasterizerD3D12::FragmentBarrier() {
+    ++feedback_epoch;
     D3D12_RESOURCE_BARRIER barrier{};
     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
     context.Commands()->ResourceBarrier(1, &barrier);

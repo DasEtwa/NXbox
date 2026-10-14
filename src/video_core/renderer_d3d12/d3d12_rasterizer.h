@@ -172,7 +172,12 @@ private:
         u64 draw{};
         u64 frame{};
         std::vector<bool> copied; // per subresource, for the current draw
+        u64 epoch{};              // feedback_epoch when copied (NXBOX_D3D12_FEEDBACK_REUSE)
+        u64 source_version{};     // source content_version when copied
     };
+    // Guest-visible coherence points: barriers, clears, attachment changes.
+    u64 feedback_epoch{};
+    std::array<const Resource*, VideoCommon::NUM_RT + 1> feedback_targets{};
     std::vector<FeedbackTexture> feedback_pool;
     std::vector<FeedbackTexture> attachment_pool;
     u64 feedback_draw{};

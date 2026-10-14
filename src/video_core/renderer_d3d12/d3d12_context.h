@@ -126,6 +126,7 @@ enum class FrameCount : size_t {
     FeedbackDisjoint,
     FeedbackAvoided,
     FeedbackCopyBytes,
+    FeedbackReused,
     Count
 };
 // Monotonic CPU samples, independent of the host clock API, for exclusive phases.
