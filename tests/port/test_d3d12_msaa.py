@@ -132,6 +132,7 @@ enum {
     D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET=2, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS=4,
     DXGI_FORMAT_R8G8B8A8_UNORM=28,
 };
+inline bool BisectEnabled(const char*) { return false; }
 struct D3D12_RESOURCE_DESC {
     int Dimension{};
     u64 Width{};

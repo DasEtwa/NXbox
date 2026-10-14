@@ -178,8 +178,11 @@ ResourcePtr MakeTexture(Context& context, const VideoCommon::ImageInfo& info, Fo
                desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE1D) {
         desc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
     }
+    // Diagnostic: UAV-capable render targets may lose DCC on AMD; measure without the flag.
+    static const bool rt_no_uav = BisectEnabled("NXBOX_D3D12_RT_NO_UAV");
+    const bool render_target = desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
     if (info.num_samples == 1 && !format.depth && format.block_width == 1 &&
-        format.block_height == 1) {
+        format.block_height == 1 && !(rt_no_uav && render_target)) {
         D3D12_FEATURE_DATA_FORMAT_SUPPORT uav_support{
             format.converted_astc ? DXGI_FORMAT_R8G8B8A8_UNORM
                                   : static_cast<DXGI_FORMAT>(format.view_format)};
