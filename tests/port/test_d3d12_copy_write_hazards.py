@@ -80,7 +80,11 @@ class CopyWriteHazards(unittest.TestCase):
     def test_every_buffer_copy_has_an_immediate_destination_guard(self):
         expected = {
             "d3d12_buffer_cache.cpp": ["dst, copy.dst_offset, copy.size"],
-            "d3d12_rasterizer.cpp": ["padded, 0, copied", "padded, copied, required - copied"],
+            "d3d12_rasterizer.cpp": [
+                "source_readback, 0, probe",
+                "padded, 0, copied",
+                "padded, copied, required - copied",
+            ],
             "d3d12_query_cache.cpp": [
                 "result.buffer, result.offset, 8",
                 "resource, destination, size",

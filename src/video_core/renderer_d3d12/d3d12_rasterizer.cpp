@@ -977,6 +977,7 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
                 if (probe) {
                     context.Transition(source_readback, D3D12_RESOURCE_STATE_COPY_DEST);
                     context.Transition(slot.resource, D3D12_RESOURCE_STATE_COPY_SOURCE);
+                    context.BeforeCopyWrite(source_readback, 0, probe);
                     context.Commands()->CopyBufferRegion(source_readback->handle.Get(), 0,
                                                          slot.resource->handle.Get(),
                                                          source_offset, probe);
@@ -2451,6 +2452,26 @@ void RasterizerD3D12::InvalidateRegion(DAddr addr, u64 size, VideoCommon::CacheT
         default_pipeline_cache->InvalidateRegion(addr, size);
     if (True(which & VideoCommon::CacheType::QueryCache))
         query_cache.InvalidateRegion(addr, size);
+}
+void RasterizerD3D12::InnerInvalidation(std::span<const std::pair<DAddr, std::size_t>> sequences) {
+    // FlushCaching drains guest inline writes, even when CPU inner invalidation is skipped.
+    // Match Vulkan: make those bytes CPU-owned before the next buffer synchronization.
+    {
+        std::scoped_lock lock{texture_cache.mutex};
+        for (const auto& [addr, size] : sequences) {
+            texture_cache.WriteMemory(addr, size);
+        }
+    }
+    {
+        std::scoped_lock lock{buffer_cache.mutex};
+        for (const auto& [addr, size] : sequences) {
+            buffer_cache.WriteMemory(addr, size);
+        }
+    }
+    for (const auto& [addr, size] : sequences) {
+        query_cache.InvalidateRegion(addr, size);
+        default_pipeline_cache->InvalidateRegion(addr, size);
+    }
 }
 bool RasterizerD3D12::OnCPUWrite(DAddr addr, u64 size) {
     {
