@@ -30,20 +30,6 @@ inline DAddr WatchedDevicePage() {
     }();
     return page;
 }
-template <typename DeviceMemory>
-void WatchEvent(DeviceMemory& memory, const char* what, DAddr addr, u64 size, u64 extra = 0) {
-    const DAddr page = WatchedDevicePage();
-    if (!page || addr >= page + 0x1000 || addr + size <= page)
-        return;
-    std::array<u8, 0x1000> bytes{};
-    memory.ReadBlockUnsafe(page, bytes.data(), bytes.size());
-    const auto nonzero = std::count_if(bytes.begin(), bytes.end(), [](u8 b) { return b != 0; });
-    LOG_ERROR(Render, "NXBOX_WATCH {} addr={:#x} size={} extra={} page_nonzero={} window_nonzero={}",
-              what, addr, size, extra, nonzero, WatchWindowNonzero(bytes));
-    if (std::string_view{what} == "upload")
-        NxboxUpload::trace_next_copy.store(true);
-}
-
 // Diagnostic window inside the watched page (NXBOX_WATCH_WINDOW=<hex offset>, 0x958 default).
 inline u32 WatchWindowOffset() {
     static const u32 offset = [] {
@@ -57,6 +43,20 @@ inline u32 WatchWindowNonzero(std::span<const u8> page) {
     const u32 end = std::min<u32>(begin + 216, static_cast<u32>(page.size()));
     return static_cast<u32>(std::count_if(page.begin() + begin, page.begin() + end,
                                           [](u8 b) { return b != 0; }));
+}
+
+template <typename DeviceMemory>
+void WatchEvent(DeviceMemory& memory, const char* what, DAddr addr, u64 size, u64 extra = 0) {
+    const DAddr page = WatchedDevicePage();
+    if (!page || addr >= page + 0x1000 || addr + size <= page)
+        return;
+    std::array<u8, 0x1000> bytes{};
+    memory.ReadBlockUnsafe(page, bytes.data(), bytes.size());
+    const auto nonzero = std::count_if(bytes.begin(), bytes.end(), [](u8 b) { return b != 0; });
+    LOG_ERROR(Render, "NXBOX_WATCH {} addr={:#x} size={} extra={} page_nonzero={} window_nonzero={}",
+              what, addr, size, extra, nonzero, WatchWindowNonzero(bytes));
+    if (std::string_view{what} == "upload")
+        NxboxUpload::trace_next_copy.store(true);
 }
 
 using Core::DEVICE_PAGESIZE;
