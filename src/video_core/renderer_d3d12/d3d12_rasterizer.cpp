@@ -956,19 +956,23 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
             context.Profile().Count(FrameCount::VertexPaddingBytes, required);
             context.Profile().Count(FrameCount::StagingCopyBytes, required);
             context.Profile().Count(FrameCount::GpuBufferCopyBytes, std::min(available, required));
+            // The data and zero-tail copies must not overlap: D3D12 does not order two copies
+            // into the same range without a barrier, and AMD let the zero fill land last.
+            const u64 copied = std::min(available, required);
             auto zero = context.CreateBuffer(required, D3D12_HEAP_TYPE_UPLOAD);
             std::fill(zero->mapped.begin(), zero->mapped.end(), u8{0});
             auto padded = context.CreateBuffer(required, D3D12_HEAP_TYPE_DEFAULT);
             context.MarkWork("vertex binding padding");
             context.Transition(padded, D3D12_RESOURCE_STATE_COPY_DEST);
-            context.Commands()->CopyBufferRegion(padded->handle.Get(), 0, zero->handle.Get(), 0,
-                                                 required);
-            if (available) {
+            if (copied) {
                 context.Transition(slot.resource, D3D12_RESOURCE_STATE_COPY_SOURCE);
                 context.Commands()->CopyBufferRegion(padded->handle.Get(), 0,
                                                      slot.resource->handle.Get(), source_offset,
-                                                     std::min(available, required));
+                                                     copied);
             }
+            if (required > copied)
+                context.Commands()->CopyBufferRegion(padded->handle.Get(), copied,
+                                                     zero->handle.Get(), 0, required - copied);
             context.Retain(zero);
             context.Retain(padded);
             vertex_views[i] = {padded->handle->GetGPUVirtualAddress(), static_cast<UINT>(required),
