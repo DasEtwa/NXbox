@@ -884,13 +884,17 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
                                  "renderer_backend or NXBOX_RENDERER and restart");
     }
     // Apply after global and per-title settings, before renderer/cache construction.
+    if (const char* reactive = std::getenv("NXBOX_REACTIVE_FLUSH"); reactive != nullptr) {
+        Settings::values.use_reactive_flushing.SetValue(reactive[0] == '1');
+    }
     if (NxboxUpload::ForceAstcSync()) {
         Settings::values.accelerate_astc.SetValue(Settings::AstcDecodeMode::Cpu);
     }
-    Diagnostic(fmt::format("UPLOAD_POLICY astc={} asynchronous_shaders={} astc_sync={}",
+    Diagnostic(fmt::format("UPLOAD_POLICY astc={} asynchronous_shaders={} astc_sync={} reactive_flush={}",
                            static_cast<int>(Settings::values.accelerate_astc.GetValue()),
                            Settings::values.use_asynchronous_shaders.GetValue(),
-                           NxboxUpload::ForceAstcSync()));
+                           NxboxUpload::ForceAstcSync(),
+                           Settings::values.use_reactive_flushing.GetValue()));
     system.GetUserChannel().clear();
     Diagnostic("GAME_LOADING");
     // Same parameters the desktop frontend uses to boot an application. With a zeroed applet id the

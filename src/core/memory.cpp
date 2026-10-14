@@ -848,6 +848,10 @@ struct Memory::Impl {
     }
 
     void HandleRasterizerDownload(VAddr v_address, size_t size) {
+        // Without reactive flushing, fastmem lets CPU reads through untouched; match that here.
+        if (!Settings::values.use_reactive_flushing.GetValue()) {
+            return;
+        }
         const auto* p = GetPointerImpl(
             v_address, []() {}, []() {});
         if (!gpu_device_memory) [[unlikely]] {
