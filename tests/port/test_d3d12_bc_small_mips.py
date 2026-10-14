@@ -1,6 +1,5 @@
-"""BC transfer footprints use whole blocks. The D3D12 runtime rejects a 2x2/1x1 BC
-footprint (vkd3d accepts it), so the small mips of BC textures were never uploaded on
-Xbox; SM3DW samples its irradiance cube at those mips and levels went black."""
+"""BC transfer footprints use whole blocks, the layout D3D12 documents for block
+formats, instead of a 2x2/1x1 extent for the small mips."""
 
 import unittest
 from pathlib import Path
