@@ -867,7 +867,10 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     // guest index buffer on the CPU per draw stalled the GPU thread for seconds (it forces
     // GPU memory reads), so bind the whole stream range the guest declared instead, like the
     // Vulkan backend does.
-    const bool whole_stream = is_indexed;
+    // Diagnostic: also bind the whole stream for generated quad indices.
+    static const bool quad_whole_stream = BisectEnabled("NXBOX_D3D12_QUAD_WHOLE_STREAM");
+    const bool quad_draw = guest_draw.topology == Maxwell::PrimitiveTopology::Quads;
+    const bool whole_stream = is_indexed || (quad_whole_stream && quad_draw);
     for (u32 i = 0; i < Pso::kNumVertexAttributes; ++i) {
         const auto& attribute = native_pipeline->State().attributes[i];
         vertex_views[i] = {zero_vertex_buffer->handle->GetGPUVirtualAddress(), 65536, 0};
@@ -1293,6 +1296,19 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         const auto result =
             regs.viewport_scale_offset_enabled ? MakeViewport(regs, i) : MakeFullViewport(regs);
         viewports[i] = result.viewport;
+        if (viewports[i].MinDepth > viewports[i].MaxDepth) {
+            static bool logged_inverted_depth = false;
+            if (!logged_inverted_depth) {
+                logged_inverted_depth = true;
+                Diagnostic(fmt::format("D3D12 viewport {} MinDepth={} > MaxDepth={}", i,
+                                       viewports[i].MinDepth, viewports[i].MaxDepth));
+            }
+        }
+        static const bool viewport_z01 = BisectEnabled("NXBOX_D3D12_VIEWPORT_Z01");
+        if (viewport_z01) {
+            viewports[i].MinDepth = 0.0f;
+            viewports[i].MaxDepth = 1.0f;
+        }
         scissors[i] = MakeScissor(regs, i);
         scissors[i].right = std::min(scissors[i].right, static_cast<LONG>(render_area.width));
         scissors[i].bottom = std::min(scissors[i].bottom, static_cast<LONG>(render_area.height));
