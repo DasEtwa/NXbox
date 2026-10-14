@@ -803,6 +803,42 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         }
     }
 
+    static const bool subresource_feedback = BisectEnabled("NXBOX_D3D12_SUBRESOURCE_FEEDBACK");
+    const auto color_disjoint = [&](const ImageView& view) {
+        const auto sampled = view.ImageHandle();
+        const auto& range = view.range;
+        const auto overlaps = [&](const auto& other) {
+            return range.base.level < other.base.level + other.extent.levels &&
+                   other.base.level < range.base.level + range.extent.levels &&
+                   range.base.layer < other.base.layer + other.extent.layers &&
+                   other.base.layer < range.base.layer + range.extent.layers;
+        };
+        for (const auto* color : color_views) {
+            if (color && color->ImageHandle() == sampled && overlaps(color->range))
+                return false;
+        }
+        return true;
+    };
+    const auto can_split_feedback = [&](const ImageView& view) {
+        if (!subresource_feedback || !color_disjoint(view))
+            return false;
+        const auto sampled = view.ImageHandle();
+        const auto desc = sampled->handle->GetDesc();
+        if ((desc.Flags & (D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL |
+                           D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE)) ||
+            (has_depth && depth_view->ImageHandle() == sampled))
+            return false;
+        // Depth slices of a 3D mip share one subresource, even if view layers differ.
+        if (desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D) {
+            for (const auto* color : color_views) {
+                if (color && color->ImageHandle() == sampled &&
+                    view.range.base.level < color->range.base.level + color->range.extent.levels &&
+                    color->range.base.level < view.range.base.level + view.range.extent.levels)
+                    return false;
+            }
+        }
+        return true;
+    };
     draw_phase.emplace(context.Profile(), FramePhase::FeedbackSetup);
     // Resource creation can drain the queue under memory pressure. Do it before
     // reserving descriptor slots, whose lifetime is tied to the recording tick.
@@ -813,21 +849,11 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         bool feedback = false;
         for (const auto& color : color_resources)
             feedback |= color == sampled;
-        if (feedback && context.Profile().Enabled()) {
-            // Count copies whose sampled mips/layers never overlap the bound color views.
-            const auto& range = texture_cache.GetImageView(item.id).range;
-            const auto overlaps = [&](const auto& other) {
-                return range.base.level < other.base.level + other.extent.levels &&
-                       other.base.level < range.base.level + range.extent.levels &&
-                       range.base.layer < other.base.layer + other.extent.layers &&
-                       other.base.layer < range.base.layer + range.extent.layers;
-            };
-            bool disjoint = true;
-            for (const auto* color : color_views)
-                disjoint &= !color || color->ImageHandle() != sampled || !overlaps(color->range);
-            if (disjoint)
-                context.Profile().Count(FrameCount::FeedbackDisjoint);
-        }
+        if (feedback && context.Profile().Enabled() &&
+            color_disjoint(texture_cache.GetImageView(item.id)))
+            context.Profile().Count(FrameCount::FeedbackDisjoint);
+        if (feedback && can_split_feedback(texture_cache.GetImageView(item.id)))
+            feedback = false;
         const bool depth_feedback = has_depth && depth_view->ImageHandle() == sampled;
         const bool stencil_writes =
             regs.stencil_enable &&
@@ -845,6 +871,7 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     bool invalid_states = false;
     bool readonly_depth = false;
     state_scratch.clear();
+    std::vector<std::pair<ResourcePtr, std::vector<u32>>> sampled_subresources;
     const auto need = [this, &invalid_states](const ResourcePtr& resource,
                                               D3D12_RESOURCE_STATES state) {
         if (!resource)
@@ -1244,8 +1271,9 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
                 bool color_feedback = false;
                 for (const auto& color : color_resources)
                     color_feedback |= sampled && color == sampled;
+                const bool split_feedback = color_feedback && can_split_feedback(view);
                 const bool depth_feedback = has_depth && sampled == depth_view->ImageHandle();
-                if (color_feedback || depth_feedback) {
+                if ((color_feedback || depth_feedback) && !split_feedback) {
                     const bool stencil_writes =
                         regs.stencil_enable != 0 &&
                         ((regs.stencil_front_mask & 0xff) != 0 ||
@@ -1264,8 +1292,27 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
                 }
                 if (descriptors.WriteImageSrv(srv_table, srv_i, view,
                                               SrvDimension(desc.type, desc.is_multisample),
-                                              sampled))
-                    need(sampled, SrvState);
+                                              sampled)) {
+                    if (split_feedback) {
+                        const auto resource_desc = sampled->handle->GetDesc();
+                        const bool volume =
+                            resource_desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D;
+                        const u32 first_layer = volume ? 0u : view.range.base.layer;
+                        const u32 layers = volume ? 1u : view.range.extent.layers;
+                        auto& subresources =
+                            sampled_subresources.emplace_back(sampled, std::vector<u32>{}).second;
+                        for (u32 layer = first_layer; layer < first_layer + layers; ++layer) {
+                            for (s32 mip = view.range.base.level;
+                                 mip < view.range.base.level + view.range.extent.levels; ++mip) {
+                                // D3D12CalcSubresource(mip, layer, 0, mips, layers).
+                                subresources.push_back(mip + layer * resource_desc.MipLevels);
+                            }
+                        }
+                        context.Profile().Count(FrameCount::FeedbackAvoided);
+                    } else {
+                        need(sampled, SrvState);
+                    }
+                }
                 descriptors.WriteSampler(sampler_table, smp_i,
                                          texture_cache.GetSampler(*sampler_it++));
             }
@@ -1430,8 +1477,14 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     // ---- 4. Record state (no more allocations from here on) ----
     auto* const commands = context.Commands();
     descriptors.SetHeaps(commands, true);
-    for (const auto& [resource, state] : state_scratch)
-        context.Transition(resource, state);
+    if (subresource_feedback) {
+        context.TransitionBatch(state_scratch);
+        for (const auto& [resource, subresources] : sampled_subresources)
+            context.TransitionSubresources(resource, subresources, SrvState);
+    } else {
+        for (const auto& [resource, state] : state_scratch)
+            context.Transition(resource, state);
+    }
 
     auto& recorded = context.DrawState();
     if (context.RecordState(recorded.root_signature.Update(root_signature))) {

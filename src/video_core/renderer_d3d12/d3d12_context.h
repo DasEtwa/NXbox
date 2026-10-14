@@ -124,6 +124,7 @@ enum class FrameCount : size_t {
     RedundantStateSkips,
     CopyHazardBarriers,
     FeedbackDisjoint,
+    FeedbackAvoided,
     Count
 };
 // Monotonic CPU samples, independent of the host clock API, for exclusive phases.
@@ -318,6 +319,8 @@ struct MemoryBudget {
 struct Resource {
     ComPtr<ID3D12Resource> handle;
     D3D12_RESOURCE_STATES state{};
+    // Empty means uniform; otherwise state is superseded by per-subresource states.
+    std::vector<D3D12_RESOURCE_STATES> sub_states;
     D3D12_HEAP_TYPE heap{};
     std::span<u8> mapped;
     std::shared_ptr<MemoryBudget> budget;
@@ -408,6 +411,9 @@ public:
         return submitted + 1;
     }
     void Transition(const ResourcePtr& resource, D3D12_RESOURCE_STATES state);
+    // Color textures only: mip + layer * mip count (one plane; 3D has one layer).
+    void TransitionSubresources(const ResourcePtr& resource, std::span<const u32> subresources,
+                                D3D12_RESOURCE_STATES state);
     // Orders overlapping copy writes within the current command list.
     void BeforeCopyWrite(const ResourcePtr& resource, u64 offset, u64 size);
     /// Orders every prior UAV write before later work on the GPU, without a CPU wait.

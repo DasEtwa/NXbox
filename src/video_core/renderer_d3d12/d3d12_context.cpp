@@ -453,7 +453,8 @@ void FrameProfile::EndFrame(bool presented) {
                                       "forced_submits_present",
                                       "redundant_state_skips",
                                       "copy_hazard_barriers",
-                                      "feedback_disjoint"};
+                                      "feedback_disjoint",
+                                      "feedback_avoided"};
         static_assert(names.size() == static_cast<size_t>(FramePhase::Count));
         static_assert(counters.size() == static_cast<size_t>(FrameCount::Count));
         const double elapsed = static_cast<double>(wall - start_wall);
@@ -870,6 +871,11 @@ void Context::Transition(const ResourcePtr& resource, D3D12_RESOURCE_STATES stat
     if (!resource)
         throw std::invalid_argument("D3D12 null resource");
     Retain(resource);
+    if (!resource->sub_states.empty()) {
+        const std::pair<ResourcePtr, D3D12_RESOURCE_STATES> use{resource, state};
+        TransitionBatch(std::span{&use, 1});
+        return;
+    }
     if (state & (D3D12_RESOURCE_STATE_COPY_DEST | D3D12_RESOURCE_STATE_UNORDERED_ACCESS |
                  D3D12_RESOURCE_STATE_STREAM_OUT))
         ++resource->content_version;
@@ -888,6 +894,52 @@ void Context::Transition(const ResourcePtr& resource, D3D12_RESOURCE_STATES stat
                            resource->handle->GetDesc().Dimension == D3D12_RESOURCE_DIMENSION_BUFFER);
     copy_writes.erase(resource->handle.Get());
     resource->state = state;
+}
+void Context::TransitionSubresources(const ResourcePtr& resource, std::span<const u32> subresources,
+                                     D3D12_RESOURCE_STATES state) {
+    const FrameProfile::Scope profile_barrier{profile, FramePhase::Barriers};
+    if (!resource)
+        throw std::invalid_argument("D3D12 null subresource resource");
+    Retain(resource);
+    const auto desc = resource->handle->GetDesc();
+    if (resource->heap != D3D12_HEAP_TYPE_DEFAULT ||
+        desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER ||
+        (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL))
+        throw std::invalid_argument(
+            "D3D12 subresource transitions require a default color texture");
+    const u32 layers =
+        desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D ? 1u : desc.DepthOrArraySize;
+    const u32 count = desc.MipLevels * layers; // Color textures have one plane.
+    for (const auto subresource : subresources) {
+        if (subresource >= count)
+            throw std::out_of_range("D3D12 texture subresource transition");
+    }
+    if (subresources.empty())
+        return;
+    if (resource->sub_states.empty())
+        resource->sub_states.assign(count, resource->state);
+    if (state & (D3D12_RESOURCE_STATE_COPY_DEST | D3D12_RESOURCE_STATE_UNORDERED_ACCESS |
+                 D3D12_RESOURCE_STATE_STREAM_OUT))
+        ++resource->content_version;
+    std::vector<D3D12_RESOURCE_BARRIER> barriers;
+    barriers.reserve(subresources.size());
+    for (const auto subresource : subresources) {
+        auto& before = resource->sub_states[subresource];
+        if (before == state)
+            continue;
+        D3D12_RESOURCE_BARRIER barrier{};
+        barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        barrier.Transition = {resource->handle.Get(), subresource, before, state};
+        barriers.push_back(barrier);
+        if (profile.Enabled())
+            profile.NoteTransition(before, state, false);
+        before = state;
+    }
+    if (!barriers.empty()) {
+        commands->ResourceBarrier(static_cast<UINT>(barriers.size()), barriers.data());
+        profile.Count(FrameCount::Barriers, barriers.size());
+        copy_writes.erase(resource->handle.Get());
+    }
 }
 void Context::BeforeCopyWrite(const ResourcePtr& resource, u64 offset, u64 size) {
     if (!resource)
@@ -945,6 +997,22 @@ void Context::TransitionBatch(std::span<const std::pair<ResourcePtr, D3D12_RESOU
         if (state & (D3D12_RESOURCE_STATE_COPY_DEST | D3D12_RESOURCE_STATE_UNORDERED_ACCESS |
                      D3D12_RESOURCE_STATE_STREAM_OUT))
             ++resource->content_version;
+        if (!resource->sub_states.empty()) {
+            for (u32 subresource = 0; subresource < resource->sub_states.size(); ++subresource) {
+                const auto before = resource->sub_states[subresource];
+                if (before == state)
+                    continue;
+                D3D12_RESOURCE_BARRIER barrier{};
+                barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                barrier.Transition = {resource->handle.Get(), subresource, before, state};
+                barriers.push_back(barrier);
+                if (profile.Enabled())
+                    profile.NoteTransition(before, state, false);
+            }
+            resource->sub_states.clear();
+            resource->state = state;
+            continue;
+        }
         if (resource->heap != D3D12_HEAP_TYPE_DEFAULT || resource->state == state)
             continue;
         D3D12_RESOURCE_BARRIER barrier{};
