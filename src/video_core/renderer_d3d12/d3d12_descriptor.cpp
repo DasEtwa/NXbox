@@ -395,9 +395,20 @@ void D3D12DescriptorAllocator::Reserve(u32 view_count, u32 sampler_count, u32 rt
     }
 }
 
-void D3D12DescriptorAllocator::SetHeaps(ID3D12GraphicsCommandList* commands) {
-    ID3D12DescriptorHeap* heaps[] = {views.heap.Get(), samplers.heap.Get()};
-    commands->SetDescriptorHeaps(2, heaps);
+void D3D12DescriptorAllocator::SetHeaps(ID3D12GraphicsCommandList* commands,
+                                        bool cache_draw_state) {
+    const std::array heaps{views.heap.Get(), samplers.heap.Get()};
+    if (cache_draw_state) {
+        auto& state = context.DrawState();
+        if (!context.RecordState(state.heaps.Update(heaps)))
+            return;
+        // Changing descriptor heaps invalidates descriptor tables. Clearing all
+        // root arguments is conservative and keeps their tracking simple.
+        state.ClearRootArguments();
+    } else {
+        context.InvalidateRecordedState();
+    }
+    commands->SetDescriptorHeaps(static_cast<UINT>(heaps.size()), heaps.data());
 }
 
 DescriptorTable D3D12DescriptorAllocator::Allocate(Ring& ring, u32 count) {

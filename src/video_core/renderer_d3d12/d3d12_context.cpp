@@ -441,7 +441,8 @@ void FrameProfile::EndFrame(bool presented) {
                                       "forced_submits_flush_all",
                                       "forced_submits_buffer_clear",
                                       "forced_submits_lifecycle",
-                                      "forced_submits_present"};
+                                      "forced_submits_present",
+                                      "redundant_state_skips"};
         static_assert(names.size() == static_cast<size_t>(FramePhase::Count));
         static_assert(counters.size() == static_cast<size_t>(FrameCount::Count));
         const double elapsed = static_cast<double>(wall - start_wall);
@@ -711,11 +712,15 @@ ID3D12GraphicsCommandList* Context::Commands() {
         Check(commands->Reset(allocators[allocator_index].handle.Get(), nullptr),
               "command list Reset", device.Get());
         recording = true;
+        InvalidateRecordedState();
     }
     return commands.Get();
 }
 void Context::MarkWork(std::string_view label) {
     Commands();
+    // Do this even for a label already seen on this recording.
+    if (label != "guest draws")
+        InvalidateRecordedState();
     if (label == "guest draws")
         profile.Count(FrameCount::Draws);
     if (std::find(work.begin(), work.end(), label) != work.end())
@@ -728,6 +733,7 @@ void Context::MarkWork(std::string_view label) {
 }
 u64 Context::Submit(FrameCount reason) {
     const FrameProfile::Scope profile_submit{profile, FramePhase::Submit};
+    InvalidateRecordedState();
     // QueueFence and FlushCommands can both request the same submission.
     // Empty requests reuse its value instead of emitting another queue signal.
     if (!recording)

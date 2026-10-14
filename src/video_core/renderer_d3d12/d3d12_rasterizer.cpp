@@ -1228,6 +1228,9 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
                                               static_cast<s32>(depth_view->Description().Format)};
     }
     if (targets != bound_targets) {
+        // OMSetRenderTargets captures descriptor contents at recording time.
+        // The fixed handles alone cannot detect these CPU-side rewrites.
+        context.InvalidateRecordedState();
         const SIZE_T rtv_stride =
             context.Device()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
         for (u32 slot = 0; slot < num_rts; ++slot) {
@@ -1268,27 +1271,43 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     draw_phase.emplace(context.Profile(), FramePhase::DrawRecording);
     // ---- 4. Record state (no more allocations from here on) ----
     auto* const commands = context.Commands();
-    descriptors.SetHeaps(commands);
+    descriptors.SetHeaps(commands, true);
     for (const auto& [resource, state] : state_scratch)
         context.Transition(resource, state);
 
-    commands->SetGraphicsRootSignature(root_signature);
-    commands->SetPipelineState(pso);
-    commands->IASetPrimitiveTopology(converted_indices ? converted_indices->topology
-                                                       : pipeline->Topology());
+    auto& recorded = context.DrawState();
+    if (context.RecordState(recorded.root_signature.Update(root_signature))) {
+        commands->SetGraphicsRootSignature(root_signature);
+        recorded.ClearRootArguments();
+    }
+    if (context.RecordState(recorded.pipeline.Update(pso)))
+        commands->SetPipelineState(pso);
+    const auto topology = converted_indices ? converted_indices->topology : pipeline->Topology();
+    if (context.RecordState(recorded.topology.Update(topology)))
+        commands->IASetPrimitiveTopology(topology);
+    const auto bind_table = [&](UINT parameter, D3D12_GPU_DESCRIPTOR_HANDLE handle) {
+        if (context.RecordState(recorded.root_args.tables[parameter].Update(handle.ptr)))
+            commands->SetGraphicsRootDescriptorTable(parameter, handle);
+    };
     if (!root_cbvs)
-        commands->SetGraphicsRootDescriptorTable(RootCbvTable, cbv_table.gpu);
+        bind_table(RootCbvTable, cbv_table.gpu);
     const UINT table_shift = root_cbvs ? 1u : 0u;
-    commands->SetGraphicsRootDescriptorTable(RootSrvTable - table_shift, srv_table.gpu);
-    commands->SetGraphicsRootDescriptorTable(RootUavTable - table_shift, uav_table.gpu);
-    commands->SetGraphicsRootDescriptorTable(RootSamplerTable - table_shift, sampler_table.gpu);
+    bind_table(RootSrvTable - table_shift, srv_table.gpu);
+    bind_table(RootUavTable - table_shift, uav_table.gpu);
+    bind_table(RootSamplerTable - table_shift, sampler_table.gpu);
     for (UINT i = 0; i < root_cbv_addresses.size(); ++i) {
-        commands->SetGraphicsRootConstantBufferView(kFirstRootCbv + i, root_cbv_addresses[i]);
-        context.Profile().Count(FrameCount::RootCbvBinds);
+        if (context.RecordState(
+                recorded.root_args.cbvs[kFirstRootCbv + i].Update(root_cbv_addresses[i]))) {
+            commands->SetGraphicsRootConstantBufferView(kFirstRootCbv + i, root_cbv_addresses[i]);
+            context.Profile().Count(FrameCount::RootCbvBinds);
+        }
     }
 
-    commands->OMSetRenderTargets(num_rts, num_rts ? &rtv_base : nullptr, TRUE,
-                                 has_depth ? &dsv_handle : nullptr);
+    const std::array<u64, 4> target_key{num_rts, num_rts ? rtv_base.ptr : 0,
+                                        has_depth ? dsv_handle.ptr : 0, has_depth ? 1u : 0u};
+    if (context.RecordState(recorded.targets.Update(target_key)))
+        commands->OMSetRenderTargets(num_rts, num_rts ? &rtv_base : nullptr, TRUE,
+                                     has_depth ? &dsv_handle : nullptr);
     std::array<D3D12_VIEWPORT, Maxwell::NumViewports> viewports{};
     std::array<D3D12_RECT, Maxwell::NumViewports> scissors{};
     bool y_flip = false;
@@ -1332,10 +1351,13 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
             viewport.MinDepth, viewport.MaxDepth, submitted.is_indexed, submitted.num_vertices,
             submitted.num_instances, submitted.base_vertex, submitted.base_instance));
     }
-    commands->RSSetViewports(static_cast<UINT>(viewports.size()), viewports.data());
-    commands->RSSetScissorRects(static_cast<UINT>(scissors.size()), scissors.data());
-    commands->IASetVertexBuffers(0, num_vertex_views, vertex_views.data());
-    if (needs_index)
+    if (context.RecordState(recorded.viewports.Update(viewports.data(), viewports.size())))
+        commands->RSSetViewports(static_cast<UINT>(viewports.size()), viewports.data());
+    if (context.RecordState(recorded.scissors.Update(scissors.data(), scissors.size())))
+        commands->RSSetScissorRects(static_cast<UINT>(scissors.size()), scissors.data());
+    if (context.RecordState(recorded.vertices.Update(vertex_views.data(), num_vertex_views)))
+        commands->IASetVertexBuffers(0, num_vertex_views, vertex_views.data());
+    if (needs_index && context.RecordState(recorded.index.Update(index_view)))
         commands->IASetIndexBuffer(&index_view);
 
     auto words = pipeline->RootConstants({render_area.width, render_area.height, y_flip});
@@ -1352,35 +1374,47 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
                                 regs.stencil_front_ref, regs.stencil_back_ref,
                                 regs.stencil_front_func_mask, regs.stencil_back_func_mask,
                                 regs.stencil_front_mask, regs.stencil_back_mask)) {
-        ComPtr<ID3D12GraphicsCommandList8> commands8;
-        Check(commands->QueryInterface(IID_PPV_ARGS(&commands8)),
-              "D3D12 independent stencil command interface", context.Device());
-        commands8->OMSetFrontAndBackStencilRef(regs.stencil_front_ref, regs.stencil_back_ref);
+        const std::array<UINT, 3> stencil{1, regs.stencil_front_ref, regs.stencil_back_ref};
+        if (context.RecordState(recorded.stencil.Update(stencil))) {
+            ComPtr<ID3D12GraphicsCommandList8> commands8;
+            Check(commands->QueryInterface(IID_PPV_ARGS(&commands8)),
+                  "D3D12 independent stencil command interface", context.Device());
+            commands8->OMSetFrontAndBackStencilRef(regs.stencil_front_ref, regs.stencil_back_ref);
+        }
     } else {
-        commands->OMSetStencilRef(back_only ? regs.stencil_back_ref : regs.stencil_front_ref);
+        const UINT stencil_ref = back_only ? regs.stencil_back_ref : regs.stencil_front_ref;
+        const std::array<UINT, 3> stencil{0, stencil_ref, stencil_ref};
+        if (context.RecordState(recorded.stencil.Update(stencil)))
+            commands->OMSetStencilRef(stencil_ref);
     }
     const bool replicate_alpha = Pso::ConstantBlendFactors(attachment_state) == 2;
-    const float blend[]{replicate_alpha ? regs.blend_color.a : regs.blend_color.r,
-                        replicate_alpha ? regs.blend_color.a : regs.blend_color.g,
-                        replicate_alpha ? regs.blend_color.a : regs.blend_color.b,
-                        regs.blend_color.a};
-    commands->OMSetBlendFactor(blend);
+    const std::array<float, 4> blend{replicate_alpha ? regs.blend_color.a : regs.blend_color.r,
+                                     replicate_alpha ? regs.blend_color.a : regs.blend_color.g,
+                                     replicate_alpha ? regs.blend_color.a : regs.blend_color.b,
+                                     regs.blend_color.a};
+    if (context.RecordState(recorded.blend.Update(blend)))
+        commands->OMSetBlendFactor(blend.data());
     if (attachment_state.depth_bounds) {
-        ComPtr<ID3D12GraphicsCommandList1> commands1;
-        Check(commands->QueryInterface(IID_PPV_ARGS(&commands1)),
-              "D3D12 depth-bounds command interface", context.Device());
-        commands1->OMSetDepthBounds(std::clamp(regs.depth_bounds[0], 0.0f, 1.0f),
-                                    std::clamp(regs.depth_bounds[1], 0.0f, 1.0f));
+        const std::array depth_bounds{std::clamp(regs.depth_bounds[0], 0.0f, 1.0f),
+                                      std::clamp(regs.depth_bounds[1], 0.0f, 1.0f)};
+        if (context.RecordState(recorded.depth_bounds.Update(depth_bounds))) {
+            ComPtr<ID3D12GraphicsCommandList1> commands1;
+            Check(commands->QueryInterface(IID_PPV_ARGS(&commands1)),
+                  "D3D12 depth-bounds command interface", context.Device());
+            commands1->OMSetDepthBounds(depth_bounds[0], depth_bounds[1]);
+        }
     }
-    commands->SetGraphicsRoot32BitConstants(0, static_cast<UINT>(words.size()), words.data(), 0);
+    if (context.RecordState(recorded.root_args.constants[0].Update(words.data(), words.size())))
+        commands->SetGraphicsRoot32BitConstants(0, static_cast<UINT>(words.size()), words.data(),
+                                                0);
 
     draw_phase.emplace(context.Profile(), FramePhase::QueryState);
     query_cache.CounterEnable(VideoCommon::QueryType::ZPassPixelCount64,
                               regs.zpass_pixel_count_enable != 0);
     if (feedback_info)
-        transform_feedback.Bind();
+        transform_feedback.Bind(true);
     else
-        transform_feedback.Unbind(regs.transform_feedback_enabled == 0);
+        transform_feedback.Unbind(regs.transform_feedback_enabled == 0, true);
     query_runtime.BeginDraw(pipeline->StageInfo(3) != nullptr);
     {
         const FrameProfile::Scope profile_record{context.Profile(), FramePhase::DrawRecording};
@@ -1727,6 +1761,7 @@ void RasterizerD3D12::DrawTexture() {
         context.Transition(target->ImageHandle(), D3D12_RESOURCE_STATE_RENDER_TARGET);
         context.Retain(sampled);
         context.Retain(target->ImageHandle());
+        context.InvalidateRecordedState();
         auto* commands = context.Commands();
         descriptors.SetHeaps(commands);
         commands->SetGraphicsRootSignature(pipeline.RootSignature());

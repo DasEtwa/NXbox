@@ -33,8 +33,8 @@ public:
     D3D12_STREAM_OUTPUT_DESC Declaration(bool rasterize = true, u32 rasterized_stream = 0) const;
     void BindBuffer(u32 slot, ResourcePtr buffer, u64 offset, u64 size,
                     std::optional<u64> filled_size = std::nullopt);
-    void Bind();
-    void Unbind(bool reset_cursor = false);
+    void Bind(bool cache_draw_state = false);
+    void Unbind(bool reset_cursor = false, bool cache_draw_state = false);
     u32 StreamMask() const;
     u64 ReadFilledSize(u32 stream);
 

@@ -121,6 +121,7 @@ enum class FrameCount : size_t {
     ForcedSubmitBufferClear,
     ForcedSubmitLifecycle,
     ForcedSubmitPresent,
+    RedundantStateSkips,
     Count
 };
 // Monotonic CPU samples, independent of the host clock API, for exclusive phases.
@@ -298,6 +299,7 @@ private:
 #include <wrl/client.h>
 
 #include "common/common_types.h"
+#include "video_core/renderer_d3d12/d3d12_recorded_state.h"
 
 namespace D3D12 {
 using Microsoft::WRL::ComPtr;
@@ -371,6 +373,20 @@ public:
     Context(const Context&) = delete;
     Context& operator=(const Context&) = delete;
     ID3D12GraphicsCommandList* Commands();
+    // Every recording path outside the cached guest draw must invalidate before
+    // recording. Resource barriers and predication do not change cached state.
+    void InvalidateRecordedState() {
+        ++recording_generation;
+    }
+    RecordedDrawState& DrawState() {
+        recorded_state.Refresh(recording_generation);
+        return recorded_state;
+    }
+    bool RecordState(bool changed) {
+        if (!changed)
+            profile.Count(FrameCount::RedundantStateSkips);
+        return changed;
+    }
     u64 Submit(FrameCount reason = FrameCount::ForcedSubmitOther);
     void MarkWork(std::string_view label);
     void Finish(FrameCount reason = FrameCount::ForcedSubmitOther);
@@ -443,6 +459,8 @@ private:
 
     u64 submitted{};
     bool recording{};
+    u64 recording_generation{};
+    RecordedDrawState recorded_state;
     std::shared_ptr<MemoryBudget> budget = std::make_shared<MemoryBudget>();
     struct Batch {
         u64 tick;

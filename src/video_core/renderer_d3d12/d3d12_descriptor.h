@@ -151,14 +151,13 @@ public:
     explicit D3D12DescriptorAllocator(Context& context, u32 view_capacity = ViewHeapSize,
                                       u32 sampler_capacity = SamplerHeapSize);
 
-    // Rebind for every draw: helpers can replace heaps within the same command list.
     // Reserve the whole draw/dispatch before allocating from any ring. Reclaiming
     // another heap must never submit tables already reserved for this operation.
     void Reserve(u32 view_count, u32 sampler_count, u32 rtv_count = 0, u32 dsv_count = 0);
     // Reserve only missing tables, then recheck after Reserve (it may change the tick).
     bool CanReuseDrawTable(const DescriptorPlan& plan, bool sampler = false) const;
     DescriptorTable FinishDrawTable(DescriptorPlan& plan, bool sampler = false);
-    void SetHeaps(ID3D12GraphicsCommandList* commands);
+    void SetHeaps(ID3D12GraphicsCommandList* commands, bool cache_draw_state = false);
     DescriptorTable AllocateViews(u32 count);
     DescriptorTable AllocateSamplers(u32 count);
     D3D12_CPU_DESCRIPTOR_HANDLE AllocateRtv(u32 count);

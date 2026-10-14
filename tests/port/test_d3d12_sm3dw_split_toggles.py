@@ -58,9 +58,12 @@ class Sm3dwSplitToggles(unittest.TestCase):
     def test_cube_override_preserves_assignment_types_and_other_textures(self):
         source = HLSL.read_text()
         block = source[source.index("bool EmitCubeOne(") : source.index("void Sample(")]
-        self.assertIn("!ctx.profile.hlsl_cube_one", block)
         self.assertIn(
-            "info.type != TextureType::ColorCube && info.type != TextureType::ColorArrayCube", block
+            "info.type == TextureType::ColorCube || info.type == TextureType::ColorArrayCube", block
+        )
+        self.assertIn(
+            "if (!(ctx.profile.hlsl_cube_one && cube) && !(ctx.profile.hlsl_shadow_one && depth_compare))",
+            block,
         )
         self.assertIn("return false;", block)
         self.assertIn('ctx.AddF32x4("{} = float4(1, 1, 1, 1);", inst);', block)
@@ -72,8 +75,16 @@ class Sm3dwSplitToggles(unittest.TestCase):
     def test_all_cube_sampling_paths_short_circuit_before_sampling(self):
         source = HLSL.read_text()
         for start, end, guard in (
-            ("void Sample(", "void Gather(", "EmitCubeOne(ctx, inst, info, !dref.empty())"),
-            ("void Gather(", "u32 ImageComponents(", "EmitCubeOne(ctx, inst, info)"),
+            (
+                "void Sample(",
+                "void Gather(",
+                "EmitCubeOne(ctx, inst, info, !dref.empty(), !dref.empty())",
+            ),
+            (
+                "void Gather(",
+                "u32 ImageComponents(",
+                "EmitCubeOne(ctx, inst, info, false, !dref.empty())",
+            ),
             ("void EmitImageGradient(", "void EmitImageRead(", "EmitCubeOne(ctx, inst, info)"),
         ):
             with self.subTest(path=start):

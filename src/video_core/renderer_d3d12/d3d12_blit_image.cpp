@@ -301,6 +301,7 @@ struct BlitImageHelper::Impl {
             context.CreateResource(desc, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_COPY_DEST);
         context.Transition(src.resource, D3D12_RESOURCE_STATE_COPY_SOURCE);
         context.Retain(scratch);
+        context.InvalidateRecordedState();
         context.Commands()->CopyResource(scratch->handle.Get(), src.resource->handle.Get());
         return {scratch, src.format, src.level, src.layer};
     }
@@ -398,12 +399,14 @@ struct BlitImageHelper::Impl {
                                                         D3D12_RESOURCE_STATE_COPY_DEST);
             context.Transition(dst.resource, D3D12_RESOURCE_STATE_COPY_SOURCE);
             context.Retain(scratch);
+            context.InvalidateRecordedState();
             context.Commands()->CopyResource(scratch->handle.Get(), dst.resource->handle.Get());
             const BlitSurface target{scratch, dst.format, dst.level, dst.layer};
             Draw(target, original_src, dst_region, src_region, linear, conversion, mode,
                  grid_samples);
             context.Transition(scratch, D3D12_RESOURCE_STATE_COPY_SOURCE);
             context.Transition(dst.resource, D3D12_RESOURCE_STATE_COPY_DEST);
+            context.InvalidateRecordedState();
             context.Commands()->CopyResource(dst.resource->handle.Get(), scratch->handle.Get());
             return;
         }
@@ -511,6 +514,7 @@ struct BlitImageHelper::Impl {
         context.Transition(src.resource, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         context.Transition(dst.resource, dst.format.depth ? D3D12_RESOURCE_STATE_DEPTH_WRITE
                                                           : D3D12_RESOURCE_STATE_RENDER_TARGET);
+        context.InvalidateRecordedState();
         auto* commands = context.Commands();
         ID3D12DescriptorHeap* heaps[]{descriptors->srv.Get()};
         commands->SetDescriptorHeaps(1, heaps);
@@ -588,6 +592,7 @@ void BlitImageHelper::Resolve(const BlitSurface& dst, const BlitSurface& src,
         (support.Support1 & D3D12_FORMAT_SUPPORT1_MULTISAMPLE_RESOLVE)) {
         impl->context.Transition(src.resource, D3D12_RESOURCE_STATE_RESOLVE_SOURCE);
         impl->context.Transition(dst.resource, D3D12_RESOURCE_STATE_RESOLVE_DEST);
+        impl->context.InvalidateRecordedState();
         impl->context.Commands()->ResolveSubresource(
             dst.resource->handle.Get(), Subresource(dst), src.resource->handle.Get(),
             Subresource(src), static_cast<DXGI_FORMAT>(dst.format.view_format));
@@ -714,6 +719,7 @@ void BlitImageHelper::CopyImage(const BlitSurface& dst, const BlitSurface& origi
                                   static_cast<UINT>(copy.src_offset.x) + copy.extent.width,
                                   static_cast<UINT>(copy.src_offset.y) + copy.extent.height,
                                   static_cast<UINT>(copy.src_offset.z) + copy.extent.depth};
+                    impl->context.InvalidateRecordedState();
                     impl->context.Commands()->CopyTextureRegion(
                         &target, copy.dst_offset.x, copy.dst_offset.y, copy.dst_offset.z, &source,
                         full_src && full_dst ? nullptr : &box);

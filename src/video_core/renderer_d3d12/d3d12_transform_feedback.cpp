@@ -126,7 +126,7 @@ void TransformFeedback::BindBuffer(u32 slot, ResourcePtr buffer, u64 offset, u64
     views[slot] = {buffers[slot]->handle->GetGPUVirtualAddress() + offset, size,
                    counters->handle->GetGPUVirtualAddress() + slot * 8};
 }
-void TransformFeedback::Bind() {
+void TransformFeedback::Bind(bool cache_draw_state) {
     EnsureCounters();
     std::array<D3D12_STREAM_OUTPUT_BUFFER_VIEW, 4> active_views{};
     for (u32 i = 0; i < 4; ++i) {
@@ -141,12 +141,21 @@ void TransformFeedback::Bind() {
     }
     context.Retain(counters);
     context.Transition(counters, D3D12_RESOURCE_STATE_STREAM_OUT);
-    context.Commands()->SOSetTargets(0, 4, active_views.data());
+    auto* commands = context.Commands();
+    if (!cache_draw_state)
+        context.InvalidateRecordedState();
+    if (context.RecordState(
+            context.DrawState().stream_output.Update(active_views.data(), active_views.size())))
+        commands->SOSetTargets(0, 4, active_views.data());
     bound = true;
 }
-void TransformFeedback::Unbind(bool reset_cursor) {
+void TransformFeedback::Unbind(bool reset_cursor, bool cache_draw_state) {
     const std::array<D3D12_STREAM_OUTPUT_BUFFER_VIEW, 4> empty{};
-    context.Commands()->SOSetTargets(0, 4, empty.data());
+    auto* commands = context.Commands();
+    if (!cache_draw_state)
+        context.InvalidateRecordedState();
+    if (context.RecordState(context.DrawState().stream_output.Update(empty.data(), empty.size())))
+        commands->SOSetTargets(0, 4, empty.data());
     bound = false;
     // Keep the last filled-size counters readable after disabling capture.
     // Clear/blit unbinding only pauses host SO; a new guest session resets on bind.

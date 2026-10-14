@@ -141,6 +141,7 @@ struct ClearRenderer::Impl {
     void Draw(const ClearAttachment& target, D3D12_RECT rect, const ClearValues& values,
               unsigned pixel, unsigned mask, bool depth, unsigned stencil_mask) {
         auto pipeline = Pipeline(target, pixel, mask, depth, stencil_mask);
+        context.InvalidateRecordedState();
         auto* commands = context.Commands();
         commands->SetPipelineState(pipeline.Get());
         commands->SetGraphicsRootSignature(root.Get());

@@ -167,6 +167,7 @@ struct Presenter::Impl {
         cpu.ptr += static_cast<SIZE_T>(cursor) * srv_stride;
         gpu.ptr += static_cast<UINT64>(cursor++) * srv_stride;
         context.Device()->CreateShaderResourceView(source->handle.Get(), &view, cpu);
+        context.InvalidateRecordedState();
         auto* commands = context.Commands();
         ID3D12DescriptorHeap* heaps[]{srv_heap.Get()};
         commands->SetDescriptorHeaps(1, heaps);

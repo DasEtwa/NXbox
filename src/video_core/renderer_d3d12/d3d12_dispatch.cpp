@@ -86,6 +86,7 @@ void ComputeDispatch::Bind(const ComputeBindings& bindings) {
             if (other.resource == use.resource && other.state != use.state)
                 throw std::invalid_argument("D3D12 conflicting compute resource states");
     }
+    context.InvalidateRecordedState();
     auto* commands = context.Commands();
     // Commands() may retire the previous recording before these objects are held.
     context.AfterCompletion([pipeline = bindings.pipeline, root = bindings.root_signature,

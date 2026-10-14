@@ -359,6 +359,7 @@ void QueryCacheRuntime::EndDraw() {
     }
     auto& context = impl->context;
     context.Retain(impl->results);
+    context.InvalidateRecordedState();
     auto* commands = context.Commands();
     const auto end = [&](ID3D12QueryHeap* heap, D3D12_QUERY_TYPE type, u64 offset) {
         commands->EndQuery(heap, type, slot);
@@ -457,6 +458,7 @@ void QueryCacheRuntime::Barriers(bool) {
 void QueryCacheRuntime::PauseHostConditionalRendering() {
     if (BisectEnabled("NXBOX_D3D12_NO_QUERIES"))
         return;
+    // Predication is always recorded and does not alter any cached draw state.
     impl->context.Commands()->SetPredication(nullptr, 0, D3D12_PREDICATION_OP_EQUAL_ZERO);
 }
 void QueryCacheRuntime::EndHostConditionalRendering() {
