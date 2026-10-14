@@ -108,11 +108,14 @@ u64 ProfileCpuTime() {
     return value(kernel) + value(user); // 100 ns, kernel + user CPU time.
 }
 u64 ProfileWallTime() {
-    LARGE_INTEGER now{}, frequency{};
+    static const double ticks_to_100ns = [] {
+        LARGE_INTEGER frequency{};
+        QueryPerformanceFrequency(&frequency);
+        return 10000000.0 / static_cast<double>(frequency.QuadPart);
+    }();
+    LARGE_INTEGER now{};
     QueryPerformanceCounter(&now);
-    QueryPerformanceFrequency(&frequency);
-    return static_cast<u64>(static_cast<double>(now.QuadPart) * 10000000.0 /
-                            static_cast<double>(frequency.QuadPart));
+    return static_cast<u64>(static_cast<double>(now.QuadPart) * ticks_to_100ns);
 }
 void InfoMessage(D3D12_MESSAGE_CATEGORY category, D3D12_MESSAGE_SEVERITY severity,
                  D3D12_MESSAGE_ID id, LPCSTR description, void*) noexcept {
@@ -297,13 +300,14 @@ bool FrameProfile::OnOwner() {
 void FrameProfile::BindRecordingThread() {
     if (enabled && !owner.load()) {
         initial_cpu = ProfileCpuTime();
-        timing.Reset(initial_cpu);
         start_wall = ProfileWallTime();
+        timing.Reset(start_wall);
         owner.store(GetCurrentThreadId());
     }
 }
 void FrameProfile::Switch(FramePhase phase) {
-    const auto now = ProfileCpuTime();
+    // Wall time: GetThreadTimes ticks at 15.6 ms and costs a syscall per phase switch.
+    const auto now = ProfileWallTime();
     timing.Switch(phase, now);
 }
 FrameProfile::Scope::Scope(FrameProfile& profile_, FramePhase phase) {
@@ -450,7 +454,7 @@ void FrameProfile::EndFrame(bool presented) {
         std::string line = fmt::format(
             "D3D12_FRAME_PROFILE thread={} frames={} gpu_thread_cpu_pct={:.2f} "
             "fence_wait_wall_ms={:.3f}",
-            owner.load(), frames, 100.0 * static_cast<double>(timing.last - initial_cpu) / elapsed,
+            owner.load(), frames, 100.0 * static_cast<double>(ProfileCpuTime() - initial_cpu) / elapsed,
             static_cast<double>(fence_wall) / 10000.0);
         for (size_t i = 0; i < timing.cpu.size(); ++i)
             line += fmt::format(" {}_cpu_ms={:.3f}", names[i],
@@ -469,8 +473,8 @@ void FrameProfile::EndFrame(bool presented) {
     counts.fill(0);
     frames = fence_wall = 0;
     initial_cpu = ProfileCpuTime();
-    timing.Reset(initial_cpu);
     start_wall = ProfileWallTime();
+    timing.Reset(start_wall);
 }
 Context::Context() {
     SetEnvironmentVariableA("NXBOX_D3D12_COMMAND_FAILURE", nullptr);
