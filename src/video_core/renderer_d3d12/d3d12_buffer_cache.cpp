@@ -109,6 +109,7 @@ void BufferCacheRuntime::CopyBuffer(ResourcePtr dst, ResourcePtr src,
                                     : FrameCount::GpuBufferCopyBytes,
                                 copy.size);
         context.MarkWork("upload/copy");
+        context.BeforeCopyWrite(dst, copy.dst_offset, copy.size);
         context.Commands()->CopyBufferRegion(dst->handle.Get(), copy.dst_offset, src->handle.Get(),
                                              copy.src_offset, copy.size);
     }
@@ -259,13 +260,15 @@ BoundBuffer BufferCacheRuntime::CopyUniform(const BoundBuffer& uniform) {
     const FrameProfile::Scope profile_upload{context.Profile(), FramePhase::BufferUpload};
     context.Profile().Count(FrameCount::BufferUploadBytes, padded);
     context.Profile().Count(FrameCount::UniformUploadBytes, padded);
-    auto staging = upload.Request(padded);
-    std::fill(staging.mapped_span.begin(), staging.mapped_span.end(), u8{0});
     auto target = context.CreateBuffer(padded, D3D12_HEAP_TYPE_DEFAULT);
-    const VideoCommon::BufferCopy zero{staging.offset, 0, padded};
-    CopyBuffer(target, staging.buffer, std::span{&zero, 1}, true);
     const VideoCommon::BufferCopy data{offset, 0, size};
     CopyBuffer(target, resource, std::span{&data, 1}, false);
+    if (padded > size) {
+        auto staging = upload.Request(padded - size);
+        std::fill(staging.mapped_span.begin(), staging.mapped_span.end(), u8{0});
+        const VideoCommon::BufferCopy zero{staging.offset, size, padded - size};
+        CopyBuffer(target, staging.buffer, std::span{&zero, 1}, true);
+    }
     // Bounded cache; command-list resource leases keep evicted copies alive for the GPU.
     uniform_copies.Insert(resource, resource->content_version, offset, size, target);
     return {std::move(target), 0, padded};

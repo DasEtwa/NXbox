@@ -332,6 +332,7 @@ struct RendererD3D12::Impl {
         destination.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
         destination.PlacedFootprint = footprint;
         context.Retain(readback);
+        context.BeforeCopyWrite(readback, footprint.Offset, total_bytes);
         context.Commands()->CopyTextureRegion(&destination, 0, 0, 0, &source, nullptr);
         context.Finish(FrameCount::ForcedSubmitPresent);
         const size_t row_bytes = static_cast<size_t>(layout.width) * 4;

@@ -22,6 +22,7 @@ void TransformFeedback::EnsureCounters() {
     context.Retain(initial.buffer);
     context.Retain(counters);
     context.MarkWork("stream-output counter initialization");
+    context.BeforeCopyWrite(counters, 0, 32);
     context.Commands()->CopyBufferRegion(counters->handle.Get(), 0, initial.buffer->handle.Get(),
                                          initial.offset, 32);
 }
@@ -118,6 +119,7 @@ void TransformFeedback::BindBuffer(u32 slot, ResourcePtr buffer, u64 offset, u64
         context.Transition(counters, D3D12_RESOURCE_STATE_COPY_DEST);
         context.Retain(reset.buffer);
         context.MarkWork("upload/copy");
+        context.BeforeCopyWrite(counters, u64{slot} * 8, 8);
         context.Commands()->CopyBufferRegion(counters->handle.Get(), slot * 8,
                                              reset.buffer->handle.Get(), reset.offset, 8);
     }
@@ -184,6 +186,7 @@ u64 TransformFeedback::ReadFilledSize(u32 stream) {
             context.Transition(counters, D3D12_RESOURCE_STATE_COPY_SOURCE);
             context.Retain(result.buffer);
             context.MarkWork("upload/copy");
+            context.BeforeCopyWrite(result.buffer, result.offset, 8);
             context.Commands()->CopyBufferRegion(result.buffer->handle.Get(), result.offset,
                                                  counters->handle.Get(), i * 8, 8);
             context.Finish(FrameCount::ForcedSubmitBufferDownload);

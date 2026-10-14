@@ -122,6 +122,7 @@ enum class FrameCount : size_t {
     ForcedSubmitLifecycle,
     ForcedSubmitPresent,
     RedundantStateSkips,
+    CopyHazardBarriers,
     Count
 };
 // Monotonic CPU samples, independent of the host clock API, for exclusive phases.
@@ -401,6 +402,8 @@ public:
         return submitted + 1;
     }
     void Transition(const ResourcePtr& resource, D3D12_RESOURCE_STATES state);
+    // Orders overlapping copy writes within the current command list.
+    void BeforeCopyWrite(const ResourcePtr& resource, u64 offset, u64 size);
     /// Orders every prior UAV write before later work on the GPU, without a CPU wait.
     void GlobalUavBarrier();
     // Explicit batch keeps raw Commands() users ordered; no hidden deferred barriers.
@@ -456,6 +459,11 @@ private:
     } info_callback;
     u64 execute_sequence{};
     std::vector<std::string> work;
+    struct CopyWriteRange {
+        u64 offset;
+        u64 size;
+    };
+    std::unordered_map<ID3D12Resource*, std::vector<CopyWriteRange>> copy_writes;
 
     u64 submitted{};
     bool recording{};

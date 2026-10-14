@@ -225,6 +225,7 @@ struct Context {
     FakeDevice device; FakeCommands commands; std::vector<std::function<void()>> pending;
     FakeDevice* Device() { return &device; } FakeCommands* Commands() { return &commands; }
     void Retain(const ResourcePtr&) {} void Transition(const ResourcePtr&,int) {} void MarkWork(const char*) {}
+    void BeforeCopyWrite(const ResourcePtr&, u64, u64) {}
     void AfterCompletion(std::function<void()> callback) { pending.push_back(std::move(callback)); }
     void Finish(FrameCount = FrameCount::ForcedSubmitTextureDownload) { for(auto& callback:pending) callback(); pending.clear(); }
 };

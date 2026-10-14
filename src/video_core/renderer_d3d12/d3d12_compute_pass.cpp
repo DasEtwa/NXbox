@@ -80,6 +80,7 @@ ResourcePtr ComputePasses::UploadInput(const ResourcePtr& staging, std::uint64_t
                                 ? FrameCount::StagingCopyBytes
                                 : FrameCount::GpuBufferCopyBytes,
                             size);
+    context.BeforeCopyWrite(input, 0, size);
     context.Commands()->CopyBufferRegion(input->handle.Get(), 0, staging->handle.Get(), offset,
                                          size);
     return input;

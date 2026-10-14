@@ -383,6 +383,7 @@ void Image::Transfer(const StagingBufferRef& input,
                         context.Transition(gpu_destination, D3D12_RESOURCE_STATE_COPY_DEST);
                         context.Retain(staging.buffer);
                         context.MarkWork("upload/copy");
+                        context.BeforeCopyWrite(gpu_destination, destination, row_bytes);
                         context.Commands()->CopyBufferRegion(
                             gpu_destination->handle.Get(), destination,
                             staging.buffer->handle.Get(), staging.offset, row_bytes);
@@ -504,6 +505,8 @@ void Image::Transfer(const StagingBufferRef& input,
                               static_cast<UINT>(offset.y) + extent.height,
                               static_cast<UINT>(offset.z) + extent.depth};
                 context.MarkWork("upload/copy");
+                context.BeforeCopyWrite(padded_gpu ? padded_gpu : aligned.buffer, footprint.Offset,
+                                        padded_size);
                 context.Commands()->CopyTextureRegion(&linear, 0, 0, 0, &texture,
                                                       full_subresource ? nullptr : &box);
                 if (padded_gpu) {
@@ -514,10 +517,12 @@ void Image::Transfer(const StagingBufferRef& input,
                                    extent.depth, row_stride, slice_stride,
                                    footprint.Footprint.RowPitch, padded_slice,
                                    [&](u64 destination, u64 source, u64 size) {
+                                       context.BeforeCopyWrite(gpu_destination, destination, size);
                                        context.Commands()->CopyBufferRegion(
                                            gpu_destination->handle.Get(), destination,
                                            padded_gpu->handle.Get(), source, size);
                                    });
+                    context.BeforeCopyWrite(aligned.buffer, aligned.offset, padded_size);
                     context.Commands()->CopyBufferRegion(aligned.buffer->handle.Get(),
                                                          aligned.offset, padded_gpu->handle.Get(),
                                                          0, padded_size);
@@ -731,6 +736,8 @@ bool Image::TransferConverted(const StagingBufferRef& input,
                                   static_cast<UINT>(offset.x) + extent.width,
                                   static_cast<UINT>(offset.y) + extent.height,
                                   static_cast<UINT>(offset.z) + extent.depth};
+                    context.BeforeCopyWrite(aligned.buffer, footprint.Offset,
+                                            padded_slice * extent.depth);
                     context.Commands()->CopyTextureRegion(&linear, 0, 0, 0, &texture,
                                                           host_format.depth ? nullptr : &box);
                     context.AfterCompletion(convert);
@@ -1172,6 +1179,9 @@ bool TextureCacheRuntime::ReinterpretOnGpu(Image& dst, Image& src,
     for (const auto& step : steps) {
         const auto out = location(bounce->handle.Get(), &step.read, 0);
         const auto in = location(src.Handle()->handle.Get(), nullptr, step.src_subresource);
+        context.BeforeCopyWrite(bounce, step.read.Offset,
+                                u64{step.read.Footprint.RowPitch} * step.read.Footprint.Height *
+                                    step.read.Footprint.Depth);
         context.Commands()->CopyTextureRegion(&out, 0, 0, 0, &in, &step.src_box);
     }
     context.Transition(bounce, D3D12_RESOURCE_STATE_COPY_SOURCE);

@@ -238,6 +238,7 @@ struct QueryCacheRuntimeImpl {
             context.Transition(resource, D3D12_RESOURCE_STATE_COPY_SOURCE);
             context.Retain(result.buffer);
             context.MarkWork("query readback/copy");
+            context.BeforeCopyWrite(result.buffer, result.offset, 8);
             context.Commands()->CopyBufferRegion(result.buffer->handle.Get(), result.offset,
                                                  resource->handle.Get(), offset, 8);
         }
@@ -449,6 +450,7 @@ void QueryCacheRuntime::CopyValue(DAddr address, const ResourcePtr& source, u64 
                                   size);
     ++impl->report_copies;
     impl->context.MarkWork("query report/predicate copy");
+    impl->context.BeforeCopyWrite(resource, destination, size);
     impl->context.Commands()->CopyBufferRegion(resource->handle.Get(), destination,
                                                source->handle.Get(), offset, size);
 }
@@ -517,6 +519,7 @@ bool QueryCacheRuntime::CompareConditional(VideoCommon::LookupData first,
     impl->context.Transition(impl->predicate, D3D12_RESOURCE_STATE_COPY_DEST);
     impl->context.Retain(upload.buffer);
     impl->context.MarkWork("query report/predicate copy");
+    impl->context.BeforeCopyWrite(impl->predicate, 0, 8);
     impl->context.Commands()->CopyBufferRegion(impl->predicate->handle.Get(), 0,
                                                upload.buffer->handle.Get(), upload.offset, 8);
     impl->predicate_set = true;

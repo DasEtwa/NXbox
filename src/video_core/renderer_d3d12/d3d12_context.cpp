@@ -442,7 +442,8 @@ void FrameProfile::EndFrame(bool presented) {
                                       "forced_submits_buffer_clear",
                                       "forced_submits_lifecycle",
                                       "forced_submits_present",
-                                      "redundant_state_skips"};
+                                      "redundant_state_skips",
+                                      "copy_hazard_barriers"};
         static_assert(names.size() == static_cast<size_t>(FramePhase::Count));
         static_assert(counters.size() == static_cast<size_t>(FrameCount::Count));
         const double elapsed = static_cast<double>(wall - start_wall);
@@ -711,6 +712,7 @@ ID3D12GraphicsCommandList* Context::Commands() {
         Check(allocators[allocator_index].handle->Reset(), "allocator Reset", device.Get());
         Check(commands->Reset(allocators[allocator_index].handle.Get(), nullptr),
               "command list Reset", device.Get());
+        copy_writes.clear();
         recording = true;
         InvalidateRecordedState();
     }
@@ -769,6 +771,7 @@ u64 Context::Submit(FrameCount reason) {
         allocators[allocator_index].tick = CurrentTick();
         allocator_index = (allocator_index + 1) % allocators.size();
         work.clear();
+        copy_writes.clear();
         LogInfoQueue();
         Check(device->GetDeviceRemovedReason(), "after ExecuteCommandLists", device.Get());
     }
@@ -824,7 +827,39 @@ void Context::Transition(const ResourcePtr& resource, D3D12_RESOURCE_STATES stat
     barrier.Transition.StateAfter = state;
     commands->ResourceBarrier(1, &barrier);
     profile.Count(FrameCount::Barriers);
+    copy_writes.erase(resource->handle.Get());
     resource->state = state;
+}
+void Context::BeforeCopyWrite(const ResourcePtr& resource, u64 offset, u64 size) {
+    if (!resource)
+        throw std::invalid_argument("D3D12 null copy destination");
+    if (!size)
+        return;
+    // Start recording before inspecting ranges; completion callbacks can record work.
+    Retain(resource);
+    auto* destination = resource->handle.Get();
+    const auto found = copy_writes.find(destination);
+    if (found != copy_writes.end()) {
+        for (const auto& range : found->second) {
+            // Half-open ranges, without overflowing offset + size at the buffer end.
+            const bool overlaps = offset < range.offset ? range.offset - offset < size
+                                                        : offset - range.offset < range.size;
+            if (!overlaps)
+                continue;
+            const FrameProfile::Scope profile_barrier{profile, FramePhase::Barriers};
+            D3D12_RESOURCE_BARRIER barrier{};
+            barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_ALIASING;
+            barrier.Aliasing.pResourceBefore = nullptr;
+            barrier.Aliasing.pResourceAfter = nullptr;
+            commands->ResourceBarrier(1, &barrier);
+            profile.Count(FrameCount::Barriers);
+            profile.Count(FrameCount::CopyHazardBarriers);
+            // The null/null aliasing barrier orders all prior work, not just this buffer.
+            copy_writes.clear();
+            break;
+        }
+    }
+    copy_writes[destination].push_back({offset, size});
 }
 void Context::GlobalUavBarrier() {
     const FrameProfile::Scope profile_barrier{profile, FramePhase::Barriers};
@@ -863,6 +898,8 @@ void Context::TransitionBatch(std::span<const std::pair<ResourcePtr, D3D12_RESOU
     if (!barriers.empty()) {
         list->ResourceBarrier(static_cast<UINT>(barriers.size()), barriers.data());
         profile.Count(FrameCount::Barriers, barriers.size());
+        for (const auto& barrier : barriers)
+            copy_writes.erase(barrier.Transition.pResource);
     }
 }
 void Context::AfterCompletion(std::function<void()> callback) {

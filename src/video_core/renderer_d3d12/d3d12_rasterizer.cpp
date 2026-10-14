@@ -966,13 +966,16 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
             context.Transition(padded, D3D12_RESOURCE_STATE_COPY_DEST);
             if (copied) {
                 context.Transition(slot.resource, D3D12_RESOURCE_STATE_COPY_SOURCE);
+                context.BeforeCopyWrite(padded, 0, copied);
                 context.Commands()->CopyBufferRegion(padded->handle.Get(), 0,
                                                      slot.resource->handle.Get(), source_offset,
                                                      copied);
             }
-            if (required > copied)
+            if (required > copied) {
+                context.BeforeCopyWrite(padded, copied, required - copied);
                 context.Commands()->CopyBufferRegion(padded->handle.Get(), copied,
                                                      zero->handle.Get(), 0, required - copied);
+            }
             context.Retain(zero);
             context.Retain(padded);
             vertex_views[i] = {padded->handle->GetGPUVirtualAddress(), static_cast<UINT>(required),
