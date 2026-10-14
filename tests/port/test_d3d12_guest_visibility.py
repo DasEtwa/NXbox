@@ -209,6 +209,7 @@ struct FrameProfile {
     Timing timing;
     std::array<u64,static_cast<size_t>(FrameCount::Count)> counts{};
     u64 frames=0,fence_wall=0,start_wall=0,initial_cpu=0;
+    std::atomic<u64> gpu_busy{};
     std::function<std::string()> guest_visibility;
     void BindRecordingThread() {}
     void Switch(int) {}

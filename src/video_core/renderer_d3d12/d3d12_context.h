@@ -354,6 +354,8 @@ public:
     void EndFrame(bool presented = true);
     std::function<std::string()> guest_visibility;
     void BindRecordingThread();
+    // GPU execution time of submitted command lists, in 100 ns, added on completion.
+    std::atomic<u64> gpu_busy{};
 
 private:
     bool OnOwner();
@@ -446,6 +448,10 @@ private:
         u64 tick{};
     };
     std::array<AllocatorSlot, 8> allocators;
+    // Profile-only timestamps bracketing each command list, one pair per allocator slot.
+    ComPtr<ID3D12QueryHeap> gpu_time_heap;
+    ResourcePtr gpu_time_readback;
+    double gpu_ticks_to_100ns{};
     size_t allocator_index{};
     ComPtr<ID3D12GraphicsCommandList> commands;
     struct InfoCallback {

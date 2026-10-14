@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cstring>
 #include <mutex>
 #include <set>
 #include <stdexcept>
@@ -453,9 +454,10 @@ void FrameProfile::EndFrame(bool presented) {
         const double elapsed = static_cast<double>(wall - start_wall);
         std::string line = fmt::format(
             "D3D12_FRAME_PROFILE thread={} frames={} gpu_thread_cpu_pct={:.2f} "
-            "fence_wait_wall_ms={:.3f}",
+            "fence_wait_wall_ms={:.3f} gpu_busy_ms={:.3f}",
             owner.load(), frames, 100.0 * static_cast<double>(ProfileCpuTime() - initial_cpu) / elapsed,
-            static_cast<double>(fence_wall) / 10000.0);
+            static_cast<double>(fence_wall) / 10000.0,
+            static_cast<double>(gpu_busy.exchange(0)) / 10000.0);
         for (size_t i = 0; i < timing.cpu.size(); ++i)
             line += fmt::format(" {}_cpu_ms={:.3f}", names[i],
                                 static_cast<double>(timing.cpu[i]) / 10000.0);
@@ -710,6 +712,24 @@ ID3D12GraphicsCommandList* Context::Commands() {
         Collect();
         auto& slot = allocators[allocator_index];
         WaitSubmitted(slot.tick);
+        // Created before Reset: CreateResource may submit under memory pressure.
+        if (profile.Enabled() && !gpu_time_heap) {
+            D3D12_QUERY_HEAP_DESC desc{};
+            desc.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
+            desc.Count = static_cast<UINT>(allocators.size() * 2);
+            Check(device->CreateQueryHeap(&desc, IID_PPV_ARGS(&gpu_time_heap)),
+                  "Create GPU time query heap", device.Get());
+            gpu_time_readback = CreateResource(
+                D3D12_RESOURCE_DESC{D3D12_RESOURCE_DIMENSION_BUFFER, 0,
+                                    allocators.size() * 16, 1, 1, 1, DXGI_FORMAT_UNKNOWN,
+                                    {1, 0}, D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
+                                    D3D12_RESOURCE_FLAG_NONE},
+                D3D12_HEAP_TYPE_READBACK, D3D12_RESOURCE_STATE_COPY_DEST);
+            UINT64 frequency{};
+            Check(queue->GetTimestampFrequency(&frequency), "GetTimestampFrequency",
+                  device.Get());
+            gpu_ticks_to_100ns = 10000000.0 / static_cast<double>(frequency);
+        }
     }
     // A completion callback may have started the next command list.
     if (!recording) {
@@ -719,6 +739,10 @@ ID3D12GraphicsCommandList* Context::Commands() {
         copy_writes.clear();
         recording = true;
         InvalidateRecordedState();
+        if (gpu_time_heap && profile.Enabled()) {
+            commands->EndQuery(gpu_time_heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
+                               static_cast<UINT>(allocator_index * 2));
+        }
     }
     return commands.Get();
 }
@@ -752,6 +776,20 @@ u64 Context::Submit(FrameCount reason) {
         return submitted;
     if (recording) {
         LogInfoQueue();
+        if (gpu_time_heap && profile.Enabled()) {
+            const auto first = static_cast<UINT>(allocator_index * 2);
+            commands->EndQuery(gpu_time_heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, first + 1);
+            commands->ResolveQueryData(gpu_time_heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, first, 2,
+                                       gpu_time_readback->handle.Get(), u64{first} * 8);
+            completion.push_back([this, first] {
+                u64 stamps[2]{};
+                std::memcpy(stamps, gpu_time_readback->mapped.data() + u64{first} * 8,
+                            sizeof(stamps));
+                if (stamps[1] > stamps[0])
+                    profile.gpu_busy += static_cast<u64>(
+                        static_cast<double>(stamps[1] - stamps[0]) * gpu_ticks_to_100ns);
+            });
+        }
         Check(commands->Close(), "Close", device.Get());
         ID3D12CommandList* lists[] = {commands.Get()};
         std::string contents;
