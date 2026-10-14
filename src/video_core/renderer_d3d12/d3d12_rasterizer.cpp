@@ -356,7 +356,7 @@ ResourcePtr RasterizerD3D12::CopyFeedback(const ResourcePtr& source,
         context.Profile().Count(FrameCount::FeedbackCopyBytes,
                                 source->allocation_size * missing.size() / subresource_count);
     };
-    static const bool reuse = BisectEnabled("NXBOX_D3D12_FEEDBACK_REUSE");
+    static const bool reuse = !BisectEnabled("NXBOX_D3D12_FEEDBACK_COPY_PER_DRAW");
     for (auto& entry : feedback_pool) {
         if (entry.draw == feedback_draw && entry.source == source.get()) {
             copy_into(entry);
@@ -624,8 +624,9 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         color_resources[slot] = color->ImageHandle();
         const FrameProfile::Scope profile_extent{context.Profile(), FramePhase::ExtentCopies};
         const auto original_extent = extent(*color);
-        // Diagnostic: bind mismatched extents directly; hardware renders the intersection.
-        static const bool no_extent_copy = BisectEnabled("NXBOX_D3D12_NO_EXTENT_COPY");
+        // Bind mismatched extents directly; hardware renders the intersection. The copy-in/out
+        // path (NXBOX_D3D12_EXTENT_COPY=1) cost ~460 copies per frame in BotW for no visible gain.
+        static const bool no_extent_copy = !BisectEnabled("NXBOX_D3D12_EXTENT_COPY");
         if (no_extent_copy || (original_extent.width == matching_extent.width &&
                                original_extent.height == matching_extent.height))
             continue;
