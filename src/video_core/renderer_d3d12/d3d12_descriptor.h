@@ -130,10 +130,10 @@ struct DescriptorTable {
         return {cpu.ptr + static_cast<SIZE_T>(index) * stride};
     }
     // Sub-range of a larger allocation (one ring allocation feeds the three view tables).
-    DescriptorTable Slice(u32 first, u32 n) const {
-        return {Slot(first), {gpu.ptr + static_cast<UINT64>(first) * stride},
-                n,           stride,
-                plan,        this->first + first};
+    DescriptorTable Slice(u32 offset, u32 n) const {
+        return {Slot(offset), {gpu.ptr + static_cast<UINT64>(offset) * stride},
+                n,            stride,
+                plan,         first + offset};
     }
 };
 
