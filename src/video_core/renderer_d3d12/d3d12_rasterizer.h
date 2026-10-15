@@ -3,7 +3,9 @@
 
 #pragma once
 
+#include <map>
 #include <optional>
+#include <tuple>
 #include "common/common_types.h"
 #include "video_core/control/channel_state_cache.h"
 #include "video_core/engines/maxwell_dma.h"
@@ -196,6 +198,11 @@ private:
     bool injected_draw_skip{};
     bool presentation_logged{};
     ResourcePtr zero_vertex_buffer;
+    struct PaddedVertexBuffer {
+        ResourcePtr source;
+        ResourcePtr padded;
+    };
+    std::map<std::tuple<const Resource*, u64, u64>, PaddedVertexBuffer> padded_vertex_buffers;
     ResourcePtr zero_uniform_buffer;
     void PrepareZeroUniformBuffer();
     std::vector<std::pair<ResourcePtr, D3D12_RESOURCE_STATES>> state_scratch;

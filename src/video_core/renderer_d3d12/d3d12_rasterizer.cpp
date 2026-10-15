@@ -1174,9 +1174,24 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
                         first_page, last_page));
                 });
             }
-            auto zero = context.CreateBuffer(required, D3D12_HEAP_TYPE_UPLOAD);
-            std::fill(zero->mapped.begin(), zero->mapped.end(), u8{0});
-            auto padded = context.CreateBuffer(required, D3D12_HEAP_TYPE_DEFAULT);
+            // Creating two buffers per padded binding cost SM3DW ~0.6 ms a frame for ~540 bytes:
+            // reuse the padded buffer per source range (barriers order the re-copy) and take the
+            // zero tail from the shared zero buffer when it fits.
+            // ponytail: unbounded until 256 entries, then cleared; LRU if games churn ranges.
+            const bool shared_zero = required - copied <= 65536;
+            ResourcePtr zero = zero_vertex_buffer;
+            if (!shared_zero) {
+                zero = context.CreateBuffer(required, D3D12_HEAP_TYPE_UPLOAD);
+                std::fill(zero->mapped.begin(), zero->mapped.end(), u8{0});
+            }
+            if (padded_vertex_buffers.size() > 256)
+                padded_vertex_buffers.clear();
+            auto& cached = padded_vertex_buffers[{slot.resource.get(), source_offset, required}];
+            if (cached.source != slot.resource || !cached.padded) {
+                cached.source = slot.resource;
+                cached.padded = context.CreateBuffer(required, D3D12_HEAP_TYPE_DEFAULT);
+            }
+            auto padded = cached.padded;
             context.MarkWork("vertex binding padding");
             context.Transition(padded, D3D12_RESOURCE_STATE_COPY_DEST);
             // Diagnostic: source the bytes from guest memory instead of the buffer cache.
@@ -1198,7 +1213,8 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
             if (required > copied) {
                 context.BeforeCopyWrite(padded, copied, required - copied);
                 context.Commands()->CopyBufferRegion(padded->handle.Get(), copied,
-                                                     zero->handle.Get(), copied, required - copied);
+                                                     zero->handle.Get(), shared_zero ? 0 : copied,
+                                                     required - copied);
             }
             context.Retain(zero);
             context.Retain(padded);
