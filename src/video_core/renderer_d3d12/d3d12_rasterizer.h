@@ -153,6 +153,7 @@ private:
     QueryCacheRuntime query_runtime;
     QueryCache query_cache;
     FenceManager fence_manager;
+    void TraceUniformWord(size_t stage, u32 index, const BoundBuffer& buffer);
     bool PrepareDrawIndices(bool is_indexed, DrawParams& params, const IGraphicsPipeline& pipeline);
     template <typename Func>
     void PrepareDraw(bool is_indexed, Func&& draw);
@@ -182,6 +183,7 @@ private:
     std::vector<FeedbackTexture> attachment_pool;
     u64 feedback_draw{};
     u32 draw_trace_lines{};
+    u32 cbuf_trace_lines{};
     u32 vb_trace_draws{};
     u64 feedback_frame{};
     u64 feedback_copies{};

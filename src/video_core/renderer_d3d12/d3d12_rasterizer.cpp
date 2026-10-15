@@ -1330,6 +1330,7 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
                 // Storage aliases need a copy; CopyUniform also aligns the GPU address.
                 if (buffer.resource && IsStorageBuffer(bindings, buffer.resource))
                     buffer = buffer_runtime.CopyUniform(buffer);
+                TraceUniformWord(stage, desc.index, buffer);
                 if (root_cbvs) {
                     if (!buffer.resource || !buffer.size)
                         buffer = {zero_uniform_buffer, 0, 65536};
@@ -1892,6 +1893,50 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         FragmentBarrier();
     for (auto& stage : bindings.stages)
         stage.Clear(); // drop upload-page references so the staging ring can recycle them
+}
+
+// Diagnostic (NXBOX_D3D12_CBUF_TRACE_FRAME=<frame>): word 4 of constant buffer
+// NXBOX_D3D12_CBUF_TRACE_INDEX (default 9) as the guest holds it and as the GPU reads it.
+void RasterizerD3D12::TraceUniformWord(size_t stage, u32 index, const BoundBuffer& buffer) {
+    static const u64 frame = [] {
+        const char* value = std::getenv("NXBOX_D3D12_CBUF_TRACE_FRAME");
+        return value ? std::strtoull(value, nullptr, 10) : 0ULL;
+    }();
+    static const u32 traced = [] {
+        const char* value = std::getenv("NXBOX_D3D12_CBUF_TRACE_INDEX");
+        return value ? static_cast<u32>(std::strtoul(value, nullptr, 10)) : 9u;
+    }();
+    if (!frame || index != traced || texture_cache.CaptureFrame() != frame ||
+        cbuf_trace_lines >= 200)
+        return;
+    const u32 line = ++cbuf_trace_lines;
+    const auto& cb = maxwell3d->state.shader_stages[stage].const_buffers[index];
+    const u32 guest = cb.enabled && cb.address ? gpu_memory->Read<u32>(cb.address + 16) : 0;
+    const auto prefix =
+        fmt::format("D3D12_CBUF_TRACE line={} stage={} index={} enabled={} guest_addr={:#x} "
+                    "guest_size={} guest_word4={:#x} bound_size={} bound_offset={}",
+                    line, stage, index, cb.enabled, cb.address, cb.size, guest, buffer.size,
+                    buffer.offset);
+    if (!buffer.resource || buffer.size < 20) {
+        Diagnostic(prefix + " host=unbound");
+        return;
+    }
+    if (buffer.resource->heap != D3D12_HEAP_TYPE_DEFAULT) {
+        u32 host{};
+        std::memcpy(&host, buffer.resource->mapped.data() + buffer.offset + 16, sizeof(host));
+        Diagnostic(fmt::format("{} heap=upload host_word4={:#x}", prefix, host));
+        return;
+    }
+    auto readback = context.CreateBuffer(256, D3D12_HEAP_TYPE_READBACK);
+    context.Transition(buffer.resource, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    context.BeforeCopyWrite(readback, 0, 4);
+    context.Commands()->CopyBufferRegion(readback->handle.Get(), 0, buffer.resource->handle.Get(),
+                                         buffer.offset + 16, 4);
+    context.AfterCompletion([readback, prefix] {
+        u32 host{};
+        std::memcpy(&host, readback->mapped.data(), sizeof(host));
+        Diagnostic(fmt::format("{} heap=default host_word4={:#x}", prefix, host));
+    });
 }
 
 bool RasterizerD3D12::PrepareDrawIndices(bool is_indexed, DrawParams& params,

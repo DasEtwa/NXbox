@@ -85,6 +85,7 @@ class CopyWriteHazards(unittest.TestCase):
                 "padded, 0, copied",
                 "padded, 0, copied",
                 "padded, copied, required - copied",
+                "readback, 0, 4",
             ],
             "d3d12_query_cache.cpp": [
                 "result.buffer, result.offset, 8",
