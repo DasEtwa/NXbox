@@ -49,7 +49,7 @@ class DescriptorTableReuse(unittest.TestCase):
         self.assertNotIn("Allocate", reuse.split("{", 1)[1])
         self.assertNotIn("WriteCached", reuse)
         self.assertIn("previous.tick = context.CurrentTick()", finish)
-        self.assertIn("previous.plan = std::move(plan)", finish)
+        self.assertIn("std::swap(previous.plan, plan)", finish)
 
     def test_reservation_rechecks_tick_and_reserves_both_on_submission(self):
         reserve = self.draw.index("descriptors.Reserve(")
@@ -74,10 +74,7 @@ class DescriptorTableReuse(unittest.TestCase):
         ):
             self.assertIn(state, collection)
         record = self.draw[finish:]
-        self.assertRegex(
-            record,
-            r"for \(const auto& \[resource, state\] : state_scratch\)\s*context.Transition\(resource, state\);",
-        )
+        self.assertIn("context.TransitionBatch(state_scratch)", record)
         self.assertNotIn("reuse_views", record)
         self.assertNotIn("reuse_samplers", record)
         context = (D3D12 / "d3d12_context.cpp").read_text()
@@ -88,7 +85,7 @@ class DescriptorTableReuse(unittest.TestCase):
 
     def test_root_cbvs_feedback_and_null_slots_are_planned(self):
         self.assertIn("const u32 cbv_size = root_cbvs ? 0u : TableSize(totals.cbv)", self.draw)
-        self.assertIn("DescriptorPlan view_plan{{cbv_size, srv_size, uav_size}}", self.draw)
+        self.assertIn("view_plan.Reset({cbv_size, srv_size, uav_size})", self.draw)
         self.assertRegex(self.draw, r"SrvDimension\(desc.type, desc.is_multisample\),\s*sampled\)")
         for kind in ("Cbv", "Srv", "Uav", "Sampler"):
             self.assertIn("descriptors.WriteNull" + kind, self.draw)

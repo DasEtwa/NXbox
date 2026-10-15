@@ -23,6 +23,7 @@ def function(source, signature):
 MOCK = r"""
 #include <cassert>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <span>
 #include <stdexcept>
@@ -98,8 +99,17 @@ struct Context {
     CommandsMock recording;
     CommandsMock* commands = &recording;
     std::unordered_map<ID3D12Resource*, unsigned> copy_writes;
+    std::vector<D3D12_RESOURCE_BARRIER> transition_barriers;
     CommandsMock* Commands() { return commands; }
-    void Retain(const ResourcePtr&) { Commands(); }
+    std::function<void()> on_retain;
+    void Retain(const ResourcePtr&) {
+        Commands();
+        if (on_retain) {
+            auto callback = std::move(on_retain);
+            on_retain = {};
+            callback();
+        }
+    }
     void Transition(const ResourcePtr&, D3D12_RESOURCE_STATES);
     void TransitionBatch(std::span<const std::pair<ResourcePtr, D3D12_RESOURCE_STATES>>);
     void TransitionSubresources(const ResourcePtr&, std::span<const u32>, D3D12_RESOURCE_STATES);
@@ -186,6 +196,48 @@ int main() {
         assert(false);
     } catch (const std::invalid_argument&) {}
     assert(depth->sub_states.empty());
+    // The normal draw path batches unique resources. Preserve transition order,
+    // write versions and copy hazards, including uses that need no barrier.
+    Context batch_context;
+    auto color = std::make_shared<Resource>();
+    auto storage = std::make_shared<Resource>();
+    auto upload = std::make_shared<Resource>();
+    upload->heap = 2;
+    const std::pair<ResourcePtr, unsigned> draw_uses[] = {
+        {color, SrvState}, {storage, D3D12_RESOURCE_STATE_UNORDERED_ACCESS},
+        {upload, SrvState}
+    };
+    batch_context.copy_writes[color->handle.Get()] = 1;
+    batch_context.copy_writes[upload->handle.Get()] = 1;
+    batch_context.TransitionBatch(draw_uses);
+    assert(batch_context.recording.calls.size() == 1);
+    const auto& batch = batch_context.recording.calls.back();
+    assert(batch.size() == 2);
+    assert(batch[0].Transition.pResource == color->handle.Get());
+    assert(batch[1].Transition.pResource == storage->handle.Get());
+    assert(storage->content_version == 1);
+    assert(!batch_context.copy_writes.contains(color->handle.Get()));
+    assert(batch_context.copy_writes.contains(upload->handle.Get()));
+    const auto* scratch = batch_context.transition_barriers.data();
+    batch_context.TransitionBatch(draw_uses);
+    assert(batch_context.transition_barriers.data() == scratch);
+    assert(batch_context.recording.calls.size() == 1);
+    assert(storage->content_version == 2);
+    batch_context.TransitionBatch({});
+    assert(batch_context.recording.calls.size() == 1);
+    // Completion callbacks may recursively transition resources while retaining
+    // the draw inputs. Their scratch must be emitted before the outer batch.
+    auto nested = std::make_shared<Resource>();
+    batch_context.on_retain = [&] {
+        const std::pair<ResourcePtr, unsigned> nested_use[] = {{nested, SrvState}};
+        batch_context.TransitionBatch(nested_use);
+    };
+    color->state = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    batch_context.TransitionBatch(draw_uses);
+    assert(batch_context.recording.calls.size() == 3);
+    assert(batch_context.recording.calls[1][0].Transition.pResource == nested->handle.Get());
+    assert(batch_context.recording.calls[2].size() == 1);
+    assert(batch_context.recording.calls[2][0].Transition.pResource == color->handle.Get());
 }
 """
 

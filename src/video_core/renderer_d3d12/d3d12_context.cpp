@@ -948,7 +948,8 @@ void Context::TransitionSubresources(const ResourcePtr& resource, std::span<cons
     if (state & (D3D12_RESOURCE_STATE_COPY_DEST | D3D12_RESOURCE_STATE_UNORDERED_ACCESS |
                  D3D12_RESOURCE_STATE_STREAM_OUT))
         ++resource->content_version;
-    std::vector<D3D12_RESOURCE_BARRIER> barriers;
+    auto& barriers = transition_barriers;
+    barriers.clear();
     barriers.reserve(subresources.size());
     for (const auto subresource : subresources) {
         auto& before = resource->sub_states[subresource];
@@ -1075,13 +1076,16 @@ void Context::TransitionBatch(std::span<const std::pair<ResourcePtr, D3D12_RESOU
     // Start/retire recording before reading tracked states: completion callbacks
     // can themselves record transitions. Keep all intermediate transitions ordered.
     auto* list = Commands();
-    std::vector<D3D12_RESOURCE_BARRIER> barriers;
-    barriers.reserve(uses.size());
     for (const auto& use : uses) {
         if (!use.first)
             throw std::invalid_argument("D3D12 null batch resource");
         Retain(use.first);
     }
+    // Retain can open a list and run callbacks which also transition resources.
+    // Acquire the shared scratch only after every resource has been retained.
+    auto& barriers = transition_barriers;
+    barriers.clear();
+    barriers.reserve(uses.size());
     for (const auto& [resource, state] : uses) {
         if (state & (D3D12_RESOURCE_STATE_COPY_DEST | D3D12_RESOURCE_STATE_UNORDERED_ACCESS |
                      D3D12_RESOURCE_STATE_STREAM_OUT))

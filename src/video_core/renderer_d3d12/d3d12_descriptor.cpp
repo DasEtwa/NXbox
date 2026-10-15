@@ -264,7 +264,9 @@ DescriptorTable D3D12DescriptorAllocator::FinishDrawTable(DescriptorPlan& plan, 
                     table.Slot(slot));
     }
     previous.tick = context.CurrentTick();
-    previous.plan = std::move(plan); // Keep resources alive while comparing their addresses.
+    // Retain the new keys/resources and return the old storage to the draw scratch.
+    // Move assignment would discard that storage and allocate again on the next draw.
+    std::swap(previous.plan, plan);
     previous.table = table;
     return table;
 }

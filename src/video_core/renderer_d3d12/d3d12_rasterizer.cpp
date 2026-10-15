@@ -446,6 +446,10 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         for (auto& stage : bindings.stages)
             stage.Clear();
         state_scratch.clear();
+        // Scratch keeps capacity, but only the allocator's remembered plans own
+        // resources between draws (including failed/skipped draws).
+        draw_view_plan.resources.clear();
+        draw_sampler_plan.resources.clear();
     };
     gpu_memory->FlushCaching();
     if (!pipeline_cache) {
@@ -1316,14 +1320,18 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     const bool root_cbvs = pipeline->UsesRootCbvs();
     if (root_cbvs)
         PrepareZeroUniformBuffer();
-    std::vector<D3D12_GPU_VIRTUAL_ADDRESS> root_cbv_addresses;
-    root_cbv_addresses.reserve(totals.cbv);
+    auto& root_cbv_addresses = draw_root_cbv_addresses;
+    root_cbv_addresses.clear();
+    if (root_cbvs)
+        root_cbv_addresses.reserve(totals.cbv);
     const u32 cbv_size = root_cbvs ? 0u : TableSize(totals.cbv);
     const u32 srv_size = TableSize(totals.srv);
     const u32 uav_size = TableSize(totals.uav);
     const u32 sampler_size = TableSize(totals.sampler);
-    DescriptorPlan view_plan{{cbv_size, srv_size, uav_size}};
-    DescriptorPlan sampler_plan{{sampler_size, 0, 0}};
+    auto& view_plan = draw_view_plan;
+    auto& sampler_plan = draw_sampler_plan;
+    view_plan.Reset({cbv_size, srv_size, uav_size});
+    sampler_plan.Reset({sampler_size, 0, 0});
     DescriptorTable view_block{{}, {}, cbv_size + srv_size + uav_size, 0, &view_plan};
     auto cbv_table = view_block.Slice(0, cbv_size);
     auto srv_table = view_block.Slice(cbv_size, srv_size);
@@ -1630,13 +1638,12 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         texture_lock.unlock();
     auto* const commands = context.Commands();
     descriptors.SetHeaps(commands, true);
+    // State collection has already merged aliases and rejected conflicting writes.
+    // Submit the same ordered transitions in one call even without split feedback.
+    context.TransitionBatch(state_scratch);
     if (subresource_feedback) {
-        context.TransitionBatch(state_scratch);
         for (const auto& [resource, subresources] : sampled_subresources)
             context.TransitionSubresources(resource, subresources, SrvState);
-    } else {
-        for (const auto& [resource, state] : state_scratch)
-            context.Transition(resource, state);
     }
 
     auto& recorded = context.DrawState();

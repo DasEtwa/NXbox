@@ -63,7 +63,10 @@ class CachedInvalidationTests(unittest.TestCase):
             (NATIVE / "d3d12_rasterizer.cpp").read_text(),
             "void RasterizerD3D12::PrepareDraw",
         )
-        self.assertLess(draw.index("gpu_memory->FlushCaching();"), draw.index("std::scoped_lock"))
+        self.assertLess(
+            draw.index("gpu_memory->FlushCaching();"),
+            draw.index("std::lock(buffer_lock, texture_lock)"),
+        )
         self.assertLess(
             draw.index("gpu_memory->FlushCaching();"),
             draw.index("buffer_cache.BindHostGeometryBuffers"),

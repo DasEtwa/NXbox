@@ -206,6 +206,9 @@ private:
     ResourcePtr zero_uniform_buffer;
     void PrepareZeroUniformBuffer();
     std::vector<std::pair<ResourcePtr, D3D12_RESOURCE_STATES>> state_scratch;
+    DescriptorPlan draw_view_plan{{0, 0, 0}};
+    DescriptorPlan draw_sampler_plan{{0, 0, 0}};
+    std::vector<D3D12_GPU_VIRTUAL_ADDRESS> draw_root_cbv_addresses;
     ComPtr<ID3D12CommandSignature> draw_signature;
     ComPtr<ID3D12CommandSignature> indexed_signature;
     bool draw_logged{};

@@ -489,6 +489,9 @@ private:
         u64 size;
     };
     std::unordered_map<ID3D12Resource*, std::vector<CopyWriteRange>> copy_writes;
+    // Used only after Commands/Retain have run completion callbacks. No callbacks
+    // may run while a transition method is collecting or emitting these barriers.
+    std::vector<D3D12_RESOURCE_BARRIER> transition_barriers;
 
     u64 submitted{};
     bool recording{};

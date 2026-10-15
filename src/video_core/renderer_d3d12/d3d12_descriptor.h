@@ -113,9 +113,16 @@ struct DescriptorPlan {
     std::array<u32, 3> sizes{};
     std::vector<DescriptorKey> keys;
     std::vector<ResourcePtr> resources;
-    explicit DescriptorPlan(std::array<u32, 3> sizes_) : sizes{sizes_} {
+    explicit DescriptorPlan(std::array<u32, 3> sizes_) {
+        Reset(sizes_);
+    }
+    void Reset(std::array<u32, 3> sizes_) {
+        sizes = sizes_;
         const u32 count = sizes[0] + sizes[1] + sizes[2];
+        // Every slot, including padding, is written before FinishDrawTable.
+        // Keep key storage initialized and reuse its capacity across draws.
         keys.resize(count);
+        resources.clear();
         resources.resize(count);
     }
 };
