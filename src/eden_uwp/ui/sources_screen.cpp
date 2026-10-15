@@ -776,6 +776,11 @@ private:
         }
         games_ = Tinfoil::Group(packages_, sizes);
         FilterCatalog();
+        // A source with only updates or DLC would open on an empty "New games" tab.
+        while (visible_.empty() && query_.empty() && tab_ < 3 && !games_.empty()) {
+            ++tab_;
+            FilterCatalog();
+        }
     }
 
     void FilterCatalog() {
