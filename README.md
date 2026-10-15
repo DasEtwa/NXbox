@@ -82,7 +82,7 @@ Everything below was measured on a retail Xbox Series X in Developer Mode.
 | --- | --- |
 | CPU | Switch ARM64 code runs through the Dynarmic JIT inside the UWP sandbox, with a 128 MiB code cache |
 | Graphics (default) | OpenGL 4.6 on Direct3D 12 through a patched Mesa `d3d12` driver, built in CI |
-| Graphics (**\*New\***, opt-in) | Native Direct3D 12 renderer (`NXBOX_RENDERER=d3d12`): Switch shaders go Maxwell → IR → HLSL → DXC → DXIL. 60 FPS on Super Mario 3D World's menus and reaches level 1-1 (lit geometry still black). MSAA, async fences and recyclable buffer heaps are in; renderer errors are logged and the game keeps running, and a failed D3D12 start falls back to OpenGL. All 4,511 corpus shaders compile with DXC; tessellation is still limited |
+| Graphics (**\*New\***, opt-in) | Native Direct3D 12 renderer (`NXBOX_RENDERER=d3d12`): Switch shaders go Maxwell → IR → HLSL → DXC → DXIL. Super Mario 3D World plays level 1-1 lit at ~59 FPS on a Series X; BotW renders the Shrine of Resurrection at ~12 FPS. MSAA, async fences and recyclable buffer heaps are in; renderer errors are logged and the game keeps running, and a failed D3D12 start falls back to OpenGL. All 4,511 corpus shaders compile with DXC; tessellation is still limited |
 | Frame pacing | OpenGL path: 60 FPS in Super Mario 3D World's hub, 30 FPS in Persona 5 Royal, about 12 FPS in Breath of the Wild, bound by the OpenGL/Mesa translation on the GPU thread (`NXBOX_THREAD_PROFILE=1` shows the ARM cores mostly idle). Loads still freeze the picture for a few seconds |
 | Shaders | Per-title pipeline cache, precompiled at boot so scene changes do not compile shaders. A cache can be shared between consoles over the LAN |
 | Memory | Guest memory is committed on demand. Persona 5 Royal peaks around 4.0 GB and Breath of the Wild around 4.5 GB of the 5 GiB app budget |
@@ -175,7 +175,9 @@ You need an Xbox Series X|S in **Developer Mode** and your own dumps:
 
 1. Install a package from the
    [package workflow](https://github.com/NspxMiguel/NXbox/actions/workflows/package-nxbox.yml)
-   through the Device Portal.
+   through the Device Portal. Then, in Dev Home, select NXbox → **View details** and set
+   **App type** to **Game**. As an App it only gets 1 GB of memory and games crash with
+   `bad allocation`; as a Game it gets 5 GB.
 2. Put `prod.keys` and `title.keys` in the app's `LocalState\eden\keys`.
 3. Put your games (`.nsp`, `.nsz` or `.xci`) in `LocalState\games`, or on a USB drive in
    `NXbox\games` (the console's internal developer storage is small, a few GB). `.nsz` files are
@@ -184,8 +186,9 @@ You need an Xbox Series X|S in **Developer Mode** and your own dumps:
 
 **\*New\*** [NXbox Pack](tools/nxbox-pack/README.md) does steps 1–4 for one game at a time: drag the
 game, your keys and any updates/DLC into its window, and it installs that game as its own app that
-boots straight into the game. To try the native renderer, add `NXBOX_RENDERER=d3d12` to
-`LocalState\nxbox_env.txt`.
+boots straight into the game. To try the native renderer, create the text file
+`LocalState\nxbox_env.txt` (it does not exist until you make it; upload it with the Device
+Portal's file explorer) containing the line `NXBOX_RENDERER=d3d12`, then restart NXbox.
 
 Two other ways to get games in are built but not yet tested on the console: **Add games** imports
 games and keys from a USB drive (copy to the console, or move into `NXbox\games` to play from the
