@@ -430,6 +430,24 @@ ResourcePtr RasterizerD3D12::CopyFeedback(const ResourcePtr& source,
     return selected->resource;
 }
 
+D3D12_RESOURCE_DESC RasterizerD3D12::AttachmentResourceDescription(const ResourcePtr& resource) {
+    const u64 generation = context.RecordingGeneration();
+    if (attachment_description_generation != generation) {
+        attachment_descriptions = {};
+        attachment_description_cursor = 0;
+        attachment_description_generation = generation;
+    }
+    for (const auto& entry : attachment_descriptions) {
+        if (entry.resource == resource)
+            return entry.description;
+    }
+    auto& entry = attachment_descriptions[attachment_description_cursor];
+    attachment_description_cursor =
+        (attachment_description_cursor + 1) % attachment_descriptions.size();
+    entry = {resource, resource->handle->GetDesc()};
+    return entry.description;
+}
+
 // Binds everything a draw needs and invokes draw(commands, params-independent). Order matters:
 // every descriptor allocation (which may submit the open command list when a ring is full)
 // happens BEFORE any per-draw state is recorded.
@@ -473,7 +491,7 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         const auto resource = view.ImageHandle();
         if (!resource)
             return false;
-        const auto desc = resource->handle->GetDesc();
+        const auto desc = AttachmentResourceDescription(resource);
         const auto required = depth ? D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL
                                     : D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
         if (!(desc.Flags & required)) {
@@ -504,7 +522,7 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
             // Only overlapping RTV subresources conflict. Distinct mips/layers
             // of one resource remain legal independent color attachments.
             bool duplicate = false;
-            const auto resource_desc = view->ImageHandle()->handle->GetDesc();
+            const auto resource_desc = AttachmentResourceDescription(view->ImageHandle());
             for (u32 previous = 0; previous < slot; ++previous) {
                 const auto* prior = color_views[previous];
                 if (!prior || prior->ImageHandle() != view->ImageHandle())
@@ -569,8 +587,8 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
 
     draw_phase.emplace(context.Profile(), FramePhase::AttachmentSetup);
     ++feedback_draw;
-    const auto extent = [](const ImageView& view) {
-        const auto desc = view.ImageHandle()->handle->GetDesc();
+    const auto extent = [this](const ImageView& view) {
+        const auto desc = AttachmentResourceDescription(view.ImageHandle());
         const u32 mip = desc.SampleDesc.Count > 1 ? 0 : static_cast<u32>(view.range.base.level);
         return AttachmentExtent{static_cast<u32>(std::max<u64>(1, desc.Width >> mip)),
                                 std::max(1u, desc.Height >> mip),
@@ -595,12 +613,12 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     if (!render_area.width || !render_area.height || !render_area.layers)
         return;
     D3D12_RESOURCE_DIMENSION attachment_dimension =
-        has_depth ? depth_view->ImageHandle()->handle->GetDesc().Dimension
+        has_depth ? AttachmentResourceDescription(depth_view->ImageHandle()).Dimension
                   : D3D12_RESOURCE_DIMENSION_UNKNOWN;
     for (const auto* color : color_views) {
         if (!color)
             continue;
-        const auto dimension = color->ImageHandle()->handle->GetDesc().Dimension;
+        const auto dimension = AttachmentResourceDescription(color->ImageHandle()).Dimension;
         if (attachment_dimension != D3D12_RESOURCE_DIMENSION_UNKNOWN &&
             dimension != attachment_dimension) {
             SkipDraw("mismatched attachment resource types");
@@ -1515,7 +1533,7 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
                                               depth_view->range.base.layer,
                                               static_cast<s32>(depth_view->Description().Format)};
     }
-    if (targets != bound_targets) {
+    if (targets != bound_targets || bound_targets_generation != context.RecordingGeneration()) {
         // OMSetRenderTargets captures descriptor contents at recording time.
         // The fixed handles alone cannot detect these CPU-side rewrites.
         context.InvalidateRecordedState();
@@ -1533,6 +1551,7 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
             descriptors.CreateDsv(dsv_handle, *depth_view, dsv_flags, render_area.layers);
         // Holding the resources keeps their addresses from being reused while cached.
         bound_targets = std::move(targets);
+        bound_targets_generation = context.RecordingGeneration();
     }
     // Remaining attachment/UAV and storage/geometry aliases cannot have legal
     // combined states. Reject only this draw, leaving the GPU thread alive.
@@ -2165,6 +2184,8 @@ bool RasterizerD3D12::AccelerateConditionalRendering() {
     return query_cache.AccelerateHostConditionalRendering();
 }
 void RasterizerD3D12::PreparePresentation() {
+    const FrameProfile::BetweenScope profile_between{context.Profile(),
+                                                     BetweenDrawWork::FrameMaintenance};
     query_runtime.PauseHostConditionalRendering();
 }
 void RasterizerD3D12::DrawTexture() {
@@ -2653,27 +2674,39 @@ void RasterizerD3D12::DispatchCompute() try {
     m_gpu.TickWork();
 }
 void RasterizerD3D12::ResetCounter(VideoCommon::QueryType type) {
+    const FrameProfile::BetweenScope profile_between{context.Profile(),
+                                                     BetweenDrawWork::GuestQueries};
     query_cache.CounterReset(type);
 }
 void RasterizerD3D12::Query(GPUVAddr gpu_addr, VideoCommon::QueryType type,
                             VideoCommon::QueryPropertiesFlags flags, u32 payload, u32 subreport) {
+    const FrameProfile::BetweenScope profile_between{context.Profile(),
+                                                     BetweenDrawWork::GuestQueries};
     query_cache.CounterReport(gpu_addr, type, flags, payload, subreport);
 }
 void RasterizerD3D12::BindGraphicsUniformBuffer(size_t stage, u32 index, GPUVAddr gpu_addr,
                                                 u32 size) {
+    const FrameProfile::BetweenScope profile_between{context.Profile(),
+                                                     BetweenDrawWork::UniformBindings};
     std::scoped_lock lock{buffer_cache.mutex};
     buffer_cache.BindGraphicsUniformBuffer(stage, index, gpu_addr, size);
 }
 void RasterizerD3D12::DisableGraphicsUniformBuffer(size_t stage, u32 index) {
+    const FrameProfile::BetweenScope profile_between{context.Profile(),
+                                                     BetweenDrawWork::UniformBindings};
     std::scoped_lock lock{buffer_cache.mutex};
     buffer_cache.DisableGraphicsUniformBuffer(stage, index);
 }
 void RasterizerD3D12::FlushAll() {
+    const FrameProfile::BetweenScope profile_between{context.Profile(),
+                                                     BetweenDrawWork::CacheMaintenance};
     fence_manager.SignalReference();
     fence_manager.WaitPendingFences(true);
     context.Finish(FrameCount::ForcedSubmitFlushAll);
 }
 void RasterizerD3D12::FlushRegion(DAddr addr, u64 size, VideoCommon::CacheType which) {
+    const FrameProfile::BetweenScope profile_between{context.Profile(),
+                                                     BetweenDrawWork::CacheMaintenance};
     if (!addr || !size)
         return;
     if (True(which & VideoCommon::CacheType::TextureCache)) {
@@ -2690,6 +2723,8 @@ void RasterizerD3D12::FlushRegion(DAddr addr, u64 size, VideoCommon::CacheType w
         query_cache.FlushRegion(addr, size);
 }
 bool RasterizerD3D12::MustFlushRegion(DAddr addr, u64 size, VideoCommon::CacheType which) {
+    const FrameProfile::BetweenScope profile_between{context.Profile(),
+                                                     BetweenDrawWork::CacheMaintenance};
     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
     return (True(which & VideoCommon::CacheType::QueryCache) &&
             query_cache.IsRegionGpuModified(addr, size)) ||
@@ -2699,6 +2734,8 @@ bool RasterizerD3D12::MustFlushRegion(DAddr addr, u64 size, VideoCommon::CacheTy
             texture_cache.IsRegionGpuModified(addr, size));
 }
 void RasterizerD3D12::InvalidateRegion(DAddr addr, u64 size, VideoCommon::CacheType which) {
+    const FrameProfile::BetweenScope profile_between{context.Profile(),
+                                                     BetweenDrawWork::CacheMaintenance};
     if (!addr || !size)
         return;
     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
@@ -2712,6 +2749,8 @@ void RasterizerD3D12::InvalidateRegion(DAddr addr, u64 size, VideoCommon::CacheT
         query_cache.InvalidateRegion(addr, size);
 }
 void RasterizerD3D12::InnerInvalidation(std::span<const std::pair<DAddr, std::size_t>> sequences) {
+    const FrameProfile::BetweenScope profile_between{context.Profile(),
+                                                     BetweenDrawWork::CacheMaintenance};
     // FlushCaching drains guest inline writes, even when CPU inner invalidation is skipped.
     // Match Vulkan: make those bytes CPU-owned before the next buffer synchronization.
     {
@@ -2732,6 +2771,8 @@ void RasterizerD3D12::InnerInvalidation(std::span<const std::pair<DAddr, std::si
     }
 }
 bool RasterizerD3D12::OnCPUWrite(DAddr addr, u64 size) {
+    const FrameProfile::BetweenScope profile_between{context.Profile(),
+                                                     BetweenDrawWork::CacheMaintenance};
     {
         std::scoped_lock lock{buffer_cache.mutex};
         // Defer cached CPU stores while the buffer still owns GPU-written bytes.
@@ -2746,6 +2787,8 @@ bool RasterizerD3D12::OnCPUWrite(DAddr addr, u64 size) {
     return false;
 }
 void RasterizerD3D12::OnCacheInvalidation(DAddr addr, u64 size) {
+    const FrameProfile::BetweenScope profile_between{context.Profile(),
+                                                     BetweenDrawWork::CacheMaintenance};
     // Gathering cached CPU stores is not an explicit guest query overwrite.
     // Keep pending reports alive, as the OpenGL/Vulkan backends do.
     InvalidateRegion(addr, size,
@@ -2753,6 +2796,8 @@ void RasterizerD3D12::OnCacheInvalidation(DAddr addr, u64 size) {
                          VideoCommon::CacheType::ShaderCache);
 }
 VideoCore::RasterizerDownloadArea RasterizerD3D12::GetFlushArea(PAddr addr, u64 size) {
+    const FrameProfile::BetweenScope profile_between{context.Profile(),
+                                                     BetweenDrawWork::CacheMaintenance};
     {
         std::scoped_lock lock{texture_cache.mutex};
         if (const auto area = texture_cache.GetFlushArea(addr, size))
@@ -2771,12 +2816,16 @@ VideoCore::RasterizerDownloadArea RasterizerD3D12::GetFlushArea(PAddr addr, u64 
     return new_area;
 }
 void RasterizerD3D12::InvalidateGPUCache() {
+    const FrameProfile::BetweenScope profile_between{context.Profile(),
+                                                     BetweenDrawWork::CacheMaintenance};
     // invalidate_texture_data_cache and fence signals make attachment writes visible to
     // texture reads: later feedback samples need a fresh copy.
     ++feedback_epoch;
     m_gpu.InvalidateGPUCache();
 }
 void RasterizerD3D12::UnmapMemory(DAddr addr, u64 size) {
+    const FrameProfile::BetweenScope profile_between{context.Profile(),
+                                                     BetweenDrawWork::CacheMaintenance};
     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
     default_pipeline_cache->InvalidateRegion(addr, size);
     query_cache.InvalidateRegion(addr, size);
@@ -2784,30 +2833,41 @@ void RasterizerD3D12::UnmapMemory(DAddr addr, u64 size) {
     buffer_cache.WriteMemory(addr, size);
 }
 void RasterizerD3D12::ModifyGPUMemory(size_t as_id, GPUVAddr addr, u64 size) {
+    const FrameProfile::BetweenScope profile_between{context.Profile(),
+                                                     BetweenDrawWork::CacheMaintenance};
     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
     texture_cache.UnmapGPUMemory(as_id, addr, size);
     buffer_cache.UnmapGPUMemory(as_id, addr, size);
 }
 void RasterizerD3D12::SignalFence(std::function<void()>&& func) {
+    const FrameProfile::BetweenScope profile_between{context.Profile(), BetweenDrawWork::Fences};
     fence_manager.SignalFence(std::move(func));
 }
 void RasterizerD3D12::SyncOperation(std::function<void()>&& func) {
+    const FrameProfile::BetweenScope profile_between{context.Profile(), BetweenDrawWork::Fences};
     fence_manager.SyncOperation(std::move(func));
 }
 void RasterizerD3D12::SignalSyncPoint(u32 value) {
+    const FrameProfile::BetweenScope profile_between{context.Profile(), BetweenDrawWork::Fences};
     fence_manager.SignalSyncPoint(value);
 }
 void RasterizerD3D12::SignalReference() {
+    const FrameProfile::BetweenScope profile_between{context.Profile(), BetweenDrawWork::Fences};
     fence_manager.SignalReference();
 }
 void RasterizerD3D12::ReleaseFences(bool force) {
+    const FrameProfile::BetweenScope profile_between{context.Profile(), BetweenDrawWork::Fences};
     fence_manager.WaitPendingFences(force);
 }
 void RasterizerD3D12::FlushAndInvalidateRegion(DAddr addr, u64 size, VideoCommon::CacheType which) {
+    const FrameProfile::BetweenScope profile_between{context.Profile(),
+                                                     BetweenDrawWork::CacheMaintenance};
     FlushRegion(addr, size, which);
     InvalidateRegion(addr, size, which);
 }
 void RasterizerD3D12::WaitForIdle() {
+    const FrameProfile::BetweenScope profile_between{context.Profile(),
+                                                     BetweenDrawWork::CacheMaintenance};
     ++feedback_epoch;
     query_cache.NotifyWFI();
     // Guest WFI is a GPU-side ordering point, as in the Vulkan backend. Waiting on the CPU here
@@ -2822,6 +2882,8 @@ void RasterizerD3D12::WaitForIdle() {
     fence_manager.SignalOrdering();
 }
 void RasterizerD3D12::FragmentBarrier() {
+    const FrameProfile::BetweenScope profile_between{context.Profile(),
+                                                     BetweenDrawWork::CacheMaintenance};
     ++feedback_epoch;
     D3D12_RESOURCE_BARRIER barrier{};
     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
@@ -2831,11 +2893,14 @@ void RasterizerD3D12::TiledCacheBarrier() {
     FragmentBarrier();
 }
 void RasterizerD3D12::FlushCommands() {
+    const FrameProfile::BetweenScope profile_between{context.Profile(), BetweenDrawWork::Fences};
     // Cache batches and guest callbacks belong to FenceManager, never submission.
     context.Submit(FrameCount::ForcedSubmitGuestFlush);
     default_pipeline_cache->FlushDiskCache();
 }
 void RasterizerD3D12::TickFrame() {
+    const FrameProfile::BetweenScope profile_between{context.Profile(),
+                                                     BetweenDrawWork::FrameMaintenance};
     // Bisect toggles: each one skips one cache's per-frame aging.
     if (!BisectEnabled("NXBOX_D3D12_TICK_NO_FENCE"))
         fence_manager.TickFrame();
@@ -2888,6 +2953,7 @@ void RasterizerD3D12::InitializeChannel(Tegra::Control::ChannelState& channel) {
     // The shared caches consume common dirty bits, even without a native state tracker.
     auto& dirty = channel.payload->maxwell_3d.dirty;
     VideoCommon::Dirty::SetupDirtyFlags(dirty.tables);
+    default_pipeline_cache->SetupGraphicsDirtyFlags(channel.payload->maxwell_3d);
     dirty.flags.set();
     CreateChannel(channel);
     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
@@ -2897,6 +2963,7 @@ void RasterizerD3D12::InitializeChannel(Tegra::Control::ChannelState& channel) {
     query_cache.CreateChannel(channel);
 }
 void RasterizerD3D12::BindChannel(Tegra::Control::ChannelState& channel) {
+    context.InvalidateRecordedState();
     BindToChannel(channel.bind_id);
     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
     buffer_cache.BindToChannel(channel.bind_id);
@@ -2916,6 +2983,8 @@ void RasterizerD3D12::ReleaseChannel(s32 channel_id) {
 
 RasterizerD3D12::DisplayTexture RasterizerD3D12::FramebufferTexture(
     const Tegra::FramebufferConfig& config) {
+    const FrameProfile::BetweenScope profile_between{context.Profile(),
+                                                     BetweenDrawWork::FrameMaintenance};
     std::scoped_lock lock{texture_cache.mutex};
     const auto [view, scaled] =
         texture_cache.TryFindFramebufferImageView(config, config.address + config.offset);

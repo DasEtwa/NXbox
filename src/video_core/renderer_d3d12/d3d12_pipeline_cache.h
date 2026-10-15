@@ -13,6 +13,7 @@
 #include <type_traits>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 #include "shader_recompiler/stage.h"
 #include "video_core/renderer_d3d12/d3d12_async_pso.h"
@@ -24,6 +25,7 @@
 #include "video_core/renderer_d3d12/d3d12_pso_tables.h"
 #include "video_core/renderer_d3d12/d3d12_root_signature.h"
 #include "video_core/shader_cache.h"
+#include "video_core/dirty_flags.h"
 
 namespace Tegra::Engines {
 class Maxwell3D;
@@ -65,6 +67,7 @@ public:
         : VideoCommon::ShaderCache{memory}, context{context_} {}
     ~PipelineCache() override;
     void BindToChannel(s32 id) override;
+    void SetupGraphicsDirtyFlags(Tegra::Engines::Maxwell3D& engine);
     IGraphicsPipeline* CurrentGraphicsPipeline(const Pso::FramebufferFormats& formats) override;
     ComputePipeline* CurrentComputePipeline();
     void LoadDiskResources(u64 title_id, std::stop_token stop_loading,
@@ -127,6 +130,15 @@ private:
     CachedFeature<D3D12_FEATURE_DATA_D3D12_OPTIONS14> graphics_options14;
     std::unordered_map<DXGI_FORMAT, CachedFeature<D3D12_FEATURE_DATA_FORMAT_SUPPORT>>
         format_support;
+    static constexpr u8 GraphicsKeyDirty = VideoCommon::Dirty::LastCommonEntry;
+    // Registers with both common dirty slots occupied are compared directly.
+    std::vector<u32> graphics_collision_indices;
+    std::vector<u32> graphics_collision_values;
+    bool graphics_dirty_tracking{};
+    u64 graphics_generation{};
+    u32 graphics_topology{};
+    Pso::FramebufferFormats graphics_formats{};
+    std::array<u64, 6> graphics_stage_hashes{};
     GraphicsPipelineKey last_graphics_request{};
     IGraphicsPipeline* last_graphics_pipeline{};
     std::array<u64, 6> guest_hashes{};

@@ -10,6 +10,15 @@ from test_d3d12_query_fence_lifetime import DRIVER
 ROOT = Path(__file__).resolve().parents[2]
 RENDERER = ROOT / "src/video_core/renderer_d3d12"
 
+# These extracted cache methods run with the optional timing flag disabled.
+BETWEEN_MOCK = r"""
+enum class BetweenDrawWork { CacheMaintenance };
+struct FrameProfile {
+    struct BetweenScope { BetweenScope(int,BetweenDrawWork) {} };
+};
+struct Context { int Profile() { return 0; } };
+"""
+
 
 class GuestVisibilityTests(unittest.TestCase):
     def test_query_flush_wins_over_older_overlapping_downloads(self):
@@ -34,7 +43,11 @@ struct Cache {
     void DownloadMemory(u64,u64) { guest=value; }
     void FlushRegion(u64,u64) { guest=value; }
 };
+"""
+            + BETWEEN_MOCK
+            + r"""
 struct RasterizerD3D12 {
+    Context context;
     Cache texture_cache{{},1},buffer_cache{{},2},query_cache{{},42};
     void FlushRegion(DAddr,u64,VideoCommon::CacheType);
 };
@@ -95,7 +108,11 @@ struct Cache {
     }
     void InvalidateRegion(u64,u64) { ++writes; }
 };
+"""
+            + BETWEEN_MOCK
+            + r"""
 struct RasterizerD3D12 {
+    Context context;
     Cache buffer_cache,texture_cache,pipeline;
     Cache* default_pipeline_cache=&pipeline;
     int invalidated=0;
@@ -202,12 +219,10 @@ void Diagnostic(const std::string& v) { logged=v; }
 #include "video_core/renderer_d3d12/d3d12_context.h"
 using D3D12::FramePhase;
 using D3D12::FrameCount;
-struct Timing {
-    std::array<u64,static_cast<size_t>(FramePhase::Count)> cpu{}; u64 last=10000000; int active=0;
-    void Reset(u64 v) { last=v; }
-};
+using D3D12::BetweenDrawWork;
+using Timing = D3D12::FrameTiming;
 struct FrameProfile {
-    bool enabled=true;
+    bool enabled=true,detail_between=false;
     std::atomic<DWORD> owner{1};
     Timing timing;
     std::array<u64,static_cast<size_t>(FrameCount::Count)> counts{};
@@ -217,7 +232,7 @@ struct FrameProfile {
     std::unordered_map<std::string_view,std::pair<u64,u64>> waits;
     std::function<std::string()> guest_visibility;
     void BindRecordingThread() {}
-    void Switch(int) {}
+    void Switch(FramePhase) {}
     void EndFrame(bool presented=true);
 };
 """
@@ -233,6 +248,11 @@ int main() {
     p.enabled=false;
     p.EndFrame(false);
     assert(logged==source);
+    p.enabled=true;
+    p.detail_between=true;
+    p.start_wall=0;
+    p.EndFrame(false);
+    assert(logged.starts_with("D3D12_BETWEEN_DRAWS_PROFILE top_wall_ms="));
 }
 """
         )

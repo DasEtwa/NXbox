@@ -303,6 +303,7 @@ void FrameProfile::BindRecordingThread() {
         initial_cpu = ProfileCpuTime();
         start_wall = ProfileWallTime();
         timing.Reset(start_wall);
+        timing.detail_between = detail_between;
         owner.store(GetCurrentThreadId());
     }
 }
@@ -328,6 +329,20 @@ FrameProfile::Scope::~Scope() {
         profile->fence_wall += ProfileWallTime() - wall_start;
     profile->Switch(previous);
 }
+FrameProfile::BetweenScope::BetweenScope(FrameProfile& profile_, BetweenDrawWork work) {
+    if (!profile_.detail_between || !profile_.OnOwner())
+        return;
+    profile = &profile_;
+    previous = profile->timing.between_work;
+    profile->Switch(profile->timing.active);
+    profile->timing.between_work = work;
+}
+FrameProfile::BetweenScope::~BetweenScope() {
+    if (!profile)
+        return;
+    profile->Switch(profile->timing.active);
+    profile->timing.between_work = previous;
+}
 void FrameProfile::Count(FrameCount counter, u64 amount) {
     if (OnOwner())
         counts[static_cast<size_t>(counter)] += amount;
@@ -351,6 +366,7 @@ void FrameProfile::EndFrame(bool presented) {
     if (owner != GetCurrentThreadId()) {
         owner = 0;
         timing.cpu.fill(0);
+        timing.between.fill(0);
         counts.fill(0);
         frames = fence_wall = 0;
     }
@@ -495,6 +511,22 @@ void FrameProfile::EndFrame(bool presented) {
         if (guest_visibility)
             line += guest_visibility();
         Diagnostic(line);
+        if (detail_between) {
+            constexpr std::array between_names{
+                "unattributed_guest_or_idle", "guest_queries", "uniform_bindings",
+                "cache_maintenance",          "fences",        "frame_maintenance"};
+            static_assert(between_names.size() == static_cast<size_t>(BetweenDrawWork::Count));
+            std::array<size_t, between_names.size()> order{};
+            for (size_t i = 0; i < order.size(); ++i)
+                order[i] = i;
+            std::sort(order.begin(), order.end(),
+                      [&](size_t a, size_t b) { return timing.between[a] > timing.between[b]; });
+            std::string detail = "D3D12_BETWEEN_DRAWS_PROFILE top_wall_ms=";
+            for (const size_t i : order)
+                detail += fmt::format("{}:{:.3f},", between_names[i],
+                                      static_cast<double>(timing.between[i]) / 10000.0);
+            Diagnostic(detail);
+        }
     } catch (...) {
         Diagnostic("D3D12 frame profile formatting failed");
     }
@@ -787,6 +819,11 @@ ID3D12GraphicsCommandList* Context::Commands() {
         }
     }
     return commands.Get();
+}
+void Context::SetDrawPredication(ID3D12Resource* predicate) {
+    auto* list = Commands(); // Opening a list can invalidate the cached state.
+    if (RecordState(DrawState().predicate.Update(predicate)))
+        list->SetPredication(predicate, 0, D3D12_PREDICATION_OP_EQUAL_ZERO);
 }
 void Context::MarkWork(std::string_view label) {
     Commands();
