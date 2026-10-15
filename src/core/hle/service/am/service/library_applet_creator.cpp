@@ -27,6 +27,12 @@ namespace {
 
 bool ShouldCreateGuestApplet(AppletId applet_id) {
 #ifdef NXBOX_UWP
+    // The firmware error applet never draws on the Xbox and grows memory until the 5 GiB limit
+    // (P5R opens it from its network prompt); the frontend sets HLE for it.
+    if (applet_id == AppletId::Error &&
+        Settings::values.error_applet_mode.GetValue() != Settings::AppletMode::LLE) {
+        return false;
+    }
     return PreferLocalFirmwareApplet(applet_id);
 #else
 #define X(Name, name)                                                                              \
