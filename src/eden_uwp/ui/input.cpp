@@ -1,6 +1,17 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "eden_uwp/ui/input.h"
 
+#include <chrono>
+#include <filesystem>
+#include <fstream>
+#include <string>
+#include <vector>
+
+#include <winrt/Windows.Storage.h>
+
+#include "eden_uwp/diagnostic.h"
+#include "eden_uwp/input_script.h"
+
 #include <cstdint>
 
 #include <winrt/Windows.Foundation.Collections.h>
@@ -153,9 +164,75 @@ void Input::PollGamepads(std::array<bool, kButtonCount>& held) const {
     }
 }
 
+namespace {
+
+// NXBOX_UI_SCRIPT drives the menus for console tests, in the NXBOX_INPUT_SCRIPT format
+// ("2:DOWN,3.5:A:0.2"); the clock starts at the first UI frame. Read from the environment or
+// nxbox_env.txt, which is applied to the environment only later, when Mesa starts.
+struct UiScript {
+    std::vector<ScriptEvent> events;
+    std::chrono::steady_clock::time_point start;
+
+    static std::string Text() {
+        if (const char* value = std::getenv("NXBOX_UI_SCRIPT"))
+            return value;
+        try {
+            std::ifstream in(std::filesystem::path(std::wstring_view(
+                                 winrt::Windows::Storage::ApplicationData::Current()
+                                     .LocalFolder()
+                                     .Path())) /
+                             "nxbox_env.txt");
+            std::string line;
+            constexpr std::string_view key = "NXBOX_UI_SCRIPT=";
+            while (std::getline(in, line)) {
+                while (!line.empty() && (line.back() == '\r' || line.back() == ' '))
+                    line.pop_back();
+                if (line.starts_with(key))
+                    return line.substr(key.size());
+            }
+        } catch (const winrt::hresult_error&) {
+        }
+        return {};
+    }
+
+    static UiScript& Get() {
+        static UiScript script = [] {
+            UiScript loaded{ParseInputScript(Text()), std::chrono::steady_clock::now()};
+            if (!loaded.events.empty())
+                Diagnostic("UI_SCRIPT loaded events=" + std::to_string(loaded.events.size()));
+            return loaded;
+        }();
+        return script;
+    }
+
+    static int ButtonIndex(const std::string& name) {
+        static const std::pair<const char*, Button> table[] = {
+            {"LEFT", Button::Left}, {"RIGHT", Button::Right}, {"UP", Button::Up},
+            {"DOWN", Button::Down}, {"A", Button::A},         {"B", Button::B},
+            {"X", Button::X},       {"Y", Button::Y},         {"LB", Button::LeftShoulder},
+            {"RB", Button::RightShoulder}, {"VIEW", Button::View}, {"MENU", Button::Menu}};
+        for (const auto& [key, button] : table)
+            if (name == key)
+                return static_cast<int>(button);
+        return -1;
+    }
+
+    void Apply(std::array<bool, kButtonCount>& held) const {
+        const double now =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+        for (const auto& event : events)
+            if (ScriptEventActive(event, now))
+                if (const int index = ButtonIndex(event.name); index >= 0)
+                    held[static_cast<std::size_t>(index)] = true;
+    }
+};
+
+} // namespace
+
 void Input::Update() {
     std::array<bool, kButtonCount> held = keys_;
     PollGamepads(held);
+    UiScript::Get().Apply(held);
     state_.Update(held, InputState::Clock::now());
 }
 
