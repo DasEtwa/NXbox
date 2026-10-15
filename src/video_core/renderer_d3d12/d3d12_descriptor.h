@@ -99,7 +99,8 @@ struct BindingState {
 
 // ---- Pure helpers (also used by the rasterizer) ----
 DXGI_FORMAT DsvFormat(DXGI_FORMAT view_format);
-D3D12_SAMPLER_DESC MakeSamplerDesc(const Tegra::Texture::TSCEntry& entry);
+// shader_compares: the shader samples with a depth reference (TextureDescriptor::is_depth).
+D3D12_SAMPLER_DESC MakeSamplerDesc(const Tegra::Texture::TSCEntry& entry, bool shader_compares);
 
 struct DescriptorKey {
     std::array<u8, 64> description{};
@@ -184,7 +185,8 @@ public:
     // Returns false (and writes a null view) when the view has no backing image.
     bool WriteImageSrv(const DescriptorTable& table, u32 slot, const ImageView& view,
                        D3D12_SRV_DIMENSION fallback_dimension, const ResourcePtr& replacement = {});
-    void WriteSampler(const DescriptorTable& table, u32 slot, const Sampler& sampler);
+    void WriteSampler(const DescriptorTable& table, u32 slot, const Sampler& sampler,
+                      bool shader_compares);
 
     bool WriteImageUav(const DescriptorTable& table, u32 slot, const ImageView& view,
                        DXGI_FORMAT format);

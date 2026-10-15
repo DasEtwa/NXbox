@@ -1397,7 +1397,7 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
                     }
                 }
                 descriptors.WriteSampler(sampler_table, smp_i,
-                                         texture_cache.GetSampler(*sampler_it++));
+                                         texture_cache.GetSampler(*sampler_it++), desc.is_depth);
             }
         }
         for (u32 i = 0; i < texel_count; ++i, ++srv_i) {
@@ -2257,7 +2257,7 @@ void RasterizerD3D12::DrawTexture() {
         context.Device()->CreateShaderResourceView(sampled->handle.Get(), &description,
                                                    tables.Slot(1));
         descriptors.WriteNullUav(tables, 2);
-        descriptors.WriteSampler(sampler_table, 0, *sampler);
+        descriptors.WriteSampler(sampler_table, 0, *sampler, false);
         descriptors.CreateRtv(rtv, target);
         context.Transition(sampled, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         context.Transition(target->ImageHandle(), D3D12_RESOURCE_STATE_RENDER_TARGET);
@@ -2587,7 +2587,8 @@ void RasterizerD3D12::DispatchCompute() try {
                                       SrvDimension(desc.type, desc.is_multisample));
             use(view.ImageHandle(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
             descriptors.WriteSampler(sampler, sampler_index,
-                                     texture_cache.GetSampler(sampler_scratch[sampler_index]));
+                                     texture_cache.GetSampler(sampler_scratch[sampler_index]),
+                                     desc.is_depth);
             ++sampler_index;
         }
     const u32 texel_count = Shader::NumDescriptors(info.texture_buffer_descriptors);

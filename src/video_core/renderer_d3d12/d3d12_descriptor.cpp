@@ -134,13 +134,18 @@ D3D12_TEXTURE_ADDRESS_MODE AddressMode(WrapMode mode) {
 }
 } // namespace
 
-D3D12_SAMPLER_DESC MakeSamplerDesc(const Tegra::Texture::TSCEntry& entry) {
+D3D12_SAMPLER_DESC MakeSamplerDesc(const Tegra::Texture::TSCEntry& entry, bool shader_compares) {
     D3D12_SAMPLER_DESC desc{};
     const u32 min_linear = entry.min_filter == TextureFilter::Linear ? 1 : 0;
     const u32 mag_linear = entry.mag_filter == TextureFilter::Linear ? 1 : 0;
     const u32 mip_linear = entry.mipmap_filter == TextureMipmapFilter::Linear ? 1 : 0;
     u32 reduction = D3D12_FILTER_REDUCTION_TYPE_STANDARD;
-    if (entry.depth_compare_enabled) {
+    // Maxwell applies the TSC compare only to depth-compare instructions; games leave it set
+    // on samplers they also use for plain fetches. D3D12 leaves Sample* with a comparison
+    // sampler undefined and the Xbox (AMD) driver returns zeros, which blacked out SM3DW's
+    // vertex-shader ambient cube.
+    const bool compare = entry.depth_compare_enabled && shader_compares;
+    if (compare) {
         reduction = D3D12_FILTER_REDUCTION_TYPE_COMPARISON;
     } else if (entry.reduction_filter == Tegra::Texture::SamplerReduction::Min) {
         reduction = D3D12_FILTER_REDUCTION_TYPE_MINIMUM;
@@ -158,7 +163,7 @@ D3D12_SAMPLER_DESC MakeSamplerDesc(const Tegra::Texture::TSCEntry& entry) {
     desc.AddressW = AddressMode(entry.wrap_p);
     desc.MipLODBias = entry.LodBias();
     desc.MaxAnisotropy = static_cast<UINT>(anisotropy);
-    desc.ComparisonFunc = entry.depth_compare_enabled
+    desc.ComparisonFunc = compare
                               ? static_cast<D3D12_COMPARISON_FUNC>(
                                     static_cast<u32>(entry.depth_compare_func.Value()) + 1)
                               : D3D12_COMPARISON_FUNC_NEVER;
@@ -624,8 +629,8 @@ bool D3D12DescriptorAllocator::WriteImageSrv(const DescriptorTable& table, u32 s
 }
 
 void D3D12DescriptorAllocator::WriteSampler(const DescriptorTable& table, u32 slot,
-                                            const Sampler& sampler) {
-    const auto desc = MakeSamplerDesc(sampler.Entry());
+                                            const Sampler& sampler, bool shader_compares) {
+    const auto desc = MakeSamplerDesc(sampler.Entry(), shader_compares);
     WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, {}, 3, &desc, sizeof(desc), table, slot);
 }
 
