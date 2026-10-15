@@ -264,6 +264,7 @@ enum class Text {
     LaunchStarting,
     LaunchMissing,
     LaunchFailed,
+    LaunchAppType,
     FirmwareInstalled,
     FirmwareMissing,
     FirmwareInstallFailed,

@@ -213,6 +213,9 @@
     {Text::LaunchFailed,
      L"Não foi possível iniciar. Abra o NXbox para conferir o jogo e as chaves. Pressione B "
      L"para sair."},
+    {Text::LaunchAppType,
+     L"O NXbox está instalado como App, limitado a 1 GB de memória. No Dev Home, selecione o "
+     L"NXbox, Ver detalhes, e mude o tipo para Jogo (Game). Aperte B para sair."},
     {Text::FirmwareInstalled, L"Firmware instalado"},
     {Text::FirmwareMissing,
      L"Firmware: copie seu dump para firmware ou NXbox\\firmware no USB e reinicie."},

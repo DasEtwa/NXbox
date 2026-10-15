@@ -1747,6 +1747,14 @@ static void RunGameViewSession(const winrt::Windows::UI::Core::CoreWindow& windo
             lifecycle.worker.join();
         }
     };
+    // Dev Home installs a package as an App, capped at 1 GiB; games then die in bad_alloc. Only
+    // the user can switch it to Game, so say so instead of crashing.
+    if (winrt::Windows::System::MemoryManager::AppMemoryUsageLimit() < (2ULL << 30)) {
+        Diagnostic(fmt::format("MEMORY_LIMIT app_type_app limit={} MiB",
+                               winrt::Windows::System::MemoryManager::AppMemoryUsageLimit() >> 20));
+        show_failure(Ui::Text::LaunchAppType);
+        return;
+    }
     // The driver targets the current HDMI surface. Layout remains 16:9 until resize handling lands.
     Ui::Pixels initial_frame;
     if (splash) {
