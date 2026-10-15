@@ -961,10 +961,25 @@ void Context::CrossListCopyBarrier(Resource& resource, u64 tick, u64 offset, u64
     if (cross_list && resource.last_copy_tick && resource.last_copy_tick < tick &&
         !IsFree(resource.last_copy_tick)) {
         const FrameProfile::Scope profile_barrier{profile, FramePhase::Barriers};
-        D3D12_RESOURCE_BARRIER barrier{};
-        barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_ALIASING;
-        commands->ResourceBarrier(1, &barrier);
-        profile.Count(FrameCount::Barriers);
+        if (resource.heap == D3D12_HEAP_TYPE_DEFAULT && resource.sub_states.empty() &&
+            resource.state == D3D12_RESOURCE_STATE_COPY_DEST) {
+            // Same reason as BeforeCopyWrite: aliasing barriers did not drain copies here.
+            D3D12_RESOURCE_BARRIER barriers[2]{};
+            barriers[0].Type = barriers[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            barriers[0].Transition = {resource.handle.Get(),
+                                      D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+                                      D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COMMON};
+            barriers[1].Transition = {resource.handle.Get(),
+                                      D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+                                      D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST};
+            commands->ResourceBarrier(2, barriers);
+            profile.Count(FrameCount::Barriers, 2);
+        } else {
+            D3D12_RESOURCE_BARRIER barrier{};
+            barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_ALIASING;
+            commands->ResourceBarrier(1, &barrier);
+            profile.Count(FrameCount::Barriers);
+        }
         profile.Count(FrameCount::CopyHazardBarriers);
         static u32 logged{};
         if (logged < 8 || ++logged % 4096 == 0) {
