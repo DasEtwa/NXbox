@@ -233,6 +233,15 @@ Image::Image(TextureCacheRuntime& runtime, const VideoCommon::ImageInfo& info, G
                                                : "BC3_SRGB");
         }
     }
+    // Probe: SM3DW's vertex shaders read 8x8 BC3 ambient cubes that come back ~20x too dark on
+    // the Xbox although the uploaded blocks are right. Decode small BCn cubes on the CPU.
+    static const bool decode_small_bc_cubes = BisectEnabled("NXBOX_D3D12_DECODE_SMALL_BC_CUBES");
+    if (decode_small_bc_cubes && host_format.block_width == 4 &&
+        VideoCore::Surface::IsPixelFormatBCn(info.format) && info.resources.layers % 6 == 0 &&
+        info.size.width == info.size.height && info.size.width <= 32) {
+        host_format = BcnFallbackFormat(host_format);
+        flags |= VideoCommon::ImageFlagBits::CostlyLoad;
+    }
     resource = MakeTexture(runtime.context, info, host_format);
     if (!resource && host_format.block_width == 4 &&
         (VideoCore::Surface::IsPixelFormatBCn(info.format) ||
