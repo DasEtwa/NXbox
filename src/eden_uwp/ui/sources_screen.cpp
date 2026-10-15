@@ -353,7 +353,7 @@ std::vector<Source> LoadSources(const fs::path& local_state) {
             if (value.ValueType() != JsonValueType::Object) {
                 continue;
             }
-            const JsonObject item = value.as<winrt::Windows::Data::Json::JsonObject>();
+            const JsonObject item = value.GetObject();
             Source source;
             source.name = StringAt(item, L"name");
             source.url = StringAt(item, L"url");

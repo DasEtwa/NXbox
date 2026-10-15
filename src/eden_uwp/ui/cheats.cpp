@@ -186,7 +186,7 @@ Selection LoadSelection(const fs::path& file) {
         if (builds_value.ValueType() != JsonValueType::Object) {
             return selection;
         }
-        const JsonObject builds = builds_value.as<winrt::Windows::Data::Json::JsonObject>();
+        const JsonObject builds = builds_value.GetObject();
         for (const auto& pair : builds) {
             std::set<std::string>& names = selection[winrt::to_string(pair.Key())];
             if (pair.Value().ValueType() != JsonValueType::Array) {

@@ -215,7 +215,7 @@ void Updater::Check() {
             }
             const std::wstring expected = L"NXbox_game_" + version_text + L"_x64.appx";
             for (const auto& value : release.GetNamedArray(L"assets")) {
-                const auto asset = value.as<winrt::Windows::Data::Json::JsonObject>();
+                const auto asset = value.GetObject();
                 const std::wstring url(asset.GetNamedString(L"browser_download_url", L""));
                 const double size = asset.GetNamedNumber(L"size", 0);
                 if (std::wstring(asset.GetNamedString(L"name", L"")) == expected &&
