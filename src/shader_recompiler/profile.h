@@ -6,6 +6,8 @@
 
 #pragma once
 
+#include <string>
+
 #include "common/common_types.h"
 
 namespace Shader {
@@ -81,6 +83,8 @@ struct Profile {
     bool hlsl_vs_cube_static{};
     /// Diagnostic: vertex-stage cube samples use the fixed direction (0, 1, 0).
     bool hlsl_vs_cube_dir{};
+    /// Diagnostic: when not empty, vertex-stage cube samples return this float4 literal.
+    std::string hlsl_vs_cube_const;
     /// Some GPU vendors use a different rounding precision when calculating texture pixel
     /// coordinates with the 16.8 format in the ImageGather instruction than the Maxwell
     /// architecture. Applying an offset does fix this mismatching rounding behaviour.

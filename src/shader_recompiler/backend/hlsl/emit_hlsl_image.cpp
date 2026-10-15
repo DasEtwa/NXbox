@@ -76,6 +76,12 @@ void Sample(EmitContext& ctx, IR::Inst& inst, const IR::Value& index, std::strin
     const auto info = TextureInfo(ctx, inst);
     if (EmitCubeOne(ctx, inst, info, !dref.empty(), !dref.empty()))
         return;
+    if (!ctx.profile.hlsl_vs_cube_const.empty() && dref.empty() &&
+        (ctx.stage == Stage::VertexA || ctx.stage == Stage::VertexB) &&
+        info.type == TextureType::ColorCube) {
+        ctx.AddF32x4("{} = float4({});", inst, ctx.profile.hlsl_vs_cube_const);
+        return;
+    }
     const auto tex = Texture(ctx, info, index);
     if (info.type == TextureType::Buffer)
         throw NotImplementedException("HLSL buffer sampling must use fetch");
