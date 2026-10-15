@@ -638,6 +638,13 @@ void RunStackSampler(const std::atomic<bool>& closed) {
             Diagnostic(fmt::format("SAMPLER samples={} inner:{}", samples, top(inner, 20)));
             Diagnostic(fmt::format("SAMPLER samples={} paths:{}", samples, top(paths, 8)));
             Diagnostic(fmt::format("SAMPLER samples={} frames:{}", samples, top(frames, 40)));
+            // The busy GPU thread is crowded out of the mixed lists by idle guest cores.
+            std::map<std::string, unsigned> gpu_frames;
+            for (const auto& [text, count] : frames) {
+                if (text.starts_with("gpu:"))
+                    gpu_frames.emplace(text, count);
+            }
+            Diagnostic(fmt::format("SAMPLER samples={} gpu_frames:{}", samples, top(gpu_frames, 80)));
             leaf.clear();
             frames.clear();
             inner.clear();
