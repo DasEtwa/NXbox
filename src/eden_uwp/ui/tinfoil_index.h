@@ -450,46 +450,76 @@ inline std::optional<std::string> Resolve(const std::string& base, const std::st
     return detail::IsHttpUrl(target) ? std::optional<std::string>(target) : std::nullopt;
 }
 
-// Keep the screen's existing title-id/version classification behavior.
-inline Kind Classify(const std::string& name) {
-    const std::string lower = detail::Lower(name);
+// Metadata shared by classification, the shop catalog and local package matching.
+struct Package {
     std::string title_id;
-    long long version = -1;
+    std::string base_id;
+    std::optional<std::uint64_t> version;
+    Kind kind = Kind::Other;
+    std::string name;
+};
+
+inline Package ParsePackage(const std::string& filename) {
+    Package package;
+    const std::string lower = detail::Lower(filename);
+    std::uint64_t id = 0;
+    std::size_t first_tag = filename.size();
     for (std::size_t i = 0; i < lower.size(); ++i) {
-        if (lower[i] != '[') {
+        if (lower[i] != '[')
             continue;
-        }
-        const std::size_t close = lower.find(']', i);
-        if (close == std::string::npos) {
+        const auto close = lower.find(']', i);
+        if (close == std::string::npos)
             break;
-        }
-        const std::string tag = lower.substr(i + 1, close - i - 1);
-        const auto all = [&tag](std::size_t from, auto predicate) {
-            return std::all_of(tag.begin() + static_cast<std::ptrdiff_t>(from), tag.end(),
-                               [&predicate](char c) { return predicate(c); });
-        };
-        if (tag.size() == 16 && all(0, [](char c) { return detail::HexValue(c) >= 0; })) {
-            title_id = tag;
+        const auto tag = lower.substr(i + 1, close - i - 1);
+        if (tag.size() == 16 &&
+            std::all_of(tag.begin(), tag.end(), [](char c) { return detail::HexValue(c) >= 0; })) {
+            package.title_id = tag;
+            std::transform(
+                package.title_id.begin(), package.title_id.end(), package.title_id.begin(),
+                [](char c) { return c >= 'a' && c <= 'f' ? static_cast<char>(c - 'a' + 'A') : c; });
+            id = 0;
+            for (char c : tag)
+                id = (id << 4) | static_cast<unsigned>(detail::HexValue(c));
+            first_tag = std::min(first_tag, i);
         } else if (tag.size() >= 2 && tag.size() <= 10 && tag[0] == 'v' &&
-                   all(1, [](char c) { return c >= '0' && c <= '9'; })) {
-            version = std::stoll(tag.substr(1));
+                   std::all_of(tag.begin() + 1, tag.end(),
+                               [](char c) { return c >= '0' && c <= '9'; })) {
+            package.version = std::stoull(tag.substr(1));
+            first_tag = std::min(first_tag, i);
         }
         i = close;
     }
-    if (!title_id.empty()) {
-        const std::string tail = title_id.substr(13);
-        if (tail == "000") {
-            return version > 0 ? Kind::Update : Kind::Game;
-        }
-        return tail == "800" ? Kind::Update : Kind::Dlc;
+    if (!package.title_id.empty()) {
+        const auto tail = id & 0xFFF;
+        package.kind = tail == 0 ? (package.version.value_or(0) > 0 ? Kind::Update : Kind::Game)
+                       : tail == 0x800 ? Kind::Update
+                                       : Kind::Dlc;
+        // Add-on title IDs occupy the range one 0x1000 block above their application.
+        // Older indexes also use low nonzero suffixes in the application block.
+        const auto base = package.kind == Kind::Dlc && (id & 0x1000)
+                              ? (id - 0x1000) & ~std::uint64_t{0xFFF}
+                              : id & ~std::uint64_t{0xFFF};
+        package.base_id.assign(16, '0');
+        for (int i = 0; i < 16; ++i)
+            package.base_id[15 - i] = "0123456789ABCDEF"[(base >> (i * 4)) & 15];
+    } else if (lower.find("dlc") != std::string::npos) {
+        package.kind = Kind::Dlc;
+    } else if (package.version) {
+        package.kind = *package.version > 0 ? Kind::Update : Kind::Game;
     }
-    if (lower.find("dlc") != std::string::npos) {
-        return Kind::Dlc;
+    package.name = detail::Trim(filename.substr(0, first_tag));
+    if (first_tag == filename.size()) {
+        const auto dot = package.name.find_last_of('.');
+        if (dot != std::string::npos)
+            package.name.resize(dot);
     }
-    if (version > 0) {
-        return Kind::Update;
-    }
-    return version == 0 ? Kind::Game : Kind::Other;
+    if (package.name.empty())
+        package.name = filename;
+    return package;
+}
+
+inline Kind Classify(const std::string& name) {
+    return ParsePackage(name).kind;
 }
 
 inline Index ParseIndex(std::string_view body, const std::string& base) {
@@ -567,6 +597,9 @@ public:
         if (next_ == requests_.size())
             return std::nullopt;
         return requests_[next_++];
+    }
+    bool HasNext() const {
+        return next_ < requests_.size();
     }
     void Follow(const Request& parent, const Index& index) {
         if (index.status != Status::Ok || parent.depth >= kMaxDepth)

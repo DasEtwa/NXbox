@@ -16,7 +16,9 @@ namespace EdenXbox::Ui {
 // Settings -> Sources. The player adds their own sources, each a URL that serves a list in the
 // Tinfoil shop format (a JSON index of files and directories), either by typing the address on
 // the on-screen keyboard or by importing a sources.txt from a USB drive. A source can be opened to
-// browse what it lists and an item can be downloaded into LocalState\games. Nothing is
+// browse a title-grouped shelf with category tabs, search and a details panel. Individual
+// packages enter a bounded, serial download queue into LocalState\games. Leaving the screen
+// cancels the active transfer and drops waiting items; partial files can be resumed. Nothing is
 // preconfigured: the list is empty until the player fills it. The addresses live in
 // LocalState\sources.json.
 //
