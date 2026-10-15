@@ -190,7 +190,7 @@ void DrawChoicePill(Renderer& renderer, const D2D1_RECT_F& rect, const std::wstr
     }
 }
 
-void DrawHints(Renderer& renderer, const std::vector<Hint>& hints) {
+void DrawHints(Renderer& renderer, const std::vector<Hint>& hints, bool align_right) {
     if (hints.empty()) {
         return;
     }
@@ -200,7 +200,8 @@ void DrawHints(Renderer& renderer, const std::vector<Hint>& hints) {
         widths.push_back(renderer.MeasureString(hint.label, Font::Hint).width);
         total += kGlyphSize + kHintLabelGap + widths.back();
     }
-    const float left = (kCanvasWidth - total) / 2.0f;
+    const float left =
+        align_right ? kCanvasWidth - kScreenMargin - total : (kCanvasWidth - total) / 2.0f;
     const D2D1_RECT_F bar = RectF(left, kHintTop, left + total, kHintTop + kHintHeight);
     renderer.FillRounded(bar, kHintHeight / 2.0f, Theme::kGlassBar);
     DrawGlassEdge(renderer, bar, kHintHeight / 2.0f);
@@ -221,8 +222,8 @@ void DrawHints(Renderer& renderer, const std::vector<Hint>& hints) {
 }
 
 void DrawTabs(Renderer& renderer, int active, bool focused) {
-    constexpr std::size_t kTabCount = 2;
-    const std::array<const wchar_t*, kTabCount> labels = {Tr(Text::NavLibrary),
+    constexpr std::size_t kTabCount = 3;
+    const std::array<const wchar_t*, kTabCount> labels = {Tr(Text::NavLibrary), Tr(Text::NavShop),
                                                           Tr(Text::NavSettings)};
     std::array<float, kTabCount> widths{};
     float total = 2.0f * kTabsPadding + kTabsGap * static_cast<float>(kTabCount - 1);

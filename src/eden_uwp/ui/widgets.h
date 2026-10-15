@@ -69,8 +69,8 @@ void DrawChoicePill(Renderer& renderer, const D2D1_RECT_F& rect, const std::wstr
                     bool primary, bool focused);
 
 // The dark glass bar at the bottom: a round colored glyph for each button, with its label.
-void DrawHints(Renderer& renderer, const std::vector<Hint>& hints);
-// The two tabs in their glass capsule. `active` is the selected one; `focused` draws the ring.
+void DrawHints(Renderer& renderer, const std::vector<Hint>& hints, bool align_right = false);
+// The three tabs in their glass capsule. `active` is the selected one; `focused` draws the ring.
 void DrawTabs(Renderer& renderer, int active, bool focused);
 void DrawClock(Renderer& renderer);
 // A short message in a glass capsule in the top row. `fade` is 0..1.

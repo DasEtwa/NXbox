@@ -164,7 +164,7 @@ releases it fully before the game boots.
 
 ### Increment 3: sources and art
 
-- Settings → Sources (like browser extensions), one list:
+- Original plan: Settings → Sources (superseded by the Shop tab below), one list:
   - built-in GameBanana for mods;
   - built-in titledb for eShop art by title ID (icon, banner);
   - user-added sources in the Tinfoil shop format (`{"files":[{"url","size"}],"directories":[...]}`),
@@ -209,7 +209,7 @@ flow) was run on a host with fakes.
   banner. The nav is one dark glass capsule with the selected tab as a white pill; the hero
   (gradient and scrim) fills the top 760 px; the rail sits on black below it.
 - Navigation, as the owner changed it after the plan above:
-  - The nav has two tabs only, Library and Settings (LB/RB switch). Mods always belong to a game,
+  - Originally two tabs; now Library, Shop and Settings (LB/RB switch). Mods always belong to a game,
     so they are reached from the game's hero.
   - Focus moves through three layers: the game rail (default; A launches), the hero pills of the
     focused game (Play, Mods, Details), then the nav. Up goes one layer up, Down one down. The
@@ -380,37 +380,83 @@ This improves presentation; the running dashboard identity is still NXbox and th
 between packages. Full per-game runtime packages are deferred until shared data, migration and
 recovery are safe; [the analysis](nxbox-native-tiles.md) records the payload, path audit and blockers.
 
-### Sources catalog (2026-10-15)
+### Shop tab and source compatibility (2026-10-15)
 
-Settings → Sources now opens a title-grouped shelf. No game source is preconfigured.
+The top navigation is **Library | Shop | Settings**. LB/RB cycles the three tabs, including
+while browsing a shop. Left/Right on the focused top bar also selects a tab; Down enters its
+content. No game shop is preconfigured.
 
-- LB/RB selects New games (base packages), Updates, DLC or All. Left/Right moves along the shelf;
-  A opens the selected game's details. X cycles name, total size and newest; Y opens the existing
-  controller keyboard to search loaded game names. Menu reloads the source.
-- The pure `tinfoil_index.h` metadata helper extracts title ID, application ID, kind and version
-  from filename tags. `source_catalog.h` groups base/update/add-on packages without merging
-  unknown IDs by name. The displayed name comes from the base filename when available; titledb's
-  art index supplies banners by application ID, but does not contain game names.
-- Newest means reverse source order, explicitly labeled in both languages. The Tinfoil index
-  provides no publication date, and version numbers cannot order different games by recency.
-- Details show every source package for the game, its size/version and installed state, plus a
-  base/update/DLC availability summary independent of the selected category. Local packages match
-  by filename or title ID/kind/version (a newer installed version satisfies an older item).
-  Valid library cache records also identify base games with untagged filenames. An unknown local
-  update version cannot prove that a specific remote version is installed.
-- A in details adds exactly that package to an eight-item queue, with one active transfer. View
-  opens progress and the waiting list; B on a queue entry cancels it, and View returns to browsing.
-  An installed item or a duplicate URL/destination is not added. The queue belongs to this Sources
-  screen session; leaving Sources cancels the active transfer and forgets waiting entries.
-- Downloads reuse the existing resumable downloader. Incomplete packages keep a `.partial` suffix
-  and become normal game files only after successful completion, including when the downloader
-  selects removable storage for space. Completed external downloads are not marked as installed
-  in LocalState. Previously written partial packages with known sizes can be migrated on retry.
-- Each page fetches one nonempty index, or at most four empty/failed indexes. A Load more tile
-  continues the bounded traversal (5,000 entries, 64 indexes, depth 3); search and sort cover the
-  loaded portion. Only tiles intersecting the shelf request banners. At most two images decode
-  per frame, and GPU images outside the visible shelf are released.
+Shop uses the Tinfoil structure with NXbox branding and the existing black theme, pills, ribbon
+focus, art loader and animation helpers:
 
-Host parsing, grouping, category/sort, installed-version and queue tests live in
-`tests/port/test_source_catalog.py`. The UWP build and visual/controller checks on Xbox remain
-required; host tests cannot validate Direct2D output or WinRT networking.
+- The sidebar contains New Games, New Updates, New DLC, All, Search, Queue and Sources. Up/Down
+  selects a section; Right/A enters its content, Left from the first grid column or B returns to
+  the sidebar. Up from the first sidebar row/B returns focus to the top tabs.
+- Content combines the configured shops into a four-column, two-row cover grid. Left/Right and
+  Up/Down move between covers. X cycles name, total size and newest (reverse index order, not a
+  publication date); Y opens the controller keyboard to search loaded names. Search covers All.
+  Menu reloads the configured shops. Results arrive incrementally; the cursor preserves its title
+  when new entries reorder the grid. Only visible covers retain GPU images, with at most two
+  decodes per frame.
+- A opens a full-page title view: banner/icon, name, application ID, total size, Game/Update/DLC
+  availability and installed state, and one download action per package showing its title ID,
+  version and size. Unknown metadata stays unknown. These indexes do not provide reliable
+  publisher/description fields. Local filename or title ID/kind/version matching remains in use;
+  a newer installed version satisfies an older package.
+- View opens Queue; View returns to its previous page. Queue also has its own sidebar section.
+  Up/Down chooses an item, X cancels it, and B returns to the sidebar. Progress, byte counts and
+  speed are live for the active item; waiting items show 0%. The serial queue has eight slots and
+  rejects installed packages and duplicate URL/destination entries. Downloads continue across
+  top-level tab changes. Closing the library cancels the active transfer and discards waiting
+  entries; partial files remain resumable. Incomplete packages retain `.partial` until complete.
+- The header shows `NXbox - <section>`, the clock and free-space bars for system/external storage
+  (Xbox storage names rather than Switch's microSD terminology). Storage queries run on an MTA
+  worker. The footer shows the selected emulator profile name/avatar using read APIs, with button
+  hints aligned right. No account or profile implementation is changed.
+- The Sources section lists configured shops and their failure messages. A opens **Settings →
+  Shop sources**, which only adds an address, imports `sources.txt` from USB, or removes a source
+  with confirmation. Opening a saved row there never browses it. The empty Shop explains the next
+  step and provides an Add source button. Existing `sources.json` and `sources.txt` (`URL` or
+  `name|URL`, UTF-8 BOM/comments/blank lines allowed) remain compatible.
+
+| Source/index feature | Behavior on Xbox |
+| --- | --- |
+| HTTP/HTTPS Tinfoil JSON | `files` string/object entries, relative/root/absolute URLs, `size`, percent-decoded `#name` display fragments |
+| `directories` | Breadth-first recursive traversal: depth 3, 64 total indexes (including roots/failures), 5,000 packages |
+| `headers`, `referrer` | Validated request headers and HTTP `Referer`, inherited by child requests and package downloads; authentication is retained in queued entries |
+| `success` | Welcome message shown once per library session; repeated refreshes do not repeat it |
+| `locations` | Additional source URLs (strings, array entries including `{url}`, or object values); persisted with duplicate checks and scheduled within the same traversal budget |
+| `error` | Source failure text shown and retained against its address in Sources; other shops still load |
+| HTTP directory listing | Apache/nginx/IIS anchor links to `.nsp`, `.nsz`, `.xci`, `.xcz`, including encoded names, quoted/unquoted attributes and HTML query entities; descendant directories followed within the same budget; parent, sorting and external-directory links ignored |
+| `http(s)://user:pass@host/…` | Percent-decoded Basic authentication, explicit Authorization header; credentials removed before constructing the WinRT request URI |
+| `ftp://`, `ftps://` | Saved/imported but explicitly reported as **not supported on Xbox** for directory browsing; no FTP list transport is implemented |
+| `gdrive:` folder IDs | Saved/imported but explicitly reported unsupported: no Google Drive account/API or anonymous folder resolver is implemented |
+| 1fichier landing links | Explicit unsupported message: no landing-page/token/account resolver is implemented; direct HTTP package URLs in ordinary indexes use the HTTP downloader |
+| Payload beginning `TINFOIL` | Detected before JSON/HTML parsing; **encrypted shop index is not supported**; no decryption attempted |
+
+The UWP `Windows.Web.Http.HttpClient` supports HTTP/HTTPS, and BackgroundTransfer's FTP support
+is download-only, not directory enumeration. See [Microsoft's networking guidance](https://learn.microsoft.com/en-us/windows/uwp/gaming/work-with-networking-in-your-directx-game)
+and [Background transfers](https://learn.microsoft.com/en-us/windows/uwp/networking/background-transfers).
+Uncredentialed packages retain the shared downloader's removable-storage fallback; header-bearing
+packages use a bounded streaming transfer with Range resume, a free-space check and removable-storage
+fallback. Index responses are streamed with a 16 MiB cap.
+A transfer that lacks space or a usable Content-Length fails visibly and retains its partial file.
+
+The existing `Input` instance drives Shop and the controller keyboard. `NXBOX_UI_SCRIPT` remains
+unchanged; no separate input poller or nested browsing loop is introduced. Console smoke sequence:
+from Library press RB, Down (sidebar), Right (grid), A (details), A (enqueue), View (queue), RB
+(Settings), LB (Shop, same queue). B returns to the sidebar, and its last row opens source management.
+Also exercise no sources, a failed/encrypted source alongside a working shop, PT-BR/English, installed
+packages, cancellation/resume, and a completed download appearing after returning to Library.
+
+Validation on the host:
+
+```sh
+python3 -m unittest discover -s tests/port -p 'test_*source*'
+python3 -m unittest discover -s tests/port -p 'test_*tinfoil*'
+```
+
+Fixture JSON/HTML/binary payloads live in `tests/port/fixtures/tinfoil_*`. Pure parsing, traversal,
+authentication, metadata/grouping/sorting, installed-version and queue tests run on the host. The
+application requires MSVC CI and a console run to validate WinRT networking, Direct2D rendering and
+controller/script behavior; it cannot be built on this Mac.
