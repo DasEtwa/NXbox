@@ -118,6 +118,8 @@ private:
     using AsyncCache =
         AsyncPsoWorkerPool<GraphicsPipelineKey, AsyncResult, GraphicsPipelineKeyHash>;
     std::unique_ptr<AsyncCache> async;
+    /// Requests that already spent their one bounded wait for an async PSO.
+    std::unordered_set<u64> pso_waited;
     std::recursive_mutex pipeline_mutex;
     Context& context;
     // Device capabilities are immutable for this cache's lifetime, including query failures.
