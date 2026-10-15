@@ -271,7 +271,7 @@ change emulation behavior and are intended only to isolate device removal:
 | `NXBOX_D3D12_NO_COMPUTE` | Skip guest compute dispatches; retain helper compute and GPU work accounting. |
 | `NXBOX_D3D12_NO_DRAWS` | Skip direct/indirect guest draws; retain clears, compositor presentation and GPU work accounting. |
 | `NXBOX_D3D12_NO_QUERIES` | Disable native query heaps, begin/end/resolve, timestamps and host predication; return zero counters/timestamps and retain guest report writes. |
-| `NXBOX_D3D12_CPU_PREDICATE` | Evaluate single-value conditional rendering on the CPU (readback and fence wait per check) instead of copying the guest value into the predicate on the GPU. |
+| `NXBOX_D3D12_CPU_PREDICATE` | Evaluate every conditional render on the CPU (readback and fence wait per check). By default single values and comparisons against a known zero are resolved on the GPU, and other two-report comparisons render unconditionally unless GPU accuracy is high, as in the Vulkan backend. |
 
 Initialization order is device/SM6 support, direct queue/fence/allocator/list,
 rasterizer heaps and transform-feedback counter upload recording, swapchain and

@@ -7,6 +7,7 @@
 #include <stdexcept>
 
 #include "common/logging.h"
+#include "common/settings.h"
 #include "video_core/buffer_cache/buffer_cache.h"
 #include "video_core/query_cache/query_cache.h"
 #include "video_core/rasterizer_interface.h"
@@ -250,7 +251,7 @@ struct QueryCacheRuntimeImpl {
         return value;
     }
     Context& context;
-    [[maybe_unused]] Tegra::MaxwellDeviceMemoryManager& memory;
+    Tegra::MaxwellDeviceMemoryManager& memory;
     BufferCache& cache;
     TransformFeedback& feedback;
     StagingRing upload, readback;
@@ -272,6 +273,8 @@ struct QueryCacheRuntimeImpl {
     std::atomic<u64> pending_reports{}, completed_reports{}, invalidated_reports{}, report_copies{};
     u32 count{};
     bool drawing{}, predicate_set{};
+    // EQUAL_ZERO skips commands when the predicate is zero; NOT_EQUAL_ZERO inverts that.
+    D3D12_PREDICATION_OP predicate_op{D3D12_PREDICATION_OP_EQUAL_ZERO};
     // Pipeline statistics are recorded only once the guest has read one of those counters.
     // Recording them on every draw filled the 256-slot bank ~14 times per frame in BotW, and
     // each full bank made the CPU wait for the GPU.
@@ -477,7 +480,7 @@ void QueryCacheRuntime::ResumeHostConditionalRendering() {
         impl->context.Transition(impl->predicate, D3D12_RESOURCE_STATE_PREDICATION);
         // D3D12 EQUAL_ZERO skips commands when zero, so a one means execute.
         impl->context.Commands()->SetPredication(impl->predicate->handle.Get(), 0,
-                                                 D3D12_PREDICATION_OP_EQUAL_ZERO);
+                                                 impl->predicate_op);
     }
 }
 bool QueryCacheRuntime::HostConditionalRenderingCompareValue(VideoCommon::LookupData object, bool) {
@@ -508,27 +511,51 @@ bool QueryCacheRuntime::CompareConditional(VideoCommon::LookupData first,
             streamer->SyncWrites();
         }
     }
-    if (!second.address && !BisectEnabled("NXBOX_D3D12_CPU_PREDICATE")) {
-        // "Render when the value is non-zero" is exactly D3D12 EQUAL_ZERO predication, so the
-        // guest value is copied into the predicate on the GPU. Reading it back on the CPU
-        // forced a submit and a fence wait per conditional draw (~200 per frame in MK8 Deluxe).
-        impl->predicate = impl->context.CreateBuffer(8, D3D12_HEAP_TYPE_DEFAULT);
+    if (!BisectEnabled("NXBOX_D3D12_CPU_PREDICATE")) {
+        if (!second.address) {
+            // "Render when the value is non-zero" is exactly EQUAL_ZERO predication. Reading it
+            // back on the CPU forced a submit and a fence wait per conditional draw.
+            SetGpuPredicate(first.address, D3D12_PREDICATION_OP_EQUAL_ZERO);
+            return true;
+        }
+        // Two reports, as in the Vulkan backend: outside high GPU accuracy only a known-zero
+        // operand is resolved on the GPU; anything else renders unconditionally instead of
+        // reading both values back (~260 submits and fence waits per frame in MK8 Deluxe).
+        const std::array<VideoCommon::LookupData*, 2> objects{&first, &second};
+        std::array<bool, 2> in_cache{};
+        bool any_gpu_written{};
         {
             std::scoped_lock lock(impl->cache.mutex);
-            const auto [buffer, offset] = impl->cache.ObtainCPUBuffer(
-                first.address, 8, VideoCommon::ObtainBufferSynchronize::FullSynchronize,
-                VideoCommon::ObtainBufferOperation::DoNothing);
-            auto resource = buffer->Handle();
-            impl->context.Transition(resource, D3D12_RESOURCE_STATE_COPY_SOURCE);
-            impl->context.Transition(impl->predicate, D3D12_RESOURCE_STATE_COPY_DEST);
-            impl->context.MarkWork("query report/predicate copy");
-            impl->context.BeforeCopyWrite(impl->predicate, 0, 8);
-            impl->context.Commands()->CopyBufferRegion(impl->predicate->handle.Get(), 0,
-                                                       resource->handle.Get(), offset, 8);
+            for (size_t i = 0; i < 2; ++i) {
+                const bool gpu_written = !objects[i]->found_query &&
+                                         impl->cache.IsRegionGpuModified(objects[i]->address, 8);
+                any_gpu_written |= gpu_written;
+                in_cache[i] = objects[i]->found_query || gpu_written;
+            }
         }
-        impl->predicate_set = true;
-        ResumeHostConditionalRendering();
-        return true;
+        if (!in_cache[0] && !in_cache[1]) {
+            EndHostConditionalRendering();
+            return false;
+        }
+        for (size_t i = 0; i < 2; ++i) {
+            if (in_cache[i])
+                continue;
+            const u8* const pointer = impl->memory.GetPointer<u8>(objects[i]->address);
+            u64 value{};
+            if (pointer)
+                std::memcpy(&value, pointer, sizeof(value));
+            if (value != 0)
+                continue;
+            // other == 0 renders when the other value is zero, so NOT_EQUAL_ZERO skips it.
+            SetGpuPredicate(objects[(i + 1) % 2]->address,
+                            equal ? D3D12_PREDICATION_OP_NOT_EQUAL_ZERO
+                                  : D3D12_PREDICATION_OP_EQUAL_ZERO);
+            return true;
+        }
+        if (!Settings::IsGPULevelHigh() || !any_gpu_written) {
+            EndHostConditionalRendering();
+            return true;
+        }
     }
     const auto a = impl->ReadGuest(first);
     const auto b = second.address ? impl->ReadGuest(second) : 0;
@@ -547,8 +574,29 @@ bool QueryCacheRuntime::CompareConditional(VideoCommon::LookupData first,
     impl->context.Commands()->CopyBufferRegion(impl->predicate->handle.Get(), 0,
                                                upload.buffer->handle.Get(), upload.offset, 8);
     impl->predicate_set = true;
+    impl->predicate_op = D3D12_PREDICATION_OP_EQUAL_ZERO;
     ResumeHostConditionalRendering();
     return true;
+}
+void QueryCacheRuntime::SetGpuPredicate(DAddr address, D3D12_PREDICATION_OP op) {
+    // Fresh storage: a previous SetPredication may still reference the old value.
+    impl->predicate = impl->context.CreateBuffer(8, D3D12_HEAP_TYPE_DEFAULT);
+    {
+        std::scoped_lock lock(impl->cache.mutex);
+        const auto [buffer, offset] = impl->cache.ObtainCPUBuffer(
+            address, 8, VideoCommon::ObtainBufferSynchronize::FullSynchronize,
+            VideoCommon::ObtainBufferOperation::DoNothing);
+        auto resource = buffer->Handle();
+        impl->context.Transition(resource, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        impl->context.Transition(impl->predicate, D3D12_RESOURCE_STATE_COPY_DEST);
+        impl->context.MarkWork("query report/predicate copy");
+        impl->context.BeforeCopyWrite(impl->predicate, 0, 8);
+        impl->context.Commands()->CopyBufferRegion(impl->predicate->handle.Get(), 0,
+                                                   resource->handle.Get(), offset, 8);
+    }
+    impl->predicate_set = true;
+    impl->predicate_op = op;
+    ResumeHostConditionalRendering();
 }
 QueryCacheRuntime::Timestamp QueryCacheRuntime::CaptureTimestamp() {
     if (BisectEnabled("NXBOX_D3D12_NO_QUERIES"))
