@@ -27,6 +27,11 @@
 #include "eden_uwp/diagnostic.h"
 #include "eden_uwp/ui/update_version.h"
 
+// wingdi.h defines GetObject as a macro for GetObjectW, which would rename JsonValue::GetObject().
+#ifdef GetObject
+#undef GetObject
+#endif
+
 namespace EdenXbox::Ui {
 namespace {
 using namespace winrt::Windows::Foundation;
