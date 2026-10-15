@@ -455,7 +455,9 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         }
         return;
     }
-    std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
+    std::unique_lock buffer_lock{buffer_cache.mutex, std::defer_lock};
+    std::unique_lock texture_lock{texture_cache.mutex, std::defer_lock};
+    std::lock(buffer_lock, texture_lock);
     const auto& regs = maxwell3d->regs;
     draw_phase.emplace(context.Profile(), FramePhase::GraphicsDescriptors);
     texture_cache.SynchronizeDescriptors(false);
@@ -1601,6 +1603,14 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
 
     draw_phase.emplace(context.Profile(), FramePhase::DrawRecording);
     // ---- 4. Record state (no more allocations from here on) ----
+    // Recording only touches resources already resolved above and this thread's command list.
+    // Releasing the caches here lets guest writes (OnCPUWrite) through instead of stalling the
+    // game core for the whole recording; SM3DW spent ~25% of cpu0 samples waiting on this.
+    // The draw trace below still reads cache views, so it keeps the locks.
+    if (!draw_trace_enabled) {
+        texture_lock.unlock();
+        buffer_lock.unlock();
+    }
     auto* const commands = context.Commands();
     descriptors.SetHeaps(commands, true);
     if (subresource_feedback) {
