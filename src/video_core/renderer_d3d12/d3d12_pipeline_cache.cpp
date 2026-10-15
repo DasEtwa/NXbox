@@ -4,7 +4,6 @@
 #include <bit>
 #include <chrono>
 #include <cmath>
-#include <cstddef>
 #include <cstdlib>
 #include <cstring>
 #include <exception>
@@ -841,90 +840,6 @@ PipelineCache::QueryFormatSupport(DXGI_FORMAT format) {
     return QueryFeature(D3D12_FEATURE_FORMAT_SUPPORT, cached);
 }
 
-void PipelineCache::SetupGraphicsDirtyFlags(Tegra::Engines::Maxwell3D& engine) {
-    using Tegra::Engines::Maxwell3D;
-    InvalidateLastGraphicsPipeline();
-    graphics_collision_indices.clear();
-    const auto mark = [&](size_t first, size_t count) {
-        for (size_t index = first; index < first + count; ++index) {
-            auto& a = engine.dirty.tables[0][index];
-            auto& b = engine.dirty.tables[1][index];
-            if (a == GraphicsKeyDirty || b == GraphicsKeyDirty)
-                continue;
-            if (a == VideoCommon::Dirty::NullEntry)
-                a = GraphicsKeyDirty;
-            else if (b == VideoCommon::Dirty::NullEntry)
-                b = GraphicsKeyDirty;
-            else
-                graphics_collision_indices.push_back(static_cast<u32>(index));
-        }
-    };
-    // Cover FillGraphicsState and the shader-specialization portion of the key.
-    // Preserve both shared-cache dirty mappings, as the Vulkan state tracker does.
-#define TRACK(field) mark(MAXWELL3D_REG_INDEX(field), sizeof(engine.regs.field) / sizeof(u32))
-    TRACK(patch_vertices);
-    TRACK(gl_cull_test_enabled);
-    TRACK(gl_cull_face);
-    TRACK(transform_feedback_enabled);
-    TRACK(rasterize_enable);
-    TRACK(gl_front_face);
-    TRACK(window_origin);
-    TRACK(polygon_mode_front);
-    TRACK(viewport_clip_control);
-    TRACK(polygon_offset_point_enable);
-    TRACK(polygon_offset_line_enable);
-    TRACK(polygon_offset_fill_enable);
-    TRACK(depth_bias);
-    TRACK(slope_scale_depth_bias);
-    TRACK(depth_bias_clamp);
-    TRACK(zeta_enable);
-    TRACK(depth_test_enable);
-    TRACK(depth_write_enabled);
-    TRACK(depth_test_func);
-    TRACK(stencil_enable);
-    TRACK(stencil_two_side_enable);
-    TRACK(stencil_back_func_mask);
-    TRACK(stencil_front_func_mask);
-    TRACK(stencil_back_mask);
-    TRACK(stencil_front_mask);
-    TRACK(stencil_front_op);
-    TRACK(stencil_back_op);
-    TRACK(stencil_front_ref);
-    TRACK(stencil_back_ref);
-    TRACK(logic_op);
-    TRACK(anti_alias_alpha_control);
-    TRACK(conservative_raster_enable);
-    TRACK(line_anti_alias_enable);
-    TRACK(depth_bounds_enable);
-    TRACK(color_mask);
-    TRACK(color_mask_common);
-    TRACK(blend);
-    TRACK(blend_per_target_enabled);
-    TRACK(blend_per_target);
-    TRACK(vertex_attrib_format);
-    TRACK(vertex_stream_instances);
-    TRACK(depth_mode);
-    TRACK(viewport_scale_offset_enabled);
-    TRACK(viewport_transform);
-    TRACK(provoking_vertex);
-    TRACK(mandated_early_z);
-    TRACK(alpha_test_enabled);
-    TRACK(alpha_test_func);
-    TRACK(alpha_test_ref);
-    TRACK(transform_feedback.controls);
-    TRACK(stream_out_layout);
-    for (size_t index = 0; index < Maxwell::NumVertexArrays; ++index) {
-        mark(MAXWELL3D_REG_INDEX(vertex_streams) +
-                 index * sizeof(Maxwell::VertexStream) / sizeof(u32) +
-                 offsetof(Maxwell::VertexStream, frequency) / sizeof(u32),
-             1);
-    }
-#undef TRACK
-    graphics_collision_values.resize(graphics_collision_indices.size());
-    graphics_dirty_tracking = true;
-    engine.dirty.flags[GraphicsKeyDirty] = true;
-}
-
 void PipelineCache::InvalidateLastGraphicsPipeline() {
     last_graphics_pipeline = nullptr;
 }
@@ -957,36 +872,8 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(
         return nullptr;
     }
     SyncGuestHost();
-    if (!RefreshStages(guest_hashes)) {
-        InvalidateLastGraphicsPipeline();
+    if (!RefreshStages(guest_hashes))
         return nullptr;
-    }
-    auto& key_dirty = maxwell3d->dirty.flags;
-    const u32 current_topology = static_cast<u32>(maxwell3d->draw_manager.draw_state.topology);
-    bool collision_changed = false;
-    for (size_t i = 0; i < graphics_collision_indices.size(); ++i) {
-        const u32 value = maxwell3d->regs.reg_array[graphics_collision_indices[i]];
-        collision_changed |= graphics_collision_values[i] != value;
-        graphics_collision_values[i] = value;
-    }
-    const bool same_inputs = graphics_dirty_tracking && !key_dirty[GraphicsKeyDirty] &&
-                             !collision_changed && graphics_stage_hashes == guest_hashes &&
-                             graphics_generation == context.RecordingGeneration() &&
-                             graphics_topology == current_topology &&
-                             graphics_formats.colors == formats.colors &&
-                             graphics_formats.depth == formats.depth &&
-                             graphics_formats.sample_count == formats.sample_count;
-    if (last_graphics_pipeline && same_inputs)
-        return last_graphics_pipeline;
-    // Never memoize a pending/failed request. Invalidation also covers channel
-    // switches, shader removals and every Context binding reset or submission.
-    IGraphicsPipeline* const previous_pipeline = last_graphics_pipeline;
-    InvalidateLastGraphicsPipeline();
-    key_dirty[GraphicsKeyDirty] = false;
-    graphics_stage_hashes = guest_hashes;
-    graphics_generation = context.RecordingGeneration();
-    graphics_topology = current_topology;
-    graphics_formats = formats;
     Pso::GraphicsPsoState state;
     FillGraphicsState(*maxwell3d, state);
     Pso::ApplyFramebufferFormats(state, formats);
@@ -1089,8 +976,8 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(
     }
     request.stage_hashes[0] =
         Pso::HashBytes(&specialization, sizeof(specialization), request.stage_hashes[0]);
-    if (previous_pipeline && request == last_graphics_request)
-        return RememberGraphicsPipeline(request, previous_pipeline);
+    if (last_graphics_pipeline && request == last_graphics_request)
+        return last_graphics_pipeline;
     if (const auto found = guest_graphics.find(request); found != guest_graphics.end()) {
         if (!found->second)
             context.Profile().Count(FrameCount::NegativeCacheHits);

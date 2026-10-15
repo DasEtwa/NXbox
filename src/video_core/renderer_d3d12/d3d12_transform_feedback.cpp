@@ -12,7 +12,7 @@ void TransformFeedback::EnsureCounters() {
     if (counters)
         return;
     counters = context.CreateBuffer(32, D3D12_HEAP_TYPE_DEFAULT);
-    context.SetDrawPredication(nullptr);
+    context.Commands()->SetPredication(nullptr, 0, D3D12_PREDICATION_OP_EQUAL_ZERO);
     context.Profile().Count(FrameCount::BufferUploadBytes, 32);
     context.Profile().Count(FrameCount::StorageUploadBytes, 32);
     context.Profile().Count(FrameCount::StagingCopyBytes, 32);
@@ -110,7 +110,7 @@ void TransformFeedback::BindBuffer(u32 slot, ResourcePtr buffer, u64 offset, u64
          views[slot].BufferLocation != buffer->handle->GetGPUVirtualAddress() + offset))
         filled_size = 0;
     if (filled_size) {
-        context.SetDrawPredication(nullptr);
+        context.Commands()->SetPredication(nullptr, 0, D3D12_PREDICATION_OP_EQUAL_ZERO);
         context.Profile().Count(FrameCount::BufferUploadBytes, 8);
         context.Profile().Count(FrameCount::StorageUploadBytes, 8);
         context.Profile().Count(FrameCount::StagingCopyBytes, 8);
@@ -181,7 +181,7 @@ u64 TransformFeedback::ReadFilledSize(u32 stream) {
     }
     for (u32 i = 0; i < 4; ++i) {
         if (buffers[i] && layout.streams[i] == stream) {
-            context.SetDrawPredication(nullptr);
+            context.Commands()->SetPredication(nullptr, 0, D3D12_PREDICATION_OP_EQUAL_ZERO);
             auto result = readback.Request(8);
             context.Transition(counters, D3D12_RESOURCE_STATE_COPY_SOURCE);
             context.Retain(result.buffer);

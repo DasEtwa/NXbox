@@ -462,8 +462,8 @@ void QueryCacheRuntime::Barriers(bool) {
 void QueryCacheRuntime::PauseHostConditionalRendering() {
     if (BisectEnabled("NXBOX_D3D12_NO_QUERIES"))
         return;
-    // Copies need predication disabled; repeated pauses reuse the recorded null binding.
-    impl->context.SetDrawPredication(nullptr);
+    // Predication is always recorded and does not alter any cached draw state.
+    impl->context.Commands()->SetPredication(nullptr, 0, D3D12_PREDICATION_OP_EQUAL_ZERO);
 }
 void QueryCacheRuntime::EndHostConditionalRendering() {
     PauseHostConditionalRendering();
@@ -476,7 +476,8 @@ void QueryCacheRuntime::ResumeHostConditionalRendering() {
     if (impl->predicate_set) {
         impl->context.Transition(impl->predicate, D3D12_RESOURCE_STATE_PREDICATION);
         // D3D12 EQUAL_ZERO skips commands when zero, so a one means execute.
-        impl->context.SetDrawPredication(impl->predicate->handle.Get());
+        impl->context.Commands()->SetPredication(impl->predicate->handle.Get(), 0,
+                                                 D3D12_PREDICATION_OP_EQUAL_ZERO);
     }
 }
 bool QueryCacheRuntime::HostConditionalRenderingCompareValue(VideoCommon::LookupData object, bool) {

@@ -12,7 +12,7 @@ class BoundTargets(unittest.TestCase):
     def test_draw_path_uses_fixed_slots_behind_a_change_check(self):
         source = (ROOT / "src/video_core/renderer_d3d12/d3d12_rasterizer.cpp").read_text()
         self.assertIn("descriptors.BoundRtvs()", source)
-        check = source.index("if (targets != bound_targets ||")
+        check = source.index("if (targets != bound_targets)")
         block = source[check : check + 1200]
         self.assertIn("descriptors.CreateRtv(", block)
         self.assertIn("descriptors.CreateDsv(", block)

@@ -60,7 +60,6 @@ struct RecordedDrawState {
     RecordedValue<ID3D12RootSignature*> root_signature;
     RecordedValue<ID3D12PipelineState*> pipeline;
     RecordedValue<D3D_PRIMITIVE_TOPOLOGY> topology;
-    RecordedValue<ID3D12Resource*> predicate;
     struct RootArguments {
         std::array<RecordedValue<D3D12_GPU_VIRTUAL_ADDRESS>, 64> tables;
         std::array<RecordedValue<D3D12_GPU_VIRTUAL_ADDRESS>, 64> cbvs;

@@ -71,7 +71,6 @@ public:
     void DrawIndirect() override;
     // Overrides the built-in guest shader pipeline cache for alternate providers.
     void SetPipelineCache(IPipelineCache* cache) {
-        context.InvalidateRecordedState();
         pipeline_cache = cache;
     }
     void DrawTexture() override;
@@ -140,15 +139,6 @@ private:
         bool operator==(const BoundTargets&) const = default;
     };
     BoundTargets bound_targets;
-    u64 bound_targets_generation{};
-    struct AttachmentDescription {
-        ResourcePtr resource;
-        D3D12_RESOURCE_DESC description{};
-    };
-    std::array<AttachmentDescription, VideoCommon::NUM_RT + 1> attachment_descriptions{};
-    u64 attachment_description_generation{};
-    size_t attachment_description_cursor{};
-    D3D12_RESOURCE_DESC AttachmentResourceDescription(const ResourcePtr& resource);
     IPipelineCache* pipeline_cache{};
     std::unique_ptr<PipelineCache> default_pipeline_cache;
     BufferCacheRuntime buffer_runtime;

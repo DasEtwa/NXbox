@@ -78,7 +78,7 @@ class RedundantStateTests(unittest.TestCase):
         self.assertIn("state.heaps.Update(heaps)", heaps)
         self.assertIn("state.ClearRootArguments();", heaps)
         self.assertIn("context.InvalidateRecordedState();", heaps)
-        targets = self.rasterizer.split("if (targets != bound_targets ||", 1)[1]
+        targets = self.rasterizer.split("if (targets != bound_targets)", 1)[1]
         self.assertLess(targets.index("InvalidateRecordedState();"), targets.index("CreateRtv("))
 
     def test_state_changing_work_always_invalidates_even_for_repeated_labels(self):

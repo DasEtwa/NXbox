@@ -29,10 +29,10 @@ class PsoLookupFast(unittest.TestCase):
         source = SOURCE.read_text()
         body = source.split("IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(", 1)[1]
         body = body.split("ComputePipeline* PipelineCache::CurrentComputePipeline()", 1)[0]
-        key_built = body.index("FillGraphicsState(*maxwell3d, state);")
-        fast_path = body.index("if (last_graphics_pipeline && same_inputs)")
+        key_built = body.index("request.stage_hashes[0] =")
+        fast_path = body.index("if (last_graphics_pipeline && request == last_graphics_request)")
         map_lookup = body.index("guest_graphics.find(request)")
-        self.assertLess(fast_path, key_built)
+        self.assertLess(key_built, fast_path)
         self.assertLess(fast_path, map_lookup)
         self.assertIn("return last_graphics_pipeline;", body)
         self.assertIn("RememberGraphicsPipeline(request, found->second)", body)

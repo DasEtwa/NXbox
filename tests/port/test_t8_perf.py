@@ -48,22 +48,6 @@ int main(int argc, char** argv) {
         assert(total == 80); // Nested phases do not double-count parent CPU.
         timing.Reset(500);
         for (auto time : timing.cpu) assert(time == 0);
-        for (auto time : timing.between) assert(time == 0); // Detail is off by default.
-        timing.detail_between = true;
-        timing.Switch(FramePhase::BetweenDraws, 510);
-        timing.between_work = BetweenDrawWork::GuestQueries;
-        timing.Switch(FramePhase::Barriers, 530);
-        timing.between_work = BetweenDrawWork::Fences;
-        timing.Switch(FramePhase::BetweenDraws, 550);
-        timing.Switch(FramePhase::DrawSetup, 560);
-        assert(timing.between[static_cast<size_t>(BetweenDrawWork::GuestQueries)] == 20);
-        assert(timing.between[static_cast<size_t>(BetweenDrawWork::Fences)] == 10);
-        total = 0;
-        for (auto time : timing.between) total += time;
-        assert(total == timing.cpu[static_cast<size_t>(FramePhase::BetweenDraws)]);
-        assert(timing.cpu[static_cast<size_t>(FramePhase::Barriers)] == 20);
-        timing.Reset(600);
-        for (auto time : timing.between) assert(time == 0);
         break;
     }
     case 'c': {

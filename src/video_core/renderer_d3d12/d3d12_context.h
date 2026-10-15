@@ -129,37 +129,21 @@ enum class FrameCount : size_t {
     FeedbackReused,
     Count
 };
-enum class BetweenDrawWork : size_t {
-    UnattributedGuestOrIdle,
-    GuestQueries,
-    UniformBindings,
-    CacheMaintenance,
-    Fences,
-    FrameMaintenance,
-    Count
-};
 // Monotonic CPU samples, independent of the host clock API, for exclusive phases.
 struct FrameTiming {
     std::array<std::uint64_t, static_cast<size_t>(FramePhase::Count)> cpu{};
     // Residual recording-thread work (guest commands and housekeeping) outside
     // draw scopes. Nested upload/submit/wait scopes keep their own attribution.
     FramePhase active{FramePhase::BetweenDraws};
-    bool detail_between{};
-    BetweenDrawWork between_work{BetweenDrawWork::UnattributedGuestOrIdle};
-    std::array<std::uint64_t, static_cast<size_t>(BetweenDrawWork::Count)> between{};
     std::uint64_t last{};
     void Switch(FramePhase phase, std::uint64_t now) {
-        if (now >= last) {
+        if (now >= last)
             cpu[static_cast<size_t>(active)] += now - last;
-            if (detail_between && active == FramePhase::BetweenDraws)
-                between[static_cast<size_t>(between_work)] += now - last;
-        }
         last = now;
         active = phase;
     }
     void Reset(std::uint64_t now) {
         cpu.fill(0);
-        between.fill(0);
         last = now;
     }
 };
@@ -371,17 +355,6 @@ public:
         u64 wall_start{};
         bool wait{};
     };
-    class BetweenScope {
-    public:
-        BetweenScope(FrameProfile& profile_, BetweenDrawWork work);
-        ~BetweenScope();
-        BetweenScope(const BetweenScope&) = delete;
-        BetweenScope& operator=(const BetweenScope&) = delete;
-
-    private:
-        FrameProfile* profile{};
-        BetweenDrawWork previous{};
-    };
     bool Enabled() const {
         return enabled;
     }
@@ -399,7 +372,6 @@ private:
     bool OnOwner();
     void Switch(FramePhase phase);
     bool enabled{BisectEnabled("NXBOX_D3D12_FRAME_PROFILE")};
-    bool detail_between{BisectEnabled("NXBOX_D3D12_BETWEEN_DRAWS_PROFILE")};
     std::atomic<DWORD> owner{};
     FrameTiming timing;
     std::array<u64, static_cast<size_t>(FrameCount::Count)> counts{};
@@ -422,9 +394,6 @@ public:
     void InvalidateRecordedState() {
         ++recording_generation;
     }
-    u64 RecordingGeneration() const {
-        return recording_generation;
-    }
     RecordedDrawState& DrawState() {
         recorded_state.Refresh(recording_generation);
         return recorded_state;
@@ -434,7 +403,6 @@ public:
             profile.Count(FrameCount::RedundantStateSkips);
         return changed;
     }
-    void SetDrawPredication(ID3D12Resource* predicate);
     u64 Submit(FrameCount reason = FrameCount::ForcedSubmitOther);
     void MarkWork(std::string_view label);
     void Finish(FrameCount reason = FrameCount::ForcedSubmitOther);
