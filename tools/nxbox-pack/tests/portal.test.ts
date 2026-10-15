@@ -199,3 +199,32 @@ test("portal without authentication sends no Authorization header", async () => 
   await portal.packages().catch(() => {});
   expect(seen).toBeNull();
 });
+test("installAsGames turns on the Game content type only when it is off", async () => {
+  const puts: { path: string; body: string }[] = [];
+  let value = "false";
+  const transport = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(String(input));
+    if (url.pathname.endsWith("machinename"))
+      return Response.json({}, { headers: { "Set-Cookie": "CSRF-Token=token; Path=/" } });
+    if (init?.method === "PUT") {
+      puts.push({ path: url.pathname, body: String(init.body) });
+      value = "true";
+      return new Response("");
+    }
+    return Response.json({
+      Settings: [{ Name: "DefaultUWPContentTypeToGame", Value: value, Type: "Text" }],
+    });
+  }) as typeof fetch;
+  const portal = new DevicePortal(
+    "https://xbox.test:11443",
+    { user: "user", password: "password" },
+    true,
+    transport,
+  );
+  expect(await portal.installAsGames()).toBe(true);
+  expect(puts).toEqual([
+    { path: "/ext/settings/DefaultUWPContentTypeToGame", body: '{"Value":"true"}' },
+  ]);
+  expect(await portal.installAsGames()).toBe(false);
+  expect(puts.length).toBe(1);
+});

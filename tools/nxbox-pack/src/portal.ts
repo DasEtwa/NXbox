@@ -64,6 +64,28 @@ export class DevicePortal {
     if (method !== "GET" && !this.csrf) await this.raw("GET", "/api/os/machinename");
     return this.raw(method, path, init);
   }
+  /**
+   * Dev Home installs UWP packages as Apps, capped at 1 GB, unless this console setting is on;
+   * games then crash with bad_alloc. Turns it on and reports whether it had to.
+   */
+  async installAsGames(): Promise<boolean> {
+    const data = (await (await this.request("GET", "/ext/settings")).json()) as {
+      Settings?: { Name?: string; Value?: string; Type?: string }[];
+    };
+    // Measured on Series X OS 10.0.26100; older builds called it DefaultAppMode.
+    const setting = data.Settings?.find(
+      (s) => s.Name === "DefaultUWPContentTypeToGame" || s.Name === "DefaultAppMode",
+    );
+    if (!setting?.Name) return false;
+    const value = setting.Type === "Bool" || setting.Name.endsWith("ToGame") ? "true" : "Game";
+    if (String(setting.Value).toLowerCase() === value.toLowerCase()) return false;
+    const response = await this.request("PUT", `/ext/settings/${encodeURIComponent(setting.Name)}`, {
+      body: JSON.stringify({ Value: value }),
+      headers: { "Content-Type": "application/json" },
+    });
+    if (!response.ok) throw new Error(`Device Portal refused ${setting.Name}: ${response.status}`);
+    return true;
+  }
   async packages(): Promise<InstalledPackage[]> {
     const data = (await (await this.request("GET", "/api/app/packagemanager/packages")).json()) as {
       InstalledPackages?: InstalledPackage[];

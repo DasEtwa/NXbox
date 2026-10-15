@@ -25,6 +25,8 @@ export async function deployGame(options: {
   if (!content.length && !library) throw new Error("A base game is required");
   const identity = packageIdentity(titleId);
   const folder = `${identity}-${crypto.randomUUID()}`;
+  // Best effort: without it the new package is an App limited to 1 GB of memory.
+  await portal.installAsGames().catch(() => false);
   await portal.uploadRuntime(folder, runtimeDirectory, runtimeFiles);
   const pkg = await portal.register(folder, identity);
   options.onUploading?.();

@@ -179,9 +179,11 @@ You need an Xbox Series X|S in **Developer Mode** and your own dumps:
 
 1. Install a package from the
    [package workflow](https://github.com/NspxMiguel/NXbox/actions/workflows/package-nxbox.yml)
-   through the Device Portal. Then, in Dev Home, select NXbox → **View details** and set
-   **App type** to **Game**. As an App it only gets 1 GB of memory and games crash with
-   `bad allocation`; as a Game it gets 5 GB.
+   through the Device Portal. It must run as a **Game**: as an App it only gets 1 GB of memory
+   and games crash with `bad allocation`; as a Game it gets 5 GB. Either turn on
+   `DefaultUWPContentTypeToGame` in the Device Portal's settings *before* installing (NXbox Pack
+   does this for you), or afterwards in Dev Home select NXbox → **View details** and set
+   **App type** to **Game**.
 2. Put `prod.keys` and `title.keys` in the app's `LocalState\eden\keys`.
 3. Put your games (`.nsp`, `.nsz` or `.xci`) in `LocalState\games`, or on a USB drive in
    `NXbox\games` (the console's internal developer storage is small, a few GB). `.nsz` files are
