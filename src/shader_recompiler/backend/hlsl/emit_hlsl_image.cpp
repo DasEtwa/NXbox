@@ -90,7 +90,12 @@ void Sample(EmitContext& ctx, IR::Inst& inst, const IR::Value& index, std::strin
     if (ctx.info.texture_descriptors.at(info.descriptor_index).is_integer)
         throw NotImplementedException("HLSL integer texture filtering must use fetch");
     std::string method;
-    std::string arguments = fmt::format("{}, {}", sampler, coords);
+    const bool fixed_dir = ctx.profile.hlsl_vs_cube_dir && dref.empty() &&
+                           (ctx.stage == Stage::VertexA || ctx.stage == Stage::VertexB) &&
+                           info.type == TextureType::ColorCube;
+    std::string arguments =
+        fmt::format("{}, {}", sampler, fixed_dir ? std::string_view{"float3(0.0f, 1.0f, 0.0f)"}
+                                                 : coords);
     if (!dref.empty()) {
         if (info.has_bias)
             throw NotImplementedException("HLSL compare sampling with bias");
