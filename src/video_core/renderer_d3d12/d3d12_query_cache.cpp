@@ -508,6 +508,28 @@ bool QueryCacheRuntime::CompareConditional(VideoCommon::LookupData first,
             streamer->SyncWrites();
         }
     }
+    if (!second.address && !BisectEnabled("NXBOX_D3D12_CPU_PREDICATE")) {
+        // "Render when the value is non-zero" is exactly D3D12 EQUAL_ZERO predication, so the
+        // guest value is copied into the predicate on the GPU. Reading it back on the CPU
+        // forced a submit and a fence wait per conditional draw (~200 per frame in MK8 Deluxe).
+        impl->predicate = impl->context.CreateBuffer(8, D3D12_HEAP_TYPE_DEFAULT);
+        {
+            std::scoped_lock lock(impl->cache.mutex);
+            const auto [buffer, offset] = impl->cache.ObtainCPUBuffer(
+                first.address, 8, VideoCommon::ObtainBufferSynchronize::FullSynchronize,
+                VideoCommon::ObtainBufferOperation::DoNothing);
+            auto resource = buffer->Handle();
+            impl->context.Transition(resource, D3D12_RESOURCE_STATE_COPY_SOURCE);
+            impl->context.Transition(impl->predicate, D3D12_RESOURCE_STATE_COPY_DEST);
+            impl->context.MarkWork("query report/predicate copy");
+            impl->context.BeforeCopyWrite(impl->predicate, 0, 8);
+            impl->context.Commands()->CopyBufferRegion(impl->predicate->handle.Get(), 0,
+                                                       resource->handle.Get(), offset, 8);
+        }
+        impl->predicate_set = true;
+        ResumeHostConditionalRendering();
+        return true;
+    }
     const auto a = impl->ReadGuest(first);
     const auto b = second.address ? impl->ReadGuest(second) : 0;
     const u64 predicate = (a == b) == equal;
