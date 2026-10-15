@@ -233,10 +233,13 @@ Image::Image(TextureCacheRuntime& runtime, const VideoCommon::ImageInfo& info, G
                                                : "BC3_SRGB");
         }
     }
-    // Probe: SM3DW's vertex shaders read 8x8 BC3 ambient cubes that come back ~20x too dark on
-    // the Xbox although the uploaded blocks are right. Decode small BCn cubes on the CPU.
-    static const bool decode_small_bc_cubes = BisectEnabled("NXBOX_D3D12_DECODE_SMALL_BC_CUBES");
-    if (decode_small_bc_cubes && host_format.block_width == 4 &&
+    // The Xbox samples small native BCn cubes wrong: SM3DW's vertex shaders read its 8x8 BC3
+    // ambient cubes ~20x too dark although the uploaded blocks are right, which blacked out
+    // shaded walls. Decoding them on the CPU fixes it and costs little at this size.
+    // ponytail: size cap is from the one case seen; raise it if larger BC cubes misbehave.
+    // NXBOX_D3D12_NATIVE_SMALL_BC_CUBES=1 keeps them native.
+    static const bool native_small_bc_cubes = BisectEnabled("NXBOX_D3D12_NATIVE_SMALL_BC_CUBES");
+    if (!native_small_bc_cubes && host_format.block_width == 4 &&
         VideoCore::Surface::IsPixelFormatBCn(info.format) && info.resources.layers % 6 == 0 &&
         info.size.width == info.size.height && info.size.width <= 32) {
         host_format = BcnFallbackFormat(host_format);

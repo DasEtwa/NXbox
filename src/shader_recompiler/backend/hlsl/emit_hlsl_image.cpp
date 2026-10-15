@@ -76,32 +76,16 @@ void Sample(EmitContext& ctx, IR::Inst& inst, const IR::Value& index, std::strin
     const auto info = TextureInfo(ctx, inst);
     if (EmitCubeOne(ctx, inst, info, !dref.empty(), !dref.empty()))
         return;
-    if (!ctx.profile.hlsl_vs_cube_const.empty() && dref.empty() &&
-        (ctx.stage == Stage::VertexA || ctx.stage == Stage::VertexB) &&
-        info.type == TextureType::ColorCube) {
-        ctx.AddF32x4("{} = float4({});", inst, ctx.profile.hlsl_vs_cube_const);
-        return;
-    }
     const auto tex = Texture(ctx, info, index);
     if (info.type == TextureType::Buffer)
         throw NotImplementedException("HLSL buffer sampling must use fetch");
-    const bool probe = ctx.profile.hlsl_vs_cube_static && dref.empty() &&
-                       (ctx.stage == Stage::VertexA || ctx.stage == Stage::VertexB) &&
-                       (info.type == TextureType::ColorCube ||
-                        info.type == TextureType::ColorArrayCube);
-    const auto sampler =
-        probe ? std::string{"nx_probe_sampler"} : ctx.Sampler(index, info.descriptor_index);
+    const auto sampler = ctx.Sampler(index, info.descriptor_index);
     if (info.type == TextureType::Buffer)
         throw NotImplementedException("HLSL buffer sampling must use fetch");
     if (ctx.info.texture_descriptors.at(info.descriptor_index).is_integer)
         throw NotImplementedException("HLSL integer texture filtering must use fetch");
     std::string method;
-    const bool fixed_dir = ctx.profile.hlsl_vs_cube_dir && dref.empty() &&
-                           (ctx.stage == Stage::VertexA || ctx.stage == Stage::VertexB) &&
-                           info.type == TextureType::ColorCube;
-    std::string arguments =
-        fmt::format("{}, {}", sampler, fixed_dir ? std::string_view{"float3(0.0f, 1.0f, 0.0f)"}
-                                                 : coords);
+    std::string arguments = fmt::format("{}, {}", sampler, coords);
     if (!dref.empty()) {
         if (info.has_bias)
             throw NotImplementedException("HLSL compare sampling with bias");

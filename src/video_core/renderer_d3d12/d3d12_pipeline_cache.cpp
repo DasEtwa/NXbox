@@ -435,10 +435,6 @@ GraphicsPipeline& PipelineCache::GetGraphics(const Pso::GraphicsPsoState& state,
         Pso::HashBytes(&StageBindingAbi, sizeof(StageBindingAbi), key.stage_hashes[0]);
     const bool root_cbvs = UseRootCbvs(total.cbv);
     key.stage_hashes[0] = Pso::HashBytes(&root_cbvs, sizeof(root_cbvs), key.stage_hashes[0]);
-    // The diagnostic static sampler changes every root signature.
-    static const bool probe_sampler = BisectEnabled("NXBOX_D3D12_VS_CUBE_STATIC");
-    if (probe_sampler)
-        key.stage_hashes[0] = Pso::HashBytes(&probe_sampler, 1, key.stage_hashes[0]);
     // Fragment occupies slot 5: folding topology after stage hashes prevents
     // its shader hash from overwriting the wrapper's IA topology identity.
     key.stage_hashes[5] = Pso::HashBytes(&d3d_topology, sizeof(d3d_topology), key.stage_hashes[5]);
@@ -526,10 +522,6 @@ struct TranslationState {
         profile.hlsl_cube_one = cube_one;
         static const bool shadow_one = BisectEnabled("NXBOX_D3D12_SHADOW_ONE");
         profile.hlsl_shadow_one = shadow_one;
-        profile.hlsl_vs_cube_static = BisectEnabled("NXBOX_D3D12_VS_CUBE_STATIC");
-        profile.hlsl_vs_cube_dir = BisectEnabled("NXBOX_D3D12_VS_CUBE_DIR");
-        if (const char* value = std::getenv("NXBOX_D3D12_VS_CUBE_CONST"))
-            profile.hlsl_vs_cube_const = value;
         D3D12_FEATURE_DATA_D3D12_OPTIONS options{};
         Check(device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &options, sizeof(options)),
               "D3D12 shader options");

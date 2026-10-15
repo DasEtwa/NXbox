@@ -60,21 +60,6 @@ ComPtr<ID3D12RootSignature> CreateRootSignature(ID3D12Device* device, Descriptor
     desc.pParameters = params.data();
     desc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT |
                  D3D12_ROOT_SIGNATURE_FLAG_ALLOW_STREAM_OUTPUT;
-    // Diagnostic (NXBOX_D3D12_VS_CUBE_STATIC): linear clamp sampler for vertex cube samples.
-    static const bool probe_sampler = BisectEnabled("NXBOX_D3D12_VS_CUBE_STATIC");
-    D3D12_STATIC_SAMPLER_DESC probe{};
-    probe.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-    probe.AddressU = probe.AddressV = probe.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-    probe.MaxAnisotropy = 1;
-    probe.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
-    probe.MaxLOD = D3D12_FLOAT32_MAX;
-    probe.ShaderRegister = 0;
-    probe.RegisterSpace = 9;
-    probe.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    if (probe_sampler) {
-        desc.NumStaticSamplers = 1;
-        desc.pStaticSamplers = &probe;
-    }
 
     ComPtr<ID3DBlob> blob, error;
     const HRESULT hr =
