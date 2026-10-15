@@ -328,6 +328,8 @@ struct Resource {
     std::shared_ptr<MemoryBudget> budget;
     u64 allocation_size{};
     u64 content_version{};
+    // Recording tick of the last copy into this resource; copy hazards span command lists.
+    u64 last_copy_tick{};
     ~Resource();
 };
 using ResourcePtr = std::shared_ptr<Resource>;
@@ -448,6 +450,7 @@ public:
     }
 
 private:
+    void CrossListCopyBarrier(Resource& resource, u64 tick, u64 offset, u64 size);
 #ifndef NXBOX_UWP
     u64 device_local_memory{};
 #endif

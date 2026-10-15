@@ -725,6 +725,17 @@ void Context::Collect() {
 }
 ID3D12GraphicsCommandList* Context::Commands() {
     profile.BindRecordingThread();
+    {
+        // Diagnostic: the command list and copy hazard state are single-threaded.
+        static std::atomic<DWORD> recorder{};
+        static std::atomic<u32> foreign{};
+        DWORD expected{};
+        const DWORD self = GetCurrentThreadId();
+        if (!recorder.compare_exchange_strong(expected, self) && expected != self &&
+            foreign.fetch_add(1) < 16)
+            Diagnostic(fmt::format("D3D12_FOREIGN_RECORDER thread={} owner={} recording={}",
+                                   self, expected, recording));
+    }
     if (!recording) {
         Collect();
         auto& slot = allocators[allocator_index];
@@ -943,6 +954,29 @@ void Context::TransitionSubresources(const ResourcePtr& resource, std::span<cons
         copy_writes.erase(resource->handle.Get());
     }
 }
+void Context::CrossListCopyBarrier(Resource& resource, u64 tick, u64 offset, u64 size) {
+    // The Xbox queue can overlap consecutive command lists: a copy recorded in an earlier,
+    // still-running list (e.g. a new buffer's zero fill) raced the next upload into it.
+    static const bool cross_list = !BisectEnabled("NXBOX_D3D12_NO_CROSS_LIST_COPY_BARRIER");
+    if (cross_list && resource.last_copy_tick && resource.last_copy_tick < tick &&
+        !IsFree(resource.last_copy_tick)) {
+        const FrameProfile::Scope profile_barrier{profile, FramePhase::Barriers};
+        D3D12_RESOURCE_BARRIER barrier{};
+        barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_ALIASING;
+        commands->ResourceBarrier(1, &barrier);
+        profile.Count(FrameCount::Barriers);
+        profile.Count(FrameCount::CopyHazardBarriers);
+        static u32 logged{};
+        if (logged < 8 || ++logged % 4096 == 0) {
+            logged += logged < 8;
+            Diagnostic(fmt::format("D3D12_CROSS_LIST_COPY_BARRIER resource={:#x} previous_tick={} "
+                                   "tick={} offset={} size={}",
+                                   resource.handle->GetGPUVirtualAddress(),
+                                   resource.last_copy_tick, tick, offset, size));
+        }
+        copy_writes.clear();
+    }
+}
 void Context::BeforeCopyWrite(const ResourcePtr& resource, u64 offset, u64 size) {
     if (!resource)
         throw std::invalid_argument("D3D12 null copy destination");
@@ -951,6 +985,9 @@ void Context::BeforeCopyWrite(const ResourcePtr& resource, u64 offset, u64 size)
     // Start recording before inspecting ranges; completion callbacks can record work.
     Retain(resource);
     auto* destination = resource->handle.Get();
+    const u64 tick = CurrentTick();
+    CrossListCopyBarrier(*resource, tick, offset, size);
+    resource->last_copy_tick = tick;
     const auto found = copy_writes.find(destination);
     if (found != copy_writes.end()) {
         for (const auto& range : found->second) {
