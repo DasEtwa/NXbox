@@ -379,3 +379,38 @@ Locally: `python tools/nxbox/package_launcher.py --exe nxbox-launcher.exe --titl
 This improves presentation; the running dashboard identity is still NXbox and the OS still switches
 between packages. Full per-game runtime packages are deferred until shared data, migration and
 recovery are safe; [the analysis](nxbox-native-tiles.md) records the payload, path audit and blockers.
+
+### Sources catalog (2026-10-15)
+
+Settings → Sources now opens a title-grouped shelf. No game source is preconfigured.
+
+- LB/RB selects New games (base packages), Updates, DLC or All. Left/Right moves along the shelf;
+  A opens the selected game's details. X cycles name, total size and newest; Y opens the existing
+  controller keyboard to search loaded game names. Menu reloads the source.
+- The pure `tinfoil_index.h` metadata helper extracts title ID, application ID, kind and version
+  from filename tags. `source_catalog.h` groups base/update/add-on packages without merging
+  unknown IDs by name. The displayed name comes from the base filename when available; titledb's
+  art index supplies banners by application ID, but does not contain game names.
+- Newest means reverse source order, explicitly labeled in both languages. The Tinfoil index
+  provides no publication date, and version numbers cannot order different games by recency.
+- Details show every source package for the game, its size/version and installed state, plus a
+  base/update/DLC availability summary independent of the selected category. Local packages match
+  by filename or title ID/kind/version (a newer installed version satisfies an older item).
+  Valid library cache records also identify base games with untagged filenames. An unknown local
+  update version cannot prove that a specific remote version is installed.
+- A in details adds exactly that package to an eight-item queue, with one active transfer. View
+  opens progress and the waiting list; B on a queue entry cancels it, and View returns to browsing.
+  An installed item or a duplicate URL/destination is not added. The queue belongs to this Sources
+  screen session; leaving Sources cancels the active transfer and forgets waiting entries.
+- Downloads reuse the existing resumable downloader. Incomplete packages keep a `.partial` suffix
+  and become normal game files only after successful completion, including when the downloader
+  selects removable storage for space. Completed external downloads are not marked as installed
+  in LocalState. Previously written partial packages with known sizes can be migrated on retry.
+- Each page fetches one nonempty index, or at most four empty/failed indexes. A Load more tile
+  continues the bounded traversal (5,000 entries, 64 indexes, depth 3); search and sort cover the
+  loaded portion. Only tiles intersecting the shelf request banners. At most two images decode
+  per frame, and GPU images outside the visible shelf are released.
+
+Host parsing, grouping, category/sort, installed-version and queue tests live in
+`tests/port/test_source_catalog.py`. The UWP build and visual/controller checks on Xbox remain
+required; host tests cannot validate Direct2D output or WinRT networking.
