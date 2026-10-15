@@ -30,6 +30,7 @@ public:
     void ReloadSources();
     bool TakeSourcesRequest();
     bool TakeNavigationRequest();
+    bool Typing() const; // The search keyboard is open.
 
 private:
     struct Impl;

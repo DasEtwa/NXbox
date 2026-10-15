@@ -652,8 +652,9 @@ inline Index ParseIndex(std::string_view body, const std::string& base) {
             if (extension != ".nsp" && extension != ".nsz" && extension != ".xci" &&
                 extension != ".xcz" && !directory)
                 continue;
-            if (directory && (absolute->rfind(base.substr(0, base.find_first_of("?#")), 0) != 0 ||
-                              *absolute == base))
+            auto base_dir = base.substr(0, base.find_first_of("?#"));
+            base_dir.erase(base_dir.rfind('/') + 1); // Directory containing the listing.
+            if (directory && (absolute->rfind(base_dir, 0) != 0 || *absolute == base))
                 continue;
             detail::Value value;
             value.type = detail::Value::Type::String;
@@ -737,6 +738,20 @@ inline Index ParseIndex(std::string_view body, const std::string& base) {
     return index;
 }
 
+// scheme://host[:port], lower-case and without userinfo. Headers and credentials from one
+// shop are only forwarded to URLs with the same origin.
+inline std::string Origin(const std::string& url) {
+    const auto scheme = url.find("://");
+    if (scheme == std::string::npos)
+        return {};
+    const auto end = url.find_first_of("/?#", scheme + 3);
+    auto authority = url.substr(scheme + 3, end == std::string::npos ? std::string::npos
+                                                                      : end - scheme - 3);
+    if (const auto at = authority.rfind('@'); at != std::string::npos)
+        authority.erase(0, at + 1);
+    return detail::Lower(url.substr(0, scheme + 3) + authority);
+}
+
 struct Request {
     std::string url;
     std::size_t depth = 0;
@@ -785,7 +800,9 @@ public:
             if (requests_.size() >= kMaxIndexes)
                 break;
             if (visited_.insert(directory).second)
-                requests_.push_back({directory, parent.depth + 1, headers});
+                requests_.push_back({directory, parent.depth + 1,
+                                     Origin(directory) == Origin(parent.url) ? headers
+                                                                             : Headers{}});
         }
     }
 

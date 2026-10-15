@@ -581,11 +581,12 @@ private:
             }
             return;
         }
-        if (input_.Pressed(Button::LeftShoulder)) {
+        const bool shop_typing = tab_ == Tab::Shop && shop_ && shop_->Typing();
+        if (!shop_typing && input_.Pressed(Button::LeftShoulder)) {
             SetTab(static_cast<Tab>((static_cast<int>(tab_) + kTabCount - 1) % kTabCount));
             return;
         }
-        if (input_.Pressed(Button::RightShoulder)) {
+        if (!shop_typing && input_.Pressed(Button::RightShoulder)) {
             SetTab(static_cast<Tab>((static_cast<int>(tab_) + 1) % kTabCount));
             return;
         }

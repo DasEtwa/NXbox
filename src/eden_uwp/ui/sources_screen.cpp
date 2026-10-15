@@ -25,6 +25,7 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <string>
@@ -510,6 +511,32 @@ ImportResult ScanDrivesForSources(const std::atomic<bool>& cancel) {
     return result;
 }
 
+// Claims a .partial path for one download thread at a time.
+struct PartialClaim {
+    explicit PartialClaim(fs::path path_) : path{std::move(path_)} {
+        std::scoped_lock lock{Mutex()};
+        owned = Paths().insert(path).second;
+    }
+    ~PartialClaim() {
+        if (!owned)
+            return;
+        std::scoped_lock lock{Mutex()};
+        Paths().erase(path);
+    }
+    PartialClaim(const PartialClaim&) = delete;
+    PartialClaim& operator=(const PartialClaim&) = delete;
+    static std::mutex& Mutex() {
+        static std::mutex mutex;
+        return mutex;
+    }
+    static std::set<fs::path>& Paths() {
+        static std::set<fs::path> paths;
+        return paths;
+    }
+    fs::path path;
+    bool owned{};
+};
+
 // ---- Reading a source ----
 
 // GETs a text body. False, with a log line, on a network error or an unsuccessful status.
@@ -657,6 +684,8 @@ FetchResult FetchSource(Tinfoil::Traversal traversal, std::size_t remaining,
                                     entry.headers.end());
                 entry.headers.push_back(header);
             }
+            if (Tinfoil::Origin(entry.url) != Tinfoil::Origin(request->url))
+                entry.headers.clear(); // Never send one shop's credentials to another host.
             entry.file = DiskName(entry.name, entry.url);
             entry.key = LowerWide(entry.file);
             entry.size = file.size;
@@ -955,7 +984,8 @@ public:
             return;
         }
         if (sidebar_focus_) {
-            SetMode(Mode::Browse);
+            if (mode_ != Mode::Browse)
+                SetMode(Mode::Browse);
             queue_return_ = Mode::Browse;
             if (input_.Pressed(Button::Up)) {
                 if (section_ == 0)
@@ -969,6 +999,7 @@ public:
                 navigation_requested_ = true;
             if (section_ < 4 && tab_ != section_) {
                 tab_ = section_;
+                query_.clear(); // A search only filters the Search section.
                 browse_cursor_ = {};
                 FilterCatalog();
             }
@@ -1015,10 +1046,12 @@ public:
             if (input_.Pressed(Button::A))
                 sources_requested_ = true;
         } else if (section_ == 5) {
-            SetMode(Mode::Queue);
+            if (mode_ != Mode::Queue)
+                SetMode(Mode::Queue);
             UpdateQueue();
         } else {
-            SetMode(Mode::Browse);
+            if (mode_ != Mode::Browse && mode_ != Mode::Detail && mode_ != Mode::Keyboard)
+                SetMode(Mode::Browse); // SetMode resets the scroll tween.
             UpdateBrowse(now);
         }
     }
@@ -1038,6 +1071,9 @@ public:
     }
     bool TakeNavigationRequest() {
         return std::exchange(navigation_requested_, false);
+    }
+    bool Typing() const {
+        return mode_ == Mode::Keyboard;
     }
 
 private:
@@ -1233,7 +1269,8 @@ private:
             entries_.push_back(std::move(entry));
         if (!fetch_->result.message.empty())
             fetch_message_ = fetch_->result.message;
-        failure_ = fetch_->result.failure;
+        if (fetch_->result.failure != Failure::None) // A later page must not hide a failure.
+            failure_ = fetch_->result.failure;
         unsupported_ = fetch_->result.unsupported;
         for (const auto& [url, error] : fetch_->result.errors) {
             source_errors_[url] = error;
@@ -1243,11 +1280,8 @@ private:
         if (!fetch_->result.message.empty() && failure_ == Failure::None &&
             announced_.insert(fetch_->result.message).second)
             Toast(fetch_->result.message, Clock::now());
-        bool added = false;
-        for (const auto& location : fetch_->result.locations)
-            added = AddSource(sources_, {HostOf(location), location}) || added;
-        if (added)
-            SaveSources(local_state_, sources_);
+        // Index "locations" are followed for this load only; persisting them would let any
+        // index add sources the user never chose.
         partial_ = partial_ || fetch_->result.partial;
         traversal_ = std::move(fetch_->result.traversal);
         RebuildCatalog();
@@ -1336,7 +1370,10 @@ private:
                     fs::file_size(destination, ec) < expected_size && !fs::exists(target, ec)) {
                     fs::rename(destination, target, ec); // resume a pre-catalog partial download
                 }
-                bool ok = DownloadShopPackage(package, target, progress, cancel_);
+                // The Shop tab and Settings > Sources each own a downloader; only one may
+                // write a given .partial file.
+                const PartialClaim claim{target};
+                bool ok = claim.owned && DownloadShopPackage(package, target, progress, cancel_);
                 if (ok) {
                     fs::path complete = target;
                     complete.replace_extension(); // removes only the trailing .partial
@@ -2318,6 +2355,9 @@ bool ShopScreen::TakeSourcesRequest() {
 }
 bool ShopScreen::TakeNavigationRequest() {
     return impl_->screen.TakeNavigationRequest();
+}
+bool ShopScreen::Typing() const {
+    return impl_->screen.Typing();
 }
 
 bool RunSourcesScreen(Renderer& renderer, const CoreWindow& window, Input& input,

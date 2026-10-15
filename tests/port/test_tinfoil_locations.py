@@ -86,6 +86,15 @@ int main(int argc, char** argv) {
         traversal.Follow(*root, basic_index);
         const auto child = traversal.Next();
         assert(child && child->headers == root->headers);
+        // Credentials never follow a directory to another host.
+        const auto cross = ParseIndex(R"({"directories":["https://evil/x/","https://HOST/y/"]})",
+                                      root->url);
+        traversal.Follow(*root, cross);
+        const auto evil = traversal.Next();
+        assert(evil && evil->url == "https://evil/x/" && evil->headers.empty());
+        const auto same = traversal.Next();
+        assert(same && same->headers == root->headers);
+        assert(Origin("https://u:p@Host:8443/a?b") == "https://host:8443");
         Headers custom = {{"Authorization", "Bearer custom"}};
         Authenticate(root->url, custom);
         assert(custom.size() == 1 && custom[0].second == "Bearer custom");
