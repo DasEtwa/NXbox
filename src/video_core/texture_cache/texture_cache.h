@@ -745,8 +745,9 @@ void TextureCache<P>::DumpPassRenderTargets() {
                                slot_images[id].aliased_images.size());
     }
     const std::vector<ImageId> sampled_ids = std::exchange(pass_dump_sampled, {});
-    // Tightly packed copy of one mip level, layer 0. No format conversion.
-    const auto download = [&](Image& image, s32 level, const std::filesystem::path& path) {
+    // Tightly packed copy of one mip level and layer. No format conversion.
+    const auto download = [&](Image& image, s32 level, const std::filesystem::path& path,
+                              s32 layer = 0) {
         const auto& info = image.info;
         const u32 width = (std::max)(info.size.width >> level, 1u);
         const u32 height = (std::max)(info.size.height >> level, 1u);
@@ -760,7 +761,7 @@ void TextureCache<P>::DumpPassRenderTargets() {
             .buffer_size = bytes,
             .buffer_row_length = width,
             .buffer_image_height = height,
-            .image_subresource = {.base_level = level, .base_layer = 0, .num_layers = 1},
+            .image_subresource = {.base_level = level, .base_layer = layer, .num_layers = 1},
             .image_offset = {0, 0, 0},
             .image_extent = {width, height, 1},
         }};
@@ -817,6 +818,16 @@ void TextureCache<P>::DumpPassRenderTargets() {
                     seq, index, level, image.gpu_addr, (std::max)(info.size.width >> level, 1u),
                     (std::max)(info.size.height >> level, 1u), PassDump::FormatName(info.format),
                     bytes, file, static_cast<int>(info.type));
+            }
+            // Cube/array faces past layer 0, top mip only (a dead cube face reads as zero).
+            for (s32 layer = 1; layer < (std::min)(info.resources.layers, 6); ++layer) {
+                const std::string file =
+                    fmt::format("pass_{:04}_t{}_m0_l{}.raw", seq, index, layer);
+                const size_t bytes = download(image, 0, directory / file, layer);
+                sampled_manifest << fmt::format(
+                    "{{\"seq\":{},\"texture\":{},\"level\":0,\"layer\":{},\"gpu_addr\":{},"
+                    "\"bytes\":{},\"file\":\"{}\"}}\n",
+                    seq, index, layer, image.gpu_addr, bytes, file);
             }
         }
     } catch (const std::exception& error) {
