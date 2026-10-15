@@ -173,6 +173,10 @@ flowchart LR
 
 You need an Xbox Series X|S in **Developer Mode** and your own dumps:
 
+> **Series S:** NXbox is developed and tested only on a Series X. The author has no Series S, so
+> compatibility, performance and memory behaviour there cannot be checked or guaranteed. Reports
+> from Series S owners (with `LocalState\nxbox_crash.txt`) are welcome in the issues.
+
 1. Install a package from the
    [package workflow](https://github.com/NspxMiguel/NXbox/actions/workflows/package-nxbox.yml)
    through the Device Portal. Then, in Dev Home, select NXbox → **View details** and set
