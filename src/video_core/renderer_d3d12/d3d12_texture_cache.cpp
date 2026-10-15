@@ -498,6 +498,8 @@ void Image::Transfer(const StagingBufferRef& input,
                            extent.depth, footprint.Footprint.RowPitch, padded_slice, row_stride,
                            slice_stride);
                 context.MarkWork("upload/copy");
+                // Texture copy hazards are tracked per subresource (offset = index, size 1).
+                context.BeforeCopyWrite(resource, subresource, 1);
                 context.Commands()->CopyTextureRegion(&texture, offset.x, offset.y, offset.z,
                                                       &linear, nullptr);
             } else {
@@ -748,6 +750,7 @@ bool Image::TransferConverted(const StagingBufferRef& input,
                     convert();
                     context.Profile().Count(FrameCount::StagingCopyBytes,
                                             padded_slice * extent.depth);
+                    context.BeforeCopyWrite(resource, texture.SubresourceIndex, 1);
                     context.Commands()->CopyTextureRegion(&texture, offset.x, offset.y, offset.z,
                                                           &linear, nullptr);
                 }
@@ -1192,6 +1195,7 @@ bool TextureCacheRuntime::ReinterpretOnGpu(Image& dst, Image& src,
     for (const auto& step : steps) {
         const auto out = location(dst.Handle()->handle.Get(), nullptr, step.dst_subresource);
         const auto in = location(bounce->handle.Get(), &step.write, 0);
+        context.BeforeCopyWrite(dst.Handle(), step.dst_subresource, 1);
         context.Commands()->CopyTextureRegion(&out, step.x, step.y, step.z, &in, &step.dst_box);
     }
     return true;

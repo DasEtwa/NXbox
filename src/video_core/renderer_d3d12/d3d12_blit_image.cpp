@@ -720,6 +720,7 @@ void BlitImageHelper::CopyImage(const BlitSurface& dst, const BlitSurface& origi
                                   static_cast<UINT>(copy.src_offset.y) + copy.extent.height,
                                   static_cast<UINT>(copy.src_offset.z) + copy.extent.depth};
                     impl->context.InvalidateRecordedState();
+                    impl->context.BeforeCopyWrite(d.resource, target.SubresourceIndex, 1);
                     impl->context.Commands()->CopyTextureRegion(
                         &target, copy.dst_offset.x, copy.dst_offset.y, copy.dst_offset.z, &source,
                         full_src && full_dst ? nullptr : &box);
