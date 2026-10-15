@@ -1,0 +1,218 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Host stubs surround production methods inserted by test_gpu_frontend_hot_paths.py.
+
+#include <array>
+#include <bitset>
+#include <cassert>
+#include <cstdint>
+#include <cstring>
+#include <numeric>
+#include <string_view>
+#include <utility>
+#include <vector>
+
+using u32 = std::uint32_t;
+using GPUVAddr = std::uint64_t;
+constexpr u32 MacroRegistersStart = 0xE00;
+static unsigned assertion_calls;
+static unsigned assertion_failures;
+#define ASSERT(condition)                                                                          \
+    do {                                                                                           \
+        ++assertion_calls;                                                                         \
+        if (!(condition))                                                                          \
+            ++assertion_failures;                                                                  \
+    } while (false)
+
+constexpr u32 RegisterIndex(std::string_view field) {
+    // REGISTER_INDICES
+    return 0;
+}
+#define MAXWELL3D_REG_INDEX(field) RegisterIndex(#field)
+
+namespace Core {
+struct System {};
+} // namespace Core
+namespace Settings {
+static bool high = true;
+bool IsGPULevelHigh() {
+    return high;
+}
+} // namespace Settings
+
+struct Maxwell3D {
+    struct Regs {
+        static constexpr u32 NUM_REGS = MacroRegistersStart;
+        enum class ShadowRamControl { Off, Track, TrackWithFilter, Replay };
+        ShadowRamControl shadow_ram_control{};
+        std::array<u32, NUM_REGS> reg_array{};
+    } regs, shadow_state;
+    struct {
+        std::bitset<256> flags;
+        std::array<std::array<unsigned char, Regs::NUM_REGS>, 2> tables{};
+    } dirty;
+    struct {
+        unsigned calls{};
+        void ProcessData(const u32*, u32) {
+            ++calls;
+        }
+    } upload_state;
+    struct Memory {
+        std::array<u32, 1024> words{};
+        std::vector<std::pair<GPUVAddr, size_t>> reads;
+        void ReadBlock(GPUVAddr address, void* out, size_t size) {
+            reads.emplace_back(address, size);
+            assert(address + size <= sizeof(words));
+            std::memcpy(out, reinterpret_cast<const char*>(words.data()) + address, size);
+        }
+    } memory_manager;
+    std::bitset<65535> execution_mask;
+    u32 executing_macro{};
+    std::vector<u32> macro_params;
+    std::vector<std::pair<GPUVAddr, size_t>> macro_segments;
+    bool current_dirty{}, current_macro_dirty{};
+    GPUVAddr current_dma_segment{};
+    unsigned effects{}, bulk_calls{}, sink_calls{}, macro_calls{};
+    bool captured_dirty{}, refresh{};
+    std::vector<u32> captured;
+    std::vector<std::pair<GPUVAddr, size_t>> captured_segments;
+
+    bool IsMethodExecutable(u32);
+    u32 ProcessShadowRam(u32, u32);
+    void ProcessDirtyRegisters(u32, u32);
+    void CallMethod(Core::System&, u32, u32, bool);
+    void CallMultiMethod(Core::System&, u32, const u32*, u32, u32);
+    void ProcessMacro(Core::System&, u32, const u32*, u32, bool);
+    void RefreshParametersImpl();
+    u32 GetRegisterValue(u32) const;
+    void ConsumeSink(Core::System&) {
+        ++sink_calls;
+    }
+    void CallMacroMethod(Core::System&, u32, const std::vector<u32>& parameters) {
+        executing_macro = 0;
+        if (refresh && current_macro_dirty)
+            RefreshParametersImpl();
+        ++macro_calls;
+        captured = parameters;
+        captured_segments = macro_segments;
+        captured_dirty = current_macro_dirty;
+    }
+    void ProcessMethodCall(u32 method, u32, u32, bool) {
+        effects += execution_mask[method];
+    }
+    void ProcessCBMultiData(const u32*, u32) {
+        ++bulk_calls;
+    }
+    void ProcessInlineIndexMultiData(u32, const u32*, u32) {
+        ++bulk_calls;
+    }
+    Maxwell3D() {
+        for (u32 i = 0; i < Regs::NUM_REGS; ++i) {
+            execution_mask[i] = IsMethodExecutable(i);
+            regs.reg_array[i] = i;
+            shadow_state.reg_array[i] = i + 100;
+            dirty.tables[0][i] = static_cast<unsigned char>(i);
+            dirty.tables[1][i] = static_cast<unsigned char>(i + 1);
+        }
+    }
+};
+
+// METHODS
+
+int main() {
+    Core::System system;
+    const u32 values[]{0x1234, 0x5678, 0x9ABC, 0xDEF0};
+    // Compare batched writes against the scalar path for every non-executable register,
+    // all shadow modes, empty/single/multiple writes, and partial DMA submissions.
+    for (u32 mode = 0; mode < 4; ++mode) {
+        for (u32 index = 0; index < Maxwell3D::Regs::NUM_REGS; ++index) {
+            for (u32 count : {0U, 1U, 4U}) {
+                Maxwell3D scalar, batch;
+                if (batch.execution_mask[index])
+                    continue;
+                scalar.shadow_state.shadow_ram_control = batch.shadow_state.shadow_ram_control =
+                    static_cast<Maxwell3D::Regs::ShadowRamControl>(mode);
+                for (u32 i = 0; i < count; ++i)
+                    scalar.CallMethod(system, index, values[i], count - i <= 1);
+                batch.CallMultiMethod(system, index, values, count, count + 2);
+                assert(scalar.regs.reg_array == batch.regs.reg_array);
+                assert(scalar.shadow_state.reg_array == batch.shadow_state.reg_array);
+                assert(scalar.dirty.flags == batch.dirty.flags);
+                assert(batch.effects == 0);
+            }
+        }
+    }
+    Maxwell3D engine;
+    const auto draw = MAXWELL3D_REG_INDEX(draw.begin);
+    engine.CallMultiMethod(system, draw, values, 4, 4);
+    assert(engine.effects == 4);
+    engine.CallMultiMethod(system, MAXWELL3D_REG_INDEX(const_buffer.buffer), values, 4, 4);
+    assert(engine.bulk_calls == 1);
+    engine.CallMultiMethod(system, MAXWELL3D_REG_INDEX(inline_data), values, 4, 4);
+    assert(engine.upload_state.calls == 1);
+    engine.CallMultiMethod(system, MAXWELL3D_REG_INDEX(draw_inline_index), values, 4, 4);
+    assert(engine.bulk_calls == 2);
+    engine.shadow_state.shadow_ram_control = Maxwell3D::Regs::ShadowRamControl::Replay;
+    engine.CallMultiMethod(system, MAXWELL3D_REG_INDEX(draw_inline_index), values, 4, 4);
+    assert(engine.bulk_calls == 2 && engine.effects == 8);
+
+    assertion_calls = assertion_failures = 0;
+    engine.CallMethod(system, 0, 123, true);
+    assert(engine.GetRegisterValue(0) == 100); // Replay still applies.
+    assert(assertion_calls == 0);
+
+    // Scalar, bulk, and zero-sized macro segments retain their addresses and dirty state.
+    engine.current_dma_segment = 64;
+    engine.current_dirty = true;
+    engine.CallMethod(system, MacroRegistersStart, values[0], false);
+    engine.current_dma_segment = 0;
+    engine.CallMultiMethod(system, MacroRegistersStart + 1, values + 1, 2, 3);
+    engine.CallMultiMethod(system, MacroRegistersStart + 1, values, 0, 1);
+    engine.current_dma_segment = 128;
+    engine.CallMethod(system, MacroRegistersStart + 1, values[3], true);
+    assert(engine.captured == std::vector<u32>(values, values + 4));
+    const std::vector<std::pair<GPUVAddr, size_t>> segments{{64, 1}, {0, 2}, {0, 0}, {128, 1}};
+    assert(engine.captured_segments == segments && engine.captured_dirty);
+    assert(!engine.current_dirty && !engine.current_macro_dirty && engine.executing_macro == 0);
+    assert(engine.macro_params.empty() && engine.macro_segments.empty());
+    assert(assertion_calls == 0);
+
+    // High-accuracy refresh reads all nonzero segments into the same parameter storage.
+    engine.refresh = true;
+    engine.memory_manager.words[16] = 77;
+    engine.memory_manager.words[32] = 88;
+    engine.current_dma_segment = 64;
+    engine.current_dirty = true;
+    engine.CallMethod(system, MacroRegistersStart, 1, false);
+    engine.current_dma_segment = 0;
+    engine.CallMethod(system, MacroRegistersStart + 1, 2, false);
+    engine.current_dma_segment = 128;
+    engine.CallMethod(system, MacroRegistersStart + 1, 3, true);
+    assert((engine.captured == std::vector<u32>{77, 2, 88}));
+    assert(engine.memory_manager.reads.size() == 2);
+    Settings::high = false;
+    engine.current_dirty = true;
+    engine.CallMethod(system, MacroRegistersStart, 5, true);
+    assert((engine.captured == std::vector<u32>{5}));
+    assert(engine.memory_manager.reads.size() == 2);
+    Settings::high = true;
+
+    // Exercise vector growth and capacity reuse, including bulk macro parameter append.
+    engine.refresh = false;
+    std::vector<u32> large(4096);
+    std::iota(large.begin(), large.end(), 0);
+    engine.CallMultiMethod(system, MacroRegistersStart, large.data(), 4096, 4096);
+    assert(engine.captured == large);
+    const auto* storage = engine.macro_params.data();
+    engine.CallMultiMethod(system, MacroRegistersStart, large.data(), 4096, 4096);
+    assert(engine.captured == large && engine.macro_params.data() == storage);
+
+    // Failure diagnostics still run; an unfinished macro must use its argument register.
+    engine.CallMethod(system, MacroRegistersStart + 1, 1, true);
+    assert(assertion_failures == 1);
+    engine.CallMethod(system, MacroRegistersStart, 1, false);
+    engine.CallMethod(system, draw, 2, true);
+    assert(assertion_failures == 2);
+    // Batching must retain that diagnostic rather than silently using the plain-write path.
+    engine.CallMultiMethod(system, 0, values, 4, 4);
+    assert(assertion_failures == 6);
+}

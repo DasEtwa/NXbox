@@ -298,8 +298,12 @@ template <typename Traits>
 u8* DeviceMemoryManager<Traits>::GetSpan(const DAddr src_addr, const std::size_t size) {
     size_t page_index = src_addr >> page_bits;
     size_t subbits = src_addr & page_mask;
-    if ((static_cast<size_t>(tracked_entries[page_index].continuity_tracker+1) << page_bits) >= size + subbits) {
-        return GetPointer<u8>(src_addr);
+    const auto& entry = tracked_entries[page_index];
+    if ((static_cast<size_t>(entry.continuity_tracker + 1) << page_bits) >= size + subbits) {
+        const auto phys_addr = entry.compressed_physical_ptr;
+        if (phys_addr != 0) {
+            return GetPointerFromRaw<u8>((PAddr(phys_addr - 1) << page_bits) + subbits);
+        }
     }
     return nullptr;
 }
@@ -308,8 +312,12 @@ template <typename Traits>
 const u8* DeviceMemoryManager<Traits>::GetSpan(const DAddr src_addr, const std::size_t size) const {
     size_t page_index = src_addr >> page_bits;
     size_t subbits = src_addr & page_mask;
-    if ((static_cast<size_t>(tracked_entries[page_index].continuity_tracker+1) << page_bits) >= size + subbits) {
-        return GetPointer<u8>(src_addr);
+    const auto& entry = tracked_entries[page_index];
+    if ((static_cast<size_t>(entry.continuity_tracker + 1) << page_bits) >= size + subbits) {
+        const auto phys_addr = entry.compressed_physical_ptr;
+        if (phys_addr != 0) {
+            return GetPointerFromRaw<u8>((PAddr(phys_addr - 1) << page_bits) + subbits);
+        }
     }
     return nullptr;
 }
@@ -378,7 +386,8 @@ void DeviceMemoryManager<Traits>::WalkBlock(DAddr addr, std::size_t size, auto o
     std::size_t page_index = addr >> Memory::YUZU_PAGEBITS;
     std::size_t page_offset = addr & Memory::YUZU_PAGEMASK;
     while (remaining_size) {
-        const size_t next_pages = std::size_t(tracked_entries[page_index].continuity_tracker+1);
+        const auto& entry = tracked_entries[page_index];
+        const size_t next_pages = std::size_t(entry.continuity_tracker + 1);
         const std::size_t copy_amount = (std::min)((next_pages << Memory::YUZU_PAGEBITS) - page_offset, remaining_size);
         const auto current_vaddr = u64((page_index << Memory::YUZU_PAGEBITS) + page_offset);
         SCOPE_EXIT{
@@ -388,7 +397,7 @@ void DeviceMemoryManager<Traits>::WalkBlock(DAddr addr, std::size_t size, auto o
             remaining_size -= copy_amount;
         };
 
-        auto phys_addr = tracked_entries[page_index].compressed_physical_ptr;
+        auto phys_addr = entry.compressed_physical_ptr;
         if (phys_addr == 0) {
             on_unmapped(copy_amount, current_vaddr);
             continue;

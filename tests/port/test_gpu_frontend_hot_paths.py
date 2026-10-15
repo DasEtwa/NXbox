@@ -1,0 +1,107 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Exercise production command and memory helpers with host-only hardware stubs."""
+
+import os
+import re
+import shlex
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+MAXWELL = ROOT / "src/video_core/engines/maxwell_3d.cpp"
+DEVICE_MEMORY = ROOT / "src/core/device_memory_manager.inc"
+FIXTURES = ROOT / "tests/port/fixtures"
+
+
+def method(source, name):
+    match = re.search(
+        rf"^[^\n]*\b{re.escape(name)}\([^\n]*\)[^\n]*\{{.*?^\}}",
+        source,
+        re.MULTILINE | re.DOTALL,
+    )
+    if match is None:
+        raise AssertionError(f"Missing production method: {name}")
+    return match.group()
+
+
+class GpuFrontendHotPathTests(unittest.TestCase):
+    def compile_and_run(self, source):
+        with tempfile.TemporaryDirectory(prefix="nxbox-frontend-") as directory:
+            cpp = Path(directory) / "check.cpp"
+            binary = Path(directory) / "check"
+            cpp.write_text(source)
+            subprocess.run(
+                [
+                    *shlex.split(os.environ.get("CXX", "c++")),
+                    "-std=c++20",
+                    "-O2",
+                    "-Wall",
+                    "-Wextra",
+                    "-Werror",
+                    "-fsanitize=address,undefined",
+                    f"-I{ROOT / 'src'}",
+                    str(cpp),
+                    "-o",
+                    str(binary),
+                ],
+                check=True,
+            )
+            subprocess.run([str(binary)], check=True, timeout=30)
+
+    def test_registers_macros_and_assertions(self):
+        source = MAXWELL.read_text()
+        methods = "\n".join(
+            method(source, f"Maxwell3D::{name}")
+            for name in (
+                "IsMethodExecutable",
+                "ProcessShadowRam",
+                "ProcessDirtyRegisters",
+                "CallMethod",
+                "CallMultiMethod",
+                "ProcessMacro",
+                "RefreshParametersImpl",
+                "GetRegisterValue",
+            )
+        )
+        # Synthetic register offsets keep the full production dispatch switches intact.
+        # Leave room for const_buffer.buffer's sixteen adjacent method registers.
+        fields = sorted(set(re.findall(r"MAXWELL3D_REG_INDEX\(([^)]+)\)", methods)))
+        registers = "\n".join(
+            f'    if (field == "{field}") return {32 * (index + 1)};'
+            for index, field in enumerate(fields)
+        )
+        fixture = (FIXTURES / "gpu_frontend.cpp").read_text()
+        self.compile_and_run(
+            fixture.replace("// REGISTER_INDICES", registers).replace("// METHODS", methods)
+        )
+
+    def test_execution_mask_covers_method_side_effects(self):
+        source = MAXWELL.read_text()
+        mask = method(source, "Maxwell3D::IsMethodExecutable")
+        handlers = method(source, "Maxwell3D::ProcessMethodCall") + method(
+            (MAXWELL.parent / "draw_manager.cpp").read_text(),
+            "Maxwell3D::DrawManager::ProcessMethodCall",
+        )
+        cases = r"case (MAXWELL3D_REG_INDEX\([^)]+\)(?: \+ \d+)?):"
+        self.assertLessEqual(set(re.findall(cases, handlers)), set(re.findall(cases, mask)))
+
+    def test_memory_spans_and_walks(self):
+        source = DEVICE_MEMORY.read_text()
+        spans = re.findall(
+            r"^template <typename Traits>\n(?:const )?u8\* "
+            r"DeviceMemoryManager<Traits>::GetSpan\(.*?^\}",
+            source,
+            re.MULTILINE | re.DOTALL,
+        )
+        self.assertEqual(len(spans), 2)
+        walk = "template <typename Traits>\n" + method(
+            source, "DeviceMemoryManager<Traits>::WalkBlock"
+        )
+        fixture = (FIXTURES / "gpu_frontend_memory.cpp").read_text()
+        self.compile_and_run(fixture.replace("// METHODS", "\n".join([*spans, walk])))
+
+
+if __name__ == "__main__":
+    unittest.main()

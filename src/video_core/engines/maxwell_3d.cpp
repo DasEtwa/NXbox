@@ -203,11 +203,18 @@ bool Maxwell3D::IsMethodExecutable(u32 method) {
 void Maxwell3D::ProcessMacro(Core::System& system, u32 method, const u32* base_start, u32 amount, bool is_last_call) {
     if (executing_macro == 0) {
         // A macro call must begin by writing the macro method's register, not its argument.
-        ASSERT((method % 2) == 0 && "Can't start macro execution by writing to the ARGS register");
+        if ((method % 2) != 0) [[unlikely]] {
+            ASSERT((method % 2) == 0 &&
+                   "Can't start macro execution by writing to the ARGS register");
+        }
         executing_macro = method;
     }
 
-    macro_params.insert(macro_params.end(), base_start, base_start + amount);
+    if (amount == 1) {
+        macro_params.push_back(*base_start);
+    } else {
+        macro_params.insert(macro_params.end(), base_start, base_start + amount);
+    }
     macro_segments.emplace_back(current_dma_segment, amount);
     current_macro_dirty |= current_dirty;
     current_dirty = false;
@@ -388,7 +395,7 @@ void Maxwell3D::CallMacroMethod(Core::System& system, u32 method, const std::vec
 void Maxwell3D::CallMethod(Core::System& system, u32 method, u32 method_argument, bool is_last_call) {
     // It is an error to write to a register other than the current macro's ARG register before
     // it has finished execution.
-    if (executing_macro != 0) {
+    if (executing_macro != 0 && method != executing_macro + 1) [[unlikely]] {
         ASSERT(method == executing_macro + 1);
     }
 
@@ -399,7 +406,10 @@ void Maxwell3D::CallMethod(Core::System& system, u32 method, u32 method_argument
         return;
     }
 
-    ASSERT(method < Regs::NUM_REGS && "Invalid Maxwell3D register, increase the size of the Regs structure");
+    if (method >= Regs::NUM_REGS) [[unlikely]] {
+        ASSERT(method < Regs::NUM_REGS &&
+               "Invalid Maxwell3D register, increase the size of the Regs structure");
+    }
     const u32 argument = ProcessShadowRam(method, method_argument);
     ProcessDirtyRegisters(method, argument);
     ProcessMethodCall(method, argument, method_argument, is_last_call);
@@ -410,6 +420,13 @@ void Maxwell3D::CallMultiMethod(Core::System& system, u32 method, const u32* bas
     // uploaded to the GPU during initialization.
     if (method >= MacroRegistersStart) {
         ProcessMacro(system, method, base_start, amount, amount == methods_pending);
+        return;
+    }
+    // The sink uses this mask to identify writes with no method side effects. Repeated
+    // writes to the same such register only retain the final value, including shadow RAM.
+    if (amount != 0 && executing_macro == 0 && !execution_mask[method]) {
+        const u32 argument = ProcessShadowRam(method, base_start[amount - 1]);
+        ProcessDirtyRegisters(method, argument);
         return;
     }
     switch (method) {
@@ -656,7 +673,9 @@ Texture::TSCEntry Maxwell3D::GetTSCEntry(u32 tsc_index) const {
 }
 
 u32 Maxwell3D::GetRegisterValue(u32 method) const {
-    ASSERT(method < Regs::NUM_REGS && "Invalid Maxwell3D register");
+    if (method >= Regs::NUM_REGS) [[unlikely]] {
+        ASSERT(method < Regs::NUM_REGS && "Invalid Maxwell3D register");
+    }
     return regs.reg_array[method];
 }
 
