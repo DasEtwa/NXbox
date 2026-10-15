@@ -1418,6 +1418,21 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
                 descriptors.WriteSampler(sampler_table, smp_i, sampler, desc.is_depth);
                 // Diagnostic: describe each distinct vertex-stage cube binding once.
                 static const bool vs_texture_trace = BisectEnabled("NXBOX_D3D12_VS_TEXTURE_TRACE");
+                if (vs_texture_trace && stage == 0 && !sampled &&
+                    (desc.type == Shader::TextureType::ColorCube ||
+                     desc.type == Shader::TextureType::ColorArrayCube)) {
+                    static std::set<u32> traced_null;
+                    const u32 tic = (texture_views - 1)->index;
+                    if (traced_null.size() < 64 && traced_null.insert(tic).second)
+                        Diagnostic(fmt::format(
+                            "D3D12_VS_TEXTURE_NULL tic={} view_id={} gpu={:x} view_type={} "
+                            "cbuf={} offset={:x} cbuf_addr={:x} via_header={}",
+                            tic, (texture_views - 1)->id.index, view.GpuAddr(),
+                            static_cast<int>(view.type), desc.cbuf_index, desc.cbuf_offset,
+                            maxwell3d->state.shader_stages[stage].const_buffers[desc.cbuf_index]
+                                .address,
+                            regs.sampler_binding == Maxwell::SamplerBinding::ViaHeaderBinding));
+                }
                 if (vs_texture_trace && stage == 0 && sampled &&
                     (desc.type == Shader::TextureType::ColorCube ||
                      desc.type == Shader::TextureType::ColorArrayCube)) {

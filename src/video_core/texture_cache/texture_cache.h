@@ -647,6 +647,13 @@ ImageViewId TextureCache<P>::VisitImageView(u32 index, bool compute) {
             channel_state->image_view_ids.insert_or_assign(map_index, pair->second);
             return pair->second;
         }
+        static const bool trace = std::getenv("NXBOX_TEXTURE_NULL_TRACE") != nullptr;
+        static u32 traced = 0;
+        if (trace && traced < 64) {
+            ++traced;
+            LOG_ERROR(HW_GPU, "TEXTURE_INVALID_ENTRY index={} addr={:x} compute={}", index,
+                      descriptor.Address(), compute);
+        }
         channel_state->image_view_ids.insert_or_assign(map_index, NULL_IMAGE_VIEW_ID);
         return NULL_IMAGE_VIEW_ID;
     }
@@ -1426,6 +1433,18 @@ ImageViewId TextureCache<P>::CreateImageView(const TICEntry& config) {
     const GPUVAddr image_gpu_addr = config.Address() - layer_offset;
     const ImageId image_id = FindOrInsertImage(info, image_gpu_addr);
     if (!image_id) {
+        static const bool trace = std::getenv("NXBOX_TEXTURE_NULL_TRACE") != nullptr;
+        static u32 traced = 0;
+        if (trace && traced < 64) {
+            ++traced;
+            LOG_ERROR(HW_GPU,
+                      "TEXTURE_NULL_VIEW addr={:x} image_addr={:x} type={} format={} size={}x{}x{} "
+                      "levels={} cpu={}",
+                      config.Address(), image_gpu_addr, static_cast<int>(info.type),
+                      static_cast<int>(info.format), info.size.width, info.size.height,
+                      info.size.depth, info.resources.levels,
+                      gpu_memory->GpuToCpuAddress(image_gpu_addr).has_value());
+        }
         return NULL_IMAGE_VIEW_ID;
     }
     ImageBase& image = slot_images[image_id];
