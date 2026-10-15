@@ -79,7 +79,12 @@ void Sample(EmitContext& ctx, IR::Inst& inst, const IR::Value& index, std::strin
     const auto tex = Texture(ctx, info, index);
     if (info.type == TextureType::Buffer)
         throw NotImplementedException("HLSL buffer sampling must use fetch");
-    const auto sampler = ctx.Sampler(index, info.descriptor_index);
+    const bool probe = ctx.profile.hlsl_vs_cube_static && dref.empty() &&
+                       (ctx.stage == Stage::VertexA || ctx.stage == Stage::VertexB) &&
+                       (info.type == TextureType::ColorCube ||
+                        info.type == TextureType::ColorArrayCube);
+    const auto sampler =
+        probe ? std::string{"nx_probe_sampler"} : ctx.Sampler(index, info.descriptor_index);
     if (info.type == TextureType::Buffer)
         throw NotImplementedException("HLSL buffer sampling must use fetch");
     if (ctx.info.texture_descriptors.at(info.descriptor_index).is_integer)

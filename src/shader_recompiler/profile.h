@@ -77,6 +77,8 @@ struct Profile {
     bool hlsl_cube_one{};
     /// Diagnostic HLSL override: depth-compare samples and gathers return 1 (fully lit).
     bool hlsl_shadow_one{};
+    /// Diagnostic: vertex-stage cube samples use a static linear sampler (s0, space9).
+    bool hlsl_vs_cube_static{};
     /// Some GPU vendors use a different rounding precision when calculating texture pixel
     /// coordinates with the 16.8 format in the ImageGather instruction than the Maxwell
     /// architecture. Applying an offset does fix this mismatching rounding behaviour.

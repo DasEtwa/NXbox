@@ -1414,8 +1414,36 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
                         need(sampled, SrvState);
                     }
                 }
-                descriptors.WriteSampler(sampler_table, smp_i,
-                                         texture_cache.GetSampler(*sampler_it++), desc.is_depth);
+                const Sampler& sampler = texture_cache.GetSampler(*sampler_it++);
+                descriptors.WriteSampler(sampler_table, smp_i, sampler, desc.is_depth);
+                // Diagnostic: describe each distinct vertex-stage cube binding once.
+                static const bool vs_texture_trace = BisectEnabled("NXBOX_D3D12_VS_TEXTURE_TRACE");
+                if (vs_texture_trace && stage == 0 && sampled &&
+                    (desc.type == Shader::TextureType::ColorCube ||
+                     desc.type == Shader::TextureType::ColorArrayCube)) {
+                    static std::set<std::pair<GPUVAddr, u64>> traced;
+                    const auto smp = MakeSamplerDesc(sampler.Entry(), desc.is_depth);
+                    u64 smp_hash{};
+                    std::memcpy(&smp_hash, &smp, sizeof(smp_hash));
+                    smp_hash ^= static_cast<u64>(smp.AddressU) << 32 ^
+                                std::bit_cast<u32>(smp.MaxLOD) ^ std::bit_cast<u32>(smp.MinLOD);
+                    if (traced.size() < 64 && traced.emplace(view.GpuAddr(), smp_hash).second) {
+                        const auto& srv = view.Description();
+                        const auto res = sampled->handle->GetDesc();
+                        Diagnostic(fmt::format(
+                            "D3D12_VS_TEXTURE gpu={:x} res_fmt={} res={}x{}x{} mips={} srv_fmt={} "
+                            "srv_dim={} srv_mip={} srv_levels={} filter={:x} addr={},{},{} "
+                            "bias={} minlod={} maxlod={} aniso={} cmp={} tsc_cmp={} is_depth={}",
+                            view.GpuAddr(), static_cast<int>(res.Format), res.Width, res.Height,
+                            res.DepthOrArraySize, res.MipLevels, static_cast<int>(srv.Format),
+                            static_cast<int>(srv.ViewDimension), srv.TextureCube.MostDetailedMip,
+                            srv.TextureCube.MipLevels, static_cast<u32>(smp.Filter),
+                            static_cast<int>(smp.AddressU), static_cast<int>(smp.AddressV),
+                            static_cast<int>(smp.AddressW), smp.MipLODBias, smp.MinLOD,
+                            smp.MaxLOD, smp.MaxAnisotropy, static_cast<int>(smp.ComparisonFunc),
+                            sampler.Entry().depth_compare_enabled.Value(), desc.is_depth));
+                    }
+                }
             }
         }
         for (u32 i = 0; i < texel_count; ++i, ++srv_i) {

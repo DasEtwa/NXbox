@@ -21,7 +21,8 @@ class SamplerMinLod(unittest.TestCase):
         self.assertIn("entry.depth_compare_enabled && shader_compares", block)
         self.assertNotIn("if (entry.depth_compare_enabled)", block)
         rasterizer = (ROOT / "src/video_core/renderer_d3d12/d3d12_rasterizer.cpp").read_text()
-        self.assertEqual(rasterizer.count("desc.is_depth);"), 2)
+        self.assertIn("WriteSampler(sampler_table, smp_i, sampler, desc.is_depth);", rasterizer)
+        self.assertIn("desc.is_depth);", rasterizer[rasterizer.index("descriptors.WriteSampler(sampler, sampler_index"):])
 
 
 if __name__ == "__main__":

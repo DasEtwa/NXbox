@@ -110,6 +110,8 @@ EmitContext::EmitContext(IR::Program& program, Bindings& bindings, const Profile
         bindings.texture += desc.count;
         bindings.hlsl_sampler += desc.count;
     }
+    if (profile.hlsl_vs_cube_static && (stage == Stage::VertexA || stage == Stage::VertexB))
+        header += "SamplerState nx_probe_sampler : register(s0, space9);\n";
     for (const auto& desc : info.texture_buffer_descriptors) {
         const auto binding = bindings.texture;
         texture_buffers.push_back({binding, desc.count});
