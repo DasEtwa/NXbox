@@ -19,8 +19,10 @@ using VideoCommon::QueryType;
 namespace {
 constexpr u32 BankSize = 256;
 // Full banks rotate instead of waiting: a bank is consumed only when it comes around again,
-// several submits later, or when the guest reads a counter.
-constexpr u32 BankCount = 8;
+// several submits later, or when the guest reads a counter. BotW records ~3600 occlusion
+// queries per frame: 8 banks wrapped inside one command list and the render thread waited
+// ~11 ms per frame for the GPU. 64 banks span several frames.
+constexpr u32 BankCount = 64;
 constexpr u32 SlotCount = BankSize * BankCount;
 constexpr u64 PipelineOffset = sizeof(u64);
 constexpr u64 SOOffset = PipelineOffset + sizeof(D3D12_QUERY_DATA_PIPELINE_STATISTICS);
