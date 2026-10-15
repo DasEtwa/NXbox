@@ -429,8 +429,7 @@ public:
     void AfterCompletion(std::function<void()> callback);
     ResourcePtr CreateResource(const D3D12_RESOURCE_DESC& desc, D3D12_HEAP_TYPE heap,
                                D3D12_RESOURCE_STATES state);
-    // placed=false forces a committed resource (long-lived buffer-cache buffers).
-    ResourcePtr CreateBuffer(u64 size, D3D12_HEAP_TYPE heap, bool placed = true);
+    ResourcePtr CreateBuffer(u64 size, D3D12_HEAP_TYPE heap);
     ID3D12Device* Device() const {
         return device.Get();
     }

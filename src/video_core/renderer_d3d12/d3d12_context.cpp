@@ -1201,7 +1201,7 @@ ResourcePtr Context::CreateResource(const D3D12_RESOURCE_DESC& desc, D3D12_HEAP_
     }
     return resource;
 }
-ResourcePtr Context::CreateBuffer(u64 size, D3D12_HEAP_TYPE heap, bool placed) {
+ResourcePtr Context::CreateBuffer(u64 size, D3D12_HEAP_TYPE heap) {
     D3D12_RESOURCE_DESC desc{};
     desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
     // CBVs need a complete final 256-byte unit even for a short guest range.
@@ -1226,7 +1226,7 @@ ResourcePtr Context::CreateBuffer(u64 size, D3D12_HEAP_TYPE heap, bool placed) {
     try {
         // Diagnostic: committed buffers only, to rule out placed-heap aliasing.
         static const bool no_placed = BisectEnabled("NXBOX_D3D12_NO_PLACED");
-        if (auto resource = no_placed || !placed ? ResourcePtr{}
+        if (auto resource = no_placed ? ResourcePtr{}
                                       : pool->Allocate(device.Get(), budget, desc, heap, state,
                                                        pool)) {
             const FrameProfile::Scope profile_alias{profile, FramePhase::Barriers};

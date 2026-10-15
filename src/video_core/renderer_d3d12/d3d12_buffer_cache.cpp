@@ -43,9 +43,7 @@ void InvalidRange(u32 kind, const char* label, u64 offset, u64 size, u64 width) 
 Buffer::Buffer(BufferCacheRuntime&, VideoCommon::NullBufferParams params) : BufferBase{params} {}
 Buffer::Buffer(BufferCacheRuntime& runtime, VAddr address, u64 size, bool)
     : BufferBase{address, size}, context{&runtime.context},
-      // Committed: a placed cache buffer lost part of its first upload in SM3DW (only the
-      // first KiB of a 4 KiB copy landed), leaving the level's vertices zero.
-      resource{context->CreateBuffer(size, D3D12_HEAP_TYPE_DEFAULT, false)}, usage{size} {
+      resource{context->CreateBuffer(size, D3D12_HEAP_TYPE_DEFAULT)}, usage{size} {
     if (UploadTraceEnabled())
         Diagnostic(fmt::format(
             "D3D12_UPLOAD_CREATE resource={:#x} guest_base={:#x} size={} tick={}",
