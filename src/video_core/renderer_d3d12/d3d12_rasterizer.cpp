@@ -1293,6 +1293,9 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         }
     }
     draw_phase.emplace(context.Profile(), FramePhase::DescriptorSetup);
+    // The buffer cache is done for this draw; guest writes contend on it the most.
+    if (!draw_trace_enabled)
+        buffer_lock.unlock();
     // ---- 2. Plan every descriptor this draw needs ----
     const bool root_cbvs = pipeline->UsesRootCbvs();
     if (root_cbvs)
@@ -1607,10 +1610,8 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     // Releasing the caches here lets guest writes (OnCPUWrite) through instead of stalling the
     // game core for the whole recording; SM3DW spent ~25% of cpu0 samples waiting on this.
     // The draw trace below still reads cache views, so it keeps the locks.
-    if (!draw_trace_enabled) {
+    if (!draw_trace_enabled)
         texture_lock.unlock();
-        buffer_lock.unlock();
-    }
     auto* const commands = context.Commands();
     descriptors.SetHeaps(commands, true);
     if (subresource_feedback) {
