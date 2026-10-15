@@ -997,13 +997,34 @@ void Context::BeforeCopyWrite(const ResourcePtr& resource, u64 offset, u64 size)
             if (!overlaps)
                 continue;
             const FrameProfile::Scope profile_barrier{profile, FramePhase::Barriers};
+            profile.Count(FrameCount::CopyHazardBarriers);
+            ++copy_hazard_count;
+            // A null aliasing barrier did not order copy-to-copy writes on the Xbox: a new
+            // buffer's zero fill landed over the tail of the upload recorded after it.
+            // Round-trip the destination through COMMON; transitions drain its prior writes.
+            static const bool alias_only = BisectEnabled("NXBOX_D3D12_ALIAS_COPY_BARRIER");
+            if (!alias_only && resource->heap == D3D12_HEAP_TYPE_DEFAULT &&
+                resource->sub_states.empty() &&
+                resource->state == D3D12_RESOURCE_STATE_COPY_DEST) {
+                D3D12_RESOURCE_BARRIER barriers[2]{};
+                barriers[0].Type = barriers[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                barriers[0].Transition = {destination, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+                                          D3D12_RESOURCE_STATE_COPY_DEST,
+                                          D3D12_RESOURCE_STATE_COMMON};
+                barriers[1].Transition = {destination, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+                                          D3D12_RESOURCE_STATE_COMMON,
+                                          D3D12_RESOURCE_STATE_COPY_DEST};
+                commands->ResourceBarrier(2, barriers);
+                profile.Count(FrameCount::Barriers, 2);
+                copy_writes.erase(found);
+                break;
+            }
             D3D12_RESOURCE_BARRIER barrier{};
             barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_ALIASING;
             barrier.Aliasing.pResourceBefore = nullptr;
             barrier.Aliasing.pResourceAfter = nullptr;
             commands->ResourceBarrier(1, &barrier);
             profile.Count(FrameCount::Barriers);
-            profile.Count(FrameCount::CopyHazardBarriers);
             // The null/null aliasing barrier orders all prior work, not just this buffer.
             copy_writes.clear();
             break;

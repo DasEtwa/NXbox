@@ -231,9 +231,13 @@ void BufferCacheRuntime::CopyBuffer(ResourcePtr dst, ResourcePtr src,
             context.Commands()->ResourceBarrier(1, &barrier);
             context.Profile().Count(FrameCount::Barriers);
         }
+        const u64 hazards_before = context.copy_hazard_count;
         context.BeforeCopyWrite(dst, copy.dst_offset, copy.size);
         context.Commands()->CopyBufferRegion(dst->handle.Get(), copy.dst_offset, src->handle.Get(),
                                              copy.src_offset, copy.size);
+        if (trace)
+            Diagnostic(fmt::format("D3D12_UPLOAD_HAZARD id={} barrier={}", trace_id,
+                                   context.copy_hazard_count - hazards_before));
     }
     if (trace_readback) {
         CopyBuffer(trace_readback, dst, trace_writes, true);

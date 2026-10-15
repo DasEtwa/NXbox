@@ -420,6 +420,8 @@ public:
                                 D3D12_RESOURCE_STATES state);
     // Orders overlapping copy writes within the current command list.
     void BeforeCopyWrite(const ResourcePtr& resource, u64 offset, u64 size);
+    // Copy write-after-write barriers recorded so far (diagnostics).
+    u64 copy_hazard_count{};
     /// Orders every prior UAV write before later work on the GPU, without a CPU wait.
     void GlobalUavBarrier();
     // Explicit batch keeps raw Commands() users ordered; no hidden deferred barriers.
