@@ -19,6 +19,8 @@ import {
   validateSource,
   type RuntimeSource,
 } from "./runtime";
+import { convertAvatar } from "./avatar";
+import { parseProfileArgs, setMulti, uploadAvatar } from "./profile";
 import { DevicePortal, portalUrl } from "./portal";
 import { discoverXbox } from "./discovery";
 import { loadCredentials, saveCredentials } from "./credentials";
@@ -93,9 +95,44 @@ export async function main(): Promise<void> {
   let prompt: Prompt | undefined, temporary: string | undefined;
   try {
     if (process.argv[2] === "--api") return await (await import("./api")).serveApi();
+    if (process.argv[2] === "profile") {
+      const { command, insecure } = parseProfileArgs(process.argv.slice(3));
+      temporary = await mkdtemp(join(tmpdir(), "nxbox-profile-"));
+      // Decode before contacting the console; invalid images never change console state.
+      const jpeg =
+        command.kind === "avatar"
+          ? await convertAvatar(draggedPath(command.image), language)
+          : undefined;
+      prompt = new Prompt();
+      const discovered = await discoverXbox();
+      const base = portalUrl(
+        await prompt.ask(text.host, discovered.length === 1 ? discovered[0] : ""),
+      );
+      const credentials = (await loadCredentials(base)) ?? {
+        user: await prompt.ask(text.user),
+        password: await prompt.password(text.password),
+      };
+      const portal = new DevicePortal(base, credentials, insecure);
+      const packages = (await portal.packages()).filter((pkg) =>
+        /^NSPX\.NXbox(?:[._]|$)/i.test(pkg.PackageFullName),
+      );
+      if (!packages.length) throw new PackError("profileMissing");
+      for (const pkg of packages) console.log(`${pkg.Name}: ${pkg.PackageFullName}`);
+      const selected = await prompt.ask(
+        text.profilePackage,
+        packages.length === 1 ? packages[0]!.PackageFullName : "",
+      );
+      if (!packages.some((pkg) => pkg.PackageFullName === selected))
+        throw new PackError("profileMissing");
+      await prompt.ask(text.profileClose);
+      if (command.kind === "multi") await setMulti(portal, selected, command.enabled, temporary);
+      else await uploadAvatar(portal, selected, command.name, jpeg!, temporary);
+      console.log(text.profileDone);
+      return;
+    }
     const options = parseArgs(process.argv.slice(2));
     if (options.help) {
-      console.log(text.help);
+      console.log(`${text.help}\n${text.profileUsage}`);
       return;
     }
     console.log(`NXbox Pack\n${text.legal}\n${text.guide}`);

@@ -56,6 +56,7 @@
 #include "core/hle/service/mii/mii_manager.h"
 #include "core/loader/loader.h"
 #include "core/perf_stats.h"
+#include "eden_uwp/accounts.h"
 #include "eden_uwp/alloc_track.h"
 #include "eden_uwp/applet_boot.h"
 #include "eden_uwp/await_bounded.h"
@@ -69,6 +70,7 @@
 #include "eden_uwp/save_sync.h"
 #include "eden_uwp/setup_ui.h"
 #include "eden_uwp/title_settings.h"
+#include "eden_uwp/ui/accounts_screen.h"
 #include "eden_uwp/ui/input.h"
 #include "eden_uwp/ui/launch_screen.h"
 #include "eden_uwp/ui/library.h"
@@ -323,6 +325,8 @@ void ApplyEdenSettingsFile(const std::filesystem::path& settings_file) {
         }
         Diagnostic(fmt::format("SETTING {}={} {}", label, value, applied ? "applied" : "unknown"));
     }
+    Accounts::Apply(std::filesystem::path(winrt::to_string(
+        winrt::Windows::Storage::ApplicationData::Current().LocalFolder().Path())));
 }
 
 void ApplyEdenSettingsFile() {
@@ -1572,6 +1576,10 @@ static void RunGameViewSession(const winrt::Windows::UI::Core::CoreWindow& windo
     Ui::SyncGame sync_game;
     const std::filesystem::path local_state(
         winrt::to_string(winrt::Windows::Storage::ApplicationData::Current().LocalFolder().Path()));
+    if (!Ui::PrepareAccounts(window, local_state, false))
+        return;
+    if (protocol_launch && !Ui::PrepareAccounts(window, local_state, true))
+        return;
     auto firmware_worker = std::async(std::launch::async, [&local_state] {
         winrt::init_apartment(winrt::apartment_type::multi_threaded);
         SCOPE_EXIT {
@@ -1668,6 +1676,8 @@ static void RunGameViewSession(const winrt::Windows::UI::Core::CoreWindow& windo
         if (chosen.empty()) {
             return; // Leaving the library must not boot the previously remembered game.
         }
+        if (!Ui::PrepareAccounts(window, local_state, true))
+            return;
         if (chosen == SwitchHomeBootTarget) {
             protocol_path = chosen;
         } else if (!chosen.empty()) {
@@ -1687,6 +1697,9 @@ static void RunGameViewSession(const winrt::Windows::UI::Core::CoreWindow& windo
             }
         }
     }
+    if ((official_startup || (!protocol_launch && !chosen_in_library && protocol_path.empty())) &&
+        !Ui::PrepareAccounts(window, local_state, true))
+        return;
     std::atomic<bool> done{false};
     SessionUi session_ui;
     auto gamepad = std::make_shared<XboxGamepad>();

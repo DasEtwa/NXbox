@@ -1,6 +1,20 @@
 import type { Translation } from "./registry";
 
 export default {
+  profileUsage:
+    "Uso: nxbox-pack profile multi on|off, ou nxbox-pack profile avatar <nome> <imagem> [--insecure-portal]",
+  profilePackage: "Nome completo do pacote (escolha o app cujas contas quer editar)",
+  profileMissing:
+    "Perfil não encontrado, nome duplicado ou dados inválidos. Abra o NXbox uma vez para criar os perfis.",
+  profileClose:
+    "Feche o app NXbox selecionado no console antes de continuar. Pressione Enter quando fechar.",
+  profileDone: "Perfil atualizado. Reabra o app NXbox selecionado.",
+  avatarInvalid:
+    "Escolha uma imagem PNG, JPEG, WebP, GIF ou BMP válida (até 20 MB). O navegador precisa concluir em dois minutos.",
+  avatarBrowser: "Convertendo no seu navegador local. Se ele não abriu, abra esta URL neste PC:",
+  avatarConverting: "Preparando seu avatar NXbox…",
+  avatarConverted: "Imagem preparada. Volte ao NXbox Pack; você pode fechar esta aba.",
+
   guide:
     "Arraste o arquivo do jogo para esta janela e pressione Enter (suportados: .nsp .xci .nsz .xcz)",
   legal:

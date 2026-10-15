@@ -15,6 +15,11 @@ add_executable(eden-uwp WIN32
     alloc_track.h
     firmware.cpp
     firmware.h
+    accounts.cpp
+    accounts.h
+    accounts_policy.h
+    ui/accounts_screen.cpp
+    ui/accounts_screen.h
     game_session.cpp
     game_session.h
     protocol_uri.h
@@ -94,7 +99,7 @@ add_executable(eden-uwp WIN32
 target_link_libraries(eden-uwp PRIVATE common core video_core audio_core frontend_common input_common glad)
 
 # ui/mods.cpp unpacks the mods' .zip files with zlib, which core already links privately.
-target_link_libraries(eden-uwp PRIVATE ZLIB::ZLIB OpenSSL::Crypto)
+target_link_libraries(eden-uwp PRIVATE ZLIB::ZLIB OpenSSL::Crypto nlohmann_json::nlohmann_json)
 
 # WinRT (CoreApplication, IFrameworkView, ApplicationData) comes from the Store umbrella import lib.
 target_link_libraries(eden-uwp PRIVATE WindowsApp.lib)

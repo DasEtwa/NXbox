@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <filesystem>
 
@@ -21,6 +22,7 @@
 #include "common/string_util.h"
 #include "core/constants.h"
 #include "core/file_sys/savedata_factory.h"
+#include "core/hle/service/acc/nxbox_profile.h"
 #include "core/hle/service/acc/offline_account.h"
 #include "core/hle/service/acc/profile_manager.h"
 
@@ -28,6 +30,14 @@ namespace Service::Account {
 
 namespace FS = Common::FS;
 using Common::UUID;
+
+namespace {
+#ifdef NXBOX_UWP
+std::atomic<bool> multi_account_enabled{false};
+#else
+std::atomic<bool> multi_account_enabled{true};
+#endif
+} // namespace
 
 struct UserRaw {
     UUID uuid{};
@@ -58,28 +68,69 @@ ProfileManager::ProfileManager() {
     // Create an user if none are present
     if (user_count == 0) {
 #ifdef NXBOX_UWP
-        CreateNewUser(UUID::MakeRandom(), "Player");
-        profiles[0].data.icon_id = 1; // A character icon, rather than a missing Mii icon.
-        const auto image_path = FS::GetEdenPath(FS::EdenPath::NANDDir) /
-                                ACC_SAVE_AVATORS_BASE_PATH /
-                                (profiles[0].user_uuid.FormattedString() + ".jpg");
-        if (FS::CreateParentDirs(image_path)) {
-            const FS::IOFile image(image_path, FS::FileAccessMode::Write, FS::FileType::BinaryFile);
-            if (image.Write(Core::Constants::ACCOUNT_BACKUP_JPEG) !=
-                Core::Constants::ACCOUNT_BACKUP_JPEG.size()) {
-                LOG_WARNING(Service_ACC, "Failed to persist the default profile avatar");
-            }
-        }
+        CreateNewUser(UUID::MakeRandom(), "NXbox");
+        SetAvatar(profiles[0].user_uuid, Core::Constants::NXBOX_ACCOUNT_JPEG);
 #else
         CreateNewUser(UUID::MakeRandom(), "Eden");
 #endif
         WriteUserSaveFile();
     }
 
+#ifdef NXBOX_UWP
+    // Preserve the UUID: all existing saves remain attached to the same account. Never replace
+    // a renamed account, a custom picture, or a member of an existing multi-account setup.
+    if (user_count == 1) {
+        bool legacy_avatar = false;
+        {
+            const FS::IOFile image(AvatarPath(profiles[0].user_uuid), FS::FileAccessMode::Read,
+                                   FS::FileType::BinaryFile);
+            auto bytes = Core::Constants::ACCOUNT_BACKUP_JPEG;
+            const auto name = Common::StringFromFixedZeroTerminatedBuffer(
+                reinterpret_cast<const char*>(profiles[0].username.data()),
+                profiles[0].username.size());
+            legacy_avatar =
+                image.IsOpen() && image.GetSize() == bytes.size() &&
+                image.Read(bytes) == bytes.size() &&
+                NXbox::ShouldMigrate(user_count, name, bytes, Core::Constants::ACCOUNT_BACKUP_JPEG);
+        } // Close the read-only handle before opening this same image for writing on Windows.
+        if (legacy_avatar &&
+            SetAvatar(profiles[0].user_uuid, Core::Constants::NXBOX_ACCOUNT_JPEG)) {
+            profiles[0].username = {};
+            std::copy_n("NXbox", 5, profiles[0].username.begin());
+            is_save_needed = true;
+            WriteUserSaveFile();
+        }
+    }
+#endif
+
     const auto current =
         Offline::SelectProfileIndex(Settings::values.current_user.GetValue(), user_count);
     Settings::values.current_user = static_cast<s32>(current);
     OpenUser(*GetUser(current));
+}
+
+std::filesystem::path ProfileManager::AvatarPath(UUID uuid) {
+    return FS::GetEdenPath(FS::EdenPath::NANDDir) /
+           NXbox::AvatarRelativePath(uuid.FormattedString());
+}
+
+bool ProfileManager::SetAvatar(UUID uuid, std::span<const u8> jpeg) {
+    const auto index = GetUserIndex(uuid);
+    if (!index || !FS::CreateParentDirs(AvatarPath(uuid))) {
+        return false;
+    }
+    {
+        const FS::IOFile image(AvatarPath(uuid), FS::FileAccessMode::Write,
+                               FS::FileType::BinaryFile);
+        if (!image.IsOpen() || image.Write(jpeg) != jpeg.size() || !image.Flush()) {
+            LOG_WARNING(Service_ACC, "Failed to persist profile avatar");
+            return false;
+        }
+    }
+    profiles[*index].data.icon_id = 1;
+    is_save_needed = true;
+    WriteUserSaveFile();
+    return true;
 }
 
 ProfileManager::~ProfileManager() = default;
@@ -101,6 +152,7 @@ bool ProfileManager::RemoveProfileAtIndex(std::size_t index) {
     }
 
     profiles[index] = ProfileInfo{};
+    --user_count;
     std::stable_partition(profiles.begin(), profiles.end(),
                           [](const ProfileInfo& profile) { return profile.user_uuid.IsValid(); });
 
@@ -303,6 +355,25 @@ UserIDArray ProfileManager::GetOpenUsers() const {
     std::stable_partition(output.begin(), output.end(),
                           [](const UUID& uuid) { return uuid.IsValid(); });
     return output;
+}
+
+void ProfileManager::SetMultiAccountEnabled(bool enabled) {
+    multi_account_enabled.store(enabled, std::memory_order_relaxed);
+}
+
+UserIDArray ProfileManager::GetApplicationUsers() const {
+    if (multi_account_enabled.load(std::memory_order_relaxed)) {
+        return GetAllUsers();
+    }
+    UserIDArray output{};
+    output[0] = profiles[0].user_uuid;
+    return output;
+}
+
+std::size_t ProfileManager::GetApplicationUserCount() const {
+    const auto users = GetApplicationUsers();
+    return std::count_if(users.begin(), users.end(),
+                         [](const UUID& uuid) { return uuid.IsValid(); });
 }
 
 /// Returns the last user which was opened
