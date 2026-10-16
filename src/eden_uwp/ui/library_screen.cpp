@@ -1598,7 +1598,7 @@ private:
                                                                 : Text::RendererDirectX),
               Theme::kTextSecondary, Tr(Text::RendererNextLaunch)},
              {Tr(Text::ShaderPreloadTitle),
-              Tr(shader_preload_ ? Text::SyncStateOn : Text::SyncStateOff), Theme::kTextSecondary,
+              Tr(shader_preload_ ? Text::NextendoOn : Text::NextendoOff), Theme::kTextSecondary,
               Tr(Text::ShaderPreloadHint)},
              {Tr(Text::ResolutionTitle), Tr(resolution_label), Theme::kTextSecondary,
               Tr(Text::ResolutionMemoryHint)},

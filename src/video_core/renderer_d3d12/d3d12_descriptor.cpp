@@ -116,7 +116,7 @@ std::optional<D3D12_SHADER_RESOURCE_VIEW_DESC> AdaptSrvDimension(
 }
 
 namespace {
-D3D12_TEXTURE_ADDRESS_MODE AddressMode(WrapMode mode) {
+D3D12_TEXTURE_ADDRESS_MODE AddressMode(WrapMode mode, TextureFilter mag_filter) {
     switch (mode) {
     case WrapMode::Wrap:
         return D3D12_TEXTURE_ADDRESS_MODE_WRAP;
@@ -128,7 +128,11 @@ D3D12_TEXTURE_ADDRESS_MODE AddressMode(WrapMode mode) {
     case WrapMode::MirrorOnceBorder:
     case WrapMode::MirrorOnceClampOGL:
         return D3D12_TEXTURE_ADDRESS_MODE_MIRROR_ONCE;
-    default: // ClampToEdge, Clamp
+    case WrapMode::Clamp:
+        // GL_CLAMP: Vulkan/OpenGL backends clamp to the border when magnifying linearly.
+        return mag_filter == TextureFilter::Linear ? D3D12_TEXTURE_ADDRESS_MODE_BORDER
+                                                   : D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    default: // ClampToEdge
         return D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
     }
 }
@@ -158,9 +162,9 @@ D3D12_SAMPLER_DESC MakeSamplerDesc(const Tegra::Texture::TSCEntry& entry, bool s
                                                   D3D12_ENCODE_BASIC_FILTER(1, 1, 1, reduction))
                       : static_cast<D3D12_FILTER>(D3D12_ENCODE_BASIC_FILTER(min_linear, mag_linear,
                                                                             mip_linear, reduction));
-    desc.AddressU = AddressMode(entry.wrap_u);
-    desc.AddressV = AddressMode(entry.wrap_v);
-    desc.AddressW = AddressMode(entry.wrap_p);
+    desc.AddressU = AddressMode(entry.wrap_u, entry.mag_filter);
+    desc.AddressV = AddressMode(entry.wrap_v, entry.mag_filter);
+    desc.AddressW = AddressMode(entry.wrap_p, entry.mag_filter);
     desc.MipLODBias = entry.LodBias();
     desc.MaxAnisotropy = static_cast<UINT>(anisotropy);
     desc.ComparisonFunc = compare
