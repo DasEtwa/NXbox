@@ -123,10 +123,16 @@ public:
     void PopUnsyncedQueries() override {
         // FenceManager calls this only after the batch's native fence completes.
         // No command recording or wait is allowed on its completion thread.
+        // `guard` keeps BuildQuery on the GPU thread from growing slot_queries meanwhile.
+        // Lock order matches Free(): pending_mutex, then guard.
         std::scoped_lock lock{pending_mutex};
+        std::scoped_lock slots{guard};
         for (const auto index : batches.front()) {
+            const auto snapshot = snapshots.find(index);
+            if (snapshot == snapshots.end())
+                continue; // Freed before its fence completed.
             auto& query = slot_queries[index];
-            std::memcpy(&query.value, snapshots.at(index).mapped_span.data(), sizeof(u64));
+            std::memcpy(&query.value, snapshot->second.mapped_span.data(), sizeof(u64));
             query.flags |= VideoCommon::QueryFlagBits::IsFinalValueSynced;
         }
         batches.pop_front();
@@ -267,7 +273,6 @@ struct QueryCacheRuntimeImpl {
         context.Retain(gpu_report);
         if (metadata.buffer)
             context.Retain(metadata.buffer);
-        context.AfterCompletion([root = resolve_root, pipeline = resolve_pipeline] {});
         context.GlobalUavBarrier();
         auto* commands = context.Commands();
         commands->OMSetRenderTargets(0, nullptr, FALSE, nullptr);
