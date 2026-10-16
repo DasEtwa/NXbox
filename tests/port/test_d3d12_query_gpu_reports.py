@@ -31,7 +31,7 @@ class GpuQueryReports(unittest.TestCase):
             self.assertIn("impl->AccumulateGpu();", body)
             self.assertIn("impl->DispatchResolve(", body)
         policy = function_body(source, "bool SynchronousQueries()")
-        self.assertIn("Settings::IsGPULevelHigh()", policy)
+        self.assertNotIn("Settings::IsGPULevelHigh()", policy)
         self.assertIn('BisectEnabled("NXBOX_D3D12_SYNC_QUERIES")', policy)
         docs = (ROOT / "docs/d3d12-backend.md").read_text()
         self.assertRegex(docs, r"\| `NXBOX_D3D12_SYNC_QUERIES` \|.*`1`.*report/reset")

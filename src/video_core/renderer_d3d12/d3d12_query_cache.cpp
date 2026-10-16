@@ -34,8 +34,10 @@ constexpr u64 SOOffset = PipelineOffset + sizeof(D3D12_QUERY_DATA_PIPELINE_STATI
 constexpr u64 ResultStride = SOOffset + 4 * sizeof(D3D12_QUERY_DATA_SO_STATISTICS);
 constexpr size_t TypeCount = static_cast<size_t>(QueryType::MaxQueryTypes);
 constexpr u64 CounterBytes = TypeCount * 4 * sizeof(u64);
+// Not tied to GPU accuracy: the default (High) would keep every report on the per-report
+// submit-and-wait path, as Persona 5 Royal showed (641 forced submits per frame).
 bool SynchronousQueries() {
-    return Settings::IsGPULevelHigh() || BisectEnabled("NXBOX_D3D12_SYNC_QUERIES");
+    return BisectEnabled("NXBOX_D3D12_SYNC_QUERIES");
 }
 ComPtr<ID3D12QueryHeap> CreateHeap(Context& context, D3D12_QUERY_HEAP_TYPE type, u32 count) {
     if (BisectEnabled("NXBOX_D3D12_NO_QUERIES"))
