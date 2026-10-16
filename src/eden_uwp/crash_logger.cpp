@@ -483,8 +483,13 @@ void OpenCrashLog() {
     // Called immediately after apartment initialization, before CoreApplication::Run or workers.
     const auto folder = winrt::Windows::Storage::ApplicationData::Current().LocalFolder().Path();
     const std::wstring path = std::wstring(folder) + L"\\nxbox_crash.txt";
-    const auto file = CreateFile2FromAppW(path.c_str(), GENERIC_WRITE,
-                                          FILE_SHARE_READ | FILE_SHARE_WRITE, OPEN_ALWAYS, nullptr);
+    // Every launch appends, so start over once the log passes 16 MiB instead of filling the disk.
+    WIN32_FILE_ATTRIBUTE_DATA info{};
+    const bool too_big = GetFileAttributesExFromAppW(path.c_str(), GetFileExInfoStandard, &info) &&
+                         (info.nFileSizeHigh != 0 || info.nFileSizeLow > 16u * 1024 * 1024);
+    const auto file =
+        CreateFile2FromAppW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                            too_big ? CREATE_ALWAYS : OPEN_ALWAYS, nullptr);
     crash_file.store(file, std::memory_order_release);
     CrashEvent(file == INVALID_HANDLE_VALUE ? "crash_log_open_failed" : "process_start");
     CrashEvent("uwp_no_vectored_handler_or_stack_guarantee");

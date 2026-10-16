@@ -80,8 +80,9 @@ void Diagnostic(std::string_view message) noexcept {
             OVERLAPPED append{};
             append.Offset = append.OffsetHigh = MAXDWORD;
             DWORD written{};
+            // No FlushFileBuffers: this runs on render threads, and a written line already
+            // survives a process crash; only a console power loss would drop it.
             WriteFile(file, line.data(), static_cast<DWORD>(line.size()), &written, &append);
-            FlushFileBuffers(file);
             CloseHandle(file);
         }
 #endif
