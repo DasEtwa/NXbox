@@ -45,7 +45,8 @@ class BufferCacheRuntime {
 public:
     BufferCacheRuntime(Context& context, BindingState& bindings)
         : context{context}, bindings{bindings}, upload{context, D3D12_HEAP_TYPE_UPLOAD},
-          readback{context, D3D12_HEAP_TYPE_READBACK} {}
+          readback{context, D3D12_HEAP_TYPE_READBACK},
+          uniform_snapshots{context, D3D12_HEAP_TYPE_DEFAULT, [this] { uniform_copies.Clear(); }} {}
     bool synchronizing_indices{};
     bool PreferCachedUniformBuffers() const {
         return true;
@@ -131,6 +132,7 @@ private:
     const u64 memory_target{NativeBufferMemoryTarget(context.MemoryUsage())};
     StagingRing upload;
     StagingRing readback;
+    StagingRing uniform_snapshots;
     ResourcePtr witness_resource;
     u64 witness_offset{}, witness_hash{}, witness_frame{};
 };

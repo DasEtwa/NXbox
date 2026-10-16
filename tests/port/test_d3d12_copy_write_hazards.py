@@ -153,11 +153,12 @@ class CopyWriteHazards(unittest.TestCase):
     def test_uniform_data_precedes_disjoint_zero_tail(self):
         source = (D3D12 / "d3d12_buffer_cache.cpp").read_text()
         body = function_body(source, "BoundBuffer BufferCacheRuntime::CopyUniform(")
-        self.assertIn("const VideoCommon::BufferCopy data{offset, 0, size};", body)
+        self.assertIn("const VideoCommon::BufferCopy data{offset, target_offset, size};", body)
         tail = function_body(body, "if (padded > size)")
         self.assertIn("upload.Request(padded - size)", tail)
         self.assertIn(
-            "const VideoCommon::BufferCopy zero{staging.offset, size, padded - size};", tail
+            "const VideoCommon::BufferCopy zero{staging.offset, target_offset + size, padded - size};",
+            tail,
         )
         self.assertIn("CopyBuffer(target, staging.buffer, std::span{&zero, 1}, true);", tail)
         self.assertLess(

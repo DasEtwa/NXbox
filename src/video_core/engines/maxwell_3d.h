@@ -3135,6 +3135,8 @@ public:
     /// Write multiple values to the register identified by method.
     void CallMultiMethod(Core::System& system, u32 method, const u32* base_start, u32 amount, u32 methods_pending) override;
 
+    void CallCBDataIncrementing(u32 method, const u32* values, u32 amount);
+
     bool ShouldExecute() const {
         return execute_on;
     }

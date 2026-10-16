@@ -20,10 +20,15 @@ template <typename Resource, std::size_t Capacity = 128>
 class UniformCopyCache {
 public:
     UniformCopyCache() = default;
+    void Clear() {
+        lookup.clear();
+        entries.clear();
+    }
     UniformCopyCache(const UniformCopyCache&) = delete;
     UniformCopyCache& operator=(const UniformCopyCache&) = delete;
     std::shared_ptr<Resource> Find(const std::shared_ptr<Resource>& source, std::uint64_t version,
-                                   std::uint32_t offset, std::uint32_t size) {
+                                   std::uint32_t offset, std::uint32_t size,
+                                   std::uint32_t* copy_offset = nullptr) {
         if (!source)
             return {};
         const auto found = lookup.find({source.get(), offset, size});
@@ -34,10 +39,13 @@ public:
         if (entry->source.lock() != source || entry->version != version)
             return {};
         entries.splice(entries.begin(), entries, entry);
+        if (copy_offset)
+            *copy_offset = entry->copy_offset;
         return entry->copy;
     }
     void Insert(const std::shared_ptr<Resource>& source, std::uint64_t version,
-                std::uint32_t offset, std::uint32_t size, std::shared_ptr<Resource> copy) {
+                std::uint32_t offset, std::uint32_t size, std::shared_ptr<Resource> copy,
+                std::uint32_t copy_offset = 0) {
         if (!source)
             return;
         const Key key{source.get(), offset, size};
@@ -49,7 +57,7 @@ public:
             lookup.erase(entries.back().key);
             entries.pop_back();
         }
-        entries.push_front({key, source, version, std::move(copy)});
+        entries.push_front({key, source, version, std::move(copy), copy_offset});
         try {
             lookup.emplace(key, entries.begin());
         } catch (...) {
@@ -78,6 +86,7 @@ private:
         std::weak_ptr<Resource> source;
         std::uint64_t version;
         std::shared_ptr<Resource> copy;
+        std::uint32_t copy_offset{};
     };
     std::list<Entry> entries;
     std::unordered_map<Key, typename std::list<Entry>::iterator, KeyHash> lookup;

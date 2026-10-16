@@ -292,6 +292,8 @@ u32 Maxwell3D::ProcessShadowRam(u32 method, u32 argument) {
 void Maxwell3D::ConsumeSinkImpl(Core::System& system) {
     const Common::GpuProfile::PhaseScope gpu_profile_scope{
         Common::GpuProfile::Phase::Maxwell3DMethods};
+    const Common::GpuProfile::MethodScope state_profile{Common::GpuProfile::MethodClass::DrawState,
+                                                        method_sink.size()};
     const auto control = shadow_state.shadow_ram_control;
     if (control == Regs::ShadowRamControl::Track || control == Regs::ShadowRamControl::TrackWithFilter) {
         for (auto [method, value] : method_sink) {
@@ -309,6 +311,13 @@ void Maxwell3D::ConsumeSinkImpl(Core::System& system) {
 }
 
 void Maxwell3D::ProcessDirtyRegisters(u32 method, u32 argument) {
+    Common::GpuProfile::MethodScope method_profile{Common::GpuProfile::MethodClass::DirtyFlags};
+    // Method side effects still run in ProcessMethodCall. Unchanged register
+    // state needs no table lookups or dirty-bit writes.
+    if (regs.reg_array[method] == argument) {
+        method_profile.Skip();
+        return;
+    }
     regs.reg_array[method] = argument;
     for (auto const& table : dirty.tables)
         dirty.flags[table[method]] = true;
@@ -317,6 +326,25 @@ void Maxwell3D::ProcessDirtyRegisters(u32 method, u32 argument) {
 void Maxwell3D::ProcessMethodCall(u32 method, u32 argument, u32 nonshadow_argument, bool is_last_call) {
     const Common::GpuProfile::PhaseScope gpu_profile_scope{
         Common::GpuProfile::Phase::Maxwell3DMethods};
+    using MethodClass = Common::GpuProfile::MethodClass;
+    const auto category = [method] {
+        switch (method) {
+        case MAXWELL3D_REG_INDEX(report_semaphore.query):
+        case MAXWELL3D_REG_INDEX(render_enable.mode):
+        case MAXWELL3D_REG_INDEX(clear_report_value):
+        case MAXWELL3D_REG_INDEX(sync_info):
+            return MethodClass::QueryReport;
+        case MAXWELL3D_REG_INDEX(load_mme.instruction_ptr):
+        case MAXWELL3D_REG_INDEX(load_mme.instruction):
+        case MAXWELL3D_REG_INDEX(load_mme.start_address):
+            return MethodClass::MacroUpload;
+        default:
+            return MethodClass::DrawDispatch;
+        }
+    }();
+    std::optional<Common::GpuProfile::MethodScope> method_profile;
+    if (Common::GpuProfile::sink && category != MethodClass::DrawDispatch)
+        method_profile.emplace(category);
     switch (method) {
     case MAXWELL3D_REG_INDEX(wait_for_idle):
         return rasterizer->WaitForIdle();
@@ -378,9 +406,11 @@ void Maxwell3D::ProcessMethodCall(u32 method, u32 argument, u32 nonshadow_argume
         return rasterizer->WaitForIdle();
     case MAXWELL3D_REG_INDEX(tiled_cache_barrier):
         return rasterizer->TiledCacheBarrier();
-    default:
+    default: {
+        const Common::GpuProfile::MethodScope draw_profile{MethodClass::DrawDispatch};
         draw_manager.ProcessMethodCall(*this, method, argument);
         break;
+    }
     }
 }
 
@@ -478,7 +508,25 @@ void Maxwell3D::CallMultiMethod(Core::System& system, u32 method, const u32* bas
     }
 }
 
+void Maxwell3D::CallCBDataIncrementing(u32 method, const u32* values, u32 amount) {
+    const Common::GpuProfile::PhaseScope gpu_profile_scope{
+        Common::GpuProfile::Phase::Maxwell3DMethods};
+    ASSERT(executing_macro == 0);
+    ASSERT(method >= MAXWELL3D_REG_INDEX(const_buffer.buffer));
+    ASSERT(method + amount <= MAXWELL3D_REG_INDEX(const_buffer.buffer) + 16);
+    std::array<u32, 16> arguments;
+    for (u32 i = 0; i < amount; ++i) {
+        arguments[i] = ProcessShadowRam(method + i, values[i]);
+        ProcessDirtyRegisters(method + i, arguments[i]);
+    }
+    // All sixteen CB_DATA registers have the same sequential memory side effect.
+    // Keep each register/shadow write, but translate and accumulate the range once.
+    ProcessCBMultiData(arguments.data(), amount);
+}
+
 void Maxwell3D::ProcessMacroUpload(u32 data) {
+    const Common::GpuProfile::MethodScope method_profile{
+        Common::GpuProfile::MethodClass::MacroUpload};
     macro_engine.AddCode(regs.load_mme.instruction_ptr++, data);
 }
 
@@ -637,6 +685,8 @@ void Maxwell3D::ProcessCBBind(size_t stage_index) {
 }
 
 void Maxwell3D::ProcessCBMultiData(const u32* start_base, u32 amount) {
+    const Common::GpuProfile::MethodScope method_profile{
+        Common::GpuProfile::MethodClass::ConstantBuffer, amount};
     // Write the input value to the current const buffer at the current position.
     const GPUVAddr buffer_address = regs.const_buffer.Address();
     ASSERT(buffer_address != 0);

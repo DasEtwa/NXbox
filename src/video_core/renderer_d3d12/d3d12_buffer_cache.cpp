@@ -445,35 +445,35 @@ BoundBuffer BufferCacheRuntime::CopyUniform(const BoundBuffer& uniform) {
     const auto padded = UniformViewSize(size);
     // A version changes on every write-state use, including same-state UAV/copy writes.
     ResourcePtr copy;
+    u32 copy_offset{};
     {
         const FrameProfile::Scope profile_lookup{context.Profile(), FramePhase::UniformCopyLookup};
-        copy = uniform_copies.Find(resource, resource->content_version, offset, size);
+        copy = uniform_copies.Find(resource, resource->content_version, offset, size, &copy_offset);
     }
     if (copy) {
         context.Profile().Count(FrameCount::UniformCopyCacheHits);
-        return {std::move(copy), 0, padded};
+        return {std::move(copy), copy_offset, padded};
     }
     context.Profile().Count(FrameCount::UniformCopyCacheMisses);
     const FrameProfile::Scope profile_upload{context.Profile(), FramePhase::BufferUpload};
     context.Profile().Count(FrameCount::BufferUploadBytes, padded);
     context.Profile().Count(FrameCount::UniformUploadBytes, padded);
-    ResourcePtr target;
-    {
-        const FrameProfile::Scope profile_allocation{context.Profile(),
-                                                     FramePhase::UploadAllocation};
-        target = context.CreateBuffer(padded, D3D12_HEAP_TYPE_DEFAULT);
-    }
-    const VideoCommon::BufferCopy data{offset, 0, size};
+    // GPU-produced sources need a DEFAULT snapshot, not a CPU upload. Share large
+    // pages; cache entries and command lists lease the page until it is safe to reset.
+    auto allocation = uniform_snapshots.Request(padded);
+    auto target = allocation.buffer;
+    const auto target_offset = static_cast<u32>(allocation.offset);
+    const VideoCommon::BufferCopy data{offset, target_offset, size};
     CopyBuffer(target, resource, std::span{&data, 1}, false);
     if (padded > size) {
         auto staging = upload.Request(padded - size);
         std::fill(staging.mapped_span.begin(), staging.mapped_span.end(), u8{0});
-        const VideoCommon::BufferCopy zero{staging.offset, size, padded - size};
+        const VideoCommon::BufferCopy zero{staging.offset, target_offset + size, padded - size};
         CopyBuffer(target, staging.buffer, std::span{&zero, 1}, true);
     }
     // Bounded cache; command-list resource leases keep evicted copies alive for the GPU.
-    uniform_copies.Insert(resource, resource->content_version, offset, size, target);
-    return {std::move(target), 0, padded};
+    uniform_copies.Insert(resource, resource->content_version, offset, size, target, target_offset);
+    return {std::move(target), target_offset, padded};
 }
 void BufferCacheRuntime::BindStorageBuffer(const Buffer& buffer, u32 offset, u32 size,
                                            bool is_written) {

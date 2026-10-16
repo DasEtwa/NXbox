@@ -575,7 +575,10 @@ void FrameProfile::EndFrame(bool presented) {
                                       "texture_direct_upload_bytes",
                                       "texture_repack_bytes",
                                       "texture_refresh_bytes",
-                                      "fermi_discard_upload_bytes"};
+                                      "fermi_discard_upload_bytes",
+                                      "staging_new_resources",
+                                      "uniform_snapshot_requests",
+                                      "uniform_snapshot_new_resources"};
         static_assert(names.size() == static_cast<size_t>(FramePhase::Count));
         static_assert(counters.size() == static_cast<size_t>(FrameCount::Count));
         const double elapsed = static_cast<double>(wall - start_wall);
@@ -644,6 +647,24 @@ void FrameProfile::EndFrame(bool presented) {
                                     : 0.0,
             guest.dropped_requests, guest.pending_requests);
         Diagnostic(guest_line);
+        const auto methods = Common::GpuProfile::TakeMethodWindow();
+        std::string method_line = "D3D12_MAXWELL_METHODS timing_sample_stride=64";
+        for (size_t i = 0; i < methods.size(); ++i) {
+            const auto& sample = methods[i];
+            const auto name = Common::GpuProfile::MethodNames[i];
+            const double estimated_ns = sample.timed_calls
+                                            ? static_cast<double>(sample.sampled_ns) *
+                                                  static_cast<double>(sample.count) /
+                                                  static_cast<double>(sample.timed_calls)
+                                            : 0.0;
+            method_line += fmt::format(
+                " {}_count={} {}_units={} {}_skipped={} {}_timed_calls={} {}_estimated_ms={:.3f}"
+                " {}_estimated_ms_per_frame={:.3f}",
+                name, sample.count, name, sample.units, name, sample.skipped, name,
+                sample.timed_calls, name, estimated_ns / 1.0e6, name,
+                frames ? estimated_ns / (1.0e6 * frames) : 0.0);
+        }
+        Diagnostic(method_line);
     } catch (...) {
         Diagnostic("D3D12 frame profile formatting failed");
     }
@@ -1497,53 +1518,69 @@ void StagingRing::Collect() {
 }
 StagingBufferRef StagingRing::Request(size_t size) {
     const FrameProfile::Scope profile_allocation{context.Profile(), FramePhase::UploadAllocation};
-    context.Profile().Count(FrameCount::StagingRequests);
+    const bool snapshot = heap == D3D12_HEAP_TYPE_DEFAULT;
+    context.Profile().Count(snapshot ? FrameCount::UniformSnapshotRequests
+                                     : FrameCount::StagingRequests);
+    const auto allocate = [&](u64 bytes) {
+        auto resource = context.CreateBuffer(bytes, heap);
+        context.Profile().Count(snapshot ? FrameCount::UniformSnapshotNewResources
+                                         : FrameCount::StagingNewResources);
+        return resource;
+    };
+    const auto slice = [](const ResourcePtr& resource, size_t offset, size_t bytes) {
+        return resource->mapped.empty() ? std::span<u8>{} : resource->mapped.subspan(offset, bytes);
+    };
     if (!size)
         throw std::invalid_argument("D3D12 empty staging allocation");
     const u64 aligned = Align(size, 512);
     // Append-only allocations need no fence query or completion callbacks. Reclaim
     // only when existing space is exhausted (or at the explicit frame collection).
     for (auto& page : pages) {
-        if (aligned <= page.resource->mapped.size() - page.cursor) {
-            context.Profile().Count(FrameCount::StagingFastRequests);
+        if (aligned <= page.capacity - page.cursor) {
+            if (!snapshot)
+                context.Profile().Count(FrameCount::StagingFastRequests);
             const auto offset = page.cursor;
             page.cursor += aligned;
             page.tick = context.CurrentTick();
             return {page.resource, static_cast<size_t>(offset),
-                    page.resource->mapped.subspan(offset, size)};
+                    slice(page.resource, static_cast<size_t>(offset), size)};
         }
     }
     Collect();
     for (auto& page : pages) {
-        if (aligned <= page.resource->mapped.size() - page.cursor) {
+        if (aligned <= page.capacity - page.cursor) {
             const auto offset = page.cursor;
             page.cursor += aligned;
             page.tick = context.CurrentTick();
             return {page.resource, static_cast<size_t>(offset),
-                    page.resource->mapped.subspan(offset, size)};
+                    slice(page.resource, static_cast<size_t>(offset), size)};
         }
     }
     u64 capacity{};
     for (const auto& page : pages)
-        capacity += page.resource->mapped.size();
+        capacity += page.capacity;
     const u64 page_size = std::max(4ULL << 20, aligned);
     if (page_size > (64ULL << 20)) {
         // Oversized guest images use a dedicated lease, not a permanent ring page.
-        auto buffer = context.CreateBuffer(aligned, heap);
-        return {buffer, 0, buffer->mapped.first(size)};
+        auto buffer = allocate(aligned);
+        return {buffer, 0, slice(buffer, 0, size)};
     }
     if (page_size > (64ULL << 20) - capacity) {
+        // Evict optional CPU caches before waiting; their hot entries could pin
+        // every page indefinitely. GPU/binding leases still prevent early reuse.
+        if (release_leases)
+            release_leases();
         // Submit the producer before waiting, then reuse completed, unleased pages.
         // A request can arrive with a tight staging lease still held by its caller.
         context.Finish(FrameCount::ForcedSubmitStagingPressure);
         Collect();
         for (auto& page : pages) {
-            if (aligned <= page.resource->mapped.size() - page.cursor) {
+            if (aligned <= page.capacity - page.cursor) {
                 const auto offset = page.cursor;
                 page.cursor += aligned;
                 page.tick = context.CurrentTick();
                 return {page.resource, static_cast<size_t>(offset),
-                        page.resource->mapped.subspan(offset, size)};
+                        slice(page.resource, static_cast<size_t>(offset), size)};
             }
         }
         // Drop completed smaller pages to make room for this size class.
@@ -1552,13 +1589,13 @@ StagingBufferRef StagingRing::Request(size_t size) {
         });
         capacity = 0;
         for (const auto& page : pages)
-            capacity += page.resource->mapped.size();
+            capacity += page.capacity;
         if (page_size > (64ULL << 20) - capacity) {
-            auto buffer = context.CreateBuffer(aligned, heap);
-            return {buffer, 0, buffer->mapped.first(size)};
+            auto buffer = allocate(aligned);
+            return {buffer, 0, slice(buffer, 0, size)};
         }
     }
-    pages.push_back({context.CreateBuffer(page_size, heap), aligned, context.CurrentTick()});
-    return {pages.back().resource, 0, pages.back().resource->mapped.first(size)};
+    pages.push_back({allocate(page_size), aligned, context.CurrentTick(), page_size});
+    return {pages.back().resource, 0, slice(pages.back().resource, 0, size)};
 }
 } // namespace D3D12

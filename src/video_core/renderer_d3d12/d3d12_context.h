@@ -185,6 +185,9 @@ enum class FrameCount : size_t {
     TextureRepackBytes,
     TextureRefreshBytes,
     FermiDiscardUploadBytes,
+    StagingNewResources,
+    UniformSnapshotRequests,
+    UniformSnapshotNewResources,
     Count
 };
 // Monotonic CPU samples, independent of the host clock API, for exclusive phases.
@@ -572,7 +575,8 @@ private:
 };
 class StagingRing {
 public:
-    StagingRing(Context& context, D3D12_HEAP_TYPE heap) : context{context}, heap{heap} {}
+    StagingRing(Context& context, D3D12_HEAP_TYPE heap, std::function<void()> release_leases = {})
+        : context{context}, heap{heap}, release_leases{std::move(release_leases)} {}
     StagingBufferRef Request(size_t size);
     void Collect();
 
@@ -581,9 +585,11 @@ private:
         ResourcePtr resource;
         u64 cursor{};
         u64 tick{};
+        u64 capacity{};
     };
     Context& context;
     D3D12_HEAP_TYPE heap;
+    std::function<void()> release_leases;
     std::vector<Page> pages;
 };
 } // namespace D3D12

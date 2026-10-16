@@ -12,6 +12,7 @@ DRIVER = r"""
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <span>
 #include <stdexcept>
@@ -26,7 +27,7 @@ struct Resource {
 };
 using ResourcePtr = std::shared_ptr<Resource>;
 struct StagingBufferRef { ResourcePtr buffer; size_t offset; std::span<u8> mapped_span; };
-enum class FrameCount { ForcedSubmitStagingPressure, StagingRequests, StagingFastRequests, StagingCollections };
+enum class FrameCount { ForcedSubmitStagingPressure, StagingRequests, StagingFastRequests, StagingCollections, StagingNewResources, UniformSnapshotRequests, UniformSnapshotNewResources };
 enum class FramePhase { UploadAllocation, StagingCollect };
 struct FrameProfile {
     struct Scope { Scope(FrameProfile&, FramePhase) {} };
@@ -37,9 +38,10 @@ struct FrameProfile {
         if (counter == FrameCount::StagingCollections) ++collections;
     }
 };
+constexpr int D3D12_HEAP_TYPE_DEFAULT = 1;
 struct Context {
     u64 tick = 1, completed = 0;
-    int finishes = 0, fence_polls = 0;
+    int finishes = 0, fence_polls = 0, resources = 0;
     FrameProfile profile;
     FrameProfile& Profile() { return profile; }
     std::vector<ResourcePtr> retained;
@@ -47,13 +49,19 @@ struct Context {
     u64 CurrentTick() const { return tick; }
     void Collect() { ++fence_polls; }
     void Finish(FrameCount = FrameCount::ForcedSubmitStagingPressure) { ++finishes; completed = tick++; retained.clear(); }
-    ResourcePtr CreateBuffer(u64 size, int) { return std::make_shared<Resource>(size); }
+    ResourcePtr CreateBuffer(u64 size, int heap) {
+        ++resources;
+        auto resource = std::make_shared<Resource>(size);
+        if (heap == D3D12_HEAP_TYPE_DEFAULT) resource->mapped = {};
+        return resource;
+    }
 };
 struct StagingRing {
-    struct Page { ResourcePtr resource; u64 cursor; u64 tick; };
+    struct Page { ResourcePtr resource; u64 cursor; u64 tick; u64 capacity; };
     Context& context;
     int heap = 0;
     std::vector<Page> pages;
+    std::function<void()> release_leases;
     void Collect();
     StagingBufferRef Request(size_t size);
 };
@@ -99,6 +107,38 @@ int main() {
     assert(small.mapped_span[0] == 99);
     assert(context.fence_polls == polls);
     assert(context.profile.fast >= 1001);
+    // DEFAULT snapshots suballocate even though they have no CPU mapping. A cache
+    // lease pins all old offsets across fence retirement; another page is used.
+    Context gpu_context;
+    StagingRing snapshots{gpu_context, D3D12_HEAP_TYPE_DEFAULT};
+    auto cached = snapshots.Request(256);
+    assert(cached.mapped_span.empty() && cached.offset == 0);
+    for (int i = 1; i < 8192; ++i) {
+        auto sub = snapshots.Request(256);
+        assert(sub.buffer == cached.buffer && sub.offset == size_t(i) * 512);
+    }
+    assert(gpu_context.resources == 1);
+    gpu_context.Finish();
+    auto following = snapshots.Request(256);
+    assert(following.buffer != cached.buffer && gpu_context.resources == 2);
+    cached = {};
+    snapshots.Collect();
+    auto reused = snapshots.Request(256);
+    assert(reused.offset == 0 && reused.buffer != following.buffer);
+    assert(gpu_context.resources == 2);
+    // Old hot cache entries cannot force a permanent dedicated-allocation fallback.
+    Context pressure_context;
+    StagingRing pressure{pressure_context, D3D12_HEAP_TYPE_DEFAULT};
+    std::vector<ResourcePtr> cache;
+    pressure.release_leases = [&] { cache.clear(); };
+    for (int i = 0; i < 16; ++i) {
+        auto sub = pressure.Request(4 * mib);
+        cache.push_back(sub.buffer);
+        pressure_context.retained.push_back(sub.buffer);
+    }
+    auto recycled = pressure.Request(256);
+    assert(cache.empty() && pressure_context.finishes == 1);
+    assert(pressure_context.resources == 16 && recycled.offset == 0);
     bool rejected = false;
     try { ring.Request(0); } catch (const std::invalid_argument&) { rejected = true; }
     assert(rejected);
@@ -124,7 +164,18 @@ class D3D12StagingPressureTests(unittest.TestCase):
             binary = Path(folder) / "staging"
             source.write_text(source_text)
             result = subprocess.run(
-                ["clang++", "-std=c++20", str(source), "-o", str(binary)],
+                [
+                    "clang++",
+                    "-std=c++20",
+                    "-Wall",
+                    "-Wextra",
+                    "-Werror",
+                    "-Wno-missing-field-initializers",
+                    "-fsanitize=address,undefined",
+                    str(source),
+                    "-o",
+                    str(binary),
+                ],
                 capture_output=True,
                 text=True,
             )

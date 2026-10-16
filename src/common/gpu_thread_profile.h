@@ -55,6 +55,67 @@ private:
     Sink* owner{};
     std::size_t previous{};
 };
+// Recording-thread method classes. Time one call in 64 to keep clock reads out
+// of the per-register hot path; counts/units are exact, time is an estimate.
+enum class MethodClass : std::size_t {
+    DirtyFlags,
+    ConstantBuffer,
+    DrawState,
+    QueryReport,
+    MacroUpload,
+    DrawDispatch,
+    Count
+};
+inline constexpr std::array MethodNames{"dirty_flags",  "constant_buffer", "draw_state",
+                                        "query_report", "macro_upload",    "draw_dispatch"};
+static_assert(MethodNames.size() == static_cast<std::size_t>(MethodClass::Count));
+struct MethodSample {
+    Tick count{}, units{}, timed_calls{}, sampled_ns{}, skipped{};
+};
+using MethodWindow = std::array<MethodSample, static_cast<std::size_t>(MethodClass::Count)>;
+inline thread_local MethodWindow method_window{};
+inline thread_local std::array<Tick, static_cast<std::size_t>(MethodClass::Count)>
+    method_sequence{};
+class MethodScope {
+public:
+    explicit MethodScope(MethodClass category, Tick units = 1) {
+        if (!sink)
+            return;
+        const auto index = static_cast<std::size_t>(category);
+        sample = &method_window[index];
+        work_units = units;
+        if ((method_sequence[index]++ & 63) == 0)
+            start = Now();
+    }
+    ~MethodScope() {
+        if (!sample)
+            return;
+        // Submit can report/reset a window inside a method. Attribute the whole
+        // completed call to its completion window, keeping counts and time paired.
+        ++sample->count;
+        sample->units += work_units;
+        sample->skipped += skipped ? 1 : 0;
+        if (start) {
+            ++sample->timed_calls;
+            sample->sampled_ns += Now() - start;
+        }
+    }
+    void Skip() {
+        skipped = true;
+    }
+    MethodScope(const MethodScope&) = delete;
+    MethodScope& operator=(const MethodScope&) = delete;
+
+private:
+    MethodSample* sample{};
+    Tick start{}, work_units{};
+    bool skipped{};
+};
+inline MethodWindow TakeMethodWindow() {
+    const auto result = method_window;
+    method_window = {};
+    return result;
+}
 enum class Wait : std::size_t {
     SyncpointHost,
     SyncpointGuest,
@@ -163,6 +224,8 @@ inline Window TakeWindow() {
     return result;
 }
 inline void Reset() {
+    method_window = {};
+    method_sequence = {};
     const std::lock_guard lock{mutex};
     window = {};
     requests.clear();

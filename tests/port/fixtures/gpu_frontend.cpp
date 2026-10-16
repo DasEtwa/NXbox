@@ -45,6 +45,12 @@ struct Maxwell3D {
     struct Regs {
         static constexpr u32 NUM_REGS = MacroRegistersStart;
         enum class ShadowRamControl { Off, Track, TrackWithFilter, Replay };
+        struct {
+            u32 offset{}, size{4096};
+            GPUVAddr Address() const {
+                return 64;
+            }
+        } const_buffer;
         ShadowRamControl shadow_ram_control{};
         std::array<u32, NUM_REGS> reg_array{};
     } regs, shadow_state;
@@ -61,6 +67,12 @@ struct Maxwell3D {
     struct Memory {
         std::array<u32, 1024> words{};
         std::vector<std::pair<GPUVAddr, size_t>> reads;
+        unsigned writes{};
+        void WriteBlockCached(GPUVAddr address, const void* input, size_t size) {
+            ++writes;
+            assert(address + size <= sizeof(words));
+            std::memcpy(reinterpret_cast<char*>(words.data()) + address, input, size);
+        }
         void ReadBlock(GPUVAddr address, void* out, size_t size) {
             reads.emplace_back(address, size);
             assert(address + size <= sizeof(words));
@@ -101,9 +113,8 @@ struct Maxwell3D {
     void ProcessMethodCall(u32 method, u32, u32, bool) {
         effects += execution_mask[method];
     }
-    void ProcessCBMultiData(const u32*, u32) {
-        ++bulk_calls;
-    }
+    void ProcessCBMultiData(const u32*, u32);
+    void CallCBDataIncrementing(u32, const u32*, u32);
     void ProcessInlineIndexMultiData(u32, const u32*, u32) {
         ++bulk_calls;
     }
@@ -148,14 +159,50 @@ int main() {
     engine.CallMultiMethod(system, draw, values, 4, 4);
     assert(engine.effects == 4);
     engine.CallMultiMethod(system, MAXWELL3D_REG_INDEX(const_buffer.buffer), values, 4, 4);
-    assert(engine.bulk_calls == 1);
+    assert(engine.memory_manager.writes == 1);
     engine.CallMultiMethod(system, MAXWELL3D_REG_INDEX(inline_data), values, 4, 4);
     assert(engine.upload_state.calls == 1);
     engine.CallMultiMethod(system, MAXWELL3D_REG_INDEX(draw_inline_index), values, 4, 4);
-    assert(engine.bulk_calls == 2);
+    assert(engine.bulk_calls == 1);
     engine.shadow_state.shadow_ram_control = Maxwell3D::Regs::ShadowRamControl::Replay;
     engine.CallMultiMethod(system, MAXWELL3D_REG_INDEX(draw_inline_index), values, 4, 4);
-    assert(engine.bulk_calls == 2 && engine.effects == 8);
+    assert(engine.bulk_calls == 1 && engine.effects == 8);
+
+    // Repeated state writes skip dirty bits but still execute draw side effects.
+    engine.shadow_state.shadow_ram_control = Maxwell3D::Regs::ShadowRamControl::Off;
+    engine.CallMethod(system, draw, 55, true);
+    engine.dirty.flags.reset();
+    const auto effects = engine.effects;
+    engine.CallMethod(system, draw, 55, true);
+    assert(engine.dirty.flags.none() && engine.effects == effects + 1);
+    engine.CallMethod(system, draw, 56, true);
+    assert(engine.dirty.flags.any());
+
+    // Incrementing CB packets preserve all register/shadow values while doing one
+    // memory-manager write instead of sixteen. Include partial packets and Replay.
+    for (u32 mode = 0; mode < 4; ++mode) {
+        for (u32 start = 0; start < 16; ++start) {
+            Maxwell3D scalar, batch;
+            scalar.shadow_state.shadow_ram_control = batch.shadow_state.shadow_ram_control =
+                static_cast<Maxwell3D::Regs::ShadowRamControl>(mode);
+            std::array<u32, 16> data;
+            std::iota(data.begin(), data.end(), 900);
+            const u32 first = MAXWELL3D_REG_INDEX(const_buffer.buffer) + start;
+            for (u32 i = 0; i < 16 - start; ++i) {
+                auto value = scalar.ProcessShadowRam(first + i, data[i]);
+                scalar.ProcessDirtyRegisters(first + i, value);
+                scalar.ProcessCBMultiData(&value, 1);
+            }
+            batch.CallCBDataIncrementing(first, data.data(), 16 - start);
+            assert(scalar.regs.reg_array == batch.regs.reg_array);
+            assert(scalar.shadow_state.reg_array == batch.shadow_state.reg_array);
+            assert(scalar.dirty.flags == batch.dirty.flags);
+            assert(scalar.memory_manager.words == batch.memory_manager.words);
+            assert(scalar.regs.const_buffer.offset == batch.regs.const_buffer.offset);
+            assert(batch.memory_manager.writes == 1 && scalar.memory_manager.writes == 16 - start);
+        }
+    }
+    engine.shadow_state.shadow_ram_control = Maxwell3D::Regs::ShadowRamControl::Replay;
 
     assertion_calls = assertion_failures = 0;
     engine.CallMethod(system, 0, 123, true);

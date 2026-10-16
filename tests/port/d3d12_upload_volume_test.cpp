@@ -82,6 +82,20 @@ int main() {
   identities.Insert(identity, 1, 0, 4, snapshot);
   assert(identities.Find(identity, 1, 0, 4) == snapshot);
 
+  // Multiple immutable snapshots can share a resource without losing their offsets.
+  UniformCopyCache<Bytes, 2> suballocated;
+  suballocated.Insert(other, 1, 0, 16, copy, 512);
+  suballocated.Insert(other, 1, 16, 16, copy, 1024);
+  std::uint32_t copy_offset = 0;
+  assert(suballocated.Find(other, 1, 0, 16, &copy_offset) == copy);
+  assert(copy_offset == 512);
+  assert(suballocated.Find(other, 1, 16, 16, &copy_offset) == copy);
+  assert(copy_offset == 1024);
+
+  suballocated.Clear();
+  assert(!suballocated.Find(other, 1, 0, 16));
+  assert(!suballocated.Find(other, 1, 16, 16));
+
   using namespace IndexConversion;
   assert(!RestartCanMatch(Format::Uint8, 256));
   assert(!RestartCanMatch(Format::Uint16, 0xffffffff));

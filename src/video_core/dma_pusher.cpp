@@ -4,6 +4,8 @@
 // SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cstddef>
+
 #include "common/gpu_thread_profile.h"
 #include "common/settings.h"
 #include "core/core.h"
@@ -126,6 +128,26 @@ void DmaPusher::ProcessCommands(std::span<const CommandHeader> commands) {
             dma_state.is_last_call = true;
             index += max_write;
         } else if (dma_state.method_count) {
+            constexpr u32 cb_begin = static_cast<u32>(
+                offsetof(Engines::Maxwell3D::Regs, const_buffer.buffer) / sizeof(u32));
+            constexpr u32 cb_end = cb_begin + 16;
+            if (!dma_increment_once && dma_state.method >= cb_begin && dma_state.method < cb_end &&
+                subchannel_type[dma_state.subchannel] == Engines::EngineTypes::Maxwell3D) {
+                auto* engine = static_cast<Engines::Maxwell3D*>(subchannels[dma_state.subchannel]);
+                const auto amount = static_cast<u32>(
+                    (std::min)(commands.size() - index,
+                               static_cast<size_t>(
+                                   (std::min)(dma_state.method_count, cb_end - dma_state.method))));
+                dma_state.dma_word_offset = static_cast<u32>(index * sizeof(u32));
+                engine->ConsumeSink(system);
+                engine->current_dma_segment = dma_state.dma_get + dma_state.dma_word_offset;
+                engine->CallCBDataIncrementing(dma_state.method, &commands[index].argument, amount);
+                dma_state.method += amount;
+                dma_state.method_count -= amount;
+                dma_state.is_last_call = dma_state.method_count == 0;
+                index += amount;
+                continue;
+            }
             auto const command_header = commands[index]; //can copy
             dma_state.dma_word_offset = u32(index * sizeof(u32));
             dma_state.is_last_call = dma_state.method_count <= 1;

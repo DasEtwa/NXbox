@@ -145,7 +145,6 @@ namespace Common {
 template<class T> T AlignUp(T value, T alignment) { return (value+alignment-1)&~(alignment-1); }
 }
 namespace VideoCommon { struct BufferCopy { u64 src_offset, dst_offset, size; }; }
-constexpr int D3D12_HEAP_TYPE_DEFAULT=0;
 struct Resource {
     u64 content_version{};
     std::vector<u8> bytes;
@@ -183,6 +182,17 @@ struct Staging {
         auto r=context.CreateBuffer(size,0); return {r,0,r->bytes};
     }
 };
+struct SnapshotStaging {
+    Context& context;
+    ResourcePtr page;
+    size_t cursor{};
+    StagingRef Request(size_t size) {
+        if (!page) page = context.CreateBuffer(4 * 1024 * 1024, 0);
+        auto offset = cursor;
+        cursor += (size + 511) & ~size_t{511};
+        return {page, offset, {}};
+    }
+};
 struct BoundBuffer { ResourcePtr resource; u32 offset, size; bool written=false; };
 struct GeometryBindings {
     static constexpr size_t MaxVertexBuffers=32;
@@ -199,6 +209,7 @@ void InvalidRange(u32, const char*, u64, u64, u64) { ++invalid; }
 struct BufferCacheRuntime {
     Context context;
     Staging upload{context};
+    SnapshotStaging uniform_snapshots{context, {}, 0};
     BindingState bindings;
     UniformCopyCache<Resource> uniform_copies;
     void CopyBuffer(ResourcePtr dst, ResourcePtr src, std::span<const VideoCommon::BufferCopy> copies, bool) {
@@ -246,8 +257,12 @@ int main() {
     memory->bytes[4]=81; ++memory->content_version;
     runtime.BindUniformBuffer(buffer,4,259);
     auto updated=runtime.bindings.stages[0].uniform.back().resource;
-    assert(updated!=snapshot && updated->bytes[0]==81 && snapshot->bytes[0]==4);
-    assert(updated->bytes[259]==0);
+    const auto updated_offset = runtime.bindings.stages[0].uniform.back().offset;
+    assert(updated==snapshot && updated_offset==512);
+    assert(updated->bytes[updated_offset]==81 && snapshot->bytes[0]==4);
+    assert(updated->bytes[updated_offset+259]==0);
+    runtime.BindUniformBuffer(buffer,4,259);
+    assert(runtime.bindings.stages[0].uniform.back().offset==updated_offset);
     assert(runtime.context.Profile().upload_bytes==256+512+512);
     runtime.BindUniformBuffer(buffer,131071,2);
     assert(!runtime.bindings.stages[0].uniform.back().resource && invalid==2);

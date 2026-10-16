@@ -80,7 +80,8 @@ class UploadVolumeTests(unittest.TestCase):
         runtime = (NATIVE / "d3d12_buffer_cache.cpp").read_text()
         self.assertNotIn("upload.Request(65536)", runtime)
         self.assertIn(
-            "uniform_copies.Find(resource, resource->content_version, offset, size)", runtime
+            "uniform_copies.Find(resource, resource->content_version, offset, size, &copy_offset)",
+            runtime,
         )
 
 

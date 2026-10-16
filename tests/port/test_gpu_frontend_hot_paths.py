@@ -60,6 +60,8 @@ class GpuFrontendHotPathTests(unittest.TestCase):
                 "ProcessDirtyRegisters",
                 "CallMethod",
                 "CallMultiMethod",
+                "CallCBDataIncrementing",
+                "ProcessCBMultiData",
                 "ProcessMacro",
                 "RefreshParametersImpl",
                 "GetRegisterValue",
@@ -76,6 +78,17 @@ class GpuFrontendHotPathTests(unittest.TestCase):
         self.compile_and_run(
             fixture.replace("// REGISTER_INDICES", registers).replace("// METHODS", methods)
         )
+
+    def test_incrementing_cb_parser_boundaries(self):
+        source = (ROOT / "src/video_core/dma_pusher.cpp").read_text()
+        parser = method(source, "DmaPusher::ProcessCommands")
+        start = parser.index("            constexpr u32 cb_begin")
+        end = parser.index("            auto const command_header", start)
+        reference = (parser[:start] + parser[end:]).replace(
+            "DmaPusher::ProcessCommands", "ReferencePusher::ProcessCommands"
+        )
+        fixture = (FIXTURES / "gpu_frontend_dma.cpp").read_text()
+        self.compile_and_run(fixture.replace("// METHODS", parser + "\n" + reference))
 
     def test_execution_mask_covers_method_side_effects(self):
         source = MAXWELL.read_text()

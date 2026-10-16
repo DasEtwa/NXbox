@@ -57,7 +57,28 @@ int main() {
     assert(owner.timing.cpu[static_cast<std::size_t>(D3D12::FramePhase::MacroExecution)] == 10);
     std::thread other([] { assert(sink == nullptr); PhaseScope ignored{Phase::DmaPusher}; });
     other.join();
+    // Method counts are exact, units retain bulk words, only 1/64 calls is timed.
+    TakeMethodWindow();
+    for (int i = 0; i < 128; ++i) {
+        MethodScope dirty{MethodClass::DirtyFlags};
+    }
+    { MethodScope cb{MethodClass::ConstantBuffer, 16}; }
+    auto methods = TakeMethodWindow();
+    assert(methods[0].count == 128 && methods[0].units == 128);
+    assert(methods[0].timed_calls == 2);
+    assert(methods[1].count == 1 && methods[1].units == 16);
+    assert(TakeMethodWindow()[0].count == 0);
+    {
+        MethodScope cross_window{MethodClass::QueryReport, 3};
+        cross_window.Skip();
+        assert(TakeMethodWindow()[3].count == 0);
+    }
+    const auto completed_method = TakeMethodWindow()[3];
+    assert(completed_method.count == 1 && completed_method.units == 3);
+    assert(completed_method.timed_calls == 1 && completed_method.skipped == 1);
     sink = nullptr;
+    { MethodScope disabled{MethodClass::DirtyFlags}; }
+    assert(TakeMethodWindow()[0].count == 0);
     enabled = true;
     { WaitScope async_tick{Wait::TickGPU, false}; }
     assert(TakeWindow().waits[static_cast<std::size_t>(Wait::TickGPU)].count == 0);
