@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <winrt/Windows.Storage.h>
@@ -314,9 +315,16 @@ MesaWindow::MesaWindow(const CoreWindow& window_, u32 width, u32 height) : windo
     LoadRuntimeEnvironment();
     StartThreadProfiler();
     const char* override_value = std::getenv("NXBOX_RENDERER");
-    native_d3d12 = D3D12::UseNativeBackend(Settings::values.renderer_backend.GetValue() ==
-                                               Settings::RendererBackend::D3D12,
-                                           override_value ? override_value : "");
+    // D3D12 is the default: Eden's default backend is Vulkan, which the Xbox does not have, and
+    // the Mesa OpenGL path renders several games black. Only an explicit OpenGL choice (setting
+    // or NXBOX_RENDERER=opengl) selects Mesa.
+    const auto backend = Settings::values.renderer_backend.GetValue();
+    const bool opengl_selected = backend == Settings::RendererBackend::OpenGL_GLSL ||
+                                 backend == Settings::RendererBackend::OpenGL_GLASM ||
+                                 backend == Settings::RendererBackend::OpenGL_SPIRV;
+    const bool opengl_forced = override_value && _stricmp(override_value, "opengl") == 0;
+    native_d3d12 = !opengl_forced &&
+                   D3D12::UseNativeBackend(!opengl_selected, override_value ? override_value : "");
     window_info.type = Core::Frontend::WindowSystemType::Windows;
     window_info.render_surface = get_abi(window);
     window_info.render_surface_scale = 1.0f;
