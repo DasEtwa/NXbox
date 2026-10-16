@@ -1543,7 +1543,7 @@ private:
              nextendo_row,
              {Tr(Text::SettingsMultiplayer), Tr(Text::HintSelect), Theme::kTextSecondary,
               Tr(Text::SettingsMultiplayerHint)},
-             {Tr(Text::InternetArtwork), Tr(internet_art_ ? Text::SyncStateOn : Text::SyncStateOff),
+             {Tr(Text::InternetArtwork), Tr(internet_art_ ? Text::NextendoOn : Text::NextendoOff),
               Theme::kTextSecondary, Tr(Text::InternetArtworkHint)},
              {Tr(Text::SystemMenuTitle), Tr(Text::SystemMenuBoot), Theme::kTextSecondary,
               Tr(Text::SystemMenuHint)},

@@ -71,7 +71,7 @@ ProfileManager::ProfileManager() {
         CreateNewUser(UUID::MakeRandom(), "NXbox");
         SetAvatar(profiles[0].user_uuid, Core::Constants::NXBOX_ACCOUNT_JPEG);
 #else
-        CreateNewUser(UUID::MakeRandom(), "Eden");
+        CreateNewUser(UUID::MakeRandom(), "NXbox");
 #endif
         WriteUserSaveFile();
     }
