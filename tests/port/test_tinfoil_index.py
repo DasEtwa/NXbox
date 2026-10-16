@@ -66,10 +66,10 @@ int main(int argc, char** argv) {
         assert(parse(R"({"error":"","files":[]})").status == Status::Ok);
     } else if (test == "headers") {
         const auto index = parse(
-            R"({"headers":{"Authorization":"Bearer secret","X-Key":"abc"},"locations":{"X-Location":"value"}})");
-        assert(index.headers.size() == 3);
-        assert(index.headers[1].first == "Authorization" &&
-               index.headers[1].second == "Bearer secret");
+            R"({"headers":{"Authorization":"Bearer secret","X-Key":"abc"},"locations":{"Another shop":"https://other/shop/"}})");
+        assert(index.headers.size() == 2 && index.locations == std::vector<std::string>({"https://other/shop/"}));
+        assert(index.headers[0].first == "Authorization" &&
+               index.headers[0].second == "Bearer secret");
     } else if (test == "header_arrays") {
         const auto index = parse(
             R"({"headers":[{"name":"X-One","value":"1"},{"X-Two":"2"},"X-Three: 3",["X-Four","4"],{"bad name":"skip","X-Bad":"a\r\nb"}]})");

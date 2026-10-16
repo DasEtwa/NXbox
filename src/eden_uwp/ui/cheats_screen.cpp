@@ -459,7 +459,7 @@ public:
             renderer_.DrawString(Tr(Text::CreditsBody), Font::Body,
                                  RectF(kMargin, kListTop - 40.0f, kMargin + 1300.0f, kFooterTop),
                                  Theme::kTextSecondary);
-            DrawTabs(renderer_, 1, false);
+            DrawTabs(renderer_, 2, false);
             DrawClock(renderer_);
             DrawHints(renderer_, {{Theme::kButtonB, L"B", Tr(Text::HintBack)}});
             renderer_.EndFrame();

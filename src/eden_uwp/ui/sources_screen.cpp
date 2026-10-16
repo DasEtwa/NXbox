@@ -20,10 +20,14 @@
 #include <cwctype>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -40,7 +44,10 @@
 #include <winrt/Windows.Web.Http.Headers.h>
 #include <winrt/Windows.Web.Http.h>
 
+#include "common/fs/path_util.h"
 #include "common/scope_exit.h"
+#include "common/settings.h"
+#include "core/hle/service/acc/profile_manager.h"
 #include "eden_uwp/await_bounded.h"
 #include "eden_uwp/diagnostic.h"
 #include "eden_uwp/game_download.h"
@@ -52,6 +59,7 @@
 #include "eden_uwp/ui/theme.h"
 #include "eden_uwp/ui/tinfoil_index.h"
 #include "eden_uwp/ui/widgets.h"
+#include "eden_uwp/usb_library.h"
 
 namespace EdenXbox::Ui {
 namespace {
@@ -112,6 +120,7 @@ struct Entry {
     std::string url;   // absolute, without the #name fragment
     std::uint64_t size = 0;
     Kind kind = Kind::Other;
+    Tinfoil::Headers headers;
     std::wstring key; // case-folded destination for Windows queue collision checks
 };
 
@@ -123,6 +132,14 @@ struct FetchResult {
     Failure failure = Failure::None;
     std::optional<Tinfoil::Traversal> traversal;
     bool partial = false;
+    Tinfoil::Unsupported unsupported = Tinfoil::Unsupported::None;
+    std::vector<std::string> locations;
+    std::map<std::string, std::wstring> errors;
+};
+
+struct StorageResult {
+    fs::space_info internal{};
+    fs::space_info external{};
 };
 
 struct ImportResult {
@@ -157,21 +174,6 @@ std::string Lower(std::string text) {
         return static_cast<char>(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c);
     });
     return text;
-}
-
-bool StartsWith(const std::string& text, const char* prefix) {
-    return text.rfind(prefix, 0) == 0;
-}
-
-bool IsHttpUrl(const std::string& url) {
-    const std::string lower = Lower(url.substr(0, 8));
-    const bool http = StartsWith(lower, "http://") && url.size() > 7;
-    const bool https = StartsWith(lower, "https://") && url.size() > 8;
-    if (!http && !https) {
-        return false;
-    }
-    return std::none_of(url.begin(), url.end(),
-                        [](unsigned char c) { return c <= ' ' || c == 0x7F; });
 }
 
 // The text between "://" and the next "/", "?" or "#", without credentials.
@@ -357,7 +359,7 @@ std::vector<Source> LoadSources(const fs::path& local_state) {
             Source source;
             source.name = StringAt(item, L"name");
             source.url = StringAt(item, L"url");
-            if (IsHttpUrl(source.url)) {
+            if (Tinfoil::IsLocation(source.url)) {
                 if (source.name.empty()) {
                     source.name = HostOf(source.url);
                 }
@@ -455,13 +457,13 @@ std::vector<Source> ParseSourcesText(const std::string& text) {
         }
         Source source;
         const std::size_t bar = line.find('|');
-        if (!IsHttpUrl(line) && bar != std::string::npos) {
+        if (!Tinfoil::IsLocation(line) && bar != std::string::npos) {
             source.name = Trim(line.substr(0, bar));
             source.url = Trim(line.substr(bar + 1));
         } else {
             source.url = line;
         }
-        if (IsHttpUrl(source.url)) {
+        if (Tinfoil::IsLocation(source.url)) {
             found.push_back(std::move(source));
         }
     }
@@ -509,19 +511,50 @@ ImportResult ScanDrivesForSources(const std::atomic<bool>& cancel) {
     return result;
 }
 
+// Claims a .partial path for one download thread at a time.
+struct PartialClaim {
+    explicit PartialClaim(fs::path path_) : path{std::move(path_)} {
+        std::scoped_lock lock{Mutex()};
+        owned = Paths().insert(path).second;
+    }
+    ~PartialClaim() {
+        if (!owned)
+            return;
+        std::scoped_lock lock{Mutex()};
+        Paths().erase(path);
+    }
+    PartialClaim(const PartialClaim&) = delete;
+    PartialClaim& operator=(const PartialClaim&) = delete;
+    static std::mutex& Mutex() {
+        static std::mutex mutex;
+        return mutex;
+    }
+    static std::set<fs::path>& Paths() {
+        static std::set<fs::path> paths;
+        return paths;
+    }
+    fs::path path;
+    bool owned{};
+};
+
 // ---- Reading a source ----
 
 // GETs a text body. False, with a log line, on a network error or an unsuccessful status.
-bool HttpGetText(const HttpClient& client, const Tinfoil::Request& request, std::string& body) {
-    const std::string& url = request.url;
+bool HttpGetText(const HttpClient& client, const Tinfoil::Request& request, std::string& body,
+                 std::string& effective_url) {
+    Tinfoil::Headers headers = request.headers;
+    const std::string url = Tinfoil::Authenticate(request.url, headers);
     try {
         const winrt::Windows::Web::Http::HttpRequestMessage message{
             winrt::Windows::Web::Http::HttpMethod::Get(), Uri{winrt::to_hstring(url)}};
-        for (const auto& [name, value] : request.headers) {
+        for (const auto& [name, value] : headers) {
             void(message.Headers().TryAppendWithoutValidation(winrt::to_hstring(name),
                                                               winrt::to_hstring(value)));
         }
-        const auto response = AwaitBounded(client.SendRequestAsync(message), kRequestTimeout);
+        const auto response = AwaitBounded(
+            client.SendRequestAsync(
+                message, winrt::Windows::Web::Http::HttpCompletionOption::ResponseHeadersRead),
+            kRequestTimeout);
         if (!response) {
             Diagnostic("SOURCES_FETCH " + RedactedUrl(url) + " timed out");
             return false;
@@ -531,21 +564,47 @@ bool HttpGetText(const HttpClient& client, const Tinfoil::Request& request, std:
                                    static_cast<int>(response->StatusCode())));
             return false;
         }
-        // Keep binary bytes intact so the parser can report unsupported encrypted indexes.
-        const auto buffer = AwaitBounded(response->Content().ReadAsBufferAsync(), kRequestTimeout);
-        if (!buffer) {
-            Diagnostic("SOURCES_FETCH " + RedactedUrl(url) + " body timed out");
+        effective_url = winrt::to_string(response->RequestMessage().RequestUri().AbsoluteUri());
+        // Preserve binary bytes for encrypted-index detection, but never buffer an unlimited
+        // response (a mistaken package URL may be gigabytes). Autoindex traversal is bounded too.
+        using namespace winrt::Windows::Storage::Streams;
+        const auto stream =
+            AwaitBounded(response->Content().ReadAsInputStreamAsync(), kRequestTimeout);
+        if (!stream)
             return false;
-        }
+        constexpr std::size_t max_body = 16u << 20;
+        Buffer buffer{64u << 10};
         body.clear();
-        if (buffer->Length() != 0) {
-            body.assign(reinterpret_cast<const char*>(buffer->data()), buffer->Length());
+        for (;;) {
+            const auto read = AwaitBounded(
+                stream->ReadAsync(buffer, buffer.Capacity(), InputStreamOptions::Partial),
+                kRequestTimeout);
+            if (!read || read->Length() > max_body - body.size())
+                return false;
+            if (read->Length() == 0)
+                break;
+            body.append(reinterpret_cast<const char*>(read->data()), read->Length());
         }
         return true;
     } catch (const winrt::hresult_error&) {
         // HTTP exception messages can include request header values.
         Diagnostic("SOURCES_FETCH " + RedactedUrl(url) + " failed");
         return false;
+    }
+}
+
+Text UnsupportedText(Tinfoil::Unsupported reason) {
+    switch (reason) {
+    case Tinfoil::Unsupported::Encrypted:
+        return Text::ShopEncrypted;
+    case Tinfoil::Unsupported::Ftp:
+        return Text::ShopFtpUnsupported;
+    case Tinfoil::Unsupported::GoogleDrive:
+        return Text::ShopDriveUnsupported;
+    case Tinfoil::Unsupported::OneFichier:
+        return Text::ShopFichierUnsupported;
+    default:
+        return Text::SrcUnsupported;
     }
 }
 
@@ -562,34 +621,52 @@ FetchResult FetchSource(Tinfoil::Traversal traversal, std::size_t remaining,
         if (!request) {
             break;
         }
+        const auto support = Tinfoil::LocationSupport(request->url);
+        if (support != Tinfoil::Unsupported::None) {
+            result.failure = Failure::Unsupported;
+            result.unsupported = support;
+            result.errors[request->url] = Tr(UnsupportedText(support));
+            if (!traversal.HasNext())
+                break;
+            result.partial = true;
+            continue;
+        }
         std::string body;
-        if (!HttpGetText(client, *request, body)) {
+        std::string effective_url;
+        if (!HttpGetText(client, *request, body, effective_url)) {
             if (request->depth == 0) {
                 result.failure = Failure::Unreachable;
-                return result;
+                result.errors[request->url] = Tr(Text::SrcUnreachable);
+                if (!traversal.HasNext())
+                    return result;
             }
             result.partial = true;
             continue;
         }
-        const Tinfoil::Index index = Tinfoil::ParseIndex(body, request->url);
+        const Tinfoil::Index index = Tinfoil::ParseIndex(body, effective_url);
         if (index.status != Tinfoil::Status::Ok) {
             if (request->depth == 0) {
                 result.failure = index.status == Tinfoil::Status::SourceError
                                      ? Failure::SourceError
                                      : Failure::Unsupported;
                 result.message = Widen(index.error);
+                result.unsupported = index.unsupported;
+                result.errors[request->url] = index.status == Tinfoil::Status::SourceError
+                                                  ? Widen(index.error)
+                                                  : Tr(UnsupportedText(index.unsupported));
                 Diagnostic("SOURCES_FETCH " + RedactedUrl(request->url) + " unusable index");
-                return result;
+                if (!traversal.HasNext())
+                    return result;
             }
             result.partial = true;
             continue;
         }
-        if (!index.success.empty()) {
-            if (!result.message.empty()) {
-                result.message += L"  ·  ";
-            }
-            result.message += Widen(index.success);
-        }
+        result.locations.insert(result.locations.end(), index.locations.begin(),
+                                index.locations.end());
+        for (const auto& location : index.locations)
+            traversal.AddRoot(location);
+        result.failure = Failure::None;
+        result.message = Widen(index.success);
         for (const Tinfoil::File& file : index.files) {
             if (result.entries.size() >= remaining) {
                 break;
@@ -597,6 +674,18 @@ FetchResult FetchSource(Tinfoil::Traversal traversal, std::size_t remaining,
             Entry entry;
             entry.name = Widen(file.name);
             entry.url = file.url;
+            entry.headers = request->headers;
+            for (const auto& header : index.headers) {
+                entry.headers.erase(std::remove_if(entry.headers.begin(), entry.headers.end(),
+                                                   [&](const auto& old) {
+                                                       return Lower(old.first) ==
+                                                              Lower(header.first);
+                                                   }),
+                                    entry.headers.end());
+                entry.headers.push_back(header);
+            }
+            if (Tinfoil::Origin(entry.url) != Tinfoil::Origin(request->url))
+                entry.headers.clear(); // Never send one shop's credentials to another host.
             entry.file = DiskName(entry.name, entry.url);
             entry.key = LowerWide(entry.file);
             entry.size = file.size;
@@ -609,6 +698,117 @@ FetchResult FetchSource(Tinfoil::Traversal traversal, std::size_t remaining,
         result.traversal = std::move(traversal);
     Diagnostic("SOURCES_FETCH page files=" + std::to_string(result.entries.size()));
     return result;
+}
+
+// The shared downloader has no request-header argument. Keep its storage/resume behavior for
+// ordinary links and stream authenticated shop packages here without buffering them in memory.
+bool DownloadShopPackage(const Entry& entry, fs::path& destination,
+                         const std::function<void(std::uint64_t, std::uint64_t)>& progress,
+                         const std::atomic<bool>& cancel) {
+    auto headers = entry.headers;
+    const auto url = Tinfoil::Authenticate(entry.url, headers);
+    if (headers.empty())
+        return DownloadFile(url, destination, [](const fs::path&) {}, progress, &cancel);
+    using namespace winrt::Windows::Web::Http;
+    using namespace winrt::Windows::Storage::Streams;
+    for (int attempt = 0; attempt < 3 && !cancel.load(); ++attempt) {
+        try {
+            std::error_code ec;
+            fs::create_directories(destination.parent_path(), ec);
+            auto have = fs::exists(destination, ec) ? fs::file_size(destination, ec) : 0;
+            if (ec)
+                return false;
+            HttpClient client;
+            HttpRequestMessage request{HttpMethod::Get(), Uri{winrt::to_hstring(url)}};
+            for (const auto& [name, value] : headers) {
+                // Range and framing are owned by the transfer, never by the index.
+                const auto key = Lower(name);
+                if (key != "range" && key != "host" && key != "content-length")
+                    void(request.Headers().TryAppendWithoutValidation(winrt::to_hstring(name),
+                                                                      winrt::to_hstring(value)));
+            }
+            if (have)
+                void(request.Headers().TryAppendWithoutValidation(
+                    L"Range", winrt::to_hstring("bytes=" + std::to_string(have) + "-")));
+            const auto response = AwaitBounded(
+                client.SendRequestAsync(request, HttpCompletionOption::ResponseHeadersRead),
+                kRequestTimeout);
+            if (!response)
+                continue;
+            if (static_cast<int>(response->StatusCode()) == 416 && have > 0) {
+                const auto range = response->Content().Headers().ContentRange();
+                if (range && range.Length() && range.Length().Value() == have) {
+                    progress(have, have);
+                    return true;
+                }
+            }
+            if (!response->IsSuccessStatusCode())
+                continue;
+            if (response->StatusCode() == HttpStatusCode::PartialContent) {
+                const auto range = response->Content().Headers().ContentRange();
+                if (!range || !range.FirstBytePosition() ||
+                    range.FirstBytePosition().Value() != have)
+                    return false;
+            } else {
+                have = 0;
+            }
+            const auto length = response->Content().Headers().ContentLength();
+            if (!length)
+                return false;
+            if (length.Value() > std::numeric_limits<std::uint64_t>::max() - have)
+                return false;
+            const auto total = have + length.Value();
+            const auto free = FreeSpace(destination.parent_path());
+            if (!free)
+                return false;
+            if (*free < total - have) {
+                bool relocated = false;
+                for (const auto& folder : ExternalGameFolders()) {
+                    const auto candidate = folder / destination.filename();
+                    if (candidate == destination)
+                        continue;
+                    const auto size = fs::exists(candidate, ec) ? fs::file_size(candidate, ec) : 0;
+                    const auto available = FreeSpace(folder);
+                    if (!ec && size <= total && available && *available >= total - size) {
+                        destination = candidate;
+                        relocated = true;
+                        break;
+                    }
+                }
+                if (relocated)
+                    continue; // reopen with the selected drive's Range, not the previous offset
+                return false;
+            }
+            const auto stream =
+                AwaitBounded(response->Content().ReadAsInputStreamAsync(), kRequestTimeout);
+            if (!stream)
+                continue;
+            std::ofstream out(destination,
+                              std::ios::binary | (have ? std::ios::app : std::ios::trunc));
+            if (!out)
+                return false;
+            Buffer buffer{1u << 20};
+            progress(have, total);
+            while (have < total && !cancel.load()) {
+                const auto read = AwaitBounded(
+                    stream->ReadAsync(buffer, buffer.Capacity(), InputStreamOptions::Partial),
+                    kRequestTimeout);
+                if (!read || read->Length() == 0 || read->Length() > total - have)
+                    break;
+                out.write(reinterpret_cast<const char*>(read->data()), read->Length());
+                if (!out)
+                    return false;
+                have += read->Length();
+                progress(have, total);
+            }
+            out.flush();
+            if (out && have == total && !cancel.load())
+                return true;
+        } catch (const winrt::hresult_error&) {
+            Diagnostic("SOURCES_DOWNLOAD retry"); // never log headers or credentials
+        }
+    }
+    return false;
 }
 
 // Runs `body(task)` on a detached thread with its own MTA apartment.
@@ -688,12 +888,200 @@ public:
         return closed_;
     }
 
+    void InitializeShop() {
+        shop_ = true;
+        sources_ = LoadSources(local_state_);
+        banners_ = std::make_unique<BannerSource>(local_state_);
+        ScanInstalled();
+        // Read the selected profile through existing APIs. Never mutate account state.
+        const Service::Account::ProfileManager profiles;
+        const auto user =
+            profiles.GetUser(static_cast<std::size_t>(Settings::values.current_user.GetValue()));
+        Service::Account::ProfileBase profile{};
+        if (user && profiles.GetProfileBase(*user, profile)) {
+            const auto end = std::find(profile.username.begin(), profile.username.end(), 0);
+            profile_name_ = Widen(std::string(profile.username.begin(), end));
+            const auto path =
+                Common::FS::GetEdenPath(Common::FS::EdenPath::NANDDir) /
+                ("system/save/8000000000000010/su/avators/" + user->FormattedString() + ".jpg");
+            Pixels pixels;
+            if (renderer_.DecodeImage(ReadFileBytes(path), pixels))
+                renderer_.UploadImage(pixels, profile_avatar_);
+        }
+        ReloadShop();
+    }
+
+    void ReloadShop() {
+        // A settings round-trip may invalidate a detail page kept as Queue's return target.
+        queue_return_ = Mode::Browse;
+        queue_section_ = tab_;
+        detail_items_.clear();
+        sidebar_focus_ = true;
+        sources_ = LoadSources(local_state_);
+        if (!sources_.empty()) {
+            browse_url_ = sources_.front().url;
+            LoadBrowse();
+        } else {
+            if (fetch_)
+                fetch_->cancel.store(true);
+            ++fetch_serial_;
+            fetch_.reset();
+            failure_ = Failure::None;
+            unsupported_ = Tinfoil::Unsupported::None;
+            fetch_message_.clear();
+            partial_ = false;
+            art_.clear();
+            source_errors_.clear();
+            entries_.clear();
+            packages_.clear();
+            games_.clear();
+            visible_.clear();
+            traversal_.reset();
+        }
+        SetMode(Mode::Browse);
+    }
+
+    void TickShop(Clock::time_point now, bool active) {
+        if (mode_ != Mode::Detail && !(mode_ == Mode::Queue && queue_return_ == Mode::Detail))
+            AdoptFetch();
+        UpdateDownload(now);
+        // Fetch the bounded traversal incrementally without requiring a Load more tile.
+        if (!Loading() && traversal_ && entries_.size() < kMaxEntries && mode_ != Mode::Detail &&
+            !(mode_ == Mode::Queue && queue_return_ == Mode::Detail))
+            LoadBrowse(true);
+        if (storage_ && storage_->done.load()) {
+            internal_space_ = storage_->result.internal;
+            external_space_ = storage_->result.external;
+            storage_.reset();
+        }
+        if (!storage_ && now >= storage_refresh_) {
+            storage_refresh_ = now + std::chrono::seconds(5);
+            storage_ = Spawn<StorageResult>([path = local_state_](Task<StorageResult>& task) {
+                std::error_code ec;
+                task.result.internal = fs::space(path, ec);
+                if (ec)
+                    task.result.internal = {};
+                if (const auto free = FreeSpace(path))
+                    task.result.internal.available = *free;
+                const auto folders = ExternalGameFolders();
+                if (!folders.empty()) {
+                    task.result.external = fs::space(folders.front(), ec);
+                    if (ec)
+                        task.result.external = {};
+                    if (const auto free = FreeSpace(folders.front()))
+                        task.result.external.available = *free;
+                }
+            });
+        }
+        if (!active)
+            return;
+        if (mode_ == Mode::Keyboard) {
+            UpdateKeyboard(now);
+            return;
+        }
+        if (mode_ == Mode::Detail) {
+            UpdateDetail(now);
+            return;
+        }
+        if (sidebar_focus_) {
+            if (mode_ != Mode::Browse)
+                SetMode(Mode::Browse);
+            queue_return_ = Mode::Browse;
+            if (input_.Pressed(Button::Up)) {
+                if (section_ == 0)
+                    navigation_requested_ = true;
+                else
+                    --section_;
+            }
+            if (input_.Pressed(Button::Down))
+                section_ = std::min(section_ + 1, 6);
+            if (input_.Pressed(Button::B))
+                navigation_requested_ = true;
+            if (section_ < 4 && tab_ != section_) {
+                tab_ = section_;
+                query_.clear(); // A search only filters the Search section.
+                browse_cursor_ = {};
+                FilterCatalog();
+            }
+            if (input_.Pressed(Button::Right) || input_.Pressed(Button::A)) {
+                if ((sources_.empty() && section_ != 5) ||
+                    (section_ == 6 && input_.Pressed(Button::A))) {
+                    sources_requested_ = true;
+                } else if (section_ == 4) {
+                    tab_ = 3;
+                    FilterCatalog();
+                    searching_ = true;
+                    entry_ = std::make_unique<TextEntry>(Tr(Text::SrcSearch), query_);
+                    SetMode(Mode::Keyboard);
+                    sidebar_focus_ = false;
+                } else {
+                    sidebar_focus_ = false;
+                }
+            }
+            return;
+        }
+        if (input_.Pressed(Button::B) ||
+            (section_ < 5 && input_.Pressed(Button::Left) && browse_cursor_.selected % 4 == 0)) {
+            sidebar_focus_ = true;
+            queue_return_ = Mode::Browse;
+            SetMode(Mode::Browse);
+            return;
+        }
+        if (sources_.empty() && section_ != 5) {
+            if (input_.Pressed(Button::A))
+                sources_requested_ = true;
+            return;
+        }
+        if (mode_ == Mode::Queue && input_.Pressed(Button::View)) {
+            section_ = queue_section_;
+            SetMode(queue_return_);
+            return;
+        }
+        if (section_ == 6) {
+            if (input_.Pressed(Button::Up))
+                source_cursor_ = std::max(0, source_cursor_ - 1);
+            if (input_.Pressed(Button::Down))
+                source_cursor_ = std::min(std::max(0, static_cast<int>(sources_.size()) - 1),
+                                          source_cursor_ + 1);
+            if (input_.Pressed(Button::A))
+                sources_requested_ = true;
+        } else if (section_ == 5) {
+            if (mode_ != Mode::Queue)
+                SetMode(Mode::Queue);
+            UpdateQueue();
+        } else {
+            if (mode_ != Mode::Browse && mode_ != Mode::Detail && mode_ != Mode::Keyboard)
+                SetMode(Mode::Browse); // SetMode resets the scroll tween.
+            UpdateBrowse(now);
+        }
+    }
+
+    void DrawShop(Clock::time_point now, bool navigation_focused) {
+        // Background fetches/downloads must not consume a message's display time on another tab.
+        if ((toast_.empty() || now >= toast_until_) && !pending_toasts_.empty()) {
+            toast_ = std::move(pending_toasts_.front());
+            pending_toasts_.erase(pending_toasts_.begin());
+            toast_until_ = now + kToastDuration;
+        }
+        navigation_focused_ = navigation_focused;
+        Draw(now);
+    }
+    bool TakeSourcesRequest() {
+        return std::exchange(sources_requested_, false);
+    }
+    bool TakeNavigationRequest() {
+        return std::exchange(navigation_requested_, false);
+    }
+    bool Typing() const {
+        return mode_ == Mode::Keyboard;
+    }
+
 private:
     // ---- State ----
 
     int ListRows() const { return 2 + static_cast<int>(sources_.size()); }
     int BrowseRows() const {
-        return static_cast<int>(visible_.size()) + (traversal_ ? 1 : 0);
+        return static_cast<int>(visible_.size()) + (!shop_ && traversal_ ? 1 : 0);
     }
     bool InBrowse() const {
         return mode_ == Mode::Browse || mode_ == Mode::Detail ||
@@ -711,6 +1099,11 @@ private:
         if (text.empty()) {
             return;
         }
+        if (shop_) {
+            if (pending_toasts_.size() < 128)
+                pending_toasts_.push_back(text);
+            return;
+        }
         toast_ = text;
         toast_until_ = now + kToastDuration;
     }
@@ -725,27 +1118,13 @@ private:
         SetMode(Mode::Keyboard);
     }
 
-    void StartBrowse() {
-        const Source& source = sources_[static_cast<std::size_t>(FocusedSource())];
-        browse_name_ = Widen(source.name);
-        browse_url_ = source.url;
-        tab_ = 0;
-        query_.clear();
-        shelf_ = Tween(0.0f);
-        if (!banners_)
-            banners_ = std::make_unique<BannerSource>(local_state_);
-        ScanInstalled();
-        LoadBrowse();
-        browse_cursor_ = Cursor{};
-        SetMode(Mode::Browse);
-    }
-
     void LoadBrowse(bool more = false) {
         if (fetch_) {
             fetch_->cancel.store(true);
         }
         ++fetch_serial_;
         if (!more) {
+            source_errors_.clear();
             entries_.clear();
             packages_.clear();
             games_.clear();
@@ -756,6 +1135,9 @@ private:
             fetch_message_.clear();
             partial_ = false;
             traversal_ = Tinfoil::Traversal(browse_url_);
+            if (shop_)
+                for (const auto& source : sources_)
+                    traversal_->AddRoot(source.url);
         }
         failure_ = Failure::None;
         auto traversal = std::move(*traversal_);
@@ -777,7 +1159,7 @@ private:
         games_ = Tinfoil::Group(packages_, sizes);
         FilterCatalog();
         // A source with only updates or DLC would open on an empty "New games" tab.
-        while (visible_.empty() && query_.empty() && tab_ < 3 && !games_.empty()) {
+        while (!shop_ && visible_.empty() && query_.empty() && tab_ < 3 && !games_.empty()) {
             ++tab_;
             FilterCatalog();
         }
@@ -878,14 +1260,37 @@ private:
         if (!fetch_ || !fetch_->done.load() || fetch_adopted_ == fetch_serial_)
             return;
         fetch_adopted_ = fetch_serial_;
+        std::string selected_id;
+        if (browse_cursor_.selected >= 0 &&
+            static_cast<std::size_t>(browse_cursor_.selected) < visible_.size())
+            selected_id =
+                games_[visible_[static_cast<std::size_t>(browse_cursor_.selected)]].base_id;
         for (auto& entry : fetch_->result.entries)
             entries_.push_back(std::move(entry));
         if (!fetch_->result.message.empty())
             fetch_message_ = fetch_->result.message;
-        failure_ = fetch_->result.failure;
+        if (fetch_->result.failure != Failure::None) // A later page must not hide a failure.
+            failure_ = fetch_->result.failure;
+        unsupported_ = fetch_->result.unsupported;
+        for (const auto& [url, error] : fetch_->result.errors) {
+            source_errors_[url] = error;
+            if (announced_.insert(error).second)
+                Toast(error, Clock::now());
+        }
+        if (!fetch_->result.message.empty() && failure_ == Failure::None &&
+            announced_.insert(fetch_->result.message).second)
+            Toast(fetch_->result.message, Clock::now());
+        // Index "locations" are followed for this load only; persisting them would let any
+        // index add sources the user never chose.
         partial_ = partial_ || fetch_->result.partial;
         traversal_ = std::move(fetch_->result.traversal);
         RebuildCatalog();
+        if (!selected_id.empty())
+            for (std::size_t i = 0; i < visible_.size(); ++i)
+                if (games_[visible_[i]].base_id == selected_id) {
+                    browse_cursor_.selected = static_cast<int>(i);
+                    break;
+                }
     }
 
     void StartImport() {
@@ -926,7 +1331,7 @@ private:
         rate_.store(0.0);
         outcome_.store(Outcome::Pending);
         const fs::path destination = local_state_ / L"games" / entry.file;
-        download_thread_ = std::thread([this, url = entry.url, name = Utf8(entry.name),
+        download_thread_ = std::thread([this, package = entry, name = Utf8(entry.name),
                                         expected_size = entry.size, destination]() mutable {
             Outcome outcome = Outcome::Failed;
             try {
@@ -965,7 +1370,10 @@ private:
                     fs::file_size(destination, ec) < expected_size && !fs::exists(target, ec)) {
                     fs::rename(destination, target, ec); // resume a pre-catalog partial download
                 }
-                bool ok = DownloadFile(url, target, [](const fs::path&) {}, progress, &cancel_);
+                // The Shop tab and Settings > Sources each own a downloader; only one may
+                // write a given .partial file.
+                const PartialClaim claim{target};
+                bool ok = claim.owned && DownloadShopPackage(package, target, progress, cancel_);
                 if (ok) {
                     fs::path complete = target;
                     complete.replace_extension(); // removes only the trailing .partial
@@ -1069,8 +1477,6 @@ private:
             OpenKeyboard({});
         } else if (list_cursor_.selected == 1) {
             StartImport();
-        } else {
-            StartBrowse();
         }
         (void)now;
     }
@@ -1098,7 +1504,7 @@ private:
             SetMode(Mode::List);
             return;
         }
-        if (!IsHttpUrl(typed)) {
+        if (!Tinfoil::IsLocation(typed)) {
             Toast(Tr(Text::SrcInvalidUrl), now);
             return; // the keyboard stays open with the text, to fix it
         }
@@ -1140,6 +1546,10 @@ private:
     }
 
     void OpenQueue() {
+        if (shop_) {
+            queue_section_ = section_;
+            section_ = 5;
+        }
         queue_cursor_ = 0;
         queue_return_ = mode_;
         SetMode(Mode::Queue);
@@ -1156,13 +1566,19 @@ private:
             OpenQueue();
             return;
         }
-        if (input_.Pressed(Button::LeftShoulder) || input_.Pressed(Button::RightShoulder)) {
+        if (!shop_ &&
+            (input_.Pressed(Button::LeftShoulder) || input_.Pressed(Button::RightShoulder))) {
             tab_ = (tab_ + (input_.Pressed(Button::RightShoulder) ? 1 : 3)) % 4;
             browse_cursor_ = {};
             shelf_ = Tween(0.0f);
             FilterCatalog();
         }
         if (input_.Pressed(Button::Y)) {
+            if (shop_) {
+                tab_ = 3;
+                section_ = 4;
+                FilterCatalog();
+            }
             searching_ = true;
             entry_ = std::make_unique<TextEntry>(Tr(Text::SrcSearch), query_);
             SetMode(Mode::Keyboard);
@@ -1174,19 +1590,26 @@ private:
             shelf_ = Tween(0.0f);
             FilterCatalog();
         }
-        if (input_.Pressed(Button::Menu) && !Loading()) {
+        if (input_.Pressed(Button::Menu) && !Loading() && !sources_.empty()) {
             LoadBrowse();
             return;
         }
-        // A horizontal shelf: the selected tile stays at the left margin, as in the library.
+        // Left/Right moves by one tile; Up/Down moves by a four-column grid row.
         if (input_.Pressed(Button::Left))
             browse_cursor_.selected = std::max(0, browse_cursor_.selected - 1);
         if (input_.Pressed(Button::Right))
             browse_cursor_.selected =
                 std::min(std::max(0, BrowseRows() - 1), browse_cursor_.selected + 1);
-        if (input_.Pressed(Button::A) && !Loading()) {
+        if (shop_) {
+            if (input_.Pressed(Button::Up))
+                browse_cursor_.selected = std::max(0, browse_cursor_.selected - 4);
+            if (input_.Pressed(Button::Down))
+                browse_cursor_.selected =
+                    std::min(std::max(0, BrowseRows() - 1), browse_cursor_.selected + 4);
+        }
+        if (input_.Pressed(Button::A)) {
             const auto selected = static_cast<std::size_t>(browse_cursor_.selected);
-            if (selected == visible_.size() && traversal_) {
+            if (!shop_ && selected == visible_.size() && traversal_) {
                 LoadBrowse(true);
             } else if (selected < visible_.size()) {
                 detail_game_ = visible_[selected];
@@ -1248,7 +1671,7 @@ private:
                 std::min(static_cast<int>(queue_.Items().size()) - 1, queue_cursor_ + 1);
         queue_cursor_ =
             std::clamp(queue_cursor_, 0, std::max(0, static_cast<int>(queue_.Items().size()) - 1));
-        if (input_.Pressed(Button::B) && !queue_.Empty()) {
+        if (input_.Pressed(shop_ ? Button::X : Button::B) && !queue_.Empty()) {
             if (queue_cursor_ == 0)
                 cancel_.store(true);
             else
@@ -1278,14 +1701,26 @@ private:
 
     void Draw(Clock::time_point now) {
         DrawHeader();
-        if (InBrowse()) {
+        if (shop_) {
+            DrawSidebar();
+            if (section_ == 6)
+                DrawShopSources();
+            else if (sources_.empty())
+                DrawShopEmpty();
+            else if (section_ != 5 && mode_ != Mode::Detail)
+                DrawBrowse(now);
+        } else if (InBrowse()) {
             DrawBrowse(now);
         } else {
             DrawListRows(now);
         }
-        DrawTabs(renderer_, 1, false);
+        DrawTabs(renderer_, shop_ ? 1 : 2, shop_ && navigation_focused_);
         DrawClock(renderer_);
-        if (!queue_.Empty() && (mode_ == Mode::Browse || mode_ == Mode::List)) {
+        if (shop_) {
+            DrawStorage(Tr(Text::ShopInternalStorage), internal_space_, 1180.0f);
+            DrawStorage(Tr(Text::ShopExternalStorage), external_space_, 1490.0f);
+        }
+        if (!shop_ && !queue_.Empty() && (mode_ == Mode::Browse || mode_ == Mode::List)) {
             const auto total = bytes_total_.load();
             const auto percent =
                 total > 0 ? std::min<std::uint64_t>(
@@ -1319,25 +1754,35 @@ private:
         default:
             break;
         }
+        if (shop_ && section_ == 5 && mode_ != Mode::Queue)
+            DrawQueue();
         DrawToast(now);
-        DrawHints(renderer_, CurrentHints());
+        if (shop_)
+            DrawProfile();
+        DrawHints(renderer_, CurrentHints(), shop_);
     }
 
     void DrawHeader() {
-        const std::wstring title = InBrowse() ? browse_name_ : std::wstring(Tr(Text::SourcesRowTitle));
-        renderer_.DrawString(title, Font::ModsTitle,
-                             RectF(kMargin, kTitleTop, kRight, kTitleTop + kTitleHeight),
-                             Theme::kText, HAlign::Left, VAlign::Middle);
+        const Text sections[] = {Text::SrcNewGames, Text::SrcUpdates, Text::SrcDlc,
+                                 Text::SrcAll,      Text::SrcSearch,  Text::SrcQueue,
+                                 Text::ShopSources};
+        const std::wstring title =
+            shop_ ? std::wstring(Tr(Text::ShopBrand)) + L" - " + Tr(sections[section_])
+                  : std::wstring(Tr(Text::SourcesRowTitle));
+        renderer_.DrawString(
+            title, Font::ModsTitle,
+            RectF(kMargin, kTitleTop, shop_ ? 1150.0f : kRight, kTitleTop + kTitleHeight),
+            Theme::kText, HAlign::Left, VAlign::Middle);
         std::wstring line = Tr(Text::SrcSubtitle);
         D2D1_COLOR_F color = Theme::kTextSecondary;
-        if (InBrowse()) {
+        if (shop_ || InBrowse()) {
             if (Loading()) {
                 line = Tr(Text::SrcLoading);
             } else if (failure_ == Failure::Unreachable) {
                 line = Tr(Text::SrcUnreachable);
                 color = Theme::kDangerText;
             } else if (failure_ == Failure::Unsupported) {
-                line = Tr(Text::SrcUnsupported);
+                line = Tr(UnsupportedText(unsupported_));
                 color = Theme::kDangerText;
             } else if (failure_ == Failure::SourceError) {
                 line = fetch_message_;
@@ -1346,13 +1791,12 @@ private:
                 line = std::to_wstring(games_.size()) + L" " + Tr(Text::SrcGamesCount);
                 if (partial_)
                     line += L"  ·  " + std::wstring(Tr(Text::SrcPartial));
-                if (!fetch_message_.empty()) {
-                    line += L"  ·  " + fetch_message_;
-                }
             }
         }
-        renderer_.DrawString(line, Font::Meta, RectF(kMargin, kSubTop, kRight, kSubTop + kSubHeight),
-                             color, HAlign::Left, VAlign::Middle);
+        renderer_.DrawString(
+            line, Font::Meta,
+            RectF(kMargin, kSubTop, shop_ ? 1150.0f : kRight, kSubTop + kSubHeight), color,
+            HAlign::Left, VAlign::Middle);
     }
 
     struct RowText {
@@ -1424,41 +1868,22 @@ private:
 
     void DrawBrowse(Clock::time_point now) {
         decodes_ = 0;
-        const Text tabs[] = {Text::SrcNewGames, Text::SrcUpdates, Text::SrcDlc, Text::SrcAll};
-        float left = kMargin;
-        for (int i = 0; i < 4; ++i) {
-            const auto label = Tr(tabs[i]);
-            const float width = PillWidth(renderer_, label, false);
-            DrawChoicePill(renderer_, RectF(left, 292.0f, left + width, 356.0f), label, i == tab_,
-                           false);
-            left += width + kPillGap;
-        }
         const Text sorts[] = {Text::SrcSortName, Text::SrcSortSize, Text::SrcSortNewest};
         std::wstring description = Tr(sorts[sort_]);
         if (!query_.empty())
-            description += L"  ·  " + query_;
-        renderer_.DrawString(description, Font::Meta, RectF(kMargin, 375.0f, kRight, 414.0f),
+            description += L" · " + query_;
+        renderer_.DrawString(description, Font::Meta, RectF(500.0f, 292.0f, kRight, 334.0f),
                              Theme::kTextSecondary);
-        renderer_.DrawString(Tr(Text::SrcBrowseHelp), Font::RowSub,
-                             RectF(kMargin, 868.0f, kRight, 910.0f), Theme::kTextSecondary);
         const int selected = browse_cursor_.selected;
-        const float offset = shelf_.Value(now);
-        if (shelf_.Target() != static_cast<float>(selected))
-            shelf_.To(static_cast<float>(selected), now, kDurationItem);
+        const int first = (selected / 4 / 2) * 8;
         std::vector<std::string> keep;
-        renderer_.PushClip(RectF(kMargin - 24.0f, 430.0f, kRight + 20.0f, 920.0f));
-        // Only the handful of tiles intersecting the viewport ask for art or own GPU images.
-        const int first = std::max(0, static_cast<int>(offset) - 1);
-        const int last = std::min(BrowseRows(), first + 7);
-        for (int i = first; i < last; ++i) {
-            const float x = kMargin + (static_cast<float>(i) - offset) * 354.0f;
-            const float lift = i == selected ? 16.0f : 0.0f;
-            const auto rect = RectF(x, 480.0f - lift, x + 320.0f, 660.0f - lift);
-            if (rect.right < kMargin - 20.0f || rect.left > kRight + 20.0f)
-                continue;
+        for (int i = first; i < std::min(BrowseRows(), first + 8); ++i) {
+            const float x = 500.0f + static_cast<float>((i - first) % 4) * 326.0f;
+            const float y = 370.0f + static_cast<float>((i - first) / 4) * 272.0f;
+            const auto rect = RectF(x, y, x + 294.0f, y + 165.0f);
+            renderer_.FillRounded(rect, 22.0f, Theme::kSurface);
             std::wstring name;
             std::wstring meta;
-            renderer_.FillRounded(rect, 22.0f, Theme::kSurface);
             if (static_cast<std::size_t>(i) < visible_.size()) {
                 const auto& game = games_[visible_[static_cast<std::size_t>(i)]];
                 name = Widen(game.name);
@@ -1466,59 +1891,63 @@ private:
                 if (auto* image = VisibleArt(game.base_id, now))
                     renderer_.DrawImage(*image, rect, 22.0f, art_[game.base_id].fade.Value(now));
                 else
-                    renderer_.DrawString(
-                        name, Font::TileLabel,
-                        RectF(x + 20.0f, rect.top + 20.0f, x + 300.0f, rect.bottom - 20.0f),
-                        Theme::kText, HAlign::Center, VAlign::Middle);
+                    renderer_.DrawString(name, Font::TileLabel,
+                                         RectF(x + 14.0f, y + 14.0f, x + 280.0f, y + 151.0f),
+                                         Theme::kText, HAlign::Center, VAlign::Middle);
                 meta = game.size ? FormatBytes(game.size) : Tr(Text::SrcUnknownSize);
             } else {
                 name = Tr(Text::SrcLoadMore);
-                renderer_.DrawString(name, Font::TileLabel, rect, Theme::kText, HAlign::Center,
-                                     VAlign::Middle);
             }
-            renderer_.DrawString(name, Font::Caption, RectF(x, 694.0f, x + 320.0f, 778.0f),
+            renderer_.DrawString(name, Font::Caption, RectF(x, y + 180.0f, x + 294.0f, y + 228.0f),
                                  Theme::kText);
-            renderer_.DrawString(meta, Font::MetaMono, RectF(x, 798.0f, x + 320.0f, 838.0f),
+            renderer_.DrawString(meta, Font::RowSub, RectF(x, y + 230.0f, x + 294.0f, y + 264.0f),
                                  Theme::kTextSecondary);
-            if (i == selected && mode_ == Mode::Browse)
+            if (i == selected && mode_ == Mode::Browse &&
+                (!shop_ || (!sidebar_focus_ && !navigation_focused_)))
                 DrawRing(renderer_, rect, 28.0f, 1.0f);
         }
-        renderer_.PopClip();
         for (auto it = art_.begin(); it != art_.end();) {
             if (std::find(keep.begin(), keep.end(), it->first) == keep.end())
                 it = art_.erase(it);
             else
                 ++it;
         }
-        if (Loading()) {
-            renderer_.DrawString(Tr(Text::SrcLoading), Font::Body,
-                                 RectF(kMargin, 818.0f, kRight, 860.0f), Theme::kTextSecondary);
-            if (entries_.empty())
-                for (int i = 0; i < 5; ++i) {
-                    const float x = kMargin + static_cast<float>(i) * 354.0f;
-                    renderer_.FillRounded(RectF(x, 480.0f, x + 320.0f, 660.0f), 22.0f,
-                                          Theme::kSurface);
-                }
-        } else if (BrowseRows() == 0 && failure_ == Failure::None) {
-            renderer_.DrawString(Tr(entries_.empty() ? Text::SrcNoFiles : Text::SrcNoMatches),
-                                 Font::Body, RectF(kMargin, 490.0f, kRight, 620.0f),
+        if (BrowseRows() == 0) {
+            const auto text =
+                Loading()                          ? std::wstring(Tr(Text::SrcLoading))
+                : failure_ == Failure::Unsupported ? std::wstring(Tr(UnsupportedText(unsupported_)))
+                : failure_ == Failure::SourceError ? fetch_message_
+                : failure_ == Failure::Unreachable
+                    ? std::wstring(Tr(Text::SrcUnreachable))
+                    : std::wstring(Tr(entries_.empty() ? Text::SrcNoFiles : Text::SrcNoMatches));
+            renderer_.DrawString(text, Font::Body, RectF(540.0f, 430.0f, kRight, 780.0f),
                                  Theme::kTextSecondary);
         }
+        renderer_.DrawString(Tr(Text::SrcBrowseHelp), Font::RowSub,
+                             RectF(500.0f, 916.0f, kRight, 954.0f), Theme::kTextSecondary);
     }
 
     void DrawDetail(Clock::time_point now) {
+        decodes_ = 0;
         const auto& game = games_[detail_game_];
         const float shift = (1.0f - panel_.Value(now)) * 28.0f;
-        const auto sheet = RectF(300.0f, 170.0f + shift, 1620.0f, 930.0f + shift);
-        DrawSheet(renderer_, sheet);
+        const auto sheet = RectF(shop_ ? 0.0f : 300.0f, 150.0f + shift,
+                                 shop_ ? kCanvasWidth : 1620.0f, 930.0f + shift);
+        if (shop_)
+            renderer_.FillRounded(sheet, 0.0f, Theme::kBackground);
+        else
+            DrawSheet(renderer_, sheet);
         renderer_.PushClip(sheet);
         if (auto* image = VisibleArt(game.base_id, now))
-            renderer_.DrawImage(*image, RectF(348.0f, 208.0f + shift, 668.0f, 388.0f + shift),
-                                22.0f, 1.0f);
+            renderer_.DrawImage(*image, RectF(96.0f, 185.0f + shift, 576.0f, 455.0f + shift), 22.0f,
+                                1.0f);
         renderer_.DrawString(Widen(game.name), Font::Heading,
-                             RectF(704.0f, 208.0f + shift, 1572.0f, 320.0f + shift), Theme::kText);
+                             RectF(624.0f, 208.0f + shift, 1824.0f, 320.0f + shift), Theme::kText);
         renderer_.DrawString(game.size ? FormatBytes(game.size) : Tr(Text::SrcUnknownSize),
-                             Font::MetaMono, RectF(704.0f, 330.0f + shift, 1572.0f, 374.0f + shift),
+                             Font::MetaMono, RectF(624.0f, 330.0f + shift, 1824.0f, 374.0f + shift),
+                             Theme::kTextSecondary);
+        renderer_.DrawString(Widen(game.base_id), Font::MetaMono,
+                             RectF(624.0f, 378.0f + shift, 1824.0f, 410.0f + shift),
                              Theme::kTextSecondary);
         // Availability is independent of the active tab, including locally installed add-ons
         // that this source does not carry.
@@ -1533,15 +1962,15 @@ private:
                     return !game.base_id.empty() && local.base_id == game.base_id &&
                            local.kind == kind;
                 });
-            const float x = 348.0f + static_cast<float>(i) * 408.0f;
+            const float x = 96.0f + static_cast<float>(i) * 576.0f;
             renderer_.DrawString(KindLabel(kind), Font::Meta,
-                                 RectF(x, 404.0f + shift, x + 398.0f, 436.0f + shift),
+                                 RectF(x, 480.0f + shift, x + 540.0f, 512.0f + shift),
                                  Theme::kText);
             std::wstring label = Tr(available ? Text::SrcAvailable : Text::SrcUnavailable);
             if (installed)
                 label += L" · " + std::wstring(Tr(Text::SrcInstalled));
             renderer_.DrawString(label, Font::RowSub,
-                                 RectF(x, 438.0f + shift, x + 398.0f, 470.0f + shift),
+                                 RectF(x, 514.0f + shift, x + 540.0f, 546.0f + shift),
                                  Theme::kTextSecondary);
         }
         const int first = std::max(0, detail_cursor_ - 4);
@@ -1549,9 +1978,9 @@ private:
              ++row) {
             const auto item = detail_items_[static_cast<std::size_t>(row)];
             const auto& package = packages_[item];
-            const float y = 482.0f + shift + static_cast<float>(row - first) * 76.0f;
-            const auto rect = RectF(348.0f, y, 1572.0f, y + 64.0f);
-            std::wstring label = KindLabel(package.kind);
+            const float y = 568.0f + shift + static_cast<float>(row - first) * 66.0f;
+            const auto rect = RectF(96.0f, y, 1824.0f, y + 60.0f);
+            std::wstring label = Widen(package.title_id) + L" · " + KindLabel(package.kind);
             label += L" · " + (package.version ? std::wstring(Tr(Text::SrcVersion)) + L" " +
                                                      std::to_wstring(*package.version)
                                                : Tr(Text::SrcUnknownVersion));
@@ -1559,34 +1988,47 @@ private:
                                                    : Tr(Text::SrcUnknownSize));
             if (Installed(item))
                 label += L" · " + std::wstring(Tr(Text::SrcInstalled));
-            renderer_.DrawString(entries_[item].name, Font::RowSub,
-                                 RectF(366.0f, y + 2.0f, 1554.0f, y + 30.0f), Theme::kText);
-            renderer_.DrawString(label, Font::RowSub, RectF(366.0f, y + 32.0f, 1554.0f, y + 62.0f),
+            renderer_.DrawString(
+                std::wstring(Tr(Text::HintDownload)) + L" · " + entries_[item].name, Font::RowSub,
+                RectF(114.0f, y + 2.0f, 1806.0f, y + 30.0f), Theme::kText);
+            renderer_.DrawString(label, Font::RowSub, RectF(114.0f, y + 32.0f, 1806.0f, y + 58.0f),
                                  Theme::kTextSecondary);
-            if (row == detail_cursor_)
+            if (row == detail_cursor_ && (!shop_ || !navigation_focused_))
                 DrawRing(renderer_, rect, 22.0f, 1.0f);
         }
         renderer_.PopClip();
     }
 
     void DrawQueue() {
-        DrawSheet(renderer_, RectF(300.0f, 170.0f, 1620.0f, 930.0f));
+        if (shop_)
+            renderer_.FillRounded(RectF(490.0f, 280.0f, kRight, 930.0f), 0.0f, Theme::kBackground);
+        else
+            DrawSheet(renderer_, RectF(300.0f, 170.0f, 1620.0f, 930.0f));
         renderer_.DrawString(Tr(Text::SrcQueue), Font::Heading,
-                             RectF(348.0f, 202.0f, 1572.0f, 270.0f), Theme::kText);
+                             RectF(500.0f, 290.0f, 1572.0f, 350.0f), Theme::kText);
         DrawProgress();
         if (queue_.Empty())
             renderer_.DrawString(Tr(Text::SrcQueueEmpty), Font::Body,
-                                 RectF(348.0f, 400.0f, 1572.0f, 550.0f), Theme::kTextSecondary);
+                                 RectF(500.0f, 400.0f, 1572.0f, 550.0f), Theme::kTextSecondary);
         for (std::size_t i = 0; i < queue_.Items().size(); ++i) {
-            const float y = 358.0f + static_cast<float>(i) * 66.0f;
+            const float y = 430.0f + static_cast<float>(i) * 66.0f;
             renderer_.DrawString(queue_.Items()[i].name, Font::RowSub,
-                                 RectF(366.0f, y, 1300.0f, y + 48.0f), Theme::kText, HAlign::Left,
+                                 RectF(518.0f, y, 1300.0f, y + 48.0f), Theme::kText, HAlign::Left,
                                  VAlign::Middle);
-            renderer_.DrawString(Tr(i == 0 ? Text::SrcDownloading : Text::SrcWaiting), Font::RowSub,
-                                 RectF(1320.0f, y, 1554.0f, y + 48.0f), Theme::kTextSecondary,
-                                 HAlign::Right, VAlign::Middle);
-            if (static_cast<int>(i) == queue_cursor_)
-                DrawRing(renderer_, RectF(348.0f, y, 1572.0f, y + 48.0f), 22.0f, 1.0f);
+            const auto total = bytes_total_.load();
+            const auto percent =
+                i == 0 && total ? std::min<std::uint64_t>(
+                                      100, static_cast<std::uint64_t>(
+                                               100.0 * static_cast<double>(bytes_done_.load()) /
+                                               static_cast<double>(total)))
+                                : 0;
+            const auto state = std::wstring(Tr(i == 0 ? Text::SrcDownloading : Text::SrcWaiting)) +
+                               L" · " + std::to_wstring(percent) + L"%";
+            renderer_.DrawString(state, Font::RowSub, RectF(1320.0f, y, 1554.0f, y + 48.0f),
+                                 Theme::kTextSecondary, HAlign::Right, VAlign::Middle);
+            if (static_cast<int>(i) == queue_cursor_ &&
+                (!shop_ || (!sidebar_focus_ && !navigation_focused_)))
+                DrawRing(renderer_, RectF(500.0f, y, 1572.0f, y + 48.0f), 22.0f, 1.0f);
         }
     }
 
@@ -1664,9 +2106,9 @@ private:
         const double fraction = total > 0 ? static_cast<double>(done) / static_cast<double>(total) : 0.0;
         if (queue_.Empty())
             return;
-        const float left = 348.0f;
+        const float left = 500.0f;
         const float right = 1572.0f;
-        DrawProgressBar(renderer_, RectF(left, 286.0f, right, 298.0f),
+        DrawProgressBar(renderer_, RectF(left, 366.0f, right, 378.0f),
                         std::clamp(fraction, 0.0, 1.0));
         const double rate = rate_.load();
         wchar_t speed[32];
@@ -1677,7 +2119,7 @@ private:
             std::replace(stats.begin(), stats.end(), L'.', L',');
         }
         stats += L"   " + FormatBytes(done) + L" / " + FormatBytes(total);
-        renderer_.DrawString(stats, Font::MetaMono, RectF(left, 308.0f, right, 344.0f),
+        renderer_.DrawString(stats, Font::MetaMono, RectF(left, 388.0f, right, 424.0f),
                              Theme::kText, HAlign::Left, VAlign::Middle);
     }
 
@@ -1692,10 +2134,21 @@ private:
     }
 
     std::vector<Hint> CurrentHints() const {
+        if (shop_ && navigation_focused_)
+            return {{Theme::kButtonA, L"A", Tr(Text::HintSelect)},
+                    {Theme::kButtonB, L"B", Tr(Text::HintQuit)}};
+        if (shop_ && section_ == 6)
+            return {{Theme::kButtonA, L"A", Tr(Text::SourcesRowTitle)},
+                    {Theme::kButtonB, L"B", Tr(Text::HintBack)}};
+        if (shop_ && sidebar_focus_)
+            return {{Theme::kButtonA, L"A",
+                     Tr(section_ == 6 || (sources_.empty() && section_ != 5) ? Text::SourcesRowTitle
+                                                                             : Text::HintSelect)},
+                    {Theme::kButtonB, L"B", Tr(Text::HintBack)}};
         switch (mode_) {
         case Mode::Queue:
-            return {{Theme::kButtonB, L"B", Tr(Text::SrcCancelEntry)},
-                    {Theme::kTextSecondary, L"≡", Tr(Text::HintBack)}};
+            return {{Theme::kButtonX, L"X", Tr(Text::SrcCancelEntry)},
+                    {Theme::kButtonB, L"B", Tr(Text::HintBack)}};
         case Mode::Detail:
             return {{Theme::kButtonA, L"A", Tr(Text::HintDownload)},
                     {Theme::kTextSecondary, L"≡", Tr(Text::SrcQueue)},
@@ -1715,7 +2168,9 @@ private:
         case Mode::List:
             break;
         }
-        std::vector<Hint> hints = {{Theme::kButtonA, L"A", Tr(Text::HintSelect)}};
+        std::vector<Hint> hints;
+        if (FocusedSource() < 0)
+            hints.push_back({Theme::kButtonA, L"A", Tr(Text::HintSelect)});
         if (!queue_.Empty())
             hints.push_back({Theme::kTextSecondary, L"≡", Tr(Text::SrcQueue)});
         if (FocusedSource() >= 0) {
@@ -1725,8 +2180,92 @@ private:
         return hints;
     }
 
+    void DrawStorage(const std::wstring& label, const fs::space_info& space, float x) {
+        renderer_.DrawString(label, Font::RowSub, RectF(x, 154.0f, x + 280.0f, 190.0f),
+                             Theme::kTextSecondary);
+        DrawProgressBar(renderer_, RectF(x, 202.0f, x + 280.0f, 210.0f),
+                        space.capacity ? static_cast<double>(space.available) / space.capacity
+                                       : 0.0);
+        renderer_.DrawString(space.capacity ? FormatBytes(space.available) : L"—", Font::RowSub,
+                             RectF(x, 218.0f, x + 280.0f, 252.0f), Theme::kTextSecondary);
+    }
+    void DrawSidebar() {
+        const Text labels[] = {Text::SrcNewGames, Text::SrcUpdates, Text::SrcDlc,     Text::SrcAll,
+                               Text::SrcSearch,   Text::SrcQueue,   Text::ShopSources};
+        const wchar_t* icons[] = {L"+", L"↑", L"◇", L"▦", L"⌕", L"↓", L"≡"};
+        for (int row = 0; row < 7; ++row) {
+            const float y = 300.0f + row * 80.0f;
+            const auto rect = RectF(kMargin, y, 446.0f, y + 64.0f);
+            if (row == section_)
+                renderer_.FillRounded(rect, 32.0f, Theme::kSurfaceStrong);
+            renderer_.DrawString(icons[row], Font::Meta,
+                                 RectF(kMargin + 18.0f, y, kMargin + 58.0f, y + 64.0f),
+                                 Theme::kText, HAlign::Center, VAlign::Middle);
+            renderer_.DrawString(Tr(labels[row]), Font::Caption,
+                                 RectF(kMargin + 72.0f, y, 430.0f, y + 64.0f), Theme::kText,
+                                 HAlign::Left, VAlign::Middle);
+            if (sidebar_focus_ && !navigation_focused_ && row == section_)
+                DrawRing(renderer_, rect, 38.0f, 1.0f);
+        }
+    }
+    void DrawShopSources() {
+        renderer_.DrawString(Tr(Text::ShopManageSources), Font::Body,
+                             RectF(500.0f, 300.0f, kRight, 370.0f), Theme::kTextSecondary);
+        const int first = std::max(0, source_cursor_ - 4);
+        for (int i = first; i < std::min(first + 5, static_cast<int>(sources_.size())); ++i) {
+            const float y = 400.0f + (i - first) * 78.0f;
+            const auto& source = sources_[static_cast<std::size_t>(i)];
+            renderer_.DrawString(Widen(source.name), Font::Caption,
+                                 RectF(500.0f, y, kRight, y + 38.0f), Theme::kText);
+            const auto status = source_errors_.find(source.url);
+            renderer_.DrawString(
+                status == source_errors_.end() ? Widen(RedactedUrl(source.url)) : status->second,
+                Font::RowSub, RectF(500.0f, y + 38.0f, kRight, y + 74.0f),
+                status == source_errors_.end() ? Theme::kTextSecondary : Theme::kDangerText);
+        }
+        DrawChoicePill(renderer_, RectF(500.0f, 830.0f, 1150.0f, 894.0f), Tr(Text::SourcesRowTitle),
+                       true, !sidebar_focus_ && !navigation_focused_);
+    }
+    void DrawShopEmpty() {
+        renderer_.DrawString(Tr(Text::ShopEmptyTitle), Font::Heading,
+                             RectF(540.0f, 410.0f, kRight, 490.0f), Theme::kText);
+        renderer_.DrawString(Tr(Text::SrcEmpty), Font::Body, RectF(540.0f, 510.0f, kRight, 640.0f),
+                             Theme::kTextSecondary);
+        DrawChoicePill(renderer_, RectF(540.0f, 690.0f, 1160.0f, 754.0f), Tr(Text::SrcAdd), true,
+                       !sidebar_focus_);
+    }
+    void DrawProfile() {
+        const auto rect = RectF(kMargin, 970.0f, kMargin + 52.0f, 1022.0f);
+        if (profile_avatar_.bitmap)
+            renderer_.DrawImage(profile_avatar_, rect, 26.0f, 1.0f);
+        else {
+            renderer_.FillRounded(rect, 26.0f, Theme::kSurfaceStrong);
+            renderer_.DrawString(profile_name_.empty() ? L"?" : profile_name_.substr(0, 1),
+                                 Font::Caption, rect, Theme::kText, HAlign::Center, VAlign::Middle);
+        }
+        renderer_.DrawString(profile_name_, Font::RowSub,
+                             RectF(kMargin + 68.0f, 970.0f, 490.0f, 1022.0f), Theme::kText,
+                             HAlign::Left, VAlign::Middle);
+    }
+
     // ---- Members ----
 
+    std::shared_ptr<Task<StorageResult>> storage_;
+    Clock::time_point storage_refresh_{};
+    fs::space_info internal_space_{};
+    fs::space_info external_space_{};
+    bool navigation_focused_ = false;
+    bool shop_ = false;
+    bool sidebar_focus_ = true;
+    int section_ = 0;
+    int source_cursor_ = 0;
+    bool sources_requested_ = false;
+    bool navigation_requested_ = false;
+    std::wstring profile_name_;
+    Image profile_avatar_;
+    std::set<std::wstring> announced_;
+    std::map<std::string, std::wstring> source_errors_;
+    Tinfoil::Unsupported unsupported_ = Tinfoil::Unsupported::None;
     Renderer& renderer_;
     CoreWindow window_;
     Input& input_;
@@ -1740,7 +2279,6 @@ private:
     int confirm_focus_ = 1; // 0 remove, 1 keep
     std::unique_ptr<TextEntry> entry_;
 
-    std::wstring browse_name_;
     std::string browse_url_;
     std::vector<Entry> entries_;
     std::vector<Tinfoil::Package> packages_;
@@ -1766,6 +2304,7 @@ private:
     int detail_cursor_ = 0;
     Tinfoil::DownloadQueue<Entry> queue_;
     int queue_cursor_ = 0;
+    int queue_section_ = 0;
     Mode queue_return_ = Mode::Browse;
     std::wstring fetch_message_;
     Failure failure_ = Failure::None;
@@ -1774,6 +2313,7 @@ private:
     int fetch_adopted_ = 0;  // which fetch's result it already took
     std::shared_ptr<Task<ImportResult>> import_;
 
+    std::vector<std::wstring> pending_toasts_;
     std::wstring toast_;
     Clock::time_point toast_until_{};
     bool closed_ = false;
@@ -1789,6 +2329,36 @@ private:
 };
 
 } // namespace
+
+struct ShopScreen::Impl {
+    SourcesScreen screen;
+    Impl(Renderer& renderer, const CoreWindow& window, Input& input, const fs::path& local_state)
+        : screen(renderer, window, input, local_state) {
+        screen.InitializeShop();
+    }
+};
+ShopScreen::ShopScreen(Renderer& renderer, const CoreWindow& window, Input& input,
+                       const fs::path& local_state)
+    : impl_(std::make_unique<Impl>(renderer, window, input, local_state)) {}
+ShopScreen::~ShopScreen() = default;
+void ShopScreen::Tick(Clock::time_point now, bool active) {
+    impl_->screen.TickShop(now, active);
+}
+void ShopScreen::Draw(Clock::time_point now, bool navigation_focused) {
+    impl_->screen.DrawShop(now, navigation_focused);
+}
+void ShopScreen::ReloadSources() {
+    impl_->screen.ReloadShop();
+}
+bool ShopScreen::TakeSourcesRequest() {
+    return impl_->screen.TakeSourcesRequest();
+}
+bool ShopScreen::TakeNavigationRequest() {
+    return impl_->screen.TakeNavigationRequest();
+}
+bool ShopScreen::Typing() const {
+    return impl_->screen.Typing();
+}
 
 bool RunSourcesScreen(Renderer& renderer, const CoreWindow& window, Input& input,
                       const std::filesystem::path& local_state) {

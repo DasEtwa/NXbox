@@ -23,6 +23,7 @@ inline constexpr std::size_t kMaxIndexes = 64; // includes the root and failed r
 
 enum class Kind { Other, Game, Update, Dlc };
 enum class Status { Ok, Unsupported, SourceError };
+enum class Unsupported { None, Encrypted, Ftp, GoogleDrive, OneFichier };
 using Headers = std::vector<std::pair<std::string, std::string>>;
 struct File {
     std::string name;
@@ -32,6 +33,8 @@ struct File {
 };
 struct Index {
     Status status = Status::Unsupported;
+    Unsupported unsupported = Unsupported::None;
+    std::vector<std::string> locations;
     std::vector<File> files;
     std::vector<std::string> directories;
     Headers headers;
@@ -450,6 +453,69 @@ inline std::optional<std::string> Resolve(const std::string& base, const std::st
     return detail::IsHttpUrl(target) ? std::optional<std::string>(target) : std::nullopt;
 }
 
+// Known locations are retained even when this Xbox transport cannot browse them.
+inline Unsupported LocationSupport(const std::string& url) {
+    const auto lower = detail::Lower(url);
+    if (lower.rfind("ftp://", 0) == 0 || lower.rfind("ftps://", 0) == 0)
+        return Unsupported::Ftp;
+    if (lower.rfind("gdrive:", 0) == 0)
+        return Unsupported::GoogleDrive;
+    if (!detail::IsHttpUrl(url))
+        return Unsupported::None;
+    const auto start = lower.find("://");
+    if (start != std::string::npos) {
+        auto host = lower.substr(start + 3, lower.find_first_of("/?#", start + 3) - start - 3);
+        host.erase(0, host.rfind('@') == std::string::npos ? 0 : host.rfind('@') + 1);
+        host = host.substr(0, host.find(':'));
+        if (host == "1fichier.com" ||
+            (host.size() > 13 && host.substr(host.size() - 13) == ".1fichier.com"))
+            return Unsupported::OneFichier;
+    }
+    return Unsupported::None;
+}
+inline bool IsLocation(const std::string& url) {
+    if (detail::IsHttpUrl(url))
+        return true;
+    if (std::any_of(url.begin(), url.end(), [](unsigned char c) { return c <= ' ' || c == 127; }))
+        return false;
+    const auto lower = detail::Lower(url);
+    if (lower.rfind("gdrive:", 0) == 0)
+        return url.size() > 7;
+    const auto start = lower.rfind("ftp://", 0) == 0 ? 6 : lower.rfind("ftps://", 0) == 0 ? 7 : 0;
+    return start != 0 && url.size() > static_cast<std::size_t>(start) && url[start] != '/';
+}
+
+// Strip userinfo before constructing WinRT Uri and send explicit Basic authentication.
+inline std::string Authenticate(std::string url, Headers& headers) {
+    const auto scheme = url.find("://");
+    if (scheme == std::string::npos)
+        return url;
+    const auto end = url.find_first_of("/?#", scheme + 3);
+    const auto at = url.rfind('@', end == std::string::npos ? url.size() : end);
+    if (at == std::string::npos || at < scheme + 3)
+        return url;
+    const auto credentials = detail::UrlDecode(url.substr(scheme + 3, at - scheme - 3));
+    constexpr char alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string encoded;
+    for (std::size_t i = 0; i < credentials.size(); i += 3) {
+        unsigned bits = static_cast<unsigned char>(credentials[i]) << 16;
+        if (i + 1 < credentials.size())
+            bits |= static_cast<unsigned char>(credentials[i + 1]) << 8;
+        if (i + 2 < credentials.size())
+            bits |= static_cast<unsigned char>(credentials[i + 2]);
+        encoded += alphabet[(bits >> 18) & 63];
+        encoded += alphabet[(bits >> 12) & 63];
+        encoded += i + 1 < credentials.size() ? alphabet[(bits >> 6) & 63] : '=';
+        encoded += i + 2 < credentials.size() ? alphabet[bits & 63] : '=';
+    }
+    if (std::none_of(headers.begin(), headers.end(), [](const auto& header) {
+            return detail::Lower(header.first) == "authorization";
+        }))
+        detail::AddHeader(headers, "Authorization", "Basic " + encoded);
+    url.erase(scheme + 3, at - scheme - 2);
+    return url;
+}
+
 // Metadata shared by classification, the shop catalog and local package matching.
 struct Package {
     std::string title_id;
@@ -526,9 +592,83 @@ inline Index ParseIndex(std::string_view body, const std::string& base) {
     Index index;
     if (body.substr(0, 3) == "\xEF\xBB\xBF")
         body.remove_prefix(3);
-    detail::Value root;
-    if (!detail::JsonReader(body).Read(root) || root.type != detail::Value::Type::Object)
+    if (body.substr(0, 7) == "TINFOIL") {
+        index.unsupported = Unsupported::Encrypted;
         return index;
+    }
+    detail::Value root;
+    if (!detail::JsonReader(body).Read(root) || root.type != detail::Value::Type::Object) {
+        root = {};
+        // Autoindex links, independent of Apache/nginx/IIS table markup. Ignore parents,
+        // sorting queries, external links and non-package files. Never execute page content.
+        const std::string html(body);
+        const auto lower = detail::Lower(html);
+        detail::Value files, directories;
+        files.type = directories.type = detail::Value::Type::Array;
+        std::size_t cursor = 0;
+        while ((cursor = lower.find("<a", cursor)) != std::string::npos &&
+               files.array.size() + directories.array.size() < kMaxEntries) {
+            const auto end = lower.find('>', cursor);
+            if (end == std::string::npos)
+                break;
+            const auto href = lower.find("href", cursor + 2);
+            cursor = end + 1;
+            if (href == std::string::npos || href >= end)
+                continue;
+            auto start = lower.find('=', href + 4);
+            if (start == std::string::npos || start >= end)
+                continue;
+            do {
+                ++start;
+            } while (start < end && std::isspace(static_cast<unsigned char>(html[start])));
+            if (start >= end)
+                continue;
+            const char quote = html[start];
+            const bool quoted = quote == '\'' || quote == '"';
+            if (quoted)
+                ++start;
+            auto stop = start;
+            while (stop < end && (quoted ? html[stop] != quote
+                                         : !std::isspace(static_cast<unsigned char>(html[stop]))))
+                ++stop;
+            std::string link = html.substr(start, stop - start);
+            for (const auto& entity :
+                 {std::make_pair("&amp;", "&"), std::make_pair("&#38;", "&"),
+                  std::make_pair("&quot;", "\""), std::make_pair("&#39;", "'")}) {
+                std::size_t at = 0;
+                while ((at = link.find(entity.first, at)) != std::string::npos) {
+                    link.replace(at, std::char_traits<char>::length(entity.first), entity.second);
+                    ++at;
+                }
+            }
+            const auto absolute = Resolve(base, link);
+            if (!absolute || link.empty() || link[0] == '?' || link[0] == '#')
+                continue;
+            const auto path =
+                detail::Lower(detail::UrlDecode(link.substr(0, link.find_first_of("?#"))));
+            const bool directory =
+                !path.empty() && path.back() == '/' && path != "../" && path != "./";
+            const auto extension = path.size() >= 4 ? path.substr(path.size() - 4) : "";
+            if (extension != ".nsp" && extension != ".nsz" && extension != ".xci" &&
+                extension != ".xcz" && !directory)
+                continue;
+            auto base_dir = base.substr(0, base.find_first_of("?#"));
+            base_dir.erase(base_dir.rfind('/') + 1); // Directory containing the listing.
+            if (directory && (absolute->rfind(base_dir, 0) != 0 || *absolute == base))
+                continue;
+            detail::Value value;
+            value.type = detail::Value::Type::String;
+            value.text = *absolute;
+            (directory ? directories : files).array.push_back(std::move(value));
+        }
+        if (files.array.empty() && directories.array.empty() &&
+            lower.find("index of ") == std::string::npos &&
+            lower.find("directory listing") == std::string::npos)
+            return index;
+        root.type = detail::Value::Type::Object;
+        root.object.emplace_back("files", std::move(files));
+        root.object.emplace_back("directories", std::move(directories));
+    }
     index.status = Status::Ok;
     index.success = root.At("success").String();
     index.error = root.At("error").String();
@@ -536,7 +676,25 @@ inline Index ParseIndex(std::string_view body, const std::string& base) {
         index.status = Status::SourceError;
         return index;
     }
-    detail::ReadHeaders(root.At("locations"), index.headers);
+    const auto& locations = root.At("locations");
+    const auto add_location = [&](const std::string& value) {
+        if (index.locations.size() >= kMaxIndexes)
+            return;
+        if (IsLocation(value))
+            index.locations.push_back(value);
+        else if (const auto url = Resolve(base, value))
+            index.locations.push_back(*url);
+    };
+    if (locations.type == detail::Value::Type::String)
+        add_location(locations.text);
+    for (const auto& item : locations.array)
+        add_location(item.type == detail::Value::Type::String ? item.text
+                                                              : item.At("url").String());
+    if (locations.type == detail::Value::Type::Object)
+        for (const auto& item : locations.object)
+            add_location(item.second.String());
+    if (const auto referrer = root.At("referrer").String(); !referrer.empty())
+        detail::AddHeader(index.headers, "Referer", referrer);
     detail::ReadHeaders(root.At("headers"), index.headers);
     for (const auto& item : root.At("files").array) {
         if (index.files.size() >= kMaxEntries)
@@ -580,6 +738,20 @@ inline Index ParseIndex(std::string_view body, const std::string& base) {
     return index;
 }
 
+// scheme://host[:port], lower-case and without userinfo. Headers and credentials from one
+// shop are only forwarded to URLs with the same origin.
+inline std::string Origin(const std::string& url) {
+    const auto scheme = url.find("://");
+    if (scheme == std::string::npos)
+        return {};
+    const auto end = url.find_first_of("/?#", scheme + 3);
+    auto authority = url.substr(scheme + 3, end == std::string::npos ? std::string::npos
+                                                                      : end - scheme - 3);
+    if (const auto at = authority.rfind('@'); at != std::string::npos)
+        authority.erase(0, at + 1);
+    return detail::Lower(url.substr(0, scheme + 3) + authority);
+}
+
 struct Request {
     std::string url;
     std::size_t depth = 0;
@@ -591,7 +763,17 @@ public:
     explicit Traversal(std::string url) {
         url.erase(url.find('#') == std::string::npos ? url.size() : url.find('#'));
         visited_.insert(url);
-        requests_.push_back({std::move(url), 0, {}});
+        Headers headers;
+        Authenticate(url, headers);
+        requests_.push_back({std::move(url), 0, std::move(headers)});
+    }
+    void AddRoot(std::string url) {
+        url = url.substr(0, url.find('#'));
+        if (requests_.size() < kMaxIndexes && visited_.insert(url).second) {
+            Headers headers;
+            Authenticate(url, headers);
+            requests_.push_back({std::move(url), 0, std::move(headers)});
+        }
     }
     std::optional<Request> Next() {
         if (next_ == requests_.size())
@@ -618,7 +800,9 @@ public:
             if (requests_.size() >= kMaxIndexes)
                 break;
             if (visited_.insert(directory).second)
-                requests_.push_back({directory, parent.depth + 1, headers});
+                requests_.push_back({directory, parent.depth + 1,
+                                     Origin(directory) == Origin(parent.url) ? headers
+                                                                             : Headers{}});
         }
     }
 

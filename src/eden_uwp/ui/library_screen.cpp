@@ -115,9 +115,9 @@ enum class Layer {
     Nav,     // the tabs at the top
 };
 
-enum class Tab { Library, Settings };
+enum class Tab { Library, Shop, Settings };
 
-constexpr int kTabCount = 2;
+constexpr int kTabCount = 3;
 constexpr int kActionPlay = 0;
 constexpr int kActionMods = 1;
 constexpr int kActionDetails = 2;
@@ -515,6 +515,8 @@ private:
 
     void Update(Clock::time_point now) {
         AdoptScan();
+        if (shop_)
+            shop_->Tick(now, false);
         if (!launching_) {
             HandleInput(now);
         }
@@ -579,11 +581,26 @@ private:
             }
             return;
         }
-        if (input_.Pressed(Button::LeftShoulder)) {
-            SetTab(Tab::Library);
+        const bool shop_typing = tab_ == Tab::Shop && shop_ && shop_->Typing();
+        if (!shop_typing && input_.Pressed(Button::LeftShoulder)) {
+            SetTab(static_cast<Tab>((static_cast<int>(tab_) + kTabCount - 1) % kTabCount));
+            return;
         }
-        if (input_.Pressed(Button::RightShoulder)) {
-            SetTab(Tab::Settings);
+        if (!shop_typing && input_.Pressed(Button::RightShoulder)) {
+            SetTab(static_cast<Tab>((static_cast<int>(tab_) + 1) % kTabCount));
+            return;
+        }
+        if (tab_ == Tab::Shop && layer_ != Layer::Nav) {
+            shop_->Tick(now, true);
+            if (shop_->TakeSourcesRequest()) {
+                SetTab(Tab::Settings);
+                settings_row_ = kSettingSources;
+                layer_ = Layer::Rail;
+                OpenSources();
+            }
+            if (shop_->TakeNavigationRequest())
+                layer_ = Layer::Nav;
+            return;
         }
         if (input_.Pressed(Button::Left)) {
             MoveHorizontal(-1);
@@ -618,12 +635,18 @@ private:
     }
 
     void SetTab(Tab tab) {
-        if (return_home_)
+        if (return_home_ || tab_ == tab)
             return;
         update_focused_ = false;
         tab_ = tab;
-        if (tab_ == Tab::Settings) {
+        if (tab_ == Tab::Shop) {
+            if (!shop_)
+                shop_ = std::make_unique<ShopScreen>(renderer_, window_, input_, local_state_);
             layer_ = Layer::Nav;
+        } else if (tab_ == Tab::Settings) {
+            layer_ = Layer::Nav;
+        } else if (shop_) {
+            StartScan();
         }
     }
 
@@ -693,6 +716,10 @@ private:
     }
 
     void Activate(Clock::time_point now) {
+        if (tab_ == Tab::Shop && layer_ == Layer::Nav) {
+            layer_ = Layer::Rail;
+            return;
+        }
         if (layer_ == Layer::Nav && update_focused_ && HasUpdate()) {
             update_open_ = true;
             input_.ConsumeUntilRelease();
@@ -796,6 +823,8 @@ private:
             return;
         }
         sources_count_ = CountSources(local_state_);
+        if (shop_)
+            shop_->ReloadSources();
         if (!return_home_)
             StartScan();
     }
@@ -974,6 +1003,10 @@ private:
             DrawSettings();
             DrawToast(now);
             DrawHints(renderer_, {{Theme::kButtonB, L"B", Tr(Text::HintBack)}});
+            return;
+        }
+        if (tab_ == Tab::Shop && shop_) {
+            shop_->Draw(now, layer_ == Layer::Nav);
             return;
         }
         DrawBackdrop(now);
@@ -1641,6 +1674,7 @@ private:
     CoreWindow window_;
     Input input_;
     std::filesystem::path local_state_;
+    std::unique_ptr<ShopScreen> shop_;
     int sources_count_ = 0; // sources saved by the Sources screen, shown on its Settings row
     Updater updater_;
     bool update_focused_ = false;

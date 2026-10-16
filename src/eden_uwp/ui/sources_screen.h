@@ -2,6 +2,7 @@
 #pragma once
 
 #include <filesystem>
+#include <memory>
 
 #include <d2d1.h>
 #include <windows.h>
@@ -13,20 +14,28 @@
 
 namespace EdenXbox::Ui {
 
-// Settings -> Sources. The player adds their own sources, each a URL that serves a list in the
-// Tinfoil shop format (a JSON index of files and directories), either by typing the address on
-// the on-screen keyboard or by importing a sources.txt from a USB drive. A source can be opened to
-// browse a title-grouped shelf with category tabs, search and a details panel. Individual
-// packages enter a bounded, serial download queue into LocalState\games. Leaving the screen
-// cancels the active transfer and drops waiting items; partial files can be resumed. Nothing is
-// preconfigured: the list is empty until the player fills it. The addresses live in
-// LocalState\sources.json.
-//
-// Runs its own loop on the library's renderer and input until the player leaves with B. Returns
-// true when the window was closed meanwhile, so the caller can stop too. The caller rescans the
-// library afterwards, since a download may have added a game.
+// Settings -> Shop sources: add, import and remove only.
+// Returns true when the window closed.
 bool RunSourcesScreen(Renderer& renderer, const winrt::Windows::UI::Core::CoreWindow& window,
                       Input& input, const std::filesystem::path& local_state);
+
+// Owned by the library, so queue workers survive top-level tab changes.
+class ShopScreen {
+public:
+    ShopScreen(Renderer& renderer, const winrt::Windows::UI::Core::CoreWindow& window, Input& input,
+               const std::filesystem::path& local_state);
+    ~ShopScreen();
+    void Tick(Clock::time_point now, bool active);
+    void Draw(Clock::time_point now, bool navigation_focused);
+    void ReloadSources();
+    bool TakeSourcesRequest();
+    bool TakeNavigationRequest();
+    bool Typing() const; // The search keyboard is open.
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
 
 // The number of sources saved in LocalState\sources.json, for the Settings row.
 int CountSources(const std::filesystem::path& local_state);

@@ -12,6 +12,18 @@ enum class Language {
 // Every text the UI shows. English must define every key; other languages may omit keys.
 enum class Text {
     NavLibrary,
+    NavShop,
+    ShopBrand,
+    ShopSources,
+    ShopManageSources,
+    ShopEmptyTitle,
+    ShopEncrypted,
+    ShopFtpUnsupported,
+    ShopDriveUnsupported,
+    ShopFichierUnsupported,
+    ShopInternalStorage,
+    ShopExternalStorage,
+
     NavSettings,
     ActionPlay,
     ActionMods,

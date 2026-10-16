@@ -1,0 +1,8 @@
+{
+  "files": [{"url": "../games/base.nsp#Example%20%5B0100000000000000%5D%20%5Bv0%5D.nsp", "size": 12345}],
+  "directories": ["child/", {"url": "nested/index.json"}],
+  "success": "Welcome to the fixture shop",
+  "referrer": "https://host/welcome",
+  "headers": {"X-Shop-Key": "fixture", "Authorization": "Bearer fixture"},
+  "locations": ["https://second.example/shop/", "gdrive:public-folder-id", "ftp://host/games/", {"url": "../another/"}]
+}
