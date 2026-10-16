@@ -28,6 +28,8 @@ public:
     void Tick(Clock::time_point now, bool active);
     void Draw(Clock::time_point now, bool navigation_focused);
     void ReloadSources();
+    void SetTinfoilAvailable(bool available);
+    bool TakeTinfoilRequest();
     bool TakeSourcesRequest();
     bool TakeNavigationRequest();
     bool Typing() const; // The search keyboard is open.

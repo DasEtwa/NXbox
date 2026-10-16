@@ -137,6 +137,7 @@ struct FetchResult {
     Failure failure = Failure::None;
     std::optional<Tinfoil::Traversal> traversal;
     bool partial = false;
+    std::set<std::string> encrypted_sources;
     Tinfoil::Unsupported unsupported = Tinfoil::Unsupported::None;
     std::vector<std::string> locations;
     std::map<std::string, std::wstring> errors;
@@ -656,6 +657,8 @@ FetchResult FetchSource(Tinfoil::Traversal traversal, std::size_t remaining,
                                      : Failure::Unsupported;
                 result.message = Widen(index.error);
                 result.unsupported = index.unsupported;
+                if (index.unsupported == Tinfoil::Unsupported::Encrypted)
+                    result.encrypted_sources.insert(request->url);
                 result.errors[request->url] = index.status == Tinfoil::Status::SourceError
                                                   ? Widen(index.error)
                                                   : Tr(UnsupportedText(index.unsupported));
@@ -942,6 +945,7 @@ public:
             partial_ = false;
             art_.clear();
             source_errors_.clear();
+            encrypted_sources_.clear();
             entries_.clear();
             packages_.clear();
             games_.clear();
@@ -1076,6 +1080,12 @@ public:
         navigation_focused_ = navigation_focused;
         Draw(now);
     }
+    void SetTinfoilAvailable(bool available) {
+        tinfoil_available_ = available;
+    }
+    bool TakeTinfoilRequest() {
+        return std::exchange(tinfoil_requested_, false);
+    }
     bool TakeSourcesRequest() {
         return std::exchange(sources_requested_, false);
     }
@@ -1091,7 +1101,11 @@ private:
 
     int ListRows() const { return 2 + static_cast<int>(sources_.size()); }
     int BrowseRows() const {
-        return static_cast<int>(visible_.size()) + (!shop_ && traversal_ ? 1 : 0);
+        return static_cast<int>(visible_.size()) +
+               ((!shop_ && traversal_) || HasEncryptedShop() ? 1 : 0);
+    }
+    bool HasEncryptedShop() const {
+        return shop_ && !encrypted_sources_.empty();
     }
     bool InBrowse() const {
         return mode_ == Mode::Browse || mode_ == Mode::Detail ||
@@ -1136,6 +1150,7 @@ private:
         if (!more) {
             shop_art_ = std::make_unique<ShopArtSource>(local_state_);
             source_errors_.clear();
+            encrypted_sources_.clear();
             entries_.clear();
             packages_.clear();
             games_.clear();
@@ -1283,9 +1298,11 @@ private:
         if (fetch_->result.failure != Failure::None) // A later page must not hide a failure.
             failure_ = fetch_->result.failure;
         unsupported_ = fetch_->result.unsupported;
+        encrypted_sources_.insert(fetch_->result.encrypted_sources.begin(),
+                                  fetch_->result.encrypted_sources.end());
         for (const auto& [url, error] : fetch_->result.errors) {
             source_errors_[url] = error;
-            if (announced_.insert(error).second)
+            if (!encrypted_sources_.count(url) && announced_.insert(error).second)
                 Toast(error, Clock::now());
         }
         if (!fetch_->result.message.empty() && failure_ == Failure::None &&
@@ -1620,7 +1637,10 @@ private:
         }
         if (input_.Pressed(Button::A)) {
             const auto selected = static_cast<std::size_t>(browse_cursor_.selected);
-            if (!shop_ && selected == visible_.size() && traversal_) {
+            if (HasEncryptedShop() && selected == visible_.size()) {
+                if (tinfoil_available_)
+                    tinfoil_requested_ = true;
+            } else if (!shop_ && selected == visible_.size() && traversal_) {
                 LoadBrowse(true);
             } else if (selected < visible_.size()) {
                 detail_game_ = visible_[selected];
@@ -1916,6 +1936,16 @@ private:
             HAlign::Center, VAlign::Middle);
     }
 
+    void DrawEncryptedShop(float x, float y, float right, bool focused) {
+        renderer_.DrawString(
+            Tr(tinfoil_available_ ? Text::ShopEncrypted : Text::ShopInstallTinfoil), Font::RowSub,
+            RectF(x, y, right, y + 160.0f), Theme::kTextSecondary);
+        if (tinfoil_available_)
+            DrawChoicePill(renderer_,
+                           RectF(x, y + 174.0f, (std::min)(right, x + 620.0f), y + 238.0f),
+                           Tr(Text::ShopOpenTinfoil), true, focused);
+    }
+
     void DrawBrowse(Clock::time_point now) {
         decodes_ = 0;
         const Text sorts[] = {Text::SrcSortName, Text::SrcSortSize, Text::SrcSortNewest};
@@ -1931,6 +1961,14 @@ private:
             const float x = 500.0f + static_cast<float>((i - first) % 4) * 326.0f;
             const float y = 370.0f + static_cast<float>((i - first) / 4) * 272.0f;
             const auto rect = RectF(x, y, x + 294.0f, y + 165.0f);
+            if (HasEncryptedShop() && static_cast<std::size_t>(i) == visible_.size()) {
+                const bool empty = visible_.empty();
+                DrawEncryptedShop(empty ? 540.0f : x, empty ? 430.0f : y,
+                                  empty ? kRight : x + 294.0f,
+                                  i == selected && mode_ == Mode::Browse && !sidebar_focus_ &&
+                                      !navigation_focused_);
+                continue;
+            }
             renderer_.FillRounded(rect, 22.0f, Theme::kSurface);
             std::wstring name;
             std::wstring meta;
@@ -2270,7 +2308,10 @@ private:
                                  RectF(500.0f, y, kRight, y + 38.0f), Theme::kText);
             const auto status = source_errors_.find(source.url);
             renderer_.DrawString(
-                status == source_errors_.end() ? Widen(RedactedUrl(source.url)) : status->second,
+                encrypted_sources_.count(source.url)
+                    ? Tr(tinfoil_available_ ? Text::ShopEncrypted : Text::ShopInstallTinfoil)
+                : status == source_errors_.end() ? Widen(RedactedUrl(source.url))
+                                                 : status->second,
                 Font::RowSub, RectF(500.0f, y + 38.0f, kRight, y + 74.0f),
                 status == source_errors_.end() ? Theme::kTextSecondary : Theme::kDangerText);
         }
@@ -2310,6 +2351,9 @@ private:
     bool sidebar_focus_ = true;
     int section_ = 0;
     int source_cursor_ = 0;
+    std::set<std::string> encrypted_sources_;
+    bool tinfoil_available_ = false;
+    bool tinfoil_requested_ = false;
     bool sources_requested_ = false;
     bool navigation_requested_ = false;
     std::wstring profile_name_;
@@ -2400,6 +2444,12 @@ void ShopScreen::Draw(Clock::time_point now, bool navigation_focused) {
 }
 void ShopScreen::ReloadSources() {
     impl_->screen.ReloadShop();
+}
+void ShopScreen::SetTinfoilAvailable(bool available) {
+    impl_->screen.SetTinfoilAvailable(available);
+}
+bool ShopScreen::TakeTinfoilRequest() {
+    return impl_->screen.TakeTinfoilRequest();
 }
 bool ShopScreen::TakeSourcesRequest() {
     return impl_->screen.TakeSourcesRequest();

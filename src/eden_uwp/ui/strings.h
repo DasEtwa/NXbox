@@ -39,6 +39,8 @@ enum class Text {
     ShopManageSources,
     ShopEmptyTitle,
     ShopEncrypted,
+    ShopOpenTinfoil,
+    ShopInstallTinfoil,
     ShopFtpUnsupported,
     ShopDriveUnsupported,
     ShopFichierUnsupported,

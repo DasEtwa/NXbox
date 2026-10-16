@@ -312,6 +312,7 @@ private:
     void StartScan() {
         keep_title_id_ = SelectedTitleId();
         games_.clear();
+        tinfoil_index_ = -1;
         visuals_.clear();
 
         lift_.clear();
@@ -330,6 +331,14 @@ private:
             return;
         }
         games_ = scan_->Take();
+        // Use the library model, never a filename guess or another disk scan.
+        tinfoil_index_ = -1;
+        for (int i = 0; i < GameCount(); ++i) {
+            if (Game(i).title_id == "050000BADDAD0000") {
+                tinfoil_index_ = i;
+                break;
+            }
+        }
         keys_missing_ = scan_->KeysMissing();
         scan_.reset();
         visuals_.assign(games_.size(), Visual{});
@@ -396,8 +405,10 @@ private:
 
     void Update(Clock::time_point now) {
         AdoptScan();
-        if (shop_)
+        if (shop_) {
+            shop_->SetTinfoilAvailable(tinfoil_index_ >= 0);
             shop_->Tick(now, false);
+        }
         if (!launching_) {
             HandleInput(now);
         }
@@ -477,6 +488,12 @@ private:
         }
         if (tab_ == Tab::Shop && layer_ != Layer::Nav) {
             shop_->Tick(now, true);
+            if (shop_->TakeTinfoilRequest() && tinfoil_index_ >= 0 &&
+                tinfoil_index_ < GameCount()) {
+                selected_ = tinfoil_index_;
+                Launch(now);
+                return;
+            }
             if (shop_->TakeSourcesRequest()) {
                 SetTab(Tab::Settings);
                 settings_category_ = 1;
@@ -1732,6 +1749,7 @@ private:
 
     Tab tab_ = Tab::Library;
     Layer layer_ = Layer::Rail;
+    int tinfoil_index_ = -1;
     int selected_ = 0; // rail index; GameCount() is the "add games" tile
     int action_ = kActionPlay;
     std::atomic<bool>* return_home_ = nullptr;
