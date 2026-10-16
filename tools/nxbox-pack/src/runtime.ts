@@ -143,7 +143,7 @@ export function runtimePayload(data: Uint8Array): Record<string, Uint8Array> {
         /^[^/]+\.(exe|dll)$/i.test(n) ||
         // The bundled game.nro marker switches nxbox.exe into the game session (game.txt).
         n === "game.nro" ||
-        /^Assets\/[^/]+\.png$/i.test(n) ||
+        /^Assets\/(?:avatars\/)?[^/]+\.png$/i.test(n) ||
         /^Notices\/[^/]+\.(txt|md|rst)$/i.test(n),
     ),
   );

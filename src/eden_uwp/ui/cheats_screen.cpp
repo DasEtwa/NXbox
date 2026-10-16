@@ -432,7 +432,7 @@ private:
     bool leaving_ = false;
 };
 
-// Settings > Credits.
+// Settings > About > Credits.
 class CreditsScreen {
 public:
     CreditsScreen(Renderer& renderer, const CoreWindow& window, Input& input)

@@ -24,6 +24,11 @@
 #include <winrt/Windows.Storage.h>
 
 #include "common/scope_exit.h"
+#include "common/scm_rev.h"
+#include "eden_uwp/renderer_settings.h"
+#include "eden_uwp/ui/settings_model.h"
+#include "eden_uwp/ui/shop_screen.h"
+#include "eden_uwp/accounts.h"
 #include "eden_uwp/diagnostic.h"
 #include "eden_uwp/firmware.h"
 #include "eden_uwp/home_ui_settings.h"
@@ -32,6 +37,7 @@
 #include "eden_uwp/nextendo_online.h"
 #include "eden_uwp/save_sync.h"
 #include "eden_uwp/title_settings.h"
+#include "eden_uwp/ui/accounts_screen.h"
 #include "eden_uwp/ui/anim.h"
 #include "eden_uwp/ui/art.h"
 #include "eden_uwp/ui/art_colors.h"
@@ -39,6 +45,7 @@
 #include "eden_uwp/ui/input.h"
 #include "eden_uwp/ui/library.h"
 #include "eden_uwp/ui/mods_screen.h"
+#include "eden_uwp/ui/moru_screen.h"
 #include "eden_uwp/ui/nextendo_screen.h"
 #include "eden_uwp/ui/renderer.h"
 #include "eden_uwp/ui/savesync_ui.h"
@@ -124,21 +131,6 @@ constexpr int kActionMods = 1;
 constexpr int kActionDetails = 2;
 constexpr int kActionResolution = 3;
 constexpr int kActionCount = 4;
-
-// The rows of the settings list.
-constexpr int kSettingSaveSync = 0;
-constexpr int kSettingSources = 1;
-constexpr int kSettingUsb = 2;
-constexpr int kSettingCredits = 3;
-constexpr int kSettingNextendo = 4;
-constexpr int kSettingMultiplayer = 5;
-constexpr int kSettingInternetArt = 6;
-constexpr int kSettingSystemMenu = 7;
-constexpr int kSettingOfficialInterface = 8;
-constexpr int kSettingBackToNXbox = 9;
-constexpr int kSettingsRowCount = 10;
-// Rows that fit on screen at once; the list scrolls to keep the focused row visible.
-constexpr int kSettingsVisibleRows = 7;
 
 constexpr std::size_t Idx(int index) {
     return static_cast<std::size_t>(index);
@@ -231,6 +223,9 @@ public:
         guest_home_request_ = guest_home_request;
         input_.SetCancelFlag(return_home_);
         official_interface_ = UseOfficialSwitchInterface(local_state_);
+        renderer_backend_ = RendererSettings::Read(local_state_);
+        std::ifstream resolution_settings(local_state_ / "eden_settings.txt");
+        settings_resolution_ = TitleSettings::ReadResolution(resolution_settings);
         if (return_home_) {
             tab_ = Tab::Settings;
             layer_ = Layer::Rail;
@@ -240,6 +235,7 @@ public:
         NextendoOnline::Initialize(local_state_);
         firmware_status_ = GetFirmwareStatus();
         sync_account_ = GetSyncAccount();
+        accounts_multi_ = Accounts::Load(local_state_).multi;
         sources_count_ = CountSources(local_state_);
         usb_mode_ = LoadUsbMode(local_state_);
         usb_detection_ = std::make_unique<UsbDetection>(local_state_);
@@ -446,13 +442,18 @@ private:
                 resolution_save_failed_ = false;
             }
             if (input_.Pressed(Button::A)) {
-                const auto file = TitleSettings::File(local_state_, Game(selected_).title_id);
+                const auto file = resolution_global_
+                                      ? local_state_ / "eden_settings.txt"
+                                      : TitleSettings::File(local_state_, Game(selected_).title_id);
                 const int value = TitleSettings::kResolutionValues[Idx(resolution_choice_)];
                 resolution_save_failed_ = !TitleSettings::SaveResolution(file, value);
-                Diagnostic("UI resolution " + Game(selected_).title_id + "=" +
-                           std::to_string(value) +
+                Diagnostic("UI resolution " +
+                           (resolution_global_ ? std::string("global") : Game(selected_).title_id) +
+                           "=" + std::to_string(value) +
                            (resolution_save_failed_ ? " failed" : " saved"));
                 if (!resolution_save_failed_) {
+                    if (resolution_global_)
+                        settings_resolution_ = value;
                     resolution_open_ = false;
                     input_.ConsumeUntilRelease();
                 }
@@ -479,7 +480,9 @@ private:
             shop_->Tick(now, true);
             if (shop_->TakeSourcesRequest()) {
                 SetTab(Tab::Settings);
-                settings_row_ = kSettingSources;
+                settings_category_ = 1;
+                settings_row_ = 0;
+                settings_rows_focused_ = true;
                 layer_ = Layer::Rail;
                 OpenSources();
             }
@@ -500,11 +503,11 @@ private:
             MoveVertical(1);
         }
         // X and Y are shortcuts for the focused game, from any layer.
-        if (input_.Pressed(Button::X) && HasGame() && !update_focused_) {
+        if (input_.Pressed(Button::X) && tab_ == Tab::Library && HasGame() && !update_focused_) {
             OpenMods();
             return;
         }
-        if (input_.Pressed(Button::Y) && HasGame() && !update_focused_) {
+        if (input_.Pressed(Button::Y) && tab_ == Tab::Library && HasGame() && !update_focused_) {
             details_open_ = true;
             input_.ConsumeUntilRelease();
             return;
@@ -514,6 +517,16 @@ private:
             return;
         }
         if (input_.Pressed(Button::B)) {
+            if (tab_ == Tab::Settings && layer_ == Layer::Rail) {
+                if (renderer_open_) {
+                    renderer_open_ = false;
+                } else if (settings_rows_focused_) {
+                    settings_rows_focused_ = false;
+                } else {
+                    layer_ = Layer::Nav;
+                }
+                return;
+            }
             Diagnostic("UI library quit");
             leaving_ = true;
         }
@@ -523,6 +536,7 @@ private:
         if (return_home_ || tab_ == tab)
             return;
         update_focused_ = false;
+        renderer_open_ = false;
         tab_ = tab;
         if (tab_ == Tab::Shop) {
             if (!shop_)
@@ -536,12 +550,16 @@ private:
     }
 
     void MoveHorizontal(int direction) {
-        if (return_home_)
+        if (return_home_ && tab_ != Tab::Settings)
             return;
         switch (layer_) {
         case Layer::Rail:
             if (tab_ == Tab::Settings) {
-                break; // the settings are a list: left and right do nothing
+                if (renderer_open_) {
+                    renderer_open_ = false;
+                }
+                settings_rows_focused_ = direction > 0;
+                break;
             }
             if (!scan_) {
                 selected_ = std::clamp(selected_ + direction, 0, GameCount());
@@ -551,6 +569,8 @@ private:
             action_ = std::clamp(action_ + direction, 0, kActionCount - 1);
             break;
         case Layer::Nav:
+            if (return_home_)
+                break;
             if (update_focused_) {
                 if (direction < 0)
                     update_focused_ = false;
@@ -570,16 +590,16 @@ private:
     void MoveVertical(int direction) {
         update_focused_ = false;
         if (tab_ == Tab::Settings && layer_ == Layer::Rail) {
-            // The settings list: up and down walk the rows, and up from the first leaves it.
-            if (direction < 0) {
-                if (settings_row_ > 0) {
-                    --settings_row_;
-                } else if (!return_home_) {
-                    layer_ = Layer::Nav;
-                }
+            if (renderer_open_) {
+                renderer_choice_ = std::clamp(renderer_choice_ + direction, 0, 2);
+            } else if (settings_rows_focused_) {
+                settings_row_ = std::clamp(settings_row_ + direction, 0,
+                                           kSettingsCategories[Idx(settings_category_)].count - 1);
+            } else if (direction < 0 && settings_category_ == 0 && !return_home_) {
+                layer_ = Layer::Nav;
             } else {
-                settings_row_ =
-                    std::min(settings_row_ + 1, kSettingsRowCount - (return_home_ ? 1 : 2));
+                settings_category_ = std::clamp(settings_category_ + direction, 0, 5);
+                settings_row_ = 0;
             }
             return;
         }
@@ -614,7 +634,10 @@ private:
         switch (layer_) {
         case Layer::Rail:
             if (tab_ == Tab::Settings) {
-                ActivateSetting(now);
+                if (!settings_rows_focused_)
+                    settings_rows_focused_ = true;
+                else
+                    ActivateSetting(now);
             } else if (HasGame()) {
                 Launch(now);
             } else if (OnAddTile()) {
@@ -630,10 +653,13 @@ private:
                 details_open_ = true;
                 input_.ConsumeUntilRelease();
             } else if (action_ == kActionResolution) {
+                resolution_global_ = false;
                 OpenResolution();
             }
             break;
         case Layer::Nav:
+            if (tab_ == Tab::Settings)
+                layer_ = Layer::Rail;
             break; // focus on a tab already selected it
         }
     }
@@ -648,13 +674,15 @@ private:
     }
 
     void OpenResolution() {
-        if (!HasGame()) {
+        if (!resolution_global_ && !HasGame()) {
             return;
         }
         std::ifstream global(local_state_ / "eden_settings.txt");
         int value = TitleSettings::ReadResolution(global);
-        std::ifstream title(TitleSettings::File(local_state_, Game(selected_).title_id));
-        value = TitleSettings::ReadResolution(title, value);
+        if (!resolution_global_) {
+            std::ifstream title(TitleSettings::File(local_state_, Game(selected_).title_id));
+            value = TitleSettings::ReadResolution(title, value);
+        }
         resolution_choice_ = 0;
         for (std::size_t i = 0; i < TitleSettings::kResolutionValues.size(); ++i) {
             if (TitleSettings::kResolutionValues[i] == value) {
@@ -723,9 +751,39 @@ private:
         }
     }
 
+    Setting SelectedSetting() const {
+        return kSettingsCategories[Idx(settings_category_)].rows[Idx(settings_row_)];
+    }
+
     // A on a settings row.
     void ActivateSetting(Clock::time_point now) {
-        if (settings_row_ == kSettingInternetArt) {
+        if (renderer_open_) {
+            if (!RendererChoiceEnabled(renderer_choice_))
+                return;
+            const int backend =
+                renderer_choice_ == 0 ? RendererSettings::kDirectX12 : RendererSettings::kOpenGL;
+            if (RendererSettings::Save(local_state_, backend)) {
+                renderer_backend_ = backend;
+                renderer_open_ = false;
+                Toast(Tr(Text::RendererNextLaunch), now);
+            } else {
+                Toast(Tr(Text::ResolutionSaveFailed), now);
+            }
+            return;
+        }
+        if (SelectedSetting() == Setting::Renderer) {
+            renderer_choice_ = renderer_backend_ == RendererSettings::kOpenGL ? 1 : 0;
+            renderer_open_ = true;
+            return;
+        }
+        if (SelectedSetting() == Setting::Resolution) {
+            resolution_global_ = true;
+            OpenResolution();
+            return;
+        }
+        if (SelectedSetting() == Setting::Version)
+            return;
+        if (SelectedSetting() == Setting::InternetArt) {
             const auto file = local_state_ / "internet-art.disabled";
             std::error_code ec;
             bool saved = true;
@@ -746,7 +804,30 @@ private:
                 backgrounds_.reset();
             return;
         }
-        if (settings_row_ == kSettingBackToNXbox) {
+        if (SelectedSetting() == Setting::Moru) {
+            if (return_home_) {
+                return_home_->store(true); // Release the guest database before editing.
+                return;
+            }
+            const InputTransition transition(input_);
+            if (RunMoruScreen(renderer_, window_, input_))
+                closed_ = true;
+            return;
+        }
+        if (SelectedSetting() == Setting::Accounts ||
+            SelectedSetting() == Setting::ProfilePicture) {
+            if (return_home_) {
+                return_home_->store(true); // Edit accounts only after the guest releases its saves.
+                return;
+            }
+            const InputTransition transition(input_);
+            if (RunAccountsScreen(renderer_, window_, input_, local_state_,
+                                  SelectedSetting() == Setting::ProfilePicture))
+                closed_ = true;
+            accounts_multi_ = Accounts::Load(local_state_).multi;
+            return;
+        }
+        if (SelectedSetting() == Setting::BackToNXbox) {
             if (SaveOfficialSwitchInterface(local_state_, false)) {
                 official_interface_ = false;
                 if (return_home_)
@@ -755,7 +836,7 @@ private:
                 Toast(Tr(Text::ResolutionSaveFailed), now);
             return;
         }
-        if (settings_row_ == kSettingOfficialInterface) {
+        if (SelectedSetting() == Setting::OfficialInterface) {
             if (firmware_status_.home_available &&
                 SaveOfficialSwitchInterface(local_state_, !official_interface_)) {
                 official_interface_ = !official_interface_;
@@ -763,7 +844,7 @@ private:
                 Toast(Tr(Text::ResolutionSaveFailed), now);
             return;
         }
-        if (settings_row_ == kSettingSystemMenu) {
+        if (SelectedSetting() == Setting::SystemMenu) {
             if (!firmware_status_.home_available)
                 return;
             if (guest_home_request_) {
@@ -778,23 +859,23 @@ private:
             input_.ConsumeUntilRelease();
             return;
         }
-        if (settings_row_ == kSettingMultiplayer) {
+        if (SelectedSetting() == Setting::Multiplayer) {
             const InputTransition transition(input_);
             if (RunMultiplayerScreen(renderer_, window_, input_)) {
                 closed_ = true;
             }
             return;
         }
-        if (settings_row_ == kSettingNextendo) {
+        if (SelectedSetting() == Setting::Nextendo) {
             const InputTransition transition(input_);
             closed_ = RunNextendoScreen(renderer_, window_, input_);
             return;
         }
-        if (settings_row_ == kSettingCredits) {
+        if (SelectedSetting() == Setting::Credits) {
             OpenCredits();
             return;
         }
-        if (settings_row_ == kSettingUsb) {
+        if (SelectedSetting() == Setting::Usb) {
             const auto next = usb_mode_ == UsbMode::Ask        ? UsbMode::Copy
                               : usb_mode_ == UsbMode::Copy     ? UsbMode::External
                               : usb_mode_ == UsbMode::External ? UsbMode::Off
@@ -806,10 +887,12 @@ private:
             }
             return;
         }
-        if (settings_row_ == kSettingSources) {
+        if (SelectedSetting() == Setting::Sources) {
             OpenSources();
             return;
         }
+        if (SelectedSetting() != Setting::SaveSync)
+            return;
         switch (sync_account_) {
         case SyncAccount::SignedIn:
             SaveSync::SignOut();
@@ -914,14 +997,20 @@ private:
                                   Theme::kSheet);
             DrawSettings();
             DrawToast(now);
-            DrawHints(renderer_, {{Theme::kButtonB, L"B", Tr(Text::HintBack)}});
+            if (resolution_open_)
+                DrawResolution();
+            DrawHints(renderer_, CurrentHints());
             return;
         }
         if (tab_ == Tab::Shop && shop_) {
             shop_->Draw(now, layer_ == Layer::Nav);
             return;
         }
-        DrawBackdrop(now);
+        if (tab_ == Tab::Library)
+            DrawBackdrop(now);
+        else
+            renderer_.FillRounded(RectF(0.0f, 0.0f, kCanvasWidth, kCanvasHeight), 0.0f,
+                                  Theme::kBackground);
         if (tab_ == Tab::Library) {
             DrawHeroBackground(now);
         }
@@ -1375,21 +1464,11 @@ private:
         }
         std::vector<Hint> hints;
         if (tab_ == Tab::Settings) {
-            if (layer_ == Layer::Rail && settings_row_ == kSettingSaveSync) {
-                if (sync_account_ == SyncAccount::SignedIn) {
-                    hints.push_back({Theme::kButtonA, L"A", Tr(Text::HintSignOut)});
-                } else if (sync_account_ == SyncAccount::SignedOut) {
-                    hints.push_back({Theme::kButtonA, L"A", Tr(Text::HintSignIn)});
-                }
-            }
             if (layer_ == Layer::Rail &&
-                (settings_row_ == kSettingSources || settings_row_ == kSettingUsb ||
-                 settings_row_ == kSettingCredits || settings_row_ == kSettingInternetArt ||
-                 settings_row_ == kSettingSystemMenu ||
-                 settings_row_ == kSettingNextendo ||
-                 settings_row_ == kSettingMultiplayer)) {
+                (!renderer_open_ || RendererChoiceEnabled(renderer_choice_)))
                 hints.push_back({Theme::kButtonA, L"A", Tr(Text::HintSelect)});
-            }
+            hints.push_back({Theme::kButtonB, L"B", Tr(Text::HintBack)});
+            return hints;
         } else if (HasGame()) {
             if (layer_ == Layer::Rail) {
                 hints.push_back({Theme::kButtonA, L"A", Tr(Text::ActionPlay)});
@@ -1405,7 +1484,7 @@ private:
         return hints;
     }
 
-    // The settings tab: a list of rows, each with a name, its state and one line of explanation.
+    // Settings shares the Shop sidebar and plain rows, with a separate focus for each pane.
     void DrawSettings() {
         renderer_.DrawString(Tr(Text::SettingsTitle), Font::Heading,
                              RectF(kMargin + 28.0f, 210.0f, kCanvasWidth - kMargin, 310.0f),
@@ -1449,13 +1528,22 @@ private:
             Tr(Text::NextendoTitle),
             Tr(Service::Nextendo::IsEnabled() ? Text::NextendoOn : Text::NextendoOff),
             Theme::kTextSecondary, Tr(Text::NextendoRowHint)};
-        const std::array<Row, kSettingsRowCount> rows = {
+        static const std::wstring build =
+            winrt::to_hstring(Common::g_build_version).c_str() + std::wstring(L" · ") +
+            winrt::to_hstring(std::string(Common::g_scm_rev).substr(0, 8)).c_str();
+        const int resolution = settings_resolution_;
+        const Text resolution_label = resolution == 5   ? Text::Resolution1_5X
+                                      : resolution == 6 ? Text::Resolution2X
+                                      : resolution == 7 ? Text::Resolution3X
+                                                        : Text::Resolution1X;
+        const std::array<Row, static_cast<std::size_t>(Setting::Count)> rows = {
             {sync_row,
              sources_row,
              usb_row,
              credits_row,
              nextendo_row,
-             {Multiplayer::Tr(Multiplayer::Text::Title), L"", Theme::kTextSecondary, L""},
+             {Tr(Text::SettingsMultiplayer), Tr(Text::HintSelect), Theme::kTextSecondary,
+              Tr(Text::SettingsMultiplayerHint)},
              {Tr(Text::InternetArtwork), Tr(internet_art_ ? Text::SyncStateOn : Text::SyncStateOff),
               Theme::kTextSecondary, Tr(Text::InternetArtworkHint)},
              {Tr(Text::SystemMenuTitle), Tr(Text::SystemMenuBoot), Theme::kTextSecondary,
@@ -1464,42 +1552,77 @@ private:
               Tr(official_interface_ ? Text::SyncStateOn : Text::SyncStateOff),
               Theme::kTextSecondary,
               Tr(firmware_status_.home_available ? Text::SystemMenuHint : Text::RequiresFirmware)},
-             {Tr(Text::BackToNXboxInterface), L"", Theme::kTextSecondary, L""}}};
+             {Tr(Text::ProfilePicture), Tr(Text::HintSelect), Theme::kTextSecondary,
+              Tr(Text::ProfilePictureHint)},
+             {Tr(Text::MultipleAccounts),
+              Tr(accounts_multi_ ? Text::SyncStateOn : Text::SyncStateOff), Theme::kTextSecondary,
+              Tr(Text::MultipleAccountsHint)},
+             {Tr(Text::MoruTitle), Tr(Text::HintSelect), Theme::kTextSecondary,
+              Tr(Text::MoruSettingsHint)},
+             {Tr(Text::BackToNXboxInterface), Tr(Text::HintSelect), Theme::kTextSecondary,
+              Tr(Text::BackToNXboxHint)},
+             {Tr(Text::RendererTitle),
+              Tr(renderer_backend_ == RendererSettings::kOpenGL ? Text::RendererOpenGL
+                                                                : Text::RendererDirectX),
+              Theme::kTextSecondary, Tr(Text::RendererNextLaunch)},
+             {Tr(Text::ResolutionTitle), Tr(resolution_label), Theme::kTextSecondary,
+              Tr(Text::ResolutionMemoryHint)},
+             {Tr(Text::SettingsVersion), build.c_str(), Theme::kTextSecondary,
+              Tr(Text::SettingsBuildHint)}}};
         constexpr float kRowTop = 340.0f;
-        constexpr float kRowHeight = 88.0f;
-        constexpr float kRowPitch = 92.0f;
-        constexpr float kRowRadius = 22.0f;
-        const int row_count = return_home_ ? kSettingsRowCount : kSettingsRowCount - 1;
-        const int first_row =
-            std::max(0, std::min(settings_row_ - 3, row_count - kSettingsVisibleRows));
-        const int last_row = std::min(row_count, first_row + kSettingsVisibleRows);
-        for (int i = first_row; i < last_row; ++i) {
-            const float y = kRowTop + static_cast<float>(i - first_row) * kRowPitch;
-            const D2D1_RECT_F row = RectF(kMargin, y, kCanvasWidth - kMargin, y + kRowHeight);
-            const bool disabled = (i == kSettingOfficialInterface || i == kSettingSystemMenu) &&
-                                  !firmware_status_.home_available;
-            const bool focused = layer_ == Layer::Rail && settings_row_ == i;
-            if (focused) {
-                renderer_.FillRounded(row, kRowRadius, Theme::kSurfaceStrong);
+        constexpr float kRowPitch = 128.0f;
+        constexpr float kRight = kCanvasWidth - kMargin;
+        constexpr float kRowsLeft = 560.0f;
+        for (std::size_t category = 0; category < kSettingsCategories.size(); ++category) {
+            const float y = kRowTop + static_cast<float>(category) * 88.0f;
+            const auto rect = RectF(kMargin, y, 510.0f, y + 72.0f);
+            if (static_cast<int>(category) == settings_category_) {
+                renderer_.FillRounded(rect, 36.0f, Theme::kSurfaceStrong);
+                if (layer_ == Layer::Rail && !settings_rows_focused_)
+                    DrawRing(renderer_, rect, 36.0f + kRingGap, 1.0f);
             }
-            renderer_.DrawString(rows[Idx(i)].name, Font::RowTitle,
-                                 RectF(kMargin + 28.0f, y + 12.0f, kMargin + 700.0f, y + 48.0f),
-                                 disabled ? Theme::kTextTertiary : Theme::kText, HAlign::Left,
+            renderer_.DrawString(Tr(kSettingsCategories[category].title), Font::RowTitle,
+                                 RectF(kMargin + 28.0f, y, 490.0f, y + 72.0f), Theme::kText,
+                                 HAlign::Left, VAlign::Middle);
+        }
+        const std::array<Row, 3> renderer_rows{{
+            {Tr(Text::RendererDirectX), Tr(Text::RendererRecommended), Theme::kTextSecondary,
+             Tr(Text::RendererNextLaunch)},
+            {Tr(Text::RendererOpenGL), Tr(Text::RendererCompatibility), Theme::kTextSecondary,
+             Tr(Text::RendererNextLaunch)},
+            {Tr(Text::RendererVulkan), L"", Theme::kTextTertiary, Tr(Text::RendererVulkanHint)},
+        }};
+        const int row_count =
+            renderer_open_ ? 3 : kSettingsCategories[Idx(settings_category_)].count;
+        for (int i = 0; i < row_count; ++i) {
+            const auto setting = kSettingsCategories[Idx(settings_category_)].rows[Idx(i)];
+            const Row& item =
+                renderer_open_ ? renderer_rows[Idx(i)] : rows[static_cast<std::size_t>(setting)];
+            const float y = kRowTop + static_cast<float>(i) * kRowPitch;
+            const auto rect = RectF(kRowsLeft, y, kRight, y + 112.0f);
+            const bool disabled = renderer_open_ ? !RendererChoiceEnabled(i)
+                                                 : setting == Setting::Version ||
+                                                       ((setting == Setting::OfficialInterface ||
+                                                         setting == Setting::SystemMenu) &&
+                                                        !firmware_status_.home_available);
+            const bool focused = layer_ == Layer::Rail && settings_rows_focused_ &&
+                                 (renderer_open_ ? renderer_choice_ : settings_row_) == i;
+            if (focused)
+                renderer_.FillRounded(rect, 56.0f, Theme::kSurfaceStrong);
+            renderer_.DrawString(
+                item.name, Font::RowTitle,
+                RectF(kRowsLeft + 28.0f, y + 12.0f,
+                      renderer_open_ && i == 2 ? kRight - 28.0f : kRowsLeft + 620.0f, y + 54.0f),
+                disabled ? Theme::kTextTertiary : Theme::kText);
+            renderer_.DrawString(item.state, Font::RowSub,
+                                 RectF(kRowsLeft + 630.0f, y + 12.0f, kRight - 28.0f, y + 54.0f),
+                                 disabled ? Theme::kTextTertiary : item.state_color, HAlign::Right,
                                  VAlign::Middle);
-            renderer_.DrawString(
-                rows[Idx(i)].hint, Font::RowSub,
-                RectF(kMargin + 28.0f, y + 50.0f,
-                      kCanvasWidth - kMargin - (i == kSettingUsb ? 790.0f : 360.0f), y + 78.0f),
-                Theme::kTextSecondary, HAlign::Left, VAlign::Middle);
-            renderer_.DrawString(
-                rows[Idx(i)].state, Font::Button,
-                RectF(kCanvasWidth - kMargin - (i == kSettingUsb ? 770.0f : 340.0f), y,
-                      kCanvasWidth - kMargin - 28.0f, y + kRowHeight),
-                disabled ? Theme::kTextTertiary : rows[Idx(i)].state_color, HAlign::Right,
-                VAlign::Middle);
-            if (focused) {
-                DrawRing(renderer_, row, kRowRadius + kRingGap, 1.0f);
-            }
+            renderer_.DrawString(item.hint, Font::RowSub,
+                                 RectF(kRowsLeft + 28.0f, y + 64.0f, kRight - 28.0f, y + 106.0f),
+                                 Theme::kTextSecondary);
+            if (focused)
+                DrawRing(renderer_, rect, 56.0f + kRingGap, 1.0f);
         }
     }
 
@@ -1554,8 +1677,9 @@ private:
         renderer_.DrawString(Tr(Text::ResolutionTitle), Font::Heading,
                              RectF(left, sheet.top + 40.0f, right, sheet.top + 110.0f),
                              Theme::kText);
-        renderer_.DrawString(Game(selected_).name, Font::Meta,
-                             RectF(left, sheet.top + 115.0f, right, sheet.top + 155.0f),
+        renderer_.DrawString(resolution_global_ ? Tr(Text::SettingsGlobalResolution)
+                                                : Game(selected_).name.c_str(),
+                             Font::Meta, RectF(left, sheet.top + 115.0f, right, sheet.top + 155.0f),
                              Theme::kTextSecondary);
         const std::array<Text, 4> labels = {Text::Resolution1X, Text::Resolution1_5X,
                                             Text::Resolution2X, Text::Resolution3X};
@@ -1614,7 +1738,15 @@ private:
     std::atomic<bool>* return_home_ = nullptr;
     std::atomic<bool>* guest_home_request_ = nullptr;
     bool official_interface_ = false;
+    bool accounts_multi_ = false;
     int settings_row_ = 0;
+    int settings_category_ = 0;
+    bool settings_rows_focused_ = false;
+    bool renderer_open_ = false;
+    int renderer_choice_ = 0;
+    bool resolution_global_ = false;
+    int renderer_backend_ = RendererSettings::kDirectX12;
+    int settings_resolution_ = TitleSettings::kDefaultResolution;
     SyncAccount sync_account_ = SyncAccount::SignedOut;
     int launched_ = -1;
     bool details_open_ = false;

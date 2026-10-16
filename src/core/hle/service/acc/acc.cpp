@@ -36,6 +36,12 @@ namespace Service::Account {
 // Thumbnails are hard coded to be at least this size
 constexpr std::size_t THUMBNAIL_SIZE = 0x24000;
 
+#ifdef NXBOX_UWP
+static const auto& ACCOUNT_FALLBACK_JPEG = Core::Constants::NXBOX_ACCOUNT_JPEG;
+#else
+static const auto& ACCOUNT_FALLBACK_JPEG = Core::Constants::ACCOUNT_BACKUP_JPEG;
+#endif
+
 static std::filesystem::path GetImagePath(const Common::UUID& uuid) {
     return Common::FS::GetEdenPath(Common::FS::EdenPath::NANDDir) /
            fmt::format("system/save/8000000000000010/su/avators/{}.jpg", uuid.FormattedString());
@@ -649,8 +655,8 @@ protected:
         if (!image.IsOpen()) {
             LOG_WARNING(Service_ACC,
                         "Failed to load user provided image! Falling back to built-in backup...");
-            ctx.WriteBuffer(Core::Constants::ACCOUNT_BACKUP_JPEG);
-            rb.Push(static_cast<u32>(Core::Constants::ACCOUNT_BACKUP_JPEG.size()));
+            ctx.WriteBuffer(ACCOUNT_FALLBACK_JPEG);
+            rb.Push(static_cast<u32>(ACCOUNT_FALLBACK_JPEG.size()));
             return;
         }
 
@@ -677,7 +683,7 @@ protected:
         if (!image.IsOpen()) {
             LOG_WARNING(Service_ACC,
                         "Failed to load user provided image! Falling back to built-in backup...");
-            rb.Push(static_cast<u32>(Core::Constants::ACCOUNT_BACKUP_JPEG.size()));
+            rb.Push(static_cast<u32>(ACCOUNT_FALLBACK_JPEG.size()));
             return;
         }
 
@@ -1063,7 +1069,7 @@ void Module::Interface::GetUserCount(HLERequestContext& ctx) {
     LOG_DEBUG(Service_ACC, "called");
     IPC::ResponseBuilder rb{ctx, 3};
     rb.Push(ResultSuccess);
-    rb.Push<u32>(static_cast<u32>(profile_manager->GetUserCount()));
+    rb.Push<u32>(static_cast<u32>(profile_manager->GetApplicationUserCount()));
 }
 
 void Module::Interface::GetUserExistence(HLERequestContext& ctx) {
@@ -1078,7 +1084,7 @@ void Module::Interface::GetUserExistence(HLERequestContext& ctx) {
 
 void Module::Interface::ListAllUsers(HLERequestContext& ctx) {
     LOG_DEBUG(Service_ACC, "called");
-    ctx.WriteBuffer(profile_manager->GetAllUsers());
+    ctx.WriteBuffer(profile_manager->GetApplicationUsers());
     IPC::ResponseBuilder rb{ctx, 2};
     rb.Push(ResultSuccess);
 }
@@ -1299,7 +1305,7 @@ void Module::Interface::ListQualifiedUsers(HLERequestContext& ctx) {
     // All users should be qualified. We don't actually have parental control or anything to do with
     // nintendo online currently. We're just going to assume the user running the game has access to
     // the game regardless of parental control settings.
-    ctx.WriteBuffer(profile_manager->GetAllUsers());
+    ctx.WriteBuffer(profile_manager->GetApplicationUsers());
     IPC::ResponseBuilder rb{ctx, 2};
     rb.Push(ResultSuccess);
 }
@@ -1385,13 +1391,13 @@ void Module::Interface::TrySelectUserWithoutInteractionDeprecated(HLERequestCont
     // A u8 is passed into this function which we can safely ignore. It's to determine if we have
     // access to use the network or not by the looks of it
     IPC::ResponseBuilder rb{ctx, 6};
-    if (profile_manager->GetUserCount() != 1) {
+    if (profile_manager->GetApplicationUserCount() != 1) {
         rb.Push(ResultSuccess);
         rb.PushRaw(Common::InvalidUUID);
         return;
     }
 
-    const auto user_list = profile_manager->GetAllUsers();
+    const auto user_list = profile_manager->GetApplicationUsers();
     if (std::ranges::all_of(user_list, [](const auto& user) { return user.IsInvalid(); })) {
         rb.Push(ResultUnknown); // TODO(ogniK): Find the correct error code
         rb.PushRaw(Common::InvalidUUID);
@@ -1408,13 +1414,13 @@ void Module::Interface::TrySelectUserWithoutInteraction(HLERequestContext& ctx) 
     // A u8 is passed into this function which we can safely ignore. It's to determine if we have
     // access to use the network or not by the looks of it
     IPC::ResponseBuilder rb{ctx, 6};
-    if (profile_manager->GetUserCount() != 1) {
+    if (profile_manager->GetApplicationUserCount() != 1) {
         rb.Push(ResultSuccess);
         rb.PushRaw(Common::InvalidUUID);
         return;
     }
 
-    const auto user_list = profile_manager->GetAllUsers();
+    const auto user_list = profile_manager->GetApplicationUsers();
     if (std::ranges::all_of(user_list, [](const auto& user) { return user.IsInvalid(); })) {
         rb.Push(ResultUnknown); // TODO(ogniK): Find the correct error code
         rb.PushRaw(Common::InvalidUUID);

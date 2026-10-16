@@ -15,6 +15,15 @@ add_executable(eden-uwp WIN32
     alloc_track.h
     firmware.cpp
     firmware.h
+    accounts.cpp
+    accounts.h
+    accounts_policy.h
+    ui/accounts_screen.cpp
+    ui/accounts_screen.h
+    ui/moru_screen.cpp
+    ui/moru_screen.h
+    moru_model.h
+    moru_parts.h
     game_session.cpp
     game_session.h
     protocol_uri.h
@@ -96,7 +105,7 @@ add_executable(eden-uwp WIN32
 target_link_libraries(eden-uwp PRIVATE common core video_core audio_core frontend_common input_common glad)
 
 # ui/mods.cpp unpacks the mods' .zip files with zlib, which core already links privately.
-target_link_libraries(eden-uwp PRIVATE ZLIB::ZLIB OpenSSL::Crypto)
+target_link_libraries(eden-uwp PRIVATE ZLIB::ZLIB OpenSSL::Crypto nlohmann_json::nlohmann_json)
 
 # WinRT (CoreApplication, IFrameworkView, ApplicationData) comes from the Store umbrella import lib.
 target_link_libraries(eden-uwp PRIVATE WindowsApp.lib)
@@ -164,3 +173,10 @@ foreach(_credential CLIENT_ID CLIENT_SECRET)
 endforeach()
 configure_file(save_sync/credentials.h.in ${CMAKE_CURRENT_BINARY_DIR}/save_sync_credentials.h @ONLY)
 target_include_directories(eden-uwp PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+
+# Stage the same runtime assets as package_uwp.py for MSVC build-directory runs.
+add_custom_command(TARGET eden-uwp POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${PROJECT_SOURCE_DIR}/dist/nxbox/Assets/avatars"
+        "$<TARGET_FILE_DIR:eden-uwp>/Assets/avatars"
+    VERBATIM)

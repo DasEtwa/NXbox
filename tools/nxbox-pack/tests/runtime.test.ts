@@ -21,6 +21,7 @@ export function fixture(): Record<string, Uint8Array> {
       "Assets/StoreLogo.png",
       "Assets/Square44x44Logo.png",
       "Assets/Square150x150Logo.png",
+      "Assets/avatars/fox-pilot.png",
       "Notices/Eden-LICENSE.txt",
       "Notices/Mesa-LICENSE.rst",
       "Notices/DXC-LICENSE-MS.txt",
@@ -47,6 +48,8 @@ test("stages only runtime payload, never private or stale boot data", async () =
     expect(files).not.toContain("games/private.nsp");
     // game.nro is the runtime's own marker that boots the game session, so it must ship.
     expect(files).toContain("game.nro");
+    expect(files).toContain("Assets/avatars/fox-pilot.png");
+    expect(await readFile(join(temporary, "Assets/avatars/fox-pilot.png"), "utf8")).toBe("fixture");
     expect(files).not.toContain("AppxSignature.p7x");
     expect(await readFile(join(temporary, "AppxManifest.xml"), "utf8")).toContain(
       'DisplayName="My Game"',

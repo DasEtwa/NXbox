@@ -7,6 +7,10 @@
 #pragma once
 
 #include <array>
+
+#ifdef NXBOX_UWP
+#include "core/constants_nxbox.h"
+#endif
 #include "common/common_types.h"
 
 // This is to consolidate system-wide constants that are used by multiple components of yuzu.

@@ -114,13 +114,13 @@ class HomeUiTests(unittest.TestCase):
         for lang, values in {
             "en": [
                 "Press again to go home",
-                "Use the official Switch interface",
+                "Use the system interface (firmware)",
                 "Requires firmware",
                 "Back to NXbox interface",
             ],
             "pt_br": [
                 "Aperte de novo para ir ao início",
-                "Usar a interface oficial do Switch",
+                "Usar a interface do sistema (firmware)",
                 "Requer firmware",
                 "Voltar para a interface do NXbox",
             ],

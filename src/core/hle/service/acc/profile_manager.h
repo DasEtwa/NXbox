@@ -7,7 +7,9 @@
 #pragma once
 
 #include <array>
+#include <filesystem>
 #include <optional>
+#include <span>
 
 #include "common/common_funcs.h"
 #include "common/common_types.h"
@@ -95,6 +97,10 @@ public:
     void CloseUser(Common::UUID uuid);
     UserIDArray GetOpenUsers() const;
     UserIDArray GetAllUsers() const;
+    // Guest-facing list. Stored accounts remain available to the frontend when single mode is on.
+    UserIDArray GetApplicationUsers() const;
+    std::size_t GetApplicationUserCount() const;
+    static void SetMultiAccountEnabled(bool enabled);
     Common::UUID GetLastOpenedUser() const;
     UserIDArray GetStoredOpenedUsers() const;
     void StoreOpenedUsers();
@@ -108,6 +114,9 @@ public:
     bool SetProfileBase(Common::UUID uuid, const ProfileBase& profile_new);
     bool SetProfileBaseAndData(Common::UUID uuid, const ProfileBase& profile_new,
                                const UserData& data_new);
+
+    static std::filesystem::path AvatarPath(Common::UUID uuid);
+    bool SetAvatar(Common::UUID uuid, std::span<const u8> jpeg);
 
     void WriteUserSaveFile();
 

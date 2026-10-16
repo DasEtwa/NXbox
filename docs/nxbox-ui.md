@@ -333,9 +333,36 @@ The backend is `save_sync.h/.cpp`; `ui/savesync_ui.cpp` is the part the player s
 - Sign-in: `StartDeviceLogin()` then `PollDeviceLogin()` on a worker thread; the screen shows the
   verification URL, the user code large, a countdown to its expiry and the result. B cancels. No QR
   code (it would need an encoder; the code and the URL are enough).
-- Settings tab: a list with "SwitchSaveSync" (Desligado / Conectado / Não configurado; A signs in
-  or out) and "Fontes" (a placeholder that says "em breve"; Increment 3 fills it). Sync is enabled
-  exactly when the account is configured and signed in.
+- Settings uses a Shop-style category pane on the left and plain label/value/help rows on the
+  right. The complete map (each setting appears once):
+
+  | Category (PT / EN) | Rows, in order |
+  | --- | --- |
+  | Gráficos / Graphics | Renderer, default resolution, artwork from the internet |
+  | Loja / Shop | Shop sources, USB install |
+  | Online | Nextendo, Multiplayer |
+  | Conta / Account | Profile picture, multiple accounts, Moru, SwitchSaveSync |
+  | Sistema / System | Boot to system HOME menu, system interface, back to NXbox |
+  | Sobre / About | Installed version/build and git SHA, Credits |
+
+  D-pad/stick Up/Down selects a category or row. Right enters rows; Left returns to categories.
+  A enters the category or opens/toggles its row. B closes the renderer choices, returns to categories,
+  then the tab bar; B at the tab bar exits. LB/RB continues to cycle Library / Shop / Settings.
+  `NXBOX_UI_SCRIPT` uses these same inputs: from Library, `RB RB DOWN` focuses Graphics;
+  `RIGHT A` opens its renderer choices; `DOWN A` saves OpenGL. For Credits from the Settings tab
+  bar: `DOWN DOWN DOWN DOWN DOWN DOWN RIGHT DOWN A`.
+
+  Renderer choices are **DirectX 12 — recommended**, **OpenGL (Mesa) — compatibility** and a
+  focusable but disabled **Vulkan — not available on Xbox** explanation. A on Vulkan does nothing.
+  The first two replace `renderer_backend` (5 / 0) in `LocalState/eden_settings.txt`, retaining
+  unrelated settings and removing the legacy `backend` alias. Changes apply on the next game launch;
+  the file is reloaded before `MesaWindow` selects the API. D3D12 remains the default unless OpenGL
+  is selected; `NXBOX_RENDERER` remains an explicit developer override. A conflicting per-title
+  renderer override must agree with the window backend, as before.
+  Resolution uses the existing choice sheet, saving `resolution_setup` globally; per-game overrides
+  continue to win. System HOME/interface rows remain disabled without firmware. Back to NXbox
+  updates the startup preference and also returns from a running guest when applicable.
+  SwitchSaveSync signs in/out and sync is enabled exactly when configured and signed in.
 - Before boot (only for a game chosen in the library): after the library returns, with sync enabled,
   `RunBootSync` reconciles the save behind a progress screen. On a conflict it shows both sides (time,
   files, size) and asks "Manter o save do Xbox" / "Usar o da nuvem" (focus starts on the newer side;

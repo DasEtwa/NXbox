@@ -1,4 +1,18 @@
 export default {
+  profileUsage:
+    "Usage: nxbox-pack profile multi on|off, or nxbox-pack profile avatar <name> <image> | --character <id> --color <name> [--insecure-portal]",
+  profilePackage: "Package full name (choose the app whose accounts you want to edit)",
+  profileMissing:
+    "Profile not found, duplicate name, or invalid profile data. Open NXbox once to create its profiles.",
+  profileClose:
+    "Close the selected NXbox app on the console before continuing. Press Enter when closed.",
+  profileDone: "Profile updated. Reopen the selected NXbox app.",
+  avatarInvalid:
+    "Choose a valid PNG, JPEG, WebP, GIF or BMP image (up to 20 MB). The browser must finish within two minutes.",
+  avatarBrowser: "Converting in your local browser. If it did not open, open this URL on this PC:",
+  avatarConverting: "Preparing your NXbox avatar…",
+  avatarConverted: "Image prepared. Return to NXbox Pack; you can close this tab.",
+
   guide: "Drag the game file into this window and press Enter (supported: .nsp .xci .nsz .xcz)",
   legal: "You must own the game and dump your own keys. NXbox Pack never downloads games or keys.",
   keys: "Drag your prod.keys into this window and press Enter",

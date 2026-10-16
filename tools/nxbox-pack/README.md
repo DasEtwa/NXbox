@@ -111,3 +111,8 @@ See [the design and console verification plan](../../docs/nxbox-pack.md).
 You must own the game and dump your own keys. NXbox Pack never downloads games or keys. They are
 uploaded separately into the installed app's private LocalState, never included in the staged
 runtime or a distributable package. Do not share game dumps, keys, or console LocalState backups.
+
+Profile characters share NXbox's 120 original portraits and 40 named backgrounds, including
+`sunrise`, `lagoon`, `dusk`, and `ember` gradients. The stable `fox-pilot` ID now represents a fox
+ceramic artisan. The console's Settings > Account > Profile picture works in single-account mode;
+Multiple accounts is off by default and no first-launch account question appears.

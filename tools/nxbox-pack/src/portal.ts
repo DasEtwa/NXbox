@@ -193,6 +193,13 @@ export class DevicePortal {
       path: path ? `\\${path.replace(/^[/\\]+/, "").replaceAll("/", "\\")}` : "",
     });
   }
+  async readFile(pkg: string, directory: string, name: string): Promise<Uint8Array> {
+    const query = this.query(pkg, directory);
+    query.set("filename", name);
+    return new Uint8Array(
+      await (await this.request("GET", `/api/filesystem/apps/file?${query}`)).arrayBuffer(),
+    );
+  }
   async listFiles(pkg: string, path: string): Promise<{ Name: string }[]> {
     const response = await this.raw("GET", `/api/filesystem/apps/files?${this.query(pkg, path)}`);
     const data = (await response.json()) as { Items?: { Name: string }[] };

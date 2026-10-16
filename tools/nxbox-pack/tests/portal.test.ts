@@ -69,8 +69,14 @@ test("Xbox loose deployment and multipart LocalState uploads use the portal cont
   try {
     const path = join(temporary, "local.nsp");
     await writeFile(path, Buffer.alloc(4 * 1024 * 1024, 1));
-    const runtime = ["nxbox.exe", "opengl32.dll", "Assets/logo.png", "Assets/wide.png"];
-    await mkdir(join(temporary, "Assets"));
+    const runtime = [
+      "nxbox.exe",
+      "opengl32.dll",
+      "Assets/logo.png",
+      "Assets/wide.png",
+      "Assets/avatars/fox-pilot.png",
+    ];
+    await mkdir(join(temporary, "Assets/avatars"), { recursive: true });
     for (const file of runtime) await writeFile(join(temporary, file), file);
     await portal.uploadRuntime("game-folder", temporary, runtime);
     const installed = await portal.register("game-folder", "NSPX.NXbox.01007EF00011E000", 5000);
@@ -89,11 +95,12 @@ test("Xbox loose deployment and multipart LocalState uploads use the portal cont
       uploads.map((c) =>
         Buffer.from(c.url.searchParams.get("destinationFolder")!, "base64").toString(),
       ),
-    ).toEqual(["game-folder", "game-folder\\Assets"]);
+    ).toEqual(["game-folder", "game-folder\\Assets", "game-folder\\Assets\\avatars"]);
     expect(uploads[0]!.body).toContain('filename="nxbox.exe"');
     expect(uploads[0]!.body).toContain('filename="opengl32.dll"');
     expect(uploads[1]!.body).toContain('filename="logo.png"');
     expect(uploads[1]!.body).toContain('filename="wide.png"');
+    expect(uploads[2]!.body).toContain('filename="fox-pilot.png"');
     const parts = await new Response(uploads[1]!.body, {
       headers: {
         "Content-Type": `multipart/form-data; boundary=${uploads[1]!.body.slice(2, uploads[1]!.body.indexOf("\r\n"))}`,
