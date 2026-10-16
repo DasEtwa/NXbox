@@ -346,3 +346,8 @@
     {Text::MultipleAccountsHint, L"Manage profiles and keep their saves separate."},
     {Text::MoruSettingsHint, L"Create and edit your characters for games."},
     {Text::BackToNXboxHint, L"Use the NXbox library on the next startup."},
+    {Text::ShaderPreloadTitle, L"Compile shaders before playing"},
+    {Text::ShaderPreloadHint,
+     L"Avoids stutters and a black screen at startup. Press B on the loading screen to skip."},
+    {Text::LaunchShaderPreload, L"Loading shaders for a smoother experience"},
+    {Text::LaunchShaderSkip, L"B Skip (the game may stutter at first)"},

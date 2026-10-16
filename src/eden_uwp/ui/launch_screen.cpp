@@ -87,7 +87,7 @@ void LaunchScreen::Draw(const LaunchStatus& status, Text failure, Pixels* captur
         progress = 0.2f;
         break;
     case LaunchPhase::Shaders:
-        text = Text::LaunchShaders;
+        text = status.shader_preload.load() ? Text::LaunchShaderPreload : Text::LaunchShaders;
         progress = 0.4f;
         break;
     case LaunchPhase::Starting:
@@ -115,6 +115,10 @@ void LaunchScreen::Draw(const LaunchStatus& status, Text failure, Pixels* captur
     if (progress > 0) {
         renderer_->FillRounded(D2D1::RectF(120, 1016, 120 + 1680 * progress, 1019), 1.5f,
                                Theme::kText);
+    }
+    if (phase == LaunchPhase::Shaders && status.shader_preload.load() && status.total.load() > 0) {
+        renderer_->DrawString(Tr(Text::LaunchShaderSkip), Font::Body,
+                              D2D1::RectF(120, 1030, 1800, 1076), Theme::kTextSecondary);
     }
     renderer_->EndFrame(capture);
 }

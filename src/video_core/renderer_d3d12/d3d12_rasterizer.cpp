@@ -3162,6 +3162,12 @@ void RasterizerD3D12::LoadDiskResources(u64 title_id, std::stop_token stop_loadi
                                         const VideoCore::DiskResourceLoadCallback& callback) {
     default_pipeline_cache->LoadDiskResources(title_id, stop_loading, callback);
 }
+void RasterizerD3D12::LoadDiskResourcesWithPreload(
+    u64 title_id, std::stop_token stop_loading, const VideoCore::DiskResourceLoadCallback& callback,
+    const std::function<bool()>& skip_wait) {
+    default_pipeline_cache->LoadDiskResources(title_id, stop_loading, callback, true, skip_wait);
+}
+
 void RasterizerD3D12::InitializeChannel(Tegra::Control::ChannelState& channel) {
     // The shared caches consume common dirty bits, even without a native state tracker.
     auto& dirty = channel.payload->maxwell_3d.dirty;

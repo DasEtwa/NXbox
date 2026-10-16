@@ -173,6 +173,17 @@ public:
         return true;
     }
 
+    bool ShaderSkipPressed() {
+        using namespace winrt::Windows::Gaming::Input;
+        if ((key_state.load(std::memory_order_acquire) | ScriptedKeys()) &
+            (1u << Settings::NativeButton::B))
+            return true;
+        for (const auto& device : Gamepad::Gamepads())
+            if ((device.GetCurrentReading().Buttons & GamepadButtons::B) != GamepadButtons::None)
+                return true;
+        return false;
+    }
+
     HomeComboAction HomeCombo() const {
         return home_combo_action;
     }

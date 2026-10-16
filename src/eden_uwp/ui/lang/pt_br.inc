@@ -361,3 +361,8 @@
     {Text::MultipleAccountsHint, L"Gerencie perfis e mantenha os saves separados."},
     {Text::MoruSettingsHint, L"Crie e edite seus personagens para os jogos."},
     {Text::BackToNXboxHint, L"Use a biblioteca NXbox na próxima inicialização."},
+    {Text::ShaderPreloadTitle, L"Compilar shaders antes de jogar"},
+    {Text::ShaderPreloadHint,
+     L"Evita travadas e tela preta no começo. Aperte B na tela de carregamento para pular."},
+    {Text::LaunchShaderPreload, L"Carregando shaders para uma melhor experiência"},
+    {Text::LaunchShaderSkip, L"B Pular (o jogo pode travar no começo)"},

@@ -163,6 +163,13 @@ public:
     virtual void LoadDiskResources(u64 title_id, std::stop_token stop_loading,
                                    const DiskResourceLoadCallback& callback) {}
 
+    /// Optionally wait for parallel disk warmup; skipping must not cancel background builds.
+    virtual void LoadDiskResourcesWithPreload(u64 title_id, std::stop_token stop_loading,
+                                              const DiskResourceLoadCallback& callback,
+                                              const std::function<bool()>& skip_wait) {
+        LoadDiskResources(title_id, stop_loading, callback);
+    }
+
     virtual void InitializeChannel(Tegra::Control::ChannelState& channel) {}
 
     virtual void BindChannel(Tegra::Control::ChannelState& channel) {}

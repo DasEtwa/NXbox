@@ -68,7 +68,9 @@ public:
     IGraphicsPipeline* CurrentGraphicsPipeline(const Pso::FramebufferFormats& formats) override;
     ComputePipeline* CurrentComputePipeline();
     void LoadDiskResources(u64 title_id, std::stop_token stop_loading,
-                           const VideoCore::DiskResourceLoadCallback& callback);
+                           const VideoCore::DiskResourceLoadCallback& callback,
+                           bool wait_for_warmup = false,
+                           const std::function<bool()>& skip_wait = {});
     void FlushDiskCache();
     std::string ProfileSummary();
 

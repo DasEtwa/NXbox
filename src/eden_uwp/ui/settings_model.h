@@ -20,6 +20,7 @@ enum class Setting {
     Moru,
     BackToNXbox,
     Renderer,
+    ShaderPreload,
     Resolution,
     Version,
     Count
@@ -30,7 +31,9 @@ struct SettingsCategory {
     int count;
 };
 inline constexpr std::array<SettingsCategory, 6> kSettingsCategories{{
-    {Text::SettingsGraphics, {Setting::Renderer, Setting::Resolution, Setting::InternetArt}, 3},
+    {Text::SettingsGraphics,
+     {Setting::Renderer, Setting::ShaderPreload, Setting::Resolution, Setting::InternetArt},
+     4},
     {Text::NavShop, {Setting::Sources, Setting::Usb}, 2},
     {Text::SettingsOnline, {Setting::Nextendo, Setting::Multiplayer}, 2},
     {Text::AccountSection,

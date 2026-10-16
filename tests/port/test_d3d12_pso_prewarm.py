@@ -9,6 +9,28 @@ D3D12 = ROOT / "src/video_core/renderer_d3d12"
 
 
 class PsoPrewarmTests(unittest.TestCase):
+    def test_shader_preload_waits_for_settled_jobs_and_skip_keeps_warmup(self):
+        source = (D3D12 / "d3d12_pipeline_cache.cpp").read_text()
+        wait = source.split("    if (preload) {\n        for (;;) {", 1)[1].split(
+            "    } else if (async_warmup)", 1
+        )[0]
+        self.assertIn("async->Lookup(request).status == AsyncCache::Status::Pending", wait)
+        self.assertIn("progress.completed - std::min(progress.completed, pending)", wait)
+        self.assertIn("finished && pending == 0", wait)
+        self.assertIn("skip_wait && skip_wait()", wait)
+        self.assertNotIn("StopWarmup", wait)
+        self.assertNotIn("async->Stop", wait)
+        self.assertIn("callback = async_warmup ? VideoCore::DiskResourceLoadCallback{}", source)
+        session = (ROOT / "src/eden_uwp/game_session.cpp").read_text()
+        self.assertIn("RendererSettings::ReadShaderPreload(local_state)", session)
+        self.assertIn("gamepad->ShaderSkipPressed()", session)
+        self.assertIn(
+            "rasterizer->LoadDiskResources(title_id, shader_stop.get_token(), progress)", session
+        )
+        settings = (ROOT / "src/eden_uwp/renderer_settings.h").read_text()
+        self.assertIn("bool enabled = true;", settings)
+        self.assertIn('"shader_preload="', settings)
+
     def test_request_schema_async_boot_and_documented_toggle(self):
         header = (D3D12 / "d3d12_disk_pipeline_cache.h").read_text()
         wire = (D3D12 / "d3d12_disk_pipeline_cache.cpp").read_text()

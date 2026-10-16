@@ -67,6 +67,7 @@
 #include "eden_uwp/home_ui_settings.h"
 #include "eden_uwp/http_vfs_file.h"
 #include "eden_uwp/mesa_window.h"
+#include "eden_uwp/renderer_settings.h"
 #include "eden_uwp/save_sync.h"
 #include "eden_uwp/setup_ui.h"
 #include "eden_uwp/title_settings.h"
@@ -1008,14 +1009,22 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
             };
             present_launch(true);
             std::stop_source shader_stop;
-            system.Renderer().ReadRasterizer()->LoadDiskResources(
-                system.GetApplicationProcessProgramID(), shader_stop.get_token(),
+            const auto local_state = std::filesystem::path(winrt::to_string(
+                winrt::Windows::Storage::ApplicationData::Current().LocalFolder().Path()));
+            const bool shader_preload =
+                window.UsesNativeD3D12() && RendererSettings::ReadShaderPreload(local_state);
+            launch_status.shader_preload.store(shader_preload);
+            size_t last_logged_value = static_cast<size_t>(-1);
+            size_t last_logged_total = static_cast<size_t>(-1);
+            const auto progress =
                 [&](VideoCore::LoadCallbackStage stage, size_t value, size_t total) {
                     if (closed.load())
                         shader_stop.request_stop();
                     if (stage == VideoCore::LoadCallbackStage::Build) {
-                        // The final callback has value=0 and total=N: retain the completed count.
-                        launch_status.built.store(total > 0 && value == 0 ? total : value);
+                        // Legacy loaders end with value=0 and total=N; preload reports settled
+                        // jobs.
+                        launch_status.built.store(
+                            !shader_preload && total > 0 && value == 0 ? total : value);
                         launch_status.total.store(total);
                         present_launch(false);
                     }
@@ -1023,7 +1032,11 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
                     // dies shows how far it got.
                     // Inline builds report a running count with no total; the final call
                     // reports the total with a count of zero.
-                    if (stage == VideoCore::LoadCallbackStage::Build && value % 32 == 0) {
+                    if (stage == VideoCore::LoadCallbackStage::Build && value % 32 == 0 &&
+                        (!shader_preload || value != last_logged_value ||
+                         total != last_logged_total)) {
+                        last_logged_value = value;
+                        last_logged_total = total;
                         // The commit shows whether a hang while loading is memory pressure.
                         const auto commit =
                             winrt::Windows::System::MemoryManager::AppMemoryUsage() >> 20;
@@ -1032,7 +1045,21 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
                                                      commit)
                                        : fmt::format("SHADER_CACHE total {}", total));
                     }
-                });
+                };
+            auto* rasterizer = system.Renderer().ReadRasterizer();
+            if (shader_preload) {
+                rasterizer->LoadDiskResourcesWithPreload(title_id, shader_stop.get_token(),
+                                                         progress, [&] {
+                                                             if (closed.load()) {
+                                                                 shader_stop.request_stop();
+                                                                 return true;
+                                                             }
+                                                             return gamepad->ShaderSkipPressed();
+                                                         });
+            } else {
+                rasterizer->LoadDiskResources(title_id, shader_stop.get_token(), progress);
+            }
+            launch_status.shader_preload.store(false);
         }
         EndShaderCacheLoad(title_id);
         Diagnostic("SHADER_CACHE ready");
