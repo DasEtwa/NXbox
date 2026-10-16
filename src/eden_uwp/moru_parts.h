@@ -6,21 +6,31 @@
 #include "eden_uwp/moru_model.h"
 
 namespace EdenXbox::Moru {
-// Original, deliberately abstract artwork. These are Moru's art tokens, separate
-// from the interface theme. RGB approximations are not console rendering tables.
+// Original, deliberately abstract artwork; no console shapes or textures.
+// RGB approximations in legacy order. raw_data.cpp's Ver3*ColorTable maps
+// catalogue positions to stored CommonColor IDs (notably legacy black -> 8).
+// Hair: black, brown, red, light brown, grey, olive, auburn, blonde.
 inline constexpr std::uint32_t Ink = 0x252127;
 inline constexpr std::uint32_t Paper = 0xFFF9F0;
 inline constexpr std::uint32_t Lips = 0xA45358;
-inline constexpr std::uint32_t Skin[] = {0xF4CEAE, 0xE8B995, 0xDDA581, 0xC88D60, 0xA56D4F,
-                                         0xFAE3CF, 0xF2DCC5, 0xE9C8AD, 0xB8805A, 0x704936};
-inline constexpr std::uint32_t Hair[] = {0x29252A, 0x392A26, 0x704839, 0xA2784D,
-                                         0x927251, 0x7A6350, 0xBFA45A, 0xD0C6B9};
-inline constexpr std::uint32_t Eyes[] = {Ink, 0x604334, 0x727D50, 0x416D8C, 0x777582, 0x42454B};
-inline constexpr std::uint32_t Glasses[] = {Ink,      0x775144, 0xA94D4C, 0x476C89,
-                                            0x8A7292, 0xB59B58, Paper};
-inline constexpr std::uint32_t Favorites[] = {0xCE4846, 0xE68842, 0xE9C454, 0xA2BE53,
-                                              0x4D9871, 0x456FAE, 0x70BED4, 0xD57FA7,
-                                              0x8E72AF, 0x815D48, 0xEDEBE5, 0x34333A};
+// The first six skin IDs follow the legacy conversion, including dark brown at
+// ID 5, despite FacelineColor's Porcelain name. IDs 6-9 are extended estimates.
+inline constexpr std::uint32_t Skin[] = {0xFFD3AD, 0xFFB66B, 0xDE7942, 0xFFAA8C, 0xAD5129,
+                                         0x632C18, 0xF2DCC5, 0xE9C8AD, 0xB8805A, 0x704936};
+inline constexpr std::uint32_t Hair[] = {0x1E1A18, 0x402015, 0x5C1810, 0x7C3A14,
+                                         0x787880, 0x4E3E0E, 0x582410, 0xD09E50};
+// Eyes: black, grey, brown, hazel, blue, green (stored IDs 8-13).
+inline constexpr std::uint32_t Eyes[] = {0x000000, 0x6C7070, 0x663C2C,
+                                         0x605E30, 0x4654A8, 0x387058};
+// Glasses: black, brown, red, blue, gold, grey, extended white.
+// Stored IDs: 8, 14, 15, 16, 17, 18, 0. White is not legacy black ID 8.
+inline constexpr std::uint32_t Glasses[] = {0x181818, 0x603810, 0xA81008, 0x203068,
+                                            0xA86000, 0x787068, 0xFFFFFF};
+// FavoriteColor enum order: red, orange, yellow, lime, green, blue, light blue,
+// pink, purple, brown, white, black.
+inline constexpr std::uint32_t Favorites[] = {0xD21E14, 0xFF6E19, 0xFFD820, 0x78D220,
+                                              0x007830, 0x0A48B4, 0x3CAADE, 0xF55A7D,
+                                              0x7328AD, 0x483818, 0xE0E0E0, 0x181814};
 
 struct Part {
     float x, y, width, height, radius;
@@ -32,6 +42,11 @@ inline std::uint32_t PartColor(const Service::Mii::StoreData& data, Field field,
     const int choice = Choice(data, field);
     return palette[choice < 0 ? 0 : static_cast<std::size_t>(choice) % palette.size()];
 }
+inline std::uint32_t HairColor(Service::Mii::CommonColor color) {
+    const auto ids = Options(Field::HairColor);
+    const auto found = std::find(ids.begin(), ids.end(), static_cast<int>(color));
+    return Hair[found == ids.end() ? 0 : static_cast<std::size_t>(found - ids.begin())];
+}
 // One shared 256-unit scene drives the Direct2D live preview and the profile icon.
 inline Scene MakeScene(const Service::Mii::StoreData& data) {
     Scene parts;
@@ -39,7 +54,9 @@ inline Scene MakeScene(const Service::Mii::StoreData& data) {
         parts.push_back({x, y, w, h, std::min(radius, std::min(w, h) / 2), color});
     };
     const auto skin = Skin[Value(data, Field::Skin) % std::size(Skin)];
-    const auto hair = PartColor(data, Field::HairColor, Hair);
+    const auto hair = HairColor(data.GetHairColor());
+    const auto eyebrow_color = HairColor(data.GetEyebrowColor());
+    const auto beard_color = HairColor(data.GetBeardColor());
     const auto eye = PartColor(data, Field::EyeColor, Eyes);
     const auto glass = PartColor(data, Field::GlassesColor, Glasses);
     const float body_width = 76 + data.GetBuild() * 0.35f;
@@ -48,6 +65,16 @@ inline Scene MakeScene(const Service::Mii::StoreData& data) {
         Favorites[Value(data, Field::Favorite) % std::size(Favorites)]);
     if (data.GetGender() == Service::Mii::Gender::Female)
         add(118, shoulder_y + 5, 20, 14, 7, Paper);
+    const int style = std::max(0, Choice(data, Field::Hair));
+    // Back hair is behind the face and ears; long styles reach the shoulders.
+    if (style == 4 || style == 6)
+        add(58, 45, 140, 165, 42, hair);
+    if (style == 2)
+        add(49, 25, 158, 139, 65, hair);
+    if (style == 7) {
+        add(43, 77, 32, 103, 16, hair);
+        add(181, 77, 32, 103, 16, hair);
+    }
     add(114, 178, 28, 36, 10, skin);
     const int face = std::max(0, Choice(data, Field::Face));
     const float face_width = face == 2 ? 126.0f : face == 3 ? 104.0f : 114.0f;
@@ -55,37 +82,52 @@ inline Scene MakeScene(const Service::Mii::StoreData& data) {
     add(128 - face_width / 2, 57, face_width, 140, face_radius, skin);
     add(61, 116, 18, 30, 9, skin);
     add(177, 116, 18, 30, 9, skin);
-    const int style = std::max(0, Choice(data, Field::Hair));
-    // Eight distinct silhouettes: crop, sweep, curls, fringe, bob, crest, side-part, buns.
-    add(69, 43, 118, style == 0 ? 33.0f : 46.0f, 22, hair);
-    if (style == 1)
-        add(72, 64, 64, 36, 14, hair);
-    if (style == 6)
-        add(126, 64, 56, 36, 14, hair);
+    // Catalogue IDs 1, 8, 39, 7, 0, 14, 6, 129: short, parted short,
+    // afro, front lock, long, peaked top, parted long, two side pony tails.
+    if (style == 0)
+        add(69, 43, 118, 33, 22, hair);
+    if (style == 1 || style == 6) {
+        // Two unequal lobes leave a visible part instead of a solid fringe.
+        add(67, 43, 76, 45, 22, hair);
+        add(148, 45, 41, 37, 18, hair);
+        if (style == 1)
+            add(70, 64, 58, 33, 14, hair);
+        else {
+            add(60, 69, 24, 133, 11, hair);
+            add(172, 69, 22, 133, 11, hair);
+            add(76, 65, 55, 31, 15, hair);
+        }
+    }
     if (style == 2) {
         for (int i = 0; i < 5; ++i)
-            add(63 + i * 24.0f, 40 - (i % 2) * 8.0f, 34, 38, 17, hair);
+            add(52 + i * 29.0f, 29 - (i % 2) * 9.0f, 36, 49, 18, hair);
     }
     if (style == 3) {
-        for (int i = 0; i < 4; ++i)
-            add(75 + i * 25.0f, 67, 23, 32 - i * 3.0f, 8, hair);
+        add(69, 43, 118, 34, 17, hair);
+        add(103, 60, 38, 43, 16, hair);
     }
     if (style == 4) {
-        add(65, 70, 18, 100, 9, hair);
-        add(173, 70, 18, 100, 9, hair);
+        add(66, 43, 124, 41, 20, hair);
+        add(61, 70, 23, 138, 11, hair);
+        add(172, 70, 23, 138, 11, hair);
     }
-    if (style == 5)
-        add(110, 22, 36, 52, 12, hair);
+    if (style == 5) {
+        add(69, 46, 118, 31, 15, hair);
+        add(88, 33, 27, 35, 12, hair);
+        add(114, 18, 28, 51, 12, hair);
+        add(141, 33, 27, 35, 12, hair);
+    }
     if (style == 7) {
-        add(49, 49, 36, 38, 18, hair);
-        add(171, 49, 36, 38, 18, hair);
+        add(69, 43, 118, 41, 20, hair);
+        add(54, 69, 27, 30, 13, hair);
+        add(175, 69, 27, 30, 13, hair);
     }
     const int brows = std::max(0, Choice(data, Field::Brows));
     if (brows != 3) {
         for (float x : {87.0f, 145.0f}) {
-            add(x, 105 - brows * 2.0f, 25, 4 + brows * 2.0f, brows == 1 ? 1 : 4, hair);
+            add(x, 105 - brows * 2.0f, 25, 4 + brows * 2.0f, brows == 1 ? 1 : 4, eyebrow_color);
             if (brows == 2)
-                add(x + 3, 99, 18, 4, 2, hair);
+                add(x + 3, 99, 18, 4, 2, eyebrow_color);
         }
     }
     const int eyes = std::max(0, Choice(data, Field::Eyes));
@@ -100,17 +142,17 @@ inline Scene MakeScene(const Service::Mii::StoreData& data) {
     add(122 - nose, 138, 12 + nose * 2.0f, 8 + nose * 3.0f, 3, Skin[4]);
     const int beard = std::max(0, Choice(data, Field::Beard));
     if (beard == 1)
-        add(115, 178, 26, 23, 10, hair);
+        add(115, 178, 26, 23, 10, beard_color);
     if (beard == 2)
-        add(83, 165, 90, 34, 17, hair);
+        add(83, 165, 90, 34, 17, beard_color);
     const int mouth = std::max(0, Choice(data, Field::Mouth));
     add(108, 169, 40, 6 + mouth * 3.0f, mouth == 1 ? 2 : 9, Lips);
     if (mouth >= 2)
         add(113, 169, 30, 5, 2, Paper);
     const int mustache = std::max(0, Choice(data, Field::Mustache));
     if (mustache > 0) {
-        add(103, 158, 25, mustache == 1 ? 4.0f : 9.0f, 4, hair);
-        add(128, 158, 25, mustache == 1 ? 4.0f : 9.0f, 4, hair);
+        add(103, 158, 25, mustache == 1 ? 4.0f : 9.0f, 4, beard_color);
+        add(128, 158, 25, mustache == 1 ? 4.0f : 9.0f, 4, beard_color);
     }
     const int glasses = std::max(0, Choice(data, Field::Glasses));
     if (glasses > 0) {

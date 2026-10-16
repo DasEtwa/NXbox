@@ -58,8 +58,25 @@ void Valid(const StoreData& data) {
     assert(info.Verify() == ValidationResult::NoErrors);
     assert(info.GetCreateId() == data.GetCreateId());
 }
+void TestLegacyHairColors() {
+    StoreData data;
+    data.BuildDefault(0);
+    const auto rgb = [&](int id) {
+        data.SetHairColor(static_cast<CommonColor>(id));
+        const auto color = Moru::HairColor(data.GetHairColor());
+        // Also exercise the catalogue lookup used by the editor's color choices.
+        assert(color == Moru::PartColor(data, Moru::Field::HairColor, Moru::Hair));
+        return std::array<float, 3>{((color >> 16) & 255) / 255.0f, ((color >> 8) & 255) / 255.0f,
+                                    (color & 255) / 255.0f};
+    };
+    const auto blonde = rgb(7);
+    const auto grey = rgb(4);
+    assert(blonde[0] > blonde[1] && blonde[1] > blonde[2] && blonde[0] > 0.6f &&
+           std::abs(grey[0] - grey[1]) < 0.05f && std::abs(grey[1] - grey[2]) < 0.05f);
+}
 int main(int argc, char** argv) {
     assert(argc == 2);
+    TestLegacyHairColors();
     Common::FS::test_nand = argv[1];
     StoreData original;
     original.BuildDefault(0);
