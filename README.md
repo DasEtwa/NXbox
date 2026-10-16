@@ -43,22 +43,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
   <sub><code>bc1qm64el0gp0kvk7zqhl89x0vkngu2skqxd26vpjg</code></sub>
 </p>
 
-<table>
-  <tr>
-    <td><img src="docs/assets/screenshots/p5r-title.jpg" alt="Persona 5 Royal title screen on Xbox Series X"></td>
-    <td><img src="docs/assets/screenshots/p5r-casino.jpg" alt="Persona 5 Royal casino gameplay on Xbox Series X"></td>
-  </tr>
-  <tr>
-    <td><img src="docs/assets/screenshots/p5r-cutscene.jpg" alt="Persona 5 Royal animated cutscene on Xbox Series X"></td>
-    <td>
-      <b>Persona 5 Royal, on an Xbox Series X.</b><br><br>
-      It boots, plays its cutscenes and reaches the first playable area (the casino), with
-      audio. It still stutters on loads and has bugs: <b>no game is fully playable yet</b>.<br><br>
-      Captured from the console with NXbox, using a copy of the game the owner bought. NXbox
-      ships no games, firmware or keys.
-    </td>
-  </tr>
-</table>
+<p align="center"><sub>NXbox ships no games, firmware or keys. Bring your own, dumped from a console you own.</sub></p>
 
 > **Experimental. No game is 100% playable without bugs yet.** Super Mario 3D World, Breath of the
 > Wild and Persona 5 Royal reach gameplay on a console in Developer Mode, but running is not the same
