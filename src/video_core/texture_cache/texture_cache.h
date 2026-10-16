@@ -8,7 +8,7 @@
 
 #include <bit>
 #include <charconv>
-#include <cstdlib>
+#include <cstdio> #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -2819,6 +2819,24 @@ void TextureCache<P>::PrepareImage(ImageId image_id, bool is_modification, bool 
             TrackImage(image, image_id);
         }
     } else {
+        // NXBOX_FORCE_REFRESH_DIMS=WxH re-reads images of that size from guest memory on every
+        // use, to tell a missed CPU write apart from other causes of stale texels.
+        static const auto force_dims = [] {
+            const char* value = std::getenv("NXBOX_FORCE_REFRESH_DIMS");
+            u32 width{}, height{};
+            if (value == nullptr || std::sscanf(value, "%ux%u", &width, &height) != 2)
+                return std::pair<u32, u32>{};
+            return std::pair<u32, u32>{width, height};
+        }();
+        if (force_dims.first == image.info.size.width &&
+            force_dims.second == image.info.size.height &&
+            False(image.flags & ImageFlagBits::CpuModified) &&
+            False(image.flags & ImageFlagBits::GpuModified)) {
+            image.flags |= ImageFlagBits::CpuModified;
+            if (True(image.flags & ImageFlagBits::Tracked)) {
+                UntrackImage(image, image_id);
+            }
+        }
         RefreshContents(image, image_id);
         if (!image.aliased_images.empty()) {
             SynchronizeAliases(image_id);
