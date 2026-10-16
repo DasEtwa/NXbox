@@ -302,6 +302,9 @@
     {Text::AvatarWhite, L"Branco"}, {Text::AvatarBlack, L"Preto"},
     {Text::AccountConfirmAvatar, L"Salvar ícone"},
 
+    {Text::MoruSystemCreator, L"Abrir criador do sistema"},
+    {Text::MoruSystemCreatorHint,
+     L"Usa o firmware instalado. Os personagens salvos aparecem aqui e nos jogos."},
     {Text::MoruTitle, L"Meus Morus"}, {Text::MoruCreate, L"Criar Moru"},
     {Text::MoruEdit, L"Editar Moru"},
     {Text::MoruEmpty, L"Crie seu primeiro Moru para usar nos jogos."}, {Text::MoruSave, L"Salvar"},

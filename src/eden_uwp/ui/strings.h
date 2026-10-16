@@ -348,6 +348,8 @@ enum class Text {
     MoruDefaultName,
     MoruTitle,
     MoruCreate,
+    MoruSystemCreator,
+    MoruSystemCreatorHint,
     MoruEdit,
     MoruEmpty,
     MoruSave,

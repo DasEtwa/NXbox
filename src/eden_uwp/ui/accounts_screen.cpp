@@ -55,9 +55,11 @@ constexpr std::array<Text, 40> kAvatarColorLabels = {
 class AccountsScreen {
 public:
     AccountsScreen(Renderer& renderer, const CoreWindow& window, Input& input,
-                   const std::filesystem::path& local_state, bool launch, bool picture_only = false)
+                   const std::filesystem::path& local_state, bool launch, bool picture_only = false,
+                   std::string* launch_target = nullptr)
         : renderer_(renderer), window_(window), input_(input), local_state_(local_state),
-          state_(Accounts::Load(local_state)), picture_only_(picture_only), launch_(launch) {
+          state_(Accounts::Load(local_state)), launch_target_(launch_target),
+          picture_only_(picture_only), launch_(launch) {
         page_ = picture_only_ ? Page::Picture : Page::List;
         if (picture_only_ && state_.multi && !state_.selected_uuid.empty())
             account_ = profiles_.GetUserIndex(Common::UUID{state_.selected_uuid}).value_or(0);
@@ -312,8 +314,10 @@ private:
             } else if (row_ == 2) {
                 ShowPresets();
             } else if (row_ == 4) {
-                if (RunMoruScreen(renderer_, window_, input_))
+                if (RunMoruScreen(renderer_, window_, input_, nullptr, launch_target_))
                     closed_ = true;
+                if (launch_target_ && !launch_target_->empty())
+                    done_ = true;
             } else if (row_ == 5) {
                 ChooseMoru();
             } else if (row_ == 3 && profiles_.GetUserCount() > 1) {
@@ -536,6 +540,7 @@ private:
     Input& input_;
     std::filesystem::path local_state_;
     Accounts::State state_;
+    std::string* launch_target_;
     Manager profiles_;
     std::array<Image, Service::Account::MAX_USERS> images_;
     std::array<Image, Core::Constants::NXBOX_CHARACTERS.size()> presets_;
@@ -556,8 +561,9 @@ private:
 } // namespace
 
 bool RunAccountsScreen(Renderer& renderer, const CoreWindow& window, Input& input,
-                       const std::filesystem::path& local_state, bool picture_only) {
-    AccountsScreen screen(renderer, window, input, local_state, false, picture_only);
+                       const std::filesystem::path& local_state, bool picture_only,
+                       std::string* launch_target) {
+    AccountsScreen screen(renderer, window, input, local_state, false, picture_only, launch_target);
     screen.Run();
     return screen.Closed();
 }

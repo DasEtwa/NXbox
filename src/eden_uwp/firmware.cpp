@@ -127,6 +127,9 @@ void PrepareFirmware(const std::filesystem::path& local_state) {
         next.home_available = controller.GetSystemNANDContents()->GetEntryRaw(
                                   static_cast<u64>(Service::AM::AppletProgramId::QLaunch),
                                   FileSys::ContentRecordType::Program) != nullptr;
+        next.mii_edit_available = controller.GetSystemNANDContents()->GetEntryRaw(
+                                      static_cast<u64>(Service::AM::AppletProgramId::MiiEdit),
+                                      FileSys::ContentRecordType::Program) != nullptr;
         Diagnostic("FIRMWARE installed version=" +
                    (next.version.empty() ? std::string("none") : next.version));
     } catch (const winrt::hresult_error& error) {

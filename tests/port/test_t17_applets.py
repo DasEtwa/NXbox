@@ -84,6 +84,30 @@ class AppletPolicyTests(unittest.TestCase):
             )
             subprocess.run([str(binary)], check=True, timeout=10)
 
+    def test_standalone_mii_edit_boot(self):
+        target = (ROOT / "src/eden_uwp/applet_boot.h").read_text()
+        self.assertIn('SwitchMiiEditBootTarget = "nxbox-system-mii-edit"', target)
+        source = (ROOT / "src/eden_uwp/game_session.cpp").read_text()
+        self.assertIn("protocol_path == SwitchMiiEditBootTarget", source)
+        self.assertIn("Service::AM::AppletProgramId::MiiEdit", source)
+        self.assertIn("Service::AM::AppletId::MiiEdit", source)
+        self.assertIn("firmware->GetEntryRaw(static_cast<u64>(firmware_program_id)", source)
+        self.assertIn(".applet_type = Service::AM::AppletType::LibraryApplet", source)
+        self.assertIn(".applet_id = firmware_applet_id", source)
+        self.assertLess(source.index("SetCurrentAppletId("), source.index("system.Load("))
+        selection = source.split("else if (chosen == SwitchMiiEditBootTarget)", 1)[1]
+        self.assertIn("protocol_path = chosen;", selection.split("} else", 1)[0])
+        firmware = (ROOT / "src/eden_uwp/firmware.cpp").read_text()
+        self.assertIn("next.mii_edit_available =", firmware)
+        self.assertIn("Service::AM::AppletProgramId::MiiEdit", firmware)
+        moru = (ROOT / "src/eden_uwp/ui/moru_screen.cpp").read_text()
+        self.assertIn("!selected && GetFirmwareStatus().mii_edit_available", moru)
+        self.assertIn("*launch_target_ = std::string(SwitchMiiEditBootTarget)", moru)
+        for lang in ("en", "pt_br"):
+            table = (ROOT / f"src/eden_uwp/ui/lang/{lang}.inc").read_text()
+            self.assertIn("Text::MoruSystemCreator,", table)
+            self.assertIn("Text::MoruSystemCreatorHint,", table)
+
     def test_guest_creation_falls_back_in_both_ipc_paths(self):
         source = (ROOT / "src/core/hle/service/am/service/library_applet_creator.cpp").read_text()
         for method in ("CreateLibraryApplet", "CreateLibraryAppletEx"):

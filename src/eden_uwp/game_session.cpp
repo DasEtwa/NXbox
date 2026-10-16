@@ -52,6 +52,7 @@
 #include "core/hle/kernel/svc/svc_debug_string.h"
 #include "core/hle/service/acc/profile_manager.h"
 #include "core/hle/service/am/applet_manager.h"
+#include "core/hle/service/am/frontend/applets.h"
 #include "core/hle/service/filesystem/filesystem.h"
 #include "core/hle/service/mii/mii_manager.h"
 #include "core/loader/loader.h"
@@ -709,10 +710,17 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
         }
     }
     const bool boot_home_menu = protocol_path == SwitchHomeBootTarget;
+    const bool boot_mii_edit = protocol_path == SwitchMiiEditBootTarget;
+    const bool boot_firmware_applet = boot_home_menu || boot_mii_edit;
+    const auto firmware_program_id = boot_mii_edit ? Service::AM::AppletProgramId::MiiEdit
+                                                   : Service::AM::AppletProgramId::QLaunch;
+    const auto firmware_applet_id =
+        boot_mii_edit ? Service::AM::AppletId::MiiEdit : Service::AM::AppletId::QLaunch;
     std::string path =
-        boot_home_menu ? std::string{}
-                       : (protocol_path.empty() ? ResolveGamePath(bundled_path, chosen_in_library)
-                                                : protocol_path);
+        boot_firmware_applet
+            ? std::string{}
+            : (protocol_path.empty() ? ResolveGamePath(bundled_path, chosen_in_library)
+                                     : protocol_path);
     SCOPE_EXIT {
         if (splash)
             splash->Release();
@@ -847,18 +855,20 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
         }
     };
     system.GetFileSystemController().CreateFactories(*system.GetFilesystem());
-    if (boot_home_menu) {
+    if (boot_firmware_applet) {
         const auto firmware = system.GetFileSystemController().GetSystemNANDContents();
-        const auto home =
-            firmware->GetEntryRaw(static_cast<u64>(Service::AM::AppletProgramId::QLaunch),
-                                  FileSys::ContentRecordType::Program);
-        if (!home) {
+        const auto program = firmware->GetEntryRaw(static_cast<u64>(firmware_program_id),
+                                                   FileSys::ContentRecordType::Program);
+        if (!program) {
             launch_status.phase.store(Ui::LaunchPhase::Failed);
-            Diagnostic("HOME_BOOT_FAILED qlaunch program is missing from system NAND");
+            Diagnostic(boot_mii_edit
+                           ? "MII_EDIT_BOOT failed: program is missing from system NAND"
+                           : "HOME_BOOT_FAILED qlaunch program is missing from system NAND");
             return;
         }
-        path = home->GetFullPath();
-        Diagnostic("HOME_BOOT firmware qlaunch selected");
+        path = program->GetFullPath();
+        Diagnostic(boot_mii_edit ? "MII_EDIT_BOOT firmware MiiEdit selected"
+                                 : "HOME_BOOT firmware qlaunch selected");
     }
     {
         // Read the actual boot package for library, game.txt and protocol launches. Release this
@@ -925,6 +935,16 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
         parameters.applet_id = Service::AM::AppletId::QLaunch;
         parameters.applet_type = Service::AM::AppletType::SystemApplet;
     }
+    if (boot_mii_edit) {
+        // Mirror the desktop standalone LibraryAppletParameters.
+        parameters = {
+            .program_id = static_cast<u64>(firmware_program_id),
+            .applet_id = firmware_applet_id,
+            .applet_type = Service::AM::AppletType::LibraryApplet,
+        };
+    }
+    system.GetFrontendAppletHolder().SetCurrentAppletId(
+        boot_firmware_applet ? firmware_applet_id : Service::AM::AppletId::None);
     memory_stage("before_load");
     if (NxboxJitCache::session) {
         // A loader without an NSO ID must not inherit the previous game's metadata.
@@ -934,9 +954,14 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
     memory_stage("after_load");
     if (result != Core::SystemResultStatus::Success) {
         launch_status.phase.store(Ui::LaunchPhase::Failed);
+        if (boot_mii_edit)
+            Diagnostic("MII_EDIT_BOOT failed: load status=" +
+                       std::to_string(static_cast<int>(result)));
         Diagnostic("GAME_LOAD_FAILED status=" + std::to_string(static_cast<int>(result)));
         return;
     }
+    if (boot_mii_edit)
+        Diagnostic("MII_EDIT_BOOT loaded");
     if (NxboxJitCache::session) {
         const auto& build = system.GetApplicationProcessBuildID();
         try {
@@ -1710,6 +1735,8 @@ static void RunGameViewSession(const winrt::Windows::UI::Core::CoreWindow& windo
         if (!Ui::PrepareAccounts(window, local_state, true))
             return;
         if (chosen == SwitchHomeBootTarget) {
+            protocol_path = chosen;
+        } else if (chosen == SwitchMiiEditBootTarget) {
             protocol_path = chosen;
         } else if (!chosen.empty()) {
             RememberChosenGame(local_state, chosen);
