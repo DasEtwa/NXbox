@@ -129,18 +129,18 @@ inline Palette Dominant(const std::vector<std::uint8_t>& bgra, unsigned width, u
 // center-cropped to cover the wide hero. The cached BMP contains image + color, never text.
 inline std::vector<std::uint8_t> Hero(const std::vector<std::uint8_t>& bgra, unsigned width,
                                       unsigned height) {
-    auto small = Downsample(bgra, width, height, 64, 64);
-    if (small.empty())
+    auto thumb = Downsample(bgra, width, height, 64, 64);
+    if (thumb.empty())
         return {};
     const auto palette = Dominant(bgra, width, height);
-    std::vector<Color> work(small.size());
+    std::vector<Color> work(thumb.size());
     constexpr int radius = 9;
     for (int pass = 0; pass < 6; ++pass) {
         for (int y = 0; y < 64; ++y) {
             for (int x = 0; x < 64; ++x) {
                 Color sum;
                 for (int offset = -radius; offset <= radius; ++offset) {
-                    const auto c = small[std::clamp(y + (pass % 2 ? offset : 0), 0, 63) * 64 +
+                    const auto c = thumb[std::clamp(y + (pass % 2 ? offset : 0), 0, 63) * 64 +
                                          std::clamp(x + (pass % 2 ? 0 : offset), 0, 63)];
                     sum.r += c.r;
                     sum.g += c.g;
@@ -149,12 +149,12 @@ inline std::vector<std::uint8_t> Hero(const std::vector<std::uint8_t>& bgra, uns
                 work[y * 64 + x] = Scale(sum, 1.0f / (2 * radius + 1));
             }
         }
-        small.swap(work);
+        thumb.swap(work);
     }
     std::vector<std::uint8_t> result(192 * 76 * 4);
     for (unsigned y = 0; y < 76; ++y) {
         for (unsigned x = 0; x < 192; ++x) {
-            auto c = small[(19 + y * 25 / 76) * 64 + x * 64 / 192];
+            auto c = thumb[(19 + y * 25 / 76) * 64 + x * 64 / 192];
             const float gray = .2126f * c.r + .7152f * c.g + .0722f * c.b;
             c = {std::clamp(gray + (c.r - gray) * 1.18f, 0.0f, 1.0f),
                  std::clamp(gray + (c.g - gray) * 1.18f, 0.0f, 1.0f),
