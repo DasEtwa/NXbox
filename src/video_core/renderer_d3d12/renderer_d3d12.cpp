@@ -243,10 +243,8 @@ struct RendererD3D12::Impl {
         auto* commands = context.Commands();
         context.Transition(render_target, D3D12_RESOURCE_STATE_RENDER_TARGET);
         commands->OMSetRenderTargets(1, &target, FALSE, nullptr);
-        constexpr float TestColor[]{0.08f, 0.25f, 0.5f, 1.0f};
         constexpr float Black[]{0, 0, 0, 1};
-        commands->ClearRenderTargetView(
-            target, layers.empty() && index < BufferCount ? TestColor : Black, 0, nullptr);
+        commands->ClearRenderTargetView(target, Black, 0, nullptr);
         commands->SetGraphicsRootSignature(root.Get());
         ID3D12DescriptorHeap* heaps[]{srv_heap.Get()};
         commands->SetDescriptorHeaps(1, heaps);
