@@ -198,7 +198,9 @@ template<class... T> std::string format(const char*,T... args) {
 }
 }
 std::string logged;
-void Diagnostic(const std::string& v) { logged=v; }
+void Diagnostic(const std::string& v) {
+    if (!v.starts_with("D3D12_GUEST_WAITS")) logged=v;
+}
 #include "video_core/renderer_d3d12/d3d12_context.h"
 using D3D12::FramePhase;
 using D3D12::FrameCount;

@@ -1,0 +1,170 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+#pragma once
+
+#include <array>
+#include <atomic>
+#include <chrono>
+#include <cstddef>
+#include <cstdint>
+#include <map>
+#include <mutex>
+
+// Renderer-neutral instrumentation. Only an enabled D3D12 recording thread installs
+// a sink. Disabled scopes perform no clock reads, allocations, or locking.
+namespace Common::GpuProfile {
+using Tick = std::uint64_t;
+inline Tick Now() {
+    return static_cast<Tick>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                 std::chrono::steady_clock::now().time_since_epoch())
+                                 .count());
+}
+enum class Phase {
+    DmaPusher,
+    Maxwell3DMethods,
+    MacroExecution,
+    DmaEngine,
+    InlineToMemory,
+    ComputeDispatchSetup,
+    Fermi2D,
+    SyncWait,
+    BufferCacheBind,
+    TextureCacheUpdate,
+    DescriptorAndPipeline
+};
+struct Sink {
+    virtual ~Sink() = default;
+    virtual std::size_t Enter(Phase phase) = 0;
+    virtual void Leave(std::size_t previous) = 0;
+};
+inline thread_local Sink* sink{};
+inline std::atomic<bool> enabled{};
+class PhaseScope {
+public:
+    explicit PhaseScope(Phase phase) : owner{sink} {
+        if (owner)
+            previous = owner->Enter(phase);
+    }
+    ~PhaseScope() {
+        if (owner)
+            owner->Leave(previous);
+    }
+    PhaseScope(const PhaseScope&) = delete;
+    PhaseScope& operator=(const PhaseScope&) = delete;
+
+private:
+    Sink* owner{};
+    std::size_t previous{};
+};
+enum class Wait : std::size_t {
+    SyncpointHost,
+    SyncpointGuest,
+    NvdrvEvent,
+    RequestSyncOperation,
+    RequestFlush,
+    WaitIdle,
+    TickGPU,
+    GpuThreadCommand,
+    GpuQueueIdle,
+    Count
+};
+inline constexpr std::array WaitNames{
+    "syncpoint_host", "syncpoint_guest", "nvdrv_event", "request_sync_operation",
+    "request_flush",  "wait_idle",       "tick_gpu",    "gpu_thread_command",
+    "gpu_queue_idle"};
+static_assert(WaitNames.size() == static_cast<std::size_t>(Wait::Count));
+struct Sample {
+    Tick count{}, total_ns{}, max_ns{};
+    void Add(Tick ns) {
+        ++count;
+        total_ns += ns;
+        if (ns > max_ns)
+            max_ns = ns;
+    }
+};
+struct Window {
+    std::array<Sample, static_cast<std::size_t>(Wait::Count)> waits{};
+    Sample fence_queued, fence_execution, fence_total;
+    Tick dropped_requests{}, pending_requests{};
+};
+inline std::mutex mutex;
+inline Window window;
+// Only submitted nvhost_gpu output fences are matched; unmatched internal
+// increments are excluded. Bound storage even if a game abandons its fences.
+inline std::map<std::uint64_t, Tick> requests;
+inline void Record(Wait reason, Tick start) {
+    if (!start)
+        return;
+    const auto elapsed = Now() - start;
+    const std::lock_guard lock{mutex};
+    window.waits[static_cast<std::size_t>(reason)].Add(elapsed);
+}
+class WaitScope {
+public:
+    explicit WaitScope(Wait reason_, bool waiting = true)
+        : reason{reason_}, start{waiting && enabled.load(std::memory_order_relaxed) ? Now() : 0} {}
+    ~WaitScope() {
+        Record(reason, start);
+    }
+    WaitScope(const WaitScope&) = delete;
+    WaitScope& operator=(const WaitScope&) = delete;
+
+private:
+    PhaseScope phase{Phase::SyncWait};
+    Wait reason;
+    Tick start;
+};
+inline Tick Start() {
+    return enabled.load(std::memory_order_relaxed) ? Now() : 0;
+}
+inline std::uint64_t FenceKey(std::uint32_t id, std::uint32_t value) {
+    return (std::uint64_t{id} << 32) | value;
+}
+inline void RequestFence(std::uint32_t id, std::uint32_t value) {
+    if (!enabled.load(std::memory_order_relaxed))
+        return;
+    const auto now = Now();
+    const std::lock_guard lock{mutex};
+    if (requests.size() >= 4096) {
+        ++window.dropped_requests;
+        return;
+    }
+    requests[FenceKey(id, value)] = now;
+}
+struct FenceLatency {
+    Tick requested{}, processed{};
+};
+inline FenceLatency ProcessFence(std::uint32_t id, std::uint32_t value) {
+    if (!enabled.load(std::memory_order_relaxed))
+        return {};
+    const auto now = Now();
+    const std::lock_guard lock{mutex};
+    const auto it = requests.find(FenceKey(id, value));
+    if (it == requests.end())
+        return {};
+    const auto start = it->second;
+    requests.erase(it);
+    return {start, now};
+}
+inline void CompleteFence(FenceLatency latency) {
+    if (!latency.requested)
+        return;
+    const auto now = Now();
+    const std::lock_guard lock{mutex};
+    // All three samples belong to the completion window, including cross-window fences.
+    window.fence_queued.Add(latency.processed - latency.requested);
+    window.fence_execution.Add(now - latency.processed);
+    window.fence_total.Add(now - latency.requested);
+}
+inline Window TakeWindow() {
+    const std::lock_guard lock{mutex};
+    auto result = window;
+    result.pending_requests = requests.size();
+    window = {};
+    return result;
+}
+inline void Reset() {
+    const std::lock_guard lock{mutex};
+    window = {};
+    requests.clear();
+}
+} // namespace Common::GpuProfile

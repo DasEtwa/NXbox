@@ -11,6 +11,7 @@
 #include <list>
 #include <memory>
 #include <utility>
+#include "common/gpu_thread_profile.h"
 
 #include "common/assert.h"
 #include "common/cancellable_sync_queue.h"
@@ -138,10 +139,13 @@ struct GPU::Impl {
     }
 
     void WaitForSyncOperation(const u64 fence) {
+        const Common::GpuProfile::WaitScope gpu_profile_scope{
+            Common::GpuProfile::Wait::RequestSyncOperation, fence > sync_requests.Completed()};
         sync_requests.Wait(fence);
     }
 
     void WaitForIdle() {
+        const Common::GpuProfile::WaitScope gpu_profile_scope{Common::GpuProfile::Wait::WaitIdle};
         const u64 fence = RequestSyncOperation([] {});
         gpu_thread.TickGPU(is_async);
         WaitForSyncOperation(fence);

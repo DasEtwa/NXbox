@@ -2588,6 +2588,8 @@ void RasterizerD3D12::Clear(u32 layer_count) try {
     m_gpu.TickWork();
 }
 void RasterizerD3D12::DispatchCompute() try {
+    const Common::GpuProfile::PhaseScope gpu_profile_scope{
+        Common::GpuProfile::Phase::ComputeDispatchSetup};
     if (BisectEnabled("NXBOX_D3D12_NO_COMPUTE")) {
         m_gpu.TickWork();
         return;
@@ -2661,6 +2663,8 @@ void RasterizerD3D12::DispatchCompute() try {
         }
     buffer_cache.UpdateComputeBuffers();
     buffer_cache.BindHostComputeBuffers();
+    std::optional<FrameProfile::Scope> profile_descriptors;
+    profile_descriptors.emplace(context.Profile(), FramePhase::DescriptorAndPipeline);
     const auto counts = CountStageTables(info);
     const bool root_cbvs = pipeline->UsesRootCbvs();
     if (root_cbvs)
@@ -2758,6 +2762,7 @@ void RasterizerD3D12::DispatchCompute() try {
     Shader::Backend::HLSL::RootConstants constants;
     std::memcpy(dispatch.constants.data(), &constants, sizeof(constants));
     dispatch.resources = resources;
+    profile_descriptors.reset();
     context.MarkWork("guest compute");
     compute_dispatch.Direct(dispatch, {qmd.grid_dim_x, qmd.grid_dim_y, qmd.grid_dim_z});
     bindings.stages[0].Clear();
@@ -2911,6 +2916,19 @@ void RasterizerD3D12::SignalFence(std::function<void()>&& func) {
 void RasterizerD3D12::SyncOperation(std::function<void()>&& func) {
     fence_manager.SyncOperation(std::move(func));
 }
+void RasterizerD3D12::ProfileGpuThread(bool active) {
+    if (!context.Profile().Enabled())
+        return;
+    if (active) {
+        Common::GpuProfile::Reset();
+        Common::GpuProfile::enabled.store(true);
+        context.Profile().BindRecordingThread(true);
+        Common::GpuProfile::sink = &context.Profile();
+    } else {
+        Common::GpuProfile::sink = nullptr;
+        Common::GpuProfile::enabled.store(false);
+    }
+}
 void RasterizerD3D12::SignalSyncPoint(u32 value) {
     fence_manager.SignalSyncPoint(value);
 }
@@ -2925,6 +2943,7 @@ void RasterizerD3D12::FlushAndInvalidateRegion(DAddr addr, u64 size, VideoCommon
     InvalidateRegion(addr, size, which);
 }
 void RasterizerD3D12::WaitForIdle() {
+    const Common::GpuProfile::PhaseScope gpu_profile_scope{Common::GpuProfile::Phase::SyncWait};
     ++feedback_epoch;
     query_cache.NotifyWFI();
     // Guest WFI is a GPU-side ordering point, as in the Vulkan backend. Waiting on the CPU here

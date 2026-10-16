@@ -8,6 +8,7 @@
 #include <bit>
 #include <cstdlib>
 #include <cstring>
+#include "common/gpu_thread_profile.h"
 
 #include <fmt/ranges.h>
 #include "common/assert.h"
@@ -198,11 +199,14 @@ NvResult nvhost_ctrl::IocCtrlEventWait(IocCtrlEventWaitParams& params, bool is_a
     }
     params.value.raw |= slot;
 
-    event.wait_handle =
-        host1x_syncpoint_manager.RegisterHostAction(fence_id, target_value, [this, slot]() {
+    const auto profile_wait_start = Common::GpuProfile::Start();
+    event.wait_handle = host1x_syncpoint_manager.RegisterHostAction(
+        fence_id, target_value, [this, slot, profile_wait_start]() {
             auto& event_ = events[slot];
             if (event_.status.exchange(EventState::Signalling, std::memory_order_acq_rel) ==
                 EventState::Waiting) {
+                Common::GpuProfile::Record(Common::GpuProfile::Wait::NvdrvEvent,
+                                           profile_wait_start);
                 event_.kevent->Signal(system.Kernel());
             }
             event_.status.store(EventState::Signalled, std::memory_order_release);

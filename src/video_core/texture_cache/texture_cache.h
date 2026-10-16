@@ -17,6 +17,7 @@
 #include <string_view>
 #include <boost/container/small_vector.hpp>
 #include "common/container/unordered_map.h"
+#include "common/gpu_thread_profile.h"
 
 #include "common/alignment.h"
 #include "common/nxbox_stall.h"
@@ -277,6 +278,8 @@ void TextureCache<P>::MarkModification(ImageId id) noexcept {
 
 template <class P>
 void TextureCache<P>::FillImageViews(std::span<ImageViewInOut> views, bool compute, bool blacklist) {
+    const Common::GpuProfile::PhaseScope gpu_profile_scope{
+        Common::GpuProfile::Phase::TextureCacheUpdate};
     bool has_blacklisted = false;
     do {
         has_deleted_images = false;
@@ -544,6 +547,8 @@ bool TextureCache<P>::RescaleRenderTargets() {
 
 template <class P>
 void TextureCache<P>::UpdateRenderTargets(bool is_clear) {
+    const Common::GpuProfile::PhaseScope gpu_profile_scope{
+        Common::GpuProfile::Phase::TextureCacheUpdate};
     using namespace VideoCommon::Dirty;
     auto& flags = maxwell3d->dirty.flags;
     if (!flags[Dirty::RenderTargets]) {
@@ -2391,6 +2396,8 @@ void TextureCache<P>::ForEachSparseSegment(ImageBase& image, Func&& func) {
 
 template <class P>
 ImageViewId TextureCache<P>::FindOrEmplaceImageView(ImageId image_id, const ImageViewInfo& info) {
+    const Common::GpuProfile::PhaseScope gpu_profile_scope{
+        Common::GpuProfile::Phase::TextureCacheUpdate};
     Image& image = slot_images[image_id];
     if (const ImageViewId image_view_id = image.FindView(info); image_view_id) {
         return image_view_id;

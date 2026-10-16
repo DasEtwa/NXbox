@@ -6,6 +6,7 @@
 
 #include <bitset>
 #include "common/assert.h"
+#include "common/gpu_thread_profile.h"
 #include "common/logging.h"
 #include "core/core.h"
 #include "video_core/engines/kepler_compute.h"
@@ -34,6 +35,8 @@ void KeplerCompute::BindRasterizer(VideoCore::RasterizerInterface* rasterizer_) 
 }
 
 void KeplerCompute::ConsumeSinkImpl(Core::System& system) {
+    const Common::GpuProfile::PhaseScope gpu_profile_scope{
+        Common::GpuProfile::Phase::ComputeDispatchSetup};
     for (auto [method, value] : method_sink) {
         regs.reg_array[method] = value;
     }
@@ -41,6 +44,8 @@ void KeplerCompute::ConsumeSinkImpl(Core::System& system) {
 }
 
 void KeplerCompute::CallMethod(Core::System& system, u32 method, u32 method_argument, bool is_last_call) {
+    const Common::GpuProfile::PhaseScope gpu_profile_scope{
+        Common::GpuProfile::Phase::ComputeDispatchSetup};
     ASSERT_MSG(method < Regs::NUM_REGS, "Invalid KeplerCompute register, increase the size of the Regs structure");
 
     regs.reg_array[method] = method_argument;
@@ -85,6 +90,8 @@ void KeplerCompute::CallMethod(Core::System& system, u32 method, u32 method_argu
 }
 
 void KeplerCompute::CallMultiMethod(Core::System& system, u32 method, const u32* base_start, u32 amount, u32 methods_pending) {
+    const Common::GpuProfile::PhaseScope gpu_profile_scope{
+        Common::GpuProfile::Phase::ComputeDispatchSetup};
     switch (method) {
     case KEPLER_COMPUTE_REG_INDEX(data_upload):
         upload_address = current_dma_segment;

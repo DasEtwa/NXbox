@@ -116,6 +116,7 @@ void ComputeDispatch::Bind(const ComputeBindings& bindings) {
     }
 }
 void ComputeDispatch::Direct(const ComputeBindings& bindings, ComputeGroups groups) {
+    const FrameProfile::Scope profile_dispatch{context.Profile(), FramePhase::DrawDispatch};
     if (!HasComputeWork(groups))
         return;
     Bind(bindings);

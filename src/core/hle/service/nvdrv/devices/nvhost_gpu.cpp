@@ -6,6 +6,7 @@
 
 #include <cstring>
 #include "common/assert.h"
+#include "common/gpu_thread_profile.h"
 #include "common/logging.h"
 #include "core/core.h"
 #include "core/hle/kernel/k_process.h"
@@ -370,6 +371,8 @@ NvResult nvhost_gpu::SubmitGPFIFOImpl(IoctlSubmitGpfifo& params, Tegra::CommandL
     u32 increment{(flags.fence_increment.Value() != 0 ? 2 : 0) +
                   (flags.increment_value.Value() != 0 ? params.fence.value : 0)};
     params.fence.value = syncpoint_manager.IncrementSyncpointMaxExt(channel_syncpoint, increment);
+    if (increment != 0)
+        Common::GpuProfile::RequestFence(channel_syncpoint, params.fence.value);
     gpu.PushGPUEntries(bind_id, std::move(entries));
 
     if (flags.fence_increment.Value()) {

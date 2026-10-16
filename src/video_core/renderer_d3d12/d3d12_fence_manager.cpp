@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "video_core/renderer_d3d12/d3d12_fence_manager.h"
 
+#include "common/gpu_thread_profile.h"
 #include "video_core/buffer_cache/buffer_cache.h"
 #include "video_core/query_cache/query_cache.h"
 #include "video_core/texture_cache/texture_cache.h"
@@ -51,11 +52,21 @@ void FenceManager::SignalSyncPoint(u32 value) {
     syncpoint_manager.IncrementGuest(value);
     ++pending_syncpoints;
     LogSyncpoints();
-    SignalFence([this, value] {
+    auto signal = [this, value] {
         syncpoint_manager.IncrementHost(value);
         --pending_syncpoints;
         ++signaled_syncpoints;
         LogSyncpoints();
+    };
+    if (!Common::GpuProfile::enabled.load(std::memory_order_relaxed)) {
+        SignalFence(std::move(signal));
+        return;
+    }
+    const auto latency =
+        Common::GpuProfile::ProcessFence(value, syncpoint_manager.GetGuestSyncpointValue(value));
+    SignalFence([signal = std::move(signal), latency] {
+        Common::GpuProfile::CompleteFence(latency);
+        signal();
     });
 }
 void FenceManager::SignalReference() {

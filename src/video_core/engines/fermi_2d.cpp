@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "common/assert.h"
+#include "common/gpu_thread_profile.h"
 #include "common/logging.h"
 #include "video_core/engines/fermi_2d.h"
 #include "video_core/engines/sw_blitter/blitter.h"
@@ -37,6 +38,7 @@ void Fermi2D::BindRasterizer(VideoCore::RasterizerInterface* rasterizer_) {
 }
 
 void Fermi2D::CallMethod(Core::System& system, u32 method, u32 method_argument, bool is_last_call) {
+    const Common::GpuProfile::PhaseScope gpu_profile_scope{Common::GpuProfile::Phase::Fermi2D};
     ASSERT_MSG(method < Regs::NUM_REGS, "Invalid Fermi2D register, increase the size of the Regs structure");
     regs.reg_array[method] = method_argument;
 
@@ -46,12 +48,14 @@ void Fermi2D::CallMethod(Core::System& system, u32 method, u32 method_argument, 
 }
 
 void Fermi2D::CallMultiMethod(Core::System& system, u32 method, const u32* base_start, u32 amount, u32 methods_pending) {
+    const Common::GpuProfile::PhaseScope gpu_profile_scope{Common::GpuProfile::Phase::Fermi2D};
     for (u32 i = 0; i < amount; ++i) {
         CallMethod(system, method, base_start[i], methods_pending - i <= 1);
     }
 }
 
 void Fermi2D::ConsumeSinkImpl(Core::System& system) {
+    const Common::GpuProfile::PhaseScope gpu_profile_scope{Common::GpuProfile::Phase::Fermi2D};
     for (auto [method, value] : method_sink) {
         regs.reg_array[method] = value;
     }

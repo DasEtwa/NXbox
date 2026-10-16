@@ -298,13 +298,41 @@ Resource::~Resource() {
 bool FrameProfile::OnOwner() {
     return enabled && owner.load() == GetCurrentThreadId();
 }
-void FrameProfile::BindRecordingThread() {
+void FrameProfile::BindRecordingThread(bool rebind) {
+    if (enabled && rebind && owner.load() != GetCurrentThreadId()) {
+        owner = 0;
+        timing.active = FramePhase::BetweenDraws;
+        timing.cpu.fill(0);
+        counts.fill(0);
+        transitions.clear();
+        waits.clear();
+        frames = fence_wall = 0;
+    }
     if (enabled && !owner.load()) {
         initial_cpu = ProfileCpuTime();
         start_wall = ProfileWallTime();
         timing.Reset(start_wall);
         owner.store(GetCurrentThreadId());
     }
+}
+std::size_t FrameProfile::Enter(Common::GpuProfile::Phase phase) {
+    constexpr std::array phases{FramePhase::DmaPusher,
+                                FramePhase::Maxwell3DMethods,
+                                FramePhase::MacroExecution,
+                                FramePhase::DmaEngine,
+                                FramePhase::InlineToMemory,
+                                FramePhase::ComputeDispatchSetup,
+                                FramePhase::Fermi2D,
+                                FramePhase::SyncWait,
+                                FramePhase::BufferCacheBind,
+                                FramePhase::TextureCacheUpdate,
+                                FramePhase::DescriptorAndPipeline};
+    const auto previous = timing.active;
+    Switch(phases[static_cast<std::size_t>(phase)]);
+    return static_cast<std::size_t>(previous);
+}
+void FrameProfile::Leave(std::size_t previous) {
+    Switch(static_cast<FramePhase>(previous));
 }
 void FrameProfile::Switch(FramePhase phase) {
     // Wall time: GetThreadTimes ticks at 15.6 ms and costs a syscall per phase switch.
@@ -398,6 +426,17 @@ void FrameProfile::EndFrame(bool presented) {
                                    "descriptor_setup",
                                    "draw_recording",
                                    "draw_cleanup",
+                                   "dma_pusher",
+                                   "maxwell3d_methods",
+                                   "macro_execution",
+                                   "dma_engine",
+                                   "inline_to_memory",
+                                   "compute_dispatch_setup",
+                                   "fermi2d",
+                                   "sync_wait",
+                                   "buffer_cache_bind",
+                                   "texture_cache_update",
+                                   "descriptor_and_pipeline",
                                    "between_draws"};
         constexpr std::array counters{"draws",
                                       "dispatches",
@@ -504,6 +543,29 @@ void FrameProfile::EndFrame(bool presented) {
         if (guest_visibility)
             line += guest_visibility();
         Diagnostic(line);
+        const auto guest = Common::GpuProfile::TakeWindow();
+        std::string guest_line = "D3D12_GUEST_WAITS";
+        for (size_t i = 0; i < guest.waits.size(); ++i) {
+            const auto& sample = guest.waits[i];
+            guest_line += fmt::format(" {}_count={} {}_total_ms={:.3f} {}_max_ms={:.3f}",
+                                      Common::GpuProfile::WaitNames[i], sample.count,
+                                      Common::GpuProfile::WaitNames[i], sample.total_ns / 1.0e6,
+                                      Common::GpuProfile::WaitNames[i], sample.max_ns / 1.0e6);
+        }
+        guest_line += fmt::format(
+            " fence_samples={} fence_queued_avg_ms={:.3f} fence_gpu_execution_avg_ms={:.3f}"
+            " fence_total_avg_ms={:.3f} dropped_fence_requests={} pending_fence_requests={}",
+            guest.fence_total.count,
+            guest.fence_total.count
+                ? guest.fence_queued.total_ns / (1.0e6 * guest.fence_total.count)
+                : 0.0,
+            guest.fence_total.count
+                ? guest.fence_execution.total_ns / (1.0e6 * guest.fence_total.count)
+                : 0.0,
+            guest.fence_total.count ? guest.fence_total.total_ns / (1.0e6 * guest.fence_total.count)
+                                    : 0.0,
+            guest.dropped_requests, guest.pending_requests);
+        Diagnostic(guest_line);
     } catch (...) {
         Diagnostic("D3D12 frame profile formatting failed");
     }

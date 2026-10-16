@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "common/assert.h"
+#include "common/gpu_thread_profile.h"
 #include "common/nxbox_stall.h"
 #include "common/scope_exit.h"
 #include "common/settings.h"
@@ -76,9 +77,16 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer,
 #else
         auto current_context = context.Acquire();
 #endif
+        rasterizer->ProfileGpuThread(true);
+        SCOPE_EXIT {
+            rasterizer->ProfileGpuThread(false);
+        };
         CommandDataContainer next;
         while (!stop_token.stop_requested()) {
-            state.queue.PopWait(next, stop_token);
+            {
+                const Common::GpuProfile::WaitScope wait{Common::GpuProfile::Wait::GpuQueueIdle};
+                state.queue.PopWait(next, stop_token);
+            }
             if (stop_token.stop_requested()) {
                 break;
             }
@@ -141,6 +149,8 @@ void ThreadManager::FlushRegion(DAddr addr, u64 size, bool is_async) {
 }
 
 void ThreadManager::TickGPU(bool is_async) {
+    const Common::GpuProfile::WaitScope gpu_profile_scope{Common::GpuProfile::Wait::TickGPU,
+                                                          !is_async};
     PushCommand(GPUTickCommand(), false, is_async);
 }
 
@@ -163,6 +173,7 @@ void ThreadManager::FlushAndInvalidateRegion(DAddr addr, u64 size, bool is_async
             auto& gpu = system.GPU();
             const u64 fence = gpu.RequestFlush(addr, size);
             TickGPU(is_async);
+            const Common::GpuProfile::WaitScope wait{Common::GpuProfile::Wait::RequestFlush};
             gpu.WaitForSyncOperation(fence);
         }
     }
@@ -187,6 +198,7 @@ u64 ThreadManager::PushCommand(CommandData&& command_data, bool block, bool is_a
     state.queue.EmplaceWait(std::move(command_data), fence, block);
 
     if (block) {
+        const Common::GpuProfile::WaitScope wait{Common::GpuProfile::Wait::GpuThreadCommand};
         state.cv.wait(lk, thread.get_stop_token(), [this, fence] {
             return fence <= state.signaled_fence.load(std::memory_order_relaxed);
         });

@@ -6,6 +6,7 @@
 
 #include "common/algorithm.h"
 #include "common/assert.h"
+#include "common/gpu_thread_profile.h"
 #include "common/logging.h"
 #include <ranges>
 #include "common/settings.h"
@@ -35,6 +36,7 @@ void MaxwellDMA::BindRasterizer(VideoCore::RasterizerInterface* rasterizer_) {
 }
 
 void MaxwellDMA::ConsumeSinkImpl(Core::System& system) {
+    const Common::GpuProfile::PhaseScope gpu_profile_scope{Common::GpuProfile::Phase::DmaEngine};
     for (auto [method, value] : method_sink) {
         regs.reg_array[method] = value;
     }
@@ -42,6 +44,7 @@ void MaxwellDMA::ConsumeSinkImpl(Core::System& system) {
 }
 
 void MaxwellDMA::CallMethod(Core::System& system, u32 method, u32 method_argument, bool is_last_call) {
+    const Common::GpuProfile::PhaseScope gpu_profile_scope{Common::GpuProfile::Phase::DmaEngine};
     ASSERT_MSG(method < NUM_REGS, "Invalid MaxwellDMA register");
 
     regs.reg_array[method] = method_argument;
@@ -52,6 +55,7 @@ void MaxwellDMA::CallMethod(Core::System& system, u32 method, u32 method_argumen
 }
 
 void MaxwellDMA::CallMultiMethod(Core::System& system, u32 method, const u32* base_start, u32 amount, u32 methods_pending) {
+    const Common::GpuProfile::PhaseScope gpu_profile_scope{Common::GpuProfile::Phase::DmaEngine};
     for (u32 i = 0; i < amount; ++i) {
         CallMethod(system, method, base_start[i], methods_pending - i <= 1);
     }
