@@ -3,6 +3,8 @@
 
 #include <algorithm>
 #include <bit>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <set>
@@ -1057,7 +1059,8 @@ void TextureCacheRuntime::RecordTextureWrite(Image& image) {
 }
 void TextureCacheRuntime::RecordTextureUpload(Image& image) {
     context.Profile().Count(FrameCount::TextureRefreshBytes, image.unswizzled_size_bytes);
-    static const bool trace = BisectEnabled("NXBOX_D3D12_TEXTURE_UPLOAD_TRACE");
+    static const bool trace = BisectEnabled("NXBOX_D3D12_TEXTURE_UPLOAD_TRACE") ||
+                              std::getenv("NXBOX_D3D12_UPLOAD_DIMS") != nullptr;
     if (!trace && !context.Profile().Enabled())
         return;
     const FrameProfile::Scope profile_diagnostic{context.Profile(),
@@ -1069,6 +1072,22 @@ void TextureCacheRuntime::RecordTextureUpload(Image& image) {
                 break;
             }
         }
+    }
+    // NXBOX_D3D12_UPLOAD_DIMS=WxH logs every upload of images with that size.
+    static const auto watched_dims = [] {
+        const char* value = std::getenv("NXBOX_D3D12_UPLOAD_DIMS");
+        u32 width{}, height{};
+        if (value == nullptr || std::sscanf(value, "%ux%u", &width, &height) != 2)
+            return std::pair<u32, u32>{};
+        return std::pair<u32, u32>{width, height};
+    }();
+    if (watched_dims.first == image.info.size.width &&
+        watched_dims.second == image.info.size.height) {
+        Diagnostic(fmt::format("D3D12_UPLOAD_WATCH gpu_address={:#x} frame={} reason={} "
+                               "gpu_modified={} layers={} levels={}",
+                               image.gpu_addr, frame_tick, image.upload_reason,
+                               True(image.flags & VideoCommon::ImageFlagBits::GpuModified),
+                               image.info.resources.layers, image.info.resources.levels));
     }
     repeated_uploads.Add({image.gpu_addr, image.unswizzled_size_bytes, 0,
                           static_cast<u32>(image.info.format), image.info.size.width,
