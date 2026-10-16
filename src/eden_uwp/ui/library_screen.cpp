@@ -27,7 +27,6 @@
 #include "common/scm_rev.h"
 #include "eden_uwp/renderer_settings.h"
 #include "eden_uwp/ui/settings_model.h"
-#include "eden_uwp/ui/shop_screen.h"
 #include "eden_uwp/accounts.h"
 #include "eden_uwp/diagnostic.h"
 #include "eden_uwp/firmware.h"
