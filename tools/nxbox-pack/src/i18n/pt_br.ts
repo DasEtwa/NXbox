@@ -2,7 +2,7 @@ import type { Translation } from "./registry";
 
 export default {
   profileUsage:
-    "Uso: nxbox-pack profile multi on|off, ou nxbox-pack profile avatar <nome> <imagem> [--insecure-portal]",
+    "Uso: nxbox-pack profile multi on|off, ou nxbox-pack profile avatar <nome> <imagem> | --character <id> --color <nome> [--insecure-portal]",
   profilePackage: "Nome completo do pacote (escolha o app cujas contas quer editar)",
   profileMissing:
     "Perfil não encontrado, nome duplicado ou dados inválidos. Abra o NXbox uma vez para criar os perfis.",

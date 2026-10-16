@@ -19,6 +19,7 @@ import {
   validateSource,
   type RuntimeSource,
 } from "./runtime";
+import { characterAvatar } from "./character-avatar";
 import { convertAvatar } from "./avatar";
 import { parseProfileArgs, setMulti, uploadAvatar } from "./profile";
 import { DevicePortal, portalUrl } from "./portal";
@@ -102,7 +103,9 @@ export async function main(): Promise<void> {
       const jpeg =
         command.kind === "avatar"
           ? await convertAvatar(draggedPath(command.image), language)
-          : undefined;
+          : command.kind === "character"
+            ? characterAvatar(command.character, command.color)
+            : undefined;
       prompt = new Prompt();
       const discovered = await discoverXbox();
       const base = portalUrl(

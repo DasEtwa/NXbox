@@ -9,11 +9,15 @@
 
 #include "common/fs/fs.h"
 #include "common/scope_exit.h"
+#include "common/stb.h"
 #include "core/constants_nxbox.h"
 #include "core/hle/service/acc/profile_manager.h"
 #include "eden_uwp/accounts.h"
 #include "eden_uwp/accounts_policy.h"
 #include "eden_uwp/diagnostic.h"
+#include "eden_uwp/moru_parts.h"
+#include "eden_uwp/ui/avatar_composite.h"
+#include "eden_uwp/ui/moru_screen.h"
 #include "eden_uwp/ui/strings.h"
 #include "eden_uwp/ui/text_entry.h"
 #include "eden_uwp/ui/widgets.h"
@@ -24,7 +28,7 @@ using D2D1::RectF;
 using winrt::Windows::UI::Core::CoreWindow;
 using Manager = Service::Account::ProfileManager;
 
-enum class Page { Question, List, Detail, Presets, Remove, DeleteSaves };
+enum class Page { Question, List, Detail, Presets, Colors, Remove, DeleteSaves };
 
 class AccountsScreen {
 public:
@@ -88,7 +92,7 @@ private:
                 renderer_.UploadImage(pixels, images_[i]);
         }
         for (std::size_t i = 0; i < presets_.size(); ++i) {
-            const auto bytes = Core::Constants::NXBOX_PRESET_AVATARS[i];
+            const auto bytes = Core::Constants::NXBOX_CHARACTER_AVATARS[i];
             Pixels pixels;
             if (renderer_.DecodeImage(std::vector<u8>(bytes.begin(), bytes.end()), pixels))
                 renderer_.UploadImage(pixels, presets_[i]);
@@ -130,8 +134,7 @@ private:
                     failed_ = profiles_.CreateNewUser(uuid, name).IsError();
                     if (!failed_) {
                         account_ = profiles_.GetUserCount() - 1;
-                        failed_ =
-                            !profiles_.SetAvatar(uuid, Core::Constants::NXBOX_PRESET_AVATARS[0]);
+                        failed_ = !profiles_.SetAvatar(uuid, Core::Constants::NXBOX_ACCOUNT_JPEG);
                         profiles_.WriteUserSaveFile();
                         page_ = Page::Presets;
                         row_ = 0;
@@ -151,7 +154,13 @@ private:
             return;
         }
         if (input_.Pressed(Button::B)) {
-            if (page_ == Page::Question) {
+            if (page_ == Page::Colors) {
+                page_ = moru_ ? Page::Detail : Page::Presets;
+                row_ = moru_ ? 5 : character_;
+            } else if (page_ == Page::Presets) {
+                page_ = Page::Detail;
+                row_ = 2;
+            } else if (page_ == Page::Question) {
                 row_ = 0;
                 if (launch_)
                     AnswerQuestion();
@@ -169,11 +178,19 @@ private:
             if (input_.Pressed(Button::Left))
                 row_ = std::max(0, row_ - 1);
             if (input_.Pressed(Button::Right))
-                row_ = std::min(19, row_ + 1);
+                row_ = std::min(static_cast<int>(presets_.size()) - 1, row_ + 1);
             if (input_.Pressed(Button::Up))
-                row_ = std::max(0, row_ - 5);
+                row_ = std::max(0, row_ - 6);
             if (input_.Pressed(Button::Down))
-                row_ = std::min(19, row_ + 5);
+                row_ = std::min(static_cast<int>(presets_.size()) - 1, row_ + 6);
+        } else if (page_ == Page::Colors) {
+            const int previous = row_;
+            if (input_.Pressed(Button::Left))
+                row_ = std::max(0, row_ - 1);
+            if (input_.Pressed(Button::Right))
+                row_ = std::min(11, row_ + 1);
+            if (previous != row_)
+                UpdatePreview();
         } else {
             int count = 2;
             if (page_ == Page::List)
@@ -186,7 +203,7 @@ private:
                                                                                              : 0)
                                : 1);
             if (page_ == Page::Detail)
-                count = 4;
+                count = state_.multi ? 6 : 4;
             if (input_.Pressed(Button::Up) || input_.Pressed(Button::Left))
                 row_ = std::max(0, row_ - 1);
             if (input_.Pressed(Button::Down) || input_.Pressed(Button::Right))
@@ -221,17 +238,34 @@ private:
             else if (row_ == 1) {
                 adding_ = false;
                 entry_ = std::make_unique<TextEntry>(Tr(Text::AccountName), Name(account_));
-            } else if (row_ == 2) {
+            } else if (row_ == 2 && state_.multi) {
                 page_ = Page::Presets;
                 row_ = 0;
+            } else if (row_ == 4 && state_.multi) {
+                if (RunMoruScreen(renderer_, window_, input_))
+                    closed_ = true;
+            } else if (row_ == 5 && state_.multi) {
+                if (RunMoruScreen(renderer_, window_, input_, &moru_))
+                    closed_ = true;
+                if (moru_) {
+                    page_ = Page::Colors;
+                    row_ = 0;
+                    UpdatePreview();
+                }
             } else if (row_ == 3 && profiles_.GetUserCount() > 1) {
                 page_ = Page::Remove;
                 row_ = 0;
             }
             break;
         case Page::Presets:
-            failed_ = !profiles_.SetAvatar(*profiles_.GetUser(account_),
-                                           Core::Constants::NXBOX_PRESET_AVATARS[row_]);
+            moru_.reset();
+            character_ = row_;
+            page_ = Page::Colors;
+            row_ = 0;
+            UpdatePreview();
+            break;
+        case Page::Colors:
+            failed_ = !SaveAvatar();
             if (!failed_) {
                 ReloadImages();
                 page_ = Page::Detail;
@@ -264,6 +298,55 @@ private:
         input_.ConsumeUntilRelease();
     }
 
+    bool UpdatePreview() {
+        preview_ = {};
+        composite_ = {};
+        if (moru_) {
+            composite_.width = composite_.height = 256;
+            composite_.bgra = Moru::Rasterize(Moru::MakeScene(*moru_));
+        } else {
+            const auto bytes = Core::Constants::NXBOX_CHARACTER_AVATARS[character_];
+            if (!renderer_.DecodeImage(std::vector<u8>(bytes.begin(), bytes.end()), composite_) ||
+                composite_.width != 256 || composite_.height != 256) {
+                failed_ = true;
+                return false;
+            }
+        }
+        const auto& rgb = Core::Constants::NXBOX_AVATAR_COLORS[row_].rgb;
+        for (std::size_t i = 0; i < composite_.bgra.size(); i += 4) {
+            const auto alpha = composite_.bgra[i + 3];
+            for (std::size_t channel = 0; channel < 3; ++channel)
+                composite_.bgra[i + channel] =
+                    CompositeAvatarChannel(composite_.bgra[i + channel], alpha, rgb[2 - channel]);
+            composite_.bgra[i + 3] = 255;
+        }
+        failed_ = !renderer_.UploadImage(composite_, preview_);
+        return !failed_;
+    }
+
+    bool SaveAvatar() {
+        if (!state_.multi || !UpdatePreview())
+            return false;
+        std::vector<u8> rgb(256 * 256 * 3);
+        for (std::size_t pixel = 0; pixel < 256 * 256; ++pixel)
+            for (std::size_t channel = 0; channel < 3; ++channel)
+                rgb[pixel * 3 + channel] = composite_.bgra[pixel * 4 + 2 - channel];
+        // Use the guest's existing stb encoder; never truncate an oversized JPEG.
+        for (int quality : {90, 75, 50, 25}) {
+            std::vector<u8> jpeg;
+            const auto append = [](void* context, void* data, int length) {
+                auto& output = *static_cast<std::vector<u8>*>(context);
+                const auto* bytes = static_cast<const u8*>(data);
+                output.insert(output.end(), bytes, bytes + length);
+            };
+            if (!stbi_write_jpg_to_func(append, &jpeg, 256, 256, 3, rgb.data(), quality))
+                return false;
+            if (jpeg.size() <= 0x20000)
+                return profiles_.SetAvatar(*profiles_.GetUser(account_), jpeg);
+        }
+        return false;
+    }
+
     void AnswerQuestion() {
         state_.initialized = true;
         state_.multi = row_ == 1;
@@ -293,7 +376,8 @@ private:
         const Text title = page_ == Page::Question      ? Text::AccountsQuestion
                            : page_ == Page::Remove      ? Text::AccountRemoveQuestion
                            : page_ == Page::DeleteSaves ? Text::AccountDeleteQuestion
-                           : page_ == Page::Presets     ? Text::AccountAvatar
+                           : page_ == Page::Colors      ? Text::AccountBackground
+                           : page_ == Page::Presets     ? Text::AccountCharacter
                                                         : Text::AccountsTitle;
         renderer_.DrawString(Tr(title), Font::Heading, RectF(96, 115, 1800, 210), Theme::kText);
         if (page_ == Page::Detail || page_ == Page::Remove || page_ == Page::DeleteSaves)
@@ -322,21 +406,46 @@ private:
             DrawRow(1, Tr(Text::AccountRename));
             DrawRow(2, Tr(Text::AccountAvatar));
             DrawRow(3, Tr(profiles_.GetUserCount() > 1 ? Text::AccountRemove : Text::AccountLast));
+            if (state_.multi) {
+                DrawRow(4, Tr(Text::MoruTitle));
+                DrawRow(5, Tr(Text::MoruIcon));
+            }
         } else if (page_ == Page::Presets) {
-            for (int i = 0; i < 20; ++i) {
-                const float x = 110.0f + (i % 5) * 165.0f;
-                const float y = 290.0f + (i / 5) * 150.0f;
-                const auto rect = RectF(x, y, x + 128, y + 128);
-                renderer_.DrawImage(presets_[i], rect, 64.0f, 1.0f);
+            for (int i = 0; i < static_cast<int>(presets_.size()); ++i) {
+                const float x = 440.0f + (i % 6) * 180.0f;
+                const float y = 270.0f + (i / 6) * 156.0f;
+                const auto rect = RectF(x, y, x + 140, y + 140);
+                renderer_.FillRounded(rect, 22.0f, Theme::kTextSecondary);
+                renderer_.DrawImage(presets_[i], rect, 22.0f, 1.0f);
                 if (i == row_)
-                    DrawRing(renderer_, rect, 64.0f, 1.0f);
+                    DrawRing(renderer_, rect, 22.0f, 1.0f);
+            }
+        } else if (page_ == Page::Colors) {
+            renderer_.DrawImage(preview_, RectF(760, 265, 1160, 665), 24.0f, 1.0f);
+            static constexpr std::array<Text, 12> labels = {
+                Text::AvatarRed,    Text::AvatarOrange, Text::AvatarYellow,  Text::AvatarLime,
+                Text::AvatarGreen,  Text::AvatarTeal,   Text::AvatarSkyBlue, Text::AvatarBlue,
+                Text::AvatarPurple, Text::AvatarPink,   Text::AvatarWhite,   Text::AvatarBlack};
+            renderer_.DrawString(Tr(labels[row_]), Font::Nav, RectF(96, 680, 1800, 735),
+                                 Theme::kText, HAlign::Center, VAlign::Middle);
+            for (int i = 0; i < 12; ++i) {
+                const auto& rgb = Core::Constants::NXBOX_AVATAR_COLORS[i].rgb;
+                const float x = 360.0f + i * 102.0f;
+                const auto rect = RectF(x, 770, x + 78, 848);
+                renderer_.FillRounded(
+                    rect, 39.0f, D2D1::ColorF(rgb[0] / 255.0f, rgb[1] / 255.0f, rgb[2] / 255.0f));
+                renderer_.StrokeRounded(rect, 39.0f, 1.0f, Theme::kTextTertiary);
+                if (i == row_)
+                    DrawRing(renderer_, rect, 39.0f, 1.0f);
             }
         } else {
             DrawRow(0, Tr(page_ == Page::Remove ? Text::AccountsNo : Text::AccountKeepSaves));
             DrawRow(1, Tr(page_ == Page::Remove ? Text::AccountRemove : Text::AccountDeleteSaves));
         }
-        DrawHints(renderer_, {{Theme::kButtonA, L"A", Tr(Text::HintSelect)},
-                              {Theme::kButtonB, L"B", Tr(Text::HintBack)}});
+        DrawHints(renderer_,
+                  {{Theme::kButtonA, L"A",
+                    Tr(page_ == Page::Colors ? Text::AccountConfirmAvatar : Text::HintSelect)},
+                   {Theme::kButtonB, L"B", Tr(Text::HintBack)}});
         if (failed_)
             DrawToastCapsule(renderer_, Tr(Text::AccountFailed), 1.0f);
         if (entry_)
@@ -350,7 +459,11 @@ private:
     Accounts::State state_;
     Manager profiles_;
     std::array<Image, Service::Account::MAX_USERS> images_;
-    std::array<Image, 20> presets_;
+    std::array<Image, Core::Constants::NXBOX_CHARACTER_AVATARS.size()> presets_;
+    Image preview_;
+    Pixels composite_;
+    std::optional<Service::Mii::StoreData> moru_;
+    int character_ = 0;
     std::unique_ptr<TextEntry> entry_;
     Page page_ = Page::List;
     int row_ = 0;

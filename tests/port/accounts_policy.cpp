@@ -1,10 +1,18 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "eden_uwp/accounts_policy.h"
+#include "eden_uwp/ui/avatar_composite.h"
 #include "core/hle/service/acc/nxbox_profile.h"
 #include <array>
 #include <cassert>
 
 int main() {
+  using EdenXbox::Ui::CompositeAvatarChannel;
+  // Premultiplied fixture: straight (200, 100, 50, 128) over (20, 40, 80).
+  static_assert(CompositeAvatarChannel(100, 128, 20) == 110);
+  static_assert(CompositeAvatarChannel(50, 128, 40) == 70);
+  static_assert(CompositeAvatarChannel(25, 128, 80) == 65);
+  static_assert(CompositeAvatarChannel(0, 0, 255) == 255);
+  static_assert(CompositeAvatarChannel(200, 255, 0) == 200);
   using namespace EdenXbox::Accounts;
   static_assert(NeedsSetup(false));
   static_assert(!NeedsSetup(true));

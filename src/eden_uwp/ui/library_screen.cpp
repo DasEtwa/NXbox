@@ -39,6 +39,7 @@
 #include "eden_uwp/ui/input.h"
 #include "eden_uwp/ui/library.h"
 #include "eden_uwp/ui/mods_screen.h"
+#include "eden_uwp/ui/moru_screen.h"
 #include "eden_uwp/ui/nextendo_screen.h"
 #include "eden_uwp/ui/renderer.h"
 #include "eden_uwp/ui/savesync_ui.h"
@@ -135,8 +136,9 @@ constexpr int kSettingMultiplayer = 5;
 constexpr int kSettingSystemMenu = 6;
 constexpr int kSettingOfficialInterface = 7;
 constexpr int kSettingAccounts = 8;
-constexpr int kSettingBackToNXbox = 9;
-constexpr int kSettingsRowCount = 10;
+constexpr int kSettingMoru = 9;
+constexpr int kSettingBackToNXbox = 10;
+constexpr int kSettingsRowCount = 11;
 // Rows that fit on screen at once; the list scrolls to keep the focused row visible.
 constexpr int kSettingsVisibleRows = 7;
 
@@ -813,6 +815,16 @@ private:
 
     // A on a settings row.
     void ActivateSetting(Clock::time_point now) {
+        if (settings_row_ == kSettingMoru) {
+            if (return_home_) {
+                return_home_->store(true); // Release the guest database before editing.
+                return;
+            }
+            const InputTransition transition(input_);
+            if (RunMoruScreen(renderer_, window_, input_))
+                closed_ = true;
+            return;
+        }
         if (settings_row_ == kSettingAccounts) {
             if (return_home_) {
                 return_home_->store(true); // Edit accounts only after the guest releases its saves.
@@ -1455,7 +1467,7 @@ private:
                 (settings_row_ == kSettingSources || settings_row_ == kSettingUsb ||
                  settings_row_ == kSettingCredits || settings_row_ == kSettingSystemMenu ||
                  settings_row_ == kSettingNextendo || settings_row_ == kSettingAccounts ||
-                 settings_row_ == kSettingMultiplayer)) {
+                 settings_row_ == kSettingMoru || settings_row_ == kSettingMultiplayer)) {
                 hints.push_back({Theme::kButtonA, L"A", Tr(Text::HintSelect)});
             }
         } else if (HasGame()) {
@@ -1531,6 +1543,7 @@ private:
               Theme::kTextSecondary,
               Tr(firmware_status_.home_available ? Text::SystemMenuHint : Text::RequiresFirmware)},
              {Tr(Text::AccountsTitle), L"", Theme::kTextSecondary, L""},
+             {Tr(Text::MoruTitle), L"", Theme::kTextSecondary, L""},
              {Tr(Text::BackToNXboxInterface), L"", Theme::kTextSecondary, L""}}};
         constexpr float kRowTop = 340.0f;
         constexpr float kRowHeight = 88.0f;

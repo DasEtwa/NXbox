@@ -1,6 +1,6 @@
 export default {
   profileUsage:
-    "Usage: nxbox-pack profile multi on|off, or nxbox-pack profile avatar <name> <image> [--insecure-portal]",
+    "Usage: nxbox-pack profile multi on|off, or nxbox-pack profile avatar <name> <image> | --character <id> --color <name> [--insecure-portal]",
   profilePackage: "Package full name (choose the app whose accounts you want to edit)",
   profileMissing:
     "Profile not found, duplicate name, or invalid profile data. Open NXbox once to create its profiles.",

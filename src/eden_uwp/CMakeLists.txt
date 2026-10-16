@@ -20,6 +20,10 @@ add_executable(eden-uwp WIN32
     accounts_policy.h
     ui/accounts_screen.cpp
     ui/accounts_screen.h
+    ui/moru_screen.cpp
+    ui/moru_screen.h
+    moru_model.h
+    moru_parts.h
     game_session.cpp
     game_session.h
     protocol_uri.h

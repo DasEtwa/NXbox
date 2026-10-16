@@ -1,3 +1,4 @@
+import { avatarCharacters, avatarColors } from "./character-avatar";
 import { join } from "node:path";
 import { PackError } from "./i18n";
 import type { DevicePortal } from "./portal";
@@ -5,7 +6,8 @@ import type { DevicePortal } from "./portal";
 export const avatarDirectory = "LocalState/eden/nand/system/save/8000000000000010/su/avators";
 export type ProfileCommand =
   | { kind: "multi"; enabled: boolean }
-  | { kind: "avatar"; name: string; image: string };
+  | { kind: "avatar"; name: string; image: string }
+  | { kind: "character"; name: string; character: string; color: string };
 export function parseProfileArgs(args: string[]): { command: ProfileCommand; insecure: boolean } {
   const insecure = args.includes("--insecure-portal");
   args = args.filter((arg) => arg !== "--insecure-portal");
@@ -13,6 +15,21 @@ export function parseProfileArgs(args: string[]): { command: ProfileCommand; ins
     return { command: { kind: "multi", enabled: args[1] === "on" }, insecure };
   if (args.length === 3 && args[0] === "avatar" && args[1] && args[2])
     return { command: { kind: "avatar", name: args[1], image: args[2] }, insecure };
+  if (args.length === 6 && args[0] === "avatar" && args[1]) {
+    const options = new Map([
+      [args[2], args[3]],
+      [args[4], args[5]],
+    ]);
+    const character = options.get("--character");
+    const color = options.get("--color");
+    if (
+      character &&
+      color &&
+      avatarCharacters.includes(character) &&
+      avatarColors.some(({ name }) => name === color)
+    )
+      return { command: { kind: "character", name: args[1], character, color }, insecure };
+  }
   throw new PackError("profileUsage");
 }
 
