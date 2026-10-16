@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "common/assert.h"
+#include "common/gpu_thread_profile.h"
 #include "common/logging.h"
 #include "common/settings.h"
 #include "core/core.h"
@@ -124,6 +125,7 @@ void Puller::ProcessSemaphoreRelease(DmaPusher& dma_pusher) {
 }
 
 void Puller::ProcessSemaphoreAcquire(DmaPusher& dma_pusher) {
+    const Common::GpuProfile::PhaseScope gpu_profile_scope{Common::GpuProfile::Phase::SyncWait};
     u32 word = dma_pusher.memory_manager.Read<u32>(regs.semaphore_address.SemaphoreAddress());
     const auto value = regs.semaphore_acquire;
     while (word != value) {

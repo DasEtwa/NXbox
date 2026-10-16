@@ -12,6 +12,7 @@
 #include <string_view>
 #include <memory>
 #include <numeric>
+#include "common/gpu_thread_profile.h"
 
 #include "common/nxbox_upload_diag.h"
 #include "common/range_sets.inc"
@@ -406,6 +407,8 @@ void BufferCache<P>::DisableGraphicsUniformBuffer(size_t stage, u32 index) {
 
 template <class P>
 void BufferCache<P>::UpdateGraphicsBuffers(bool is_indexed) {
+    const Common::GpuProfile::PhaseScope gpu_profile_scope{
+        Common::GpuProfile::Phase::BufferCacheBind};
     do {
         channel_state->has_deleted_buffers = false;
         DoUpdateGraphicsBuffers(is_indexed);
@@ -422,6 +425,8 @@ void BufferCache<P>::UpdateComputeBuffers() {
 
 template <class P>
 void BufferCache<P>::BindHostGeometryBuffers(bool is_indexed, bool bind_index) {
+    const Common::GpuProfile::PhaseScope gpu_profile_scope{
+        Common::GpuProfile::Phase::BufferCacheBind};
     if (is_indexed && bind_index) {
         BindHostIndexBuffer();
     } else if constexpr (!HAS_FULL_INDEX_AND_PRIMITIVE_SUPPORT) {
@@ -441,6 +446,8 @@ void BufferCache<P>::BindHostGeometryBuffers(bool is_indexed, bool bind_index) {
 
 template <class P>
 void BufferCache<P>::BindHostStageBuffers(size_t stage) {
+    const Common::GpuProfile::PhaseScope gpu_profile_scope{
+        Common::GpuProfile::Phase::BufferCacheBind};
     BindHostGraphicsUniformBuffers(stage);
     BindHostGraphicsStorageBuffers(stage);
     BindHostGraphicsTextureBuffers(stage);
@@ -448,6 +455,8 @@ void BufferCache<P>::BindHostStageBuffers(size_t stage) {
 
 template <class P>
 void BufferCache<P>::BindHostComputeBuffers() {
+    const Common::GpuProfile::PhaseScope gpu_profile_scope{
+        Common::GpuProfile::Phase::BufferCacheBind};
     BindHostComputeUniformBuffers();
     BindHostComputeStorageBuffers();
     BindHostComputeTextureBuffers();

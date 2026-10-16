@@ -18,6 +18,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include "common/gpu_thread_profile.h"
 
 namespace D3D12 {
 enum class FramePhase : size_t {
@@ -58,6 +59,17 @@ enum class FramePhase : size_t {
     DescriptorSetup,
     DrawRecording,
     DrawCleanup,
+    DmaPusher,
+    Maxwell3DMethods,
+    MacroExecution,
+    DmaEngine,
+    InlineToMemory,
+    ComputeDispatchSetup,
+    Fermi2D,
+    SyncWait,
+    BufferCacheBind,
+    TextureCacheUpdate,
+    DescriptorAndPipeline,
     BetweenDraws,
     Count
 };
@@ -89,6 +101,12 @@ enum class FrameCount : size_t {
     FeedbackCopies,
     IndexConversions,
     IndexConversionBytes,
+    IndexConversionUint8,
+    IndexConversionRestart,
+    IndexConversionStripOrFan,
+    IndexConversionProvoking,
+    IndexConversionInline,
+    IndexConversionCacheHits,
     BufferUploadBytes,
     BufferDownloadBytes,
     SkippedDraws,
@@ -343,7 +361,7 @@ struct StagingBufferRef {
 };
 // CPU intervals are exclusive (nested scopes suspend the parent phase). Wait wall
 // time is separate: sleeping in a fence must not look like GPU-thread CPU work.
-class FrameProfile {
+class FrameProfile : public Common::GpuProfile::Sink {
 public:
     class Scope {
     public:
@@ -367,7 +385,9 @@ public:
     void NoteWait(std::string_view site, u64 wall);
     void EndFrame(bool presented = true);
     std::function<std::string()> guest_visibility;
-    void BindRecordingThread();
+    void BindRecordingThread(bool rebind = false);
+    std::size_t Enter(Common::GpuProfile::Phase phase) override;
+    void Leave(std::size_t previous) override;
     // GPU execution time of submitted command lists, in 100 ns, added on completion.
     std::atomic<u64> gpu_busy{};
 

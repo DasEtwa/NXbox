@@ -39,6 +39,7 @@ namespace Tegra {
 namespace Host1x {
 struct SyncpointManager {
     std::atomic<int> guest{}, host{};
+    u32 GetGuestSyncpointValue(u32) const { return guest.load(); }
     void IncrementGuest(u32) { ++guest; }
     void IncrementHost(u32) { ++host; }
 };
@@ -265,6 +266,7 @@ inline void Diagnostic(const std::string&) {}
             source = temp / "native.cpp"
             source.write_text(r"""
 #include <cassert>
+#include "common/gpu_thread_profile.h"
 #include "video_core/renderer_d3d12/d3d12_fence_manager.h"
 int main() {
     VideoCore::RasterizerInterface rasterizer;
@@ -274,6 +276,9 @@ int main() {
     Settings::high = false;
     D3D12::Context context;
     D3D12::FenceManager manager(rasterizer, gpu, texture, buffer, query, context);
+    Common::GpuProfile::Reset();
+    Common::GpuProfile::enabled = true;
+    Common::GpuProfile::RequestFence(7, 1);
     // Queue multiple submissions without waiting for GPU completion on the producer.
     manager.SignalSyncPoint(7);
     manager.SignalReference();
@@ -291,6 +296,10 @@ int main() {
     while (!callback && std::chrono::steady_clock::now() < deadline)
         std::this_thread::yield();
     assert(callback && gpu.host.sync.host == 1);
+    const auto profile = Common::GpuProfile::TakeWindow();
+    assert(profile.fence_total.count == 1 && profile.fence_queued.count == 1);
+    assert(profile.fence_execution.count == 1);
+    Common::GpuProfile::enabled = false;
     assert(query.commits == query.pops && buffer.commits == buffer.pops);
     assert(texture.commits == texture.pops && context.waits == 3);
     D3D12::Context broken;

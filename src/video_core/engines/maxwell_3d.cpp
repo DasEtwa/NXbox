@@ -8,6 +8,7 @@
 #include <optional>
 #include "common/assert.h"
 #include "common/bit_util.h"
+#include "common/gpu_thread_profile.h"
 #include "common/scope_exit.h"
 #include "common/settings.h"
 #include "core/core.h"
@@ -289,6 +290,8 @@ u32 Maxwell3D::ProcessShadowRam(u32 method, u32 argument) {
 }
 
 void Maxwell3D::ConsumeSinkImpl(Core::System& system) {
+    const Common::GpuProfile::PhaseScope gpu_profile_scope{
+        Common::GpuProfile::Phase::Maxwell3DMethods};
     const auto control = shadow_state.shadow_ram_control;
     if (control == Regs::ShadowRamControl::Track || control == Regs::ShadowRamControl::TrackWithFilter) {
         for (auto [method, value] : method_sink) {
@@ -312,6 +315,8 @@ void Maxwell3D::ProcessDirtyRegisters(u32 method, u32 argument) {
 }
 
 void Maxwell3D::ProcessMethodCall(u32 method, u32 argument, u32 nonshadow_argument, bool is_last_call) {
+    const Common::GpuProfile::PhaseScope gpu_profile_scope{
+        Common::GpuProfile::Phase::Maxwell3DMethods};
     switch (method) {
     case MAXWELL3D_REG_INDEX(wait_for_idle):
         return rasterizer->WaitForIdle();
@@ -393,6 +398,8 @@ void Maxwell3D::CallMacroMethod(Core::System& system, u32 method, const std::vec
 }
 
 void Maxwell3D::CallMethod(Core::System& system, u32 method, u32 method_argument, bool is_last_call) {
+    const Common::GpuProfile::PhaseScope gpu_profile_scope{
+        Common::GpuProfile::Phase::Maxwell3DMethods};
     // It is an error to write to a register other than the current macro's ARG register before
     // it has finished execution.
     if (executing_macro != 0 && method != executing_macro + 1) [[unlikely]] {
@@ -416,6 +423,8 @@ void Maxwell3D::CallMethod(Core::System& system, u32 method, u32 method_argument
 }
 
 void Maxwell3D::CallMultiMethod(Core::System& system, u32 method, const u32* base_start, u32 amount, u32 methods_pending) {
+    const Common::GpuProfile::PhaseScope gpu_profile_scope{
+        Common::GpuProfile::Phase::Maxwell3DMethods};
     // Methods after 0xE00 are special, they're actually triggers for some microcode that was
     // uploaded to the GPU during initialization.
     if (method >= MacroRegistersStart) {

@@ -4,6 +4,7 @@
 // SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "common/gpu_thread_profile.h"
 #include "common/settings.h"
 #include "core/core.h"
 #include "video_core/dma_pusher.h"
@@ -29,6 +30,7 @@ DmaPusher::DmaPusher(Core::System& system_, MemoryManager& memory_manager_, Cont
 DmaPusher::~DmaPusher() = default;
 
 void DmaPusher::DispatchCalls() {
+    const Common::GpuProfile::PhaseScope gpu_profile_scope{Common::GpuProfile::Phase::DmaPusher};
     dma_pushbuffer_subindex = 0;
     dma_state.is_last_call = true;
     while (system.IsPoweredOn()) {
@@ -67,6 +69,7 @@ bool DmaPusher::Step() {
     dma_state.dma_get = header.addr;
 
     if (signal_sync && !synced) {
+        const Common::GpuProfile::PhaseScope wait{Common::GpuProfile::Phase::SyncWait};
         std::unique_lock lk(sync_mutex);
         sync_cv.wait(lk, [this]() { return synced; });
         signal_sync = false;

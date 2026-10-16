@@ -4,6 +4,7 @@
 // SPDX-FileCopyrightText: 2021 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "common/gpu_thread_profile.h"
 #include "video_core/host1x/syncpoint_manager.h"
 
 namespace Tegra {
@@ -96,6 +97,9 @@ void SyncpointManager::Wait(std::atomic<u32>& syncpoint, std::condition_variable
         return;
     }
 
+    const Common::GpuProfile::WaitScope wait{&wait_cv == &wait_host_cv
+                                                 ? Common::GpuProfile::Wait::SyncpointHost
+                                                 : Common::GpuProfile::Wait::SyncpointGuest};
     std::unique_lock lk(guard);
     wait_cv.wait(lk, pred);
 }

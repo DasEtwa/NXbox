@@ -2050,6 +2050,25 @@ bool RasterizerD3D12::PrepareDrawIndices(bool is_indexed, DrawParams& params,
         regs.primitive_restart.enabled != 0 &&
             IndexConversion::RestartCanMatch(format, regs.primitive_restart.index),
         regs.primitive_restart.index};
+    // Reasons may overlap; count only real conversions, not cache hits.
+    const auto count_conversion = [&] {
+        context.Profile().Count(FrameCount::IndexConversions);
+        if (is_indexed && format == IndexConversion::Format::Uint8)
+            context.Profile().Count(FrameCount::IndexConversionUint8);
+        if (is_indexed && restart.enabled)
+            context.Profile().Count(FrameCount::IndexConversionRestart);
+        if (topology != IndexConversion::Topology::Points &&
+            topology != IndexConversion::Topology::Lines &&
+            topology != IndexConversion::Topology::Triangles &&
+            topology != IndexConversion::LinesAdjacency &&
+            topology != IndexConversion::TrianglesAdjacency)
+            context.Profile().Count(FrameCount::IndexConversionStripOrFan);
+        if (provoking != IndexConversion::Provoking::Preserve &&
+            topology != IndexConversion::Topology::Points)
+            context.Profile().Count(FrameCount::IndexConversionProvoking);
+        if (is_indexed && !state.inline_index_draw_indexes.empty())
+            context.Profile().Count(FrameCount::IndexConversionInline);
+    };
     if (is_indexed &&
         static_cast<u32>(topology) <= static_cast<u32>(IndexConversion::TriangleStripAdjacency) &&
         (IndexConversion::NeedsConversion(topology, format, restart, provoking) ||
@@ -2064,9 +2083,6 @@ bool RasterizerD3D12::PrepareDrawIndices(bool is_indexed, DrawParams& params,
             SkipDraw("index conversion exceeds 64 MiB draw budget");
             return false;
         }
-        context.Profile().Count(FrameCount::IndexConversions);
-        context.Profile().Count(FrameCount::IndexConversionBytes,
-                                u64{state.index_buffer.count} * width);
         std::vector<std::byte> input(size_t{state.index_buffer.count} * width);
         const auto address =
             state.index_buffer.StartAddress() + size_t{state.index_buffer.first} * width;
@@ -2077,14 +2093,38 @@ bool RasterizerD3D12::PrepareDrawIndices(bool is_indexed, DrawParams& params,
             }
             std::memcpy(input.data(), state.inline_index_draw_indexes.data(), input.size());
         } else {
-            if (const auto cpu = gpu_memory->GpuToCpuAddress(address)) {
+            if (const auto cpu = gpu_memory->GpuToCpuAddress(address);
+                cpu && buffer_cache.IsRegionGpuModified(*cpu, input.size())) {
                 const FrameProfile::Scope profile_download{context.Profile(),
                                                            FramePhase::BufferDownload};
                 buffer_cache.DownloadMemory(*cpu, input.size());
             }
             gpu_memory->ReadBlock(address, input.data(), input.size());
         }
-        converted_indices = index_converter.Convert(topology, format, input, restart, provoking);
+        if (state.inline_index_draw_indexes.empty()) {
+            const IndexConversion::CacheKey key{state.index_buffer.StartAddress(),
+                                                0,
+                                                state.index_buffer.count,
+                                                state.index_buffer.first,
+                                                static_cast<u32>(format),
+                                                static_cast<u32>(topology),
+                                                restart.index,
+                                                static_cast<u32>(provoking),
+                                                restart.enabled};
+            bool cache_hit{};
+            converted_indices = index_converter.ConvertCached(key, input, cache_hit);
+            if (cache_hit) {
+                context.Profile().Count(FrameCount::IndexConversionCacheHits);
+            } else {
+                count_conversion();
+                context.Profile().Count(FrameCount::IndexConversionBytes, input.size());
+            }
+        } else {
+            count_conversion();
+            context.Profile().Count(FrameCount::IndexConversionBytes, input.size());
+            converted_indices =
+                index_converter.Convert(topology, format, input, restart, provoking);
+        }
     } else if (!is_indexed &&
                (topology == IndexConversion::Topology::Quads ||
                 topology == IndexConversion::Topology::QuadStrip ||
@@ -2094,7 +2134,7 @@ bool RasterizerD3D12::PrepareDrawIndices(bool is_indexed, DrawParams& params,
                 (vertex_only && static_cast<u32>(topology) <= 9)) &&
                IndexConversion::NeedsConversion(topology, IndexConversion::Format::Uint32, {},
                                                 provoking)) {
-        context.Profile().Count(FrameCount::IndexConversions);
+        count_conversion();
         converted_indices =
             index_converter.Generate(topology, state.vertex_buffer.count, 0, provoking);
     }
@@ -2548,6 +2588,8 @@ void RasterizerD3D12::Clear(u32 layer_count) try {
     m_gpu.TickWork();
 }
 void RasterizerD3D12::DispatchCompute() try {
+    const Common::GpuProfile::PhaseScope gpu_profile_scope{
+        Common::GpuProfile::Phase::ComputeDispatchSetup};
     if (BisectEnabled("NXBOX_D3D12_NO_COMPUTE")) {
         m_gpu.TickWork();
         return;
@@ -2621,6 +2663,8 @@ void RasterizerD3D12::DispatchCompute() try {
         }
     buffer_cache.UpdateComputeBuffers();
     buffer_cache.BindHostComputeBuffers();
+    std::optional<FrameProfile::Scope> profile_descriptors;
+    profile_descriptors.emplace(context.Profile(), FramePhase::DescriptorAndPipeline);
     const auto counts = CountStageTables(info);
     const bool root_cbvs = pipeline->UsesRootCbvs();
     if (root_cbvs)
@@ -2718,6 +2762,7 @@ void RasterizerD3D12::DispatchCompute() try {
     Shader::Backend::HLSL::RootConstants constants;
     std::memcpy(dispatch.constants.data(), &constants, sizeof(constants));
     dispatch.resources = resources;
+    profile_descriptors.reset();
     context.MarkWork("guest compute");
     compute_dispatch.Direct(dispatch, {qmd.grid_dim_x, qmd.grid_dim_y, qmd.grid_dim_z});
     bindings.stages[0].Clear();
@@ -2871,6 +2916,19 @@ void RasterizerD3D12::SignalFence(std::function<void()>&& func) {
 void RasterizerD3D12::SyncOperation(std::function<void()>&& func) {
     fence_manager.SyncOperation(std::move(func));
 }
+void RasterizerD3D12::ProfileGpuThread(bool active) {
+    if (!context.Profile().Enabled())
+        return;
+    if (active) {
+        Common::GpuProfile::Reset();
+        Common::GpuProfile::enabled.store(true);
+        context.Profile().BindRecordingThread(true);
+        Common::GpuProfile::sink = &context.Profile();
+    } else {
+        Common::GpuProfile::sink = nullptr;
+        Common::GpuProfile::enabled.store(false);
+    }
+}
 void RasterizerD3D12::SignalSyncPoint(u32 value) {
     fence_manager.SignalSyncPoint(value);
 }
@@ -2885,6 +2943,7 @@ void RasterizerD3D12::FlushAndInvalidateRegion(DAddr addr, u64 size, VideoCommon
     InvalidateRegion(addr, size, which);
 }
 void RasterizerD3D12::WaitForIdle() {
+    const Common::GpuProfile::PhaseScope gpu_profile_scope{Common::GpuProfile::Phase::SyncWait};
     ++feedback_epoch;
     query_cache.NotifyWFI();
     // Guest WFI is a GPU-side ordering point, as in the Vulkan backend. Waiting on the CPU here

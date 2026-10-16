@@ -102,6 +102,7 @@ public:
     void SignalFence(std::function<void()>&& func) override;
     void SyncOperation(std::function<void()>&& func) override;
     void SignalSyncPoint(u32 value) override;
+    void ProfileGpuThread(bool active) override;
     void SignalReference() override;
     void ReleaseFences(bool force) override;
     void FlushAndInvalidateRegion(
