@@ -339,6 +339,7 @@ enum class Text {
     FirmwareMissing,
     FirmwareInstallFailed,
     HomeComboPrompt,
+    HintStickMotion,
     OfficialSwitchInterface,
     RequiresFirmware,
     BackToNXboxInterface,

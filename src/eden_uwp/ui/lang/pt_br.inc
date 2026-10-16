@@ -226,6 +226,7 @@
     {Text::SystemMenuTitle, L"Menu do sistema"},
     {Text::SystemMenuBoot, L"Iniciar no menu HOME do sistema"},
     {Text::SystemMenuHint, L"Use o firmware instalado. View + Menu abre o HOME."},
+    {Text::HintStickMotion, L"View + analógico direito: inclinar (movimento)"},
     {Text::HomeComboPrompt, L"Aperte de novo para ir ao início"},
     {Text::OfficialSwitchInterface, L"Usar a interface do sistema (firmware)"},
     {Text::RequiresFirmware, L"Requer firmware"},

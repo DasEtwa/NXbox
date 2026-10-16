@@ -18,6 +18,7 @@
 #include "eden_uwp/home_combo.h"
 #include "eden_uwp/input_script.h"
 #include "eden_uwp/pad_style.h"
+#include "eden_uwp/stick_motion.h"
 #include "hid_core/frontend/emulated_controller.h"
 #include "hid_core/hid_core.h"
 #include "input_common/input_engine.h"
@@ -59,6 +60,10 @@ class XboxGamepad final : public InputCommon::InputEngine {
 public:
     XboxGamepad() : InputEngine("nxbox") {
         PreSetController(pad);
+        PreSetMotion(pad, 0);
+        BasicMotion level{};
+        level.accel_z = -1.0f;
+        SetMotion(pad, 0, level);
         for (int i = 0; i < Settings::NativeButton::NumButtons; ++i)
             PreSetButton(pad, i);
         for (int i = 0; i < 4; ++i)
@@ -78,6 +83,12 @@ public:
             parameters.Set("button", i);
             player.buttons[i] = parameters.Serialize();
         }
+        // Both slots share the virtual sensor, including styles selected by AutoStyle.
+        // Keep HID's standard gyro deadband so its automatic bias estimate cannot drift at rest.
+        Common::ParamPackage motion{
+            {"engine", "nxbox"}, {"port", "0"}, {"pad", "0"}, {"motion", "0"}, {"threshold", "1"}};
+        for (auto& mapping : player.motions)
+            mapping = motion.Serialize();
         for (int i = 0; i < 2; ++i) {
             Common::ParamPackage parameters{{"engine", "nxbox"}, {"port", "0"}, {"pad", "0"}};
             parameters.Set("axis_x", i * 2);
@@ -100,9 +111,22 @@ public:
                           (keys & (1u << Settings::NativeButton::Minus)) != 0;
         const bool menu = (reading.Buttons & GamepadButtons::Menu) != GamepadButtons::None ||
                           (keys & (1u << Settings::NativeButton::Plus)) != 0;
+        const auto now = std::chrono::steady_clock::now();
+        const bool combo_blocked = home_combo.held || (view && menu);
         home_pressed = home_edge.Update(view, menu);
-        home_combo_action =
-            UpdateHomeCombo(home_combo, view, menu, std::chrono::steady_clock::now());
+        home_combo_action = UpdateHomeCombo(home_combo, view, menu, now);
+        const auto motion = stick_motion.Update(view, static_cast<float>(reading.RightThumbstickX),
+                                                static_cast<float>(reading.RightThumbstickY), now,
+                                                suppress_guest || combo_blocked);
+        BasicMotion sensors{};
+        sensors.accel_x = motion.accel[0];
+        sensors.accel_y = motion.accel[1];
+        sensors.accel_z = motion.accel[2];
+        sensors.gyro_x = motion.gyro[0];
+        sensors.gyro_y = motion.gyro[1];
+        sensors.gyro_z = motion.gyro[2];
+        sensors.delta_timestamp = motion.delta_timestamp;
+        SetMotion(pad, 0, sensors);
         // Player 1 stays connected, as the keyboard keeps it on desktop Eden. Disconnecting when
         // no Xbox pad was visible made games re-open the controller-support applet in a loop:
         // Persona 5 Royal every ~5 s, and Breath of the Wild 43 times in 13 s, leaking each
@@ -135,6 +159,10 @@ public:
             if (i == Settings::NativeButton::ZR)
                 pressed = reading.RightTrigger > 0.5;
             pressed = pressed || (keys & (1u << i)) != 0;
+            if (i == Settings::NativeButton::Minus)
+                pressed = motion.minus_pressed;
+            if (i == Settings::NativeButton::RStick && motion.suppress_right_stick)
+                pressed = false;
             if (((view && menu) || home_combo.held) &&
                 (i == Settings::NativeButton::Minus || i == Settings::NativeButton::Plus)) {
                 pressed = false;
@@ -155,8 +183,10 @@ public:
         };
         SetAxis(pad, 0, key_axis(KeyLeftStickRight, KeyLeftStickLeft, reading.LeftThumbstickX));
         SetAxis(pad, 1, key_axis(KeyLeftStickUp, KeyLeftStickDown, reading.LeftThumbstickY));
-        SetAxis(pad, 2, static_cast<float>(reading.RightThumbstickX));
-        SetAxis(pad, 3, static_cast<float>(reading.RightThumbstickY));
+        SetAxis(pad, 2,
+                motion.suppress_right_stick ? 0.0f : static_cast<float>(reading.RightThumbstickX));
+        SetAxis(pad, 3,
+                motion.suppress_right_stick ? 0.0f : static_cast<float>(reading.RightThumbstickY));
     }
 
     /// Gamepad virtual keys from the CoreWindow. Device Portal remote input only arrives this way,
@@ -199,6 +229,7 @@ public:
     }
 
 private:
+    StickMotion stick_motion;
     HomeComboState home_combo;
     HomeComboAction home_combo_action{};
     HomeButtonEdge home_edge;
