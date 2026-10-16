@@ -202,9 +202,24 @@ Catalogue positions map to these service IDs, in order:
 
 These limits come from the existing service enums and validation, not the bitfield widths.
 Common colours are valid up to 99, but this editor uses the service's legacy colour subsets.
-The Moru preview palette is an original RGB approximation; an in-game renderer may interpret
-style IDs and colours differently. Nicknames reject controls and unpaired UTF-16 surrogates;
-characters outside the BMP consume two units.
+The preview uses RGB approximations in legacy order, following `RawData::Ver3*ColorTable`
+in `src/core/hle/service/mii/types/raw_data.cpp`. Hair IDs 8/1/2/3/4/5/6/7 are
+black/brown/red/light brown/grey/olive/auburn/blonde; stored ID 8 represents legacy black,
+while ID 7 is blonde, not white. Eyebrows and facial hair read their own stored colours.
+`CharInfo` copies these IDs without remapping. The HLE has no RGB rendering table;
+hair uses the documented approximations, and the other legacy RGB sets follow the
+[FFL colour implementation](https://github.com/aboood40091/ffl/blob/master/src/FFLiColor.cpp).
+Only colour values are used; all shapes remain original rounded 2D artwork.
+
+Skin IDs 0–5 follow the legacy six-tone set. In particular, ID 5 is dark brown in that
+set despite the service enum's `Porcelain` label. Extended skin IDs 6–9 remain estimates
+based on the service enum names; these need confirmation in a Switch game. Glasses ID 0
+is the extended white choice, distinct from legacy black (stored ID 8). Lighting and
+materials in games can change the apparent RGB. The eight catalogue hair silhouettes
+are short, parted short, afro, front lock, long, peaked top, parted long and two side pony
+tails, respectively; both long styles extend to the shoulders. Imported styles outside
+the catalogue remain approximate. Nicknames reject controls and unpaired UTF-16
+surrogates; characters outside the BMP consume two units.
 
 Every change refreshes the data and device CRC through `StoreData::SetChecksum`. Save and delete
 use `AddOrReplace` / `Delete`, then `SaveDatabase`, writing the same
