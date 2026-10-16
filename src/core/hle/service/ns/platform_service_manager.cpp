@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <vector>
 #include <boost/container/static_vector.hpp>
@@ -116,11 +117,16 @@ IPlatformServiceManager::IPlatformServiceManager(Core::System& system_, const ch
     // Attempt to load shared font data from disk
     const auto* nand = fsc.GetSystemNANDContents();
     std::size_t offset = 0;
+    // NXBOX_SUBSTITUTE_FONTS=1 ignores the firmware fonts, to bisect glyph bugs.
+    const char* substitute_env = std::getenv("NXBOX_SUBSTITUTE_FONTS");
+    const bool force_substitute = substitute_env != nullptr && substitute_env[0] == '1';
     // Rebuild shared fonts from data ncas or synthesize
     for (auto& font : SHARED_FONTS) {
         FileSys::VirtualFile romfs;
         const auto nca =
-            nand->GetEntry(static_cast<u64>(font.first), FileSys::ContentRecordType::Data);
+            force_substitute
+                ? nullptr
+                : nand->GetEntry(static_cast<u64>(font.first), FileSys::ContentRecordType::Data);
         if (nca) {
             romfs = nca->GetRomFS();
         }
