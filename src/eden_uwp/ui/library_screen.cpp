@@ -1479,6 +1479,8 @@ private:
             return {{Theme::kButtonB, L"B", Tr(Text::HintBack)}};
         }
         std::vector<Hint> hints;
+        if (return_home_)
+            hints.push_back({Theme::kTextSecondary, L"R", Tr(Text::HintStickMotion)});
         if (tab_ == Tab::Settings) {
             if (layer_ == Layer::Rail &&
                 (!renderer_open_ || RendererChoiceEnabled(renderer_choice_)))

@@ -219,6 +219,7 @@
     {Text::SystemMenuTitle, L"System menu"},
     {Text::SystemMenuBoot, L"Boot to the system HOME menu"},
     {Text::SystemMenuHint, L"Use your installed firmware. View + Menu opens HOME."},
+    {Text::HintStickMotion, L"View + right stick: tilt (motion)"},
     {Text::HomeComboPrompt, L"Press again to go home"},
     {Text::OfficialSwitchInterface, L"Use the system interface (firmware)"},
     {Text::RequiresFirmware, L"Requires firmware"},
