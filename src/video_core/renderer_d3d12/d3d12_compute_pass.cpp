@@ -46,7 +46,7 @@ ComputePasses::ComputePasses(Context& context)
     ShaderCompiler compiler;
     for (std::size_t i = 0; i < sources.size(); ++i) {
         if (i == static_cast<size_t>(HelperComputePass::DecodeAstc) &&
-            BisectEnabled("NXBOX_D3D12_NO_GPU_ASTC"))
+            !BisectEnabled("NXBOX_D3D12_GPU_ASTC"))
             continue;
         const auto dxil = compiler.Compile(sources[i], L"main", L"cs_6_0");
         D3D12_COMPUTE_PIPELINE_STATE_DESC desc{};

@@ -255,7 +255,7 @@ Image::Image(TextureCacheRuntime& runtime, const VideoCommon::ImageInfo& info, G
         flags |= VideoCommon::ImageFlagBits::CostlyLoad;
         resource = MakeTexture(runtime.context, info, host_format);
     }
-    if (resource && !BisectEnabled("NXBOX_D3D12_NO_GPU_ASTC") &&
+    if (resource && BisectEnabled("NXBOX_D3D12_GPU_ASTC") &&
         VideoCore::Surface::IsPixelFormatASTC(info.format) &&
         info.type == VideoCommon::ImageType::e2D && info.num_samples == 1 &&
         host_format.block_width == 1 &&

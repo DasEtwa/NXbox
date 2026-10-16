@@ -752,7 +752,7 @@ Context::Context() {
                                info_callback.registered ? "callback" : "poll"));
     }
     for (const auto* knob :
-         {"NXBOX_D3D12_NO_PSO_LIBRARY", "NXBOX_D3D12_NO_GPU_ASTC", "NXBOX_D3D12_NO_COMPUTE",
+         {"NXBOX_D3D12_NO_PSO_LIBRARY", "NXBOX_D3D12_GPU_ASTC", "NXBOX_D3D12_NO_COMPUTE",
           "NXBOX_D3D12_NO_DRAWS", "NXBOX_D3D12_NO_QUERIES"})
         Diagnostic(fmt::format("D3D12 bisect {}={}", knob, BisectEnabled(knob) ? 1 : 0));
     D3D12_FEATURE_DATA_SHADER_MODEL model{D3D_SHADER_MODEL_6_0};
