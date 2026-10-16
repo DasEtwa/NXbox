@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstring>
 #include <stdexcept>
+#include <unordered_set>
 #include <fmt/format.h>
 #include "common/alignment.h"
 #include "video_core/renderer_d3d12/d3d12_texture_cache.h"
@@ -627,6 +628,27 @@ bool D3D12DescriptorAllocator::WriteImageSrv(const DescriptorTable& table, u32 s
             Diagnostic(fmt::format("D3D12 SRV dimension {} cannot become shader dimension {}",
                                    static_cast<int>(desc.ViewDimension),
                                    static_cast<int>(fallback_dimension)));
+        }
+    }
+    // NXBOX_D3D12_ARRAY_TRACE=1: once per address, report array-sampling shaders whose view
+    // exposes fewer slices than the resource holds (the sampled layer clamps to the last one).
+    static const bool array_trace = BisectEnabled("NXBOX_D3D12_ARRAY_TRACE");
+    if (array_trace && fallback_dimension == D3D12_SRV_DIMENSION_TEXTURE2DARRAY) {
+        const auto resource_desc = resource->handle->GetDesc();
+        const UINT slices = desc.ViewDimension == D3D12_SRV_DIMENSION_TEXTURE2DARRAY
+                                ? desc.Texture2DArray.ArraySize
+                                : 1;
+        static std::unordered_set<u64> traced;
+        if (traced.insert(view.gpu_addr).second) {
+            Diagnostic(fmt::format(
+                "D3D12_ARRAY_TRACE gpu_addr={:#x} view_type={} view_dim={} first={} slices={} "
+                "resource_layers={} width={} height={} format={}",
+                view.gpu_addr, static_cast<int>(view.type), static_cast<int>(desc.ViewDimension),
+                desc.ViewDimension == D3D12_SRV_DIMENSION_TEXTURE2DARRAY
+                    ? desc.Texture2DArray.FirstArraySlice
+                    : 0,
+                slices, resource_desc.DepthOrArraySize, resource_desc.Width,
+                resource_desc.Height, static_cast<int>(resource_desc.Format)));
         }
     }
     WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, resource, 1, &desc, sizeof(desc), table,
