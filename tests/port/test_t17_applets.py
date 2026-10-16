@@ -16,13 +16,13 @@ int main() {
     using namespace Service::AM;
     int preferred = 0;
     for (unsigned id = 0; id < 256; ++id) {
-        const bool expected = id == 0x0a || id == 0x0b || id == 0x0c ||
+        const bool expected = id == 0x0a || id == 0x0b ||
             id == 0x0e || id == 0x0f || id == 0x10 || id == 0x11 ||
             id == 0x12 || id == 0x13 || id == 0x15 || id == 0x17 || id == 0x19;
         assert(PreferLocalFirmwareApplet(static_cast<AppletId>(id)) == expected);
         preferred += expected;
     }
-    assert(preferred == 12);
+    assert(preferred == 11);
     // Missing firmware and loader failure have the same null guest result.
     for (int prefer = 0; prefer < 2; ++prefer) {
         for (int guest_ok = 0; guest_ok < 2; ++guest_ok) {

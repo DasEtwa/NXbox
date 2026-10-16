@@ -5,12 +5,13 @@
 
 namespace Service::AM {
 
-// Firmware-first policy for local applets. Account authentication and the shop are excluded.
+// Firmware-first policy for local applets. Account authentication and the shop are excluded,
+// and so is Controller: the HLE applet accepts the connected Xbox pad at once, while the
+// firmware one waits on a Joy-Con UI that the pad cannot drive.
 constexpr bool PreferLocalFirmwareApplet(AppletId id) {
     switch (id) {
     case AppletId::Auth: // Parental controls, not Nintendo account authentication.
     case AppletId::Cabinet:
-    case AppletId::Controller:
     case AppletId::Error:
     case AppletId::NetConnect:
     case AppletId::ProfileSelect:

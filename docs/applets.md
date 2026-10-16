@@ -36,7 +36,7 @@ firmware service or visual interaction works. Base choices include UWP overrides
 | QLaunch / HOME | 1000 | Yes; desktop boot | No UI boot entry | Optional boot | None |
 | Auth / parental controls | 1001 | Yes | LLE | Firmware-first | Parental controls |
 | Cabinet / amiibo | 1002 | Yes | LLE | Firmware-first | Limited Cabinet frontend |
-| Controller support | 1003 | Yes | Forced HLE | Firmware-first | Controller reconfiguration |
+| Controller support | 1003 | Yes | Forced HLE | HLE | Controller reconfiguration |
 | DataErase | 1004 | Yes | HLE | HLE | Generic stub |
 | Error viewer | 1005 | Yes | LLE | Firmware-first | Error frontend |
 | NetConnect | 1006 | Yes | LLE | Firmware-first | Explicit cancellation; formerly never completed |
