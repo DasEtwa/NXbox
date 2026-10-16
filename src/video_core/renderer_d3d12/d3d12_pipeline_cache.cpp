@@ -1677,7 +1677,9 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() try {
 }
 
 void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading,
-                                      const VideoCore::DiskResourceLoadCallback& callback) {
+                                      const VideoCore::DiskResourceLoadCallback& callback,
+                                      bool wait_for_warmup,
+                                      const std::function<bool()>& skip_wait) {
     if (disk)
         disk->StopWarmup();
     const size_t detached = async ? async->Stop() : 0;
@@ -1730,13 +1732,24 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
     }
     if (async_warmup && !async)
         async = std::make_unique<AsyncCache>();
+    // Background callbacks own only this state, never frontend loading-scope captures.
+    struct PreloadProgress {
+        std::mutex mutex;
+        DiskWarmupProgress progress{};
+        std::vector<GraphicsPipelineKey> requests;
+        size_t published_requests{};
+        bool finished{};
+    };
+    const auto preload =
+        async_warmup && wait_for_warmup ? std::make_shared<PreloadProgress>() : nullptr;
     struct WarmupStats {
         std::chrono::steady_clock::time_point start{std::chrono::steady_clock::now()};
         size_t skipped{};
     };
     const auto stats = std::make_shared<WarmupStats>();
     disk->StartWarmup(
-        [this, async_warmup, stats](const DiskPipelineRecord& record, std::stop_token stop) {
+        [this, async_warmup, stats, preload](const DiskPipelineRecord& record,
+                                             std::stop_token stop) {
             if (stop.stop_requested())
                 return false;
             try {
@@ -1765,6 +1778,10 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
                             return false;
                         const auto entry = async->Lookup(request);
                         if (entry.status != AsyncCache::Status::Missing) {
+                            if (preload) {
+                                std::scoped_lock guard{preload->mutex};
+                                preload->requests.push_back(request);
+                            }
                             ++stats->skipped;
                             return true;
                         }
@@ -1786,6 +1803,10 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
                         // Wait only on this disk coordinator, never on the loading/GPU thread.
                         std::this_thread::sleep_for(std::chrono::milliseconds{10});
                     }
+                    if (preload) {
+                        std::scoped_lock guard{preload->mutex};
+                        preload->requests.push_back(request);
+                    }
                     // Do not wait for the build: the pool's admission limit keeps the workers
                     // busy in parallel, and runtime lookups pick each PSO up when it is ready.
                     return true;
@@ -1805,8 +1826,15 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
                 return false;
             }
         },
-        [callback = async_warmup ? VideoCore::DiskResourceLoadCallback{} : callback,
-         stats](const DiskWarmupProgress& progress) {
+        [callback = async_warmup ? VideoCore::DiskResourceLoadCallback{} : callback, stats,
+         preload](const DiskWarmupProgress& progress) {
+            if (preload) {
+                std::scoped_lock guard{preload->mutex};
+                preload->progress = progress;
+                preload->published_requests = preload->requests.size();
+                preload->finished = progress.stage != DiskWarmupStage::Begin &&
+                                    progress.stage != DiskWarmupStage::Build;
+            }
             if (progress.stage == DiskWarmupStage::Begin) {
                 Diagnostic(fmt::format("D3D12_PSO_PREWARM start records={}", progress.total));
             } else if (progress.stage != DiskWarmupStage::Build) {
@@ -1825,7 +1853,39 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
         },
         stop_loading);
     lock.unlock();
-    if (async_warmup) {
+    if (preload) {
+        for (;;) {
+            // Poll independently of job completions, including slow or stuck driver calls.
+            // B releases only the loading thread; closing still cancels the coordinator.
+            if (stop_loading.stop_requested() || (skip_wait && skip_wait()))
+                return;
+            DiskWarmupProgress progress;
+            std::vector<GraphicsPipelineKey> requests;
+            bool finished;
+            {
+                std::scoped_lock guard{preload->mutex};
+                progress = preload->progress;
+                requests.assign(preload->requests.begin(),
+                                preload->requests.begin() + preload->published_requests);
+                finished = preload->finished;
+            }
+            size_t pending = 0;
+            for (const auto& request : requests)
+                if (async->Lookup(request).status == AsyncCache::Status::Pending)
+                    ++pending;
+            // Rejected/skipped records count as processed; submitted jobs count only when settled.
+            const size_t built = progress.completed - std::min(progress.completed, pending);
+            if (callback)
+                callback(VideoCore::LoadCallbackStage::Build, built, progress.total);
+            if (finished && pending == 0) {
+                disk->WaitWarmup();
+                if (callback)
+                    callback(VideoCore::LoadCallbackStage::Complete, built, progress.total);
+                return;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds{10});
+        }
+    } else if (async_warmup) {
         // No background callback may retain the frontend's loading-scope captures.
         if (callback)
             callback(VideoCore::LoadCallbackStage::Complete, 0, 0);
