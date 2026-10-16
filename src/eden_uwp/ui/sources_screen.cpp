@@ -1850,7 +1850,7 @@ private:
         Image image;
         std::string url;
         bool final = false;
-        Tween fade;
+        Tween fade = Tween(); // explicit ctor: Art{} needs a default member initializer
     };
 
     Image* VisibleArt(const Tinfoil::Game& game, Clock::time_point now, bool detail = false) {
@@ -1908,8 +1908,8 @@ private:
                 c = EdenXbox::Ui::Art::Scale(c, .95f);
             stops[i] = {EdenXbox::Ui::Art::kGradientStops[i], D2D1::ColorF(c.r, c.g, c.b, 1)};
         }
-        renderer_.FillGradient(rect, 22, stops, 3, Point2F(rect.left, rect.top),
-                               Point2F(rect.left, rect.bottom));
+        renderer_.FillGradient(rect, 22, stops, 3, D2D1::Point2F(rect.left, rect.top),
+                               D2D1::Point2F(rect.left, rect.bottom));
         renderer_.DrawString(
             Widen(game.name), Font::TileLabel,
             RectF(rect.left + 14, rect.top + 14, rect.right - 14, rect.bottom - 14), Theme::kText,
