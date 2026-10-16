@@ -511,6 +511,7 @@ if (WIN32 AND (ENABLE_D3D12 OR CMAKE_SYSTEM_NAME STREQUAL "WindowsStore"))
         renderer_d3d12/d3d12_buffer_cache_base.cpp
         renderer_d3d12/d3d12_texture_cache.cpp
         renderer_d3d12/d3d12_texture_cache.h
+        renderer_d3d12/d3d12_texture_transfer.h
         renderer_d3d12/d3d12_texture_cache_base.cpp
         renderer_d3d12/d3d12_shader.cpp
         renderer_d3d12/d3d12_shader.h

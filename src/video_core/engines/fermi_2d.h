@@ -39,9 +39,15 @@ class SoftwareBlitEngine;
     (offsetof(Tegra::Engines::Fermi2D::Regs, field_name) / sizeof(u32))
 
 class Fermi2D final : public EngineInterface {
+    static inline thread_local bool software_blit_active{};
+
 public:
     explicit Fermi2D(MemoryManager& memory_manager_);
     ~Fermi2D() override;
+
+    static bool IsSoftwareBlitActive() {
+        return software_blit_active;
+    }
 
     /// Binds a rasterizer to this engine.
     void BindRasterizer(VideoCore::RasterizerInterface* rasterizer);

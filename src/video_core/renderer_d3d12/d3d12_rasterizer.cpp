@@ -3114,7 +3114,40 @@ Tegra::Engines::AccelerateDMAInterface& RasterizerD3D12::AccessAccelerateDMA() {
 bool RasterizerD3D12::AccelerateSurfaceCopy(const Tegra::Engines::Fermi2D::Surface& src,
                                             const Tegra::Engines::Fermi2D::Surface& dst,
                                             const Tegra::Engines::Fermi2D::Config& copy_config) {
-    return false;
+    const auto format =
+        MaxwellFormat(VideoCore::Surface::PixelFormatFromRenderTargetFormat(dst.format));
+    const u64 bytes =
+        u64{static_cast<u32>(std::max<s64>(0, s64{copy_config.dst_x1} - copy_config.dst_x0))} *
+        static_cast<u32>(std::max<s64>(0, s64{copy_config.dst_y1} - copy_config.dst_y0)) *
+        VideoCore::Surface::BytesPerBlock(
+            VideoCore::Surface::PixelFormatFromRenderTargetFormat(dst.format));
+    bool accelerated = false;
+    // Exact native color copies preserve bits, including integer and sRGB formats.
+    // Scaling, conversion, depth and unsupported operations retain the software path.
+    if (src.layer == 0 && dst.layer == 0 && src.depth == 1 && dst.depth == 1 &&
+        src.format == dst.format && format.Supported() && !format.depth && !format.converted_astc &&
+        format.conversion == FormatConversion::None && format.block_width == 1 &&
+        format.block_height == 1 &&
+        copy_config.operation == Tegra::Engines::Fermi2D::Operation::SrcCopy &&
+        IsExactBlit(copy_config.src_x0, copy_config.src_y0, copy_config.src_x1, copy_config.src_y1,
+                    copy_config.dst_x0, copy_config.dst_y0, copy_config.dst_x1,
+                    copy_config.dst_y1)) {
+        std::scoped_lock lock{texture_cache.mutex};
+        auto gpu_copy = copy_config;
+        // Preserve the shared cache's CPU-only heuristic for tiny copies; creating
+        // and uploading two textures can cost more than the software copy itself.
+        gpu_copy.must_accelerate = copy_config.must_accelerate || bytes >= (256ULL << 10);
+        accelerated = texture_cache.BlitImage(dst, src, gpu_copy);
+    }
+    if (!accelerated) {
+        texture_runtime.RecordSoftwareBlit(dst.Address());
+    }
+    context.Profile().Count(accelerated ? FrameCount::FermiBlitsAccelerated
+                                        : FrameCount::FermiBlitsSoftware);
+    context.Profile().Count(accelerated ? FrameCount::FermiBlitAcceleratedBytes
+                                        : FrameCount::FermiBlitSoftwareBytes,
+                            bytes);
+    return accelerated;
 }
 void RasterizerD3D12::AccelerateInlineToMemory(GPUVAddr address, size_t copy_size,
                                                std::span<const u8> memory) {

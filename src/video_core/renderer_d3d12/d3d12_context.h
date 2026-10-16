@@ -70,6 +70,8 @@ enum class FramePhase : size_t {
     BufferCacheBind,
     TextureCacheUpdate,
     DescriptorAndPipeline,
+    TextureUploadDiagnostic,
+    TextureRepack,
     BetweenDraws,
     IndexRead,
     IndexHash,
@@ -175,6 +177,14 @@ enum class FrameCount : size_t {
     TexelUploadCount,
     OtherUploadCount,
     UniformCopyCacheMisses,
+    FermiBlitsAccelerated,
+    FermiBlitsSoftware,
+    FermiBlitAcceleratedBytes,
+    FermiBlitSoftwareBytes,
+    TextureDirectUploadBytes,
+    TextureRepackBytes,
+    TextureRefreshBytes,
+    FermiDiscardUploadBytes,
     Count
 };
 // Monotonic CPU samples, independent of the host clock API, for exclusive phases.

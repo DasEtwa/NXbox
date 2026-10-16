@@ -464,6 +464,8 @@ void FrameProfile::EndFrame(bool presented) {
                                    "buffer_cache_bind",
                                    "texture_cache_update",
                                    "descriptor_and_pipeline",
+                                   "texture_upload_diagnostic",
+                                   "texture_repack",
                                    "between_draws",
                                    "index_read",
                                    "index_hash",
@@ -565,7 +567,15 @@ void FrameProfile::EndFrame(bool presented) {
                                       "storage_upload_count",
                                       "texel_upload_count",
                                       "other_upload_count",
-                                      "uniform_copy_cache_misses"};
+                                      "uniform_copy_cache_misses",
+                                      "fermi_blits_accelerated",
+                                      "fermi_blits_software",
+                                      "fermi_blit_accelerated_bytes",
+                                      "fermi_blit_software_bytes",
+                                      "texture_direct_upload_bytes",
+                                      "texture_repack_bytes",
+                                      "texture_refresh_bytes",
+                                      "fermi_discard_upload_bytes"};
         static_assert(names.size() == static_cast<size_t>(FramePhase::Count));
         static_assert(counters.size() == static_cast<size_t>(FrameCount::Count));
         const double elapsed = static_cast<double>(wall - start_wall);

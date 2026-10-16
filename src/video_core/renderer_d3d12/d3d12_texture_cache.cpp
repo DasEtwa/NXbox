@@ -484,8 +484,16 @@ void Image::Transfer(const StagingBufferRef& input,
                  (extent.width % host_format.block_width) ||
                  (extent.height % host_format.block_height)))
                 throw std::invalid_argument("D3D12 partial BC copy must be block aligned");
-            auto aligned = download ? runtime->DownloadStagingBuffer(padded_size)
-                                    : runtime->UploadStagingBuffer(padded_size);
+            const bool direct_upload =
+                !download &&
+                CanDirectTextureUpload(CheckedAdd(map.offset, base), row_stride, slice_stride,
+                                       footprint.Footprint.RowPitch, padded_slice) &&
+                padded_size <= map.mapped_span.size() - base;
+            auto aligned =
+                direct_upload ? StagingBufferRef{map.buffer, static_cast<size_t>(map.offset + base),
+                                                 map.mapped_span.subspan(base, padded_size)}
+                : download    ? runtime->DownloadStagingBuffer(padded_size)
+                              : runtime->UploadStagingBuffer(padded_size);
             ResourcePtr padded_gpu;
             if (gpu_destination) {
                 // READBACK heaps cannot become COPY_SOURCE. Download once into a
@@ -505,10 +513,19 @@ void Image::Transfer(const StagingBufferRef& input,
             texture.SubresourceIndex = subresource;
             context.Retain(aligned.buffer);
             if (!download) {
-                context.Profile().Count(FrameCount::StagingCopyBytes, padded_size);
-                RepackRows(aligned.mapped_span, map.mapped_span.subspan(base), row_bytes, num_rows,
-                           extent.depth, footprint.Footprint.RowPitch, padded_slice, row_stride,
-                           slice_stride);
+                if (direct_upload) {
+                    context.Profile().Count(FrameCount::TextureDirectUploadBytes,
+                                            row_bytes * num_rows * extent.depth);
+                } else {
+                    context.Profile().Count(FrameCount::StagingCopyBytes, padded_size);
+                    context.Profile().Count(FrameCount::TextureRepackBytes,
+                                            row_bytes * num_rows * extent.depth);
+                    const FrameProfile::Scope profile_repack{context.Profile(),
+                                                             FramePhase::TextureRepack};
+                    RepackRows(aligned.mapped_span, map.mapped_span.subspan(base), row_bytes,
+                               num_rows, extent.depth, footprint.Footprint.RowPitch, padded_slice,
+                               row_stride, slice_stride);
+                }
                 context.MarkWork("upload/copy");
                 // Texture copy hazards are tracked per subresource (offset = index, size 1).
                 context.BeforeCopyWrite(resource, subresource, 1);
@@ -1017,6 +1034,96 @@ void TextureCacheRuntime::AccelerateImageUpload(
                     buffers, output);
     }
 }
+bool TextureCacheRuntime::CanDiscardBlitDestination(
+    const Image& image, const Tegra::Engines::Fermi2D::Surface& surface,
+    const Tegra::Engines::Fermi2D::Config& copy) const {
+    // The caller excludes self-copies and aliases. Discard only a complete
+    // single-subresource destination; partial blits still preserve guest bytes.
+    return image.gpu_addr == surface.Address() &&
+           CoversSingleSubresource(copy.dst_x0, copy.dst_y0, copy.dst_x1, copy.dst_y1,
+                                   image.info.size.width, image.info.size.height,
+                                   image.info.size.depth, image.info.resources.levels,
+                                   image.info.resources.layers);
+}
+void TextureCacheRuntime::RecordBlitDiscard(const Image& image) {
+    if (True(image.flags & VideoCommon::ImageFlagBits::CpuModified))
+        context.Profile().Count(FrameCount::FermiDiscardUploadBytes, image.unswizzled_size_bytes);
+}
+void TextureCacheRuntime::RecordTextureWrite(Image& image) {
+    image.upload_reason = Tegra::Engines::Fermi2D::IsSoftwareBlitActive()
+                              ? "fermi_software_write"
+                              : "cpu_write_notification";
+}
+void TextureCacheRuntime::RecordTextureUpload(Image& image) {
+    context.Profile().Count(FrameCount::TextureRefreshBytes, image.unswizzled_size_bytes);
+    static const bool trace = BisectEnabled("NXBOX_D3D12_TEXTURE_UPLOAD_TRACE");
+    if (!trace && !context.Profile().Enabled())
+        return;
+    const FrameProfile::Scope profile_diagnostic{context.Profile(),
+                                                 FramePhase::TextureUploadDiagnostic};
+    if (image.upload_reason == "initial_or_recreated") {
+        for (const auto& write : software_writes) {
+            if (write.address == image.gpu_addr && write.valid && frame_tick - write.frame <= 1) {
+                image.upload_reason = "initial_after_fermi_software";
+                break;
+            }
+        }
+    }
+    repeated_uploads.Add({image.gpu_addr, image.unswizzled_size_bytes, 0,
+                          static_cast<u32>(image.info.format), image.info.size.width,
+                          image.info.size.height, image.upload_reason,
+                          True(image.flags & VideoCommon::ImageFlagBits::GpuModified)});
+    // RefreshContents clears CpuModified after this hook. If another invalidation
+    // source does not supply a reason, do not reuse the previous write's reason.
+    image.upload_reason = "cache_refresh_or_remap";
+    const auto now = std::chrono::steady_clock::now();
+    if (now - upload_log_time < std::chrono::seconds{5})
+        return;
+    const auto entry = repeated_uploads.LargestRepeated();
+    if (entry.count) {
+        Diagnostic(fmt::format("D3D12_TEXTURE_UPLOAD_REPEAT gpu_address={:#x} bytes={} format={} "
+                               "width={} height={} uploads={} reason={} gpu_modified={}",
+                               entry.address, entry.size, entry.format, entry.width, entry.height,
+                               entry.count, entry.reason, entry.gpu_modified));
+    }
+    repeated_uploads.Reset();
+    upload_log_time = now;
+}
+bool TextureCacheRuntime::CanBlitImages(const Image& dst, const Image& src,
+                                        const Tegra::Engines::Fermi2D::Surface& dst_surface,
+                                        const Tegra::Engines::Fermi2D::Surface& src_surface,
+                                        const Tegra::Engines::Fermi2D::Config& copy) const {
+    if (!dst.Handle() || !src.Handle() || dst.info.format != src.info.format ||
+        dst.HostFormat().depth || src.HostFormat().depth ||
+        dst.HostFormat().conversion != FormatConversion::None ||
+        src.HostFormat().conversion != FormatConversion::None || dst.info.num_samples != 1 ||
+        src.info.num_samples != 1 || dst.HostFormat().converted_astc ||
+        src.HostFormat().converted_astc || dst.HostFormat().block_width != 1 ||
+        src.HostFormat().block_width != 1 || dst.HostFormat().block_height != 1 ||
+        src.HostFormat().block_height != 1 ||
+        copy.operation != Tegra::Engines::Fermi2D::Operation::SrcCopy ||
+        !IsExactBlit(copy.src_x0, copy.src_y0, copy.src_x1, copy.src_y1, copy.dst_x0, copy.dst_y0,
+                     copy.dst_x1, copy.dst_y1))
+        return false;
+    // Use each actual cached mip, which need not match the surface's dimensions.
+    const auto source_base = src.TryFindBase(src_surface.Address());
+    const auto target_base = dst.TryFindBase(dst_surface.Address());
+    if (!source_base || !target_base)
+        return false;
+    const BlitSurface source{src.Handle(), src.HostFormat(), static_cast<u32>(source_base->level),
+                             static_cast<u32>(source_base->layer)};
+    const BlitSurface target{dst.Handle(), dst.HostFormat(), static_cast<u32>(target_base->level),
+                             static_cast<u32>(target_base->layer)};
+    const auto fits = [](const BlitSurface& surface, s32 x, s32 y) {
+        const auto desc = surface.resource->handle->GetDesc();
+        return desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
+               surface.level < u32{desc.MipLevels} && surface.layer < u32{desc.DepthOrArraySize} &&
+               static_cast<u64>(x) <= std::max(u64{1}, desc.Width >> surface.level) &&
+               static_cast<u32>(y) <= std::max(1u, desc.Height >> surface.level);
+    };
+    return BlitImageHelper::CopyCompatible(target, source) &&
+           fits(source, copy.src_x1, copy.src_y1) && fits(target, copy.dst_x1, copy.dst_y1);
+}
 void TextureCacheRuntime::BlitImage(Framebuffer*, ImageView& dst, ImageView& src,
                                     const VideoCommon::Region2D& dst_region,
                                     const VideoCommon::Region2D& src_region,
@@ -1030,6 +1137,27 @@ void TextureCacheRuntime::BlitImage(Framebuffer*, ImageView& dst, ImageView& src
     const BlitSurface target{dst.ImageHandle(), dst.HostFormat(),
                              static_cast<u32>(dst.range.base.level),
                              static_cast<u32>(dst.range.base.layer)};
+    // CanBlitImages preflights the Fermi path before either image is marked
+    // modified. Exact native copies do not sample, blend, clamp or convert bits.
+    if (operation == Tegra::Engines::Fermi2D::Operation::SrcCopy &&
+        IsExactBlit(src_region.start.x, src_region.start.y, src_region.end.x, src_region.end.y,
+                    dst_region.start.x, dst_region.start.y, dst_region.end.x, dst_region.end.y) &&
+        !source.format.depth && !target.format.depth &&
+        source.resource->handle->GetDesc().SampleDesc.Count == 1 &&
+        BlitImageHelper::CopyCompatible(target, source)) {
+        VideoCommon::ImageCopy copy{};
+        const auto layers = std::min(src.range.extent.layers, dst.range.extent.layers);
+        copy.src_subresource = {static_cast<s32>(source.level), static_cast<s32>(source.layer),
+                                layers};
+        copy.dst_subresource = {static_cast<s32>(target.level), static_cast<s32>(target.layer),
+                                layers};
+        copy.src_offset = {src_region.start.x, src_region.start.y, 0};
+        copy.dst_offset = {dst_region.start.x, dst_region.start.y, 0};
+        copy.extent = {static_cast<u32>(src_region.end.x - src_region.start.x),
+                       static_cast<u32>(src_region.end.y - src_region.start.y), 1};
+        BlitHelpers().CopyImage(target, source, std::span{&copy, 1});
+        return;
+    }
     try {
         const u32 layers = std::min(src.range.extent.layers, dst.range.extent.layers);
         for (u32 layer = 0; layer < layers; ++layer) {
