@@ -26,14 +26,26 @@ struct Resource {
 };
 using ResourcePtr = std::shared_ptr<Resource>;
 struct StagingBufferRef { ResourcePtr buffer; size_t offset; std::span<u8> mapped_span; };
-enum class FrameCount { ForcedSubmitStagingPressure };
+enum class FrameCount { ForcedSubmitStagingPressure, StagingRequests, StagingFastRequests, StagingCollections };
+enum class FramePhase { UploadAllocation, StagingCollect };
+struct FrameProfile {
+    struct Scope { Scope(FrameProfile&, FramePhase) {} };
+    int requests{}, fast{}, collections{};
+    void Count(FrameCount counter) {
+        if (counter == FrameCount::StagingRequests) ++requests;
+        if (counter == FrameCount::StagingFastRequests) ++fast;
+        if (counter == FrameCount::StagingCollections) ++collections;
+    }
+};
 struct Context {
     u64 tick = 1, completed = 0;
-    int finishes = 0;
+    int finishes = 0, fence_polls = 0;
+    FrameProfile profile;
+    FrameProfile& Profile() { return profile; }
     std::vector<ResourcePtr> retained;
     bool IsFree(u64 value) const { return value <= completed; }
     u64 CurrentTick() const { return tick; }
-    void Collect() {}
+    void Collect() { ++fence_polls; }
     void Finish(FrameCount = FrameCount::ForcedSubmitStagingPressure) { ++finishes; completed = tick++; retained.clear(); }
     ResourcePtr CreateBuffer(u64 size, int) { return std::make_shared<Resource>(size); }
 };
@@ -74,6 +86,22 @@ int main() {
     next = {};
     ring.Collect();
     assert(ring.pages[0].cursor == 0);
+    // Appending small uploads amortizes fence queries, including a still-live lease.
+    const int polls = context.fence_polls;
+    auto small = ring.Request(256);
+    small.mapped_span[0] = 99;
+    const auto first_offset = small.offset;
+    for (int i = 0; i < 1000; ++i) {
+        auto sub = ring.Request(256);
+        assert(sub.buffer == small.buffer && sub.offset > first_offset);
+        assert((sub.offset & 511) == 0);
+    }
+    assert(small.mapped_span[0] == 99);
+    assert(context.fence_polls == polls);
+    assert(context.profile.fast >= 1001);
+    bool rejected = false;
+    try { ring.Request(0); } catch (const std::invalid_argument&) { rejected = true; }
+    assert(rejected);
     // Images larger than the ring get a temporary lease without permanently growing it.
     const auto pages = ring.pages.size();
     auto oversized = ring.Request(65 * mib);

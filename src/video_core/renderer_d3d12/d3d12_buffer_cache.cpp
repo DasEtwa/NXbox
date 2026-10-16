@@ -77,7 +77,7 @@ void BufferCacheRuntime::RecordBufferUpload(VideoCommon::BufferUploadSource sour
         counter = FrameCount::TexelUploadBytes;
         break;
     }
-    upload_source = counter;
+    upload_source = synchronizing_indices ? FrameCount::IndexUploadBytes : counter;
     (void)bytes; // The staging allocation records the actual transferred bytes.
 }
 namespace {
@@ -205,39 +205,48 @@ void BufferCacheRuntime::CopyBuffer(ResourcePtr dst, ResourcePtr src,
             }
         }
     }
-    context.Transition(src, D3D12_RESOURCE_STATE_COPY_SOURCE);
-    context.Transition(dst, D3D12_RESOURCE_STATE_COPY_DEST);
+    {
+        const FrameProfile::Scope profile_transitions{context.Profile(),
+                                                      FramePhase::UploadTransitions};
+        context.Transition(src, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        context.Transition(dst, D3D12_RESOURCE_STATE_COPY_DEST);
+    }
     if (trace_readback)
         CopyBuffer(trace_readback, src, trace_reads, true);
     const u64 trace_tick = trace ? context.CurrentTick() : 0;
-    for (const auto& copy : copies) {
-        if (trace)
-            Diagnostic(fmt::format(
-                "D3D12_UPLOAD_COPY id={} tick={} source={:#x} source_heap={} src_offset={} "
-                "destination={:#x} dst_offset={} size={}",
-                trace_id, trace_tick, src->handle->GetGPUVirtualAddress(),
-                static_cast<u32>(src->heap), copy.src_offset, dst->handle->GetGPUVirtualAddress(),
-                copy.dst_offset, copy.size));
-        context.Profile().Count(src->heap == D3D12_HEAP_TYPE_UPLOAD
-                                    ? FrameCount::StagingCopyBytes
-                                    : FrameCount::GpuBufferCopyBytes,
-                                copy.size);
-        context.MarkWork("upload/copy");
-        // Diagnostic: order every buffer copy after all prior GPU work.
-        static const bool copy_barrier = BisectEnabled("NXBOX_D3D12_COPY_BARRIER");
-        if (copy_barrier) {
-            D3D12_RESOURCE_BARRIER barrier{};
-            barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_ALIASING;
-            context.Commands()->ResourceBarrier(1, &barrier);
-            context.Profile().Count(FrameCount::Barriers);
+    {
+        const FrameProfile::Scope profile_recording{context.Profile(), FramePhase::UploadRecording};
+        for (const auto& copy : copies) {
+            if (trace)
+                Diagnostic(fmt::format(
+                    "D3D12_UPLOAD_COPY id={} tick={} source={:#x} source_heap={} src_offset={} "
+                    "destination={:#x} dst_offset={} size={}",
+                    trace_id, trace_tick, src->handle->GetGPUVirtualAddress(),
+                    static_cast<u32>(src->heap), copy.src_offset,
+                    dst->handle->GetGPUVirtualAddress(), copy.dst_offset, copy.size));
+            context.Profile().Count(src->heap == D3D12_HEAP_TYPE_UPLOAD
+                                        ? FrameCount::StagingCopyBytes
+                                        : FrameCount::GpuBufferCopyBytes,
+                                    copy.size);
+            context.MarkWork("upload/copy");
+            // Diagnostic: order every buffer copy after all prior GPU work.
+            static const bool copy_barrier = BisectEnabled("NXBOX_D3D12_COPY_BARRIER");
+            if (copy_barrier) {
+                D3D12_RESOURCE_BARRIER barrier{};
+                barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_ALIASING;
+                context.Commands()->ResourceBarrier(1, &barrier);
+                context.Profile().Count(FrameCount::Barriers);
+            }
+            if (src->heap == D3D12_HEAP_TYPE_UPLOAD)
+                context.Profile().Count(FrameCount::UploadCopyCommands);
+            const u64 hazards_before = context.copy_hazard_count;
+            context.BeforeCopyWrite(dst, copy.dst_offset, copy.size);
+            context.Commands()->CopyBufferRegion(dst->handle.Get(), copy.dst_offset,
+                                                 src->handle.Get(), copy.src_offset, copy.size);
+            if (trace)
+                Diagnostic(fmt::format("D3D12_UPLOAD_HAZARD id={} barrier={}", trace_id,
+                                       context.copy_hazard_count - hazards_before));
         }
-        const u64 hazards_before = context.copy_hazard_count;
-        context.BeforeCopyWrite(dst, copy.dst_offset, copy.size);
-        context.Commands()->CopyBufferRegion(dst->handle.Get(), copy.dst_offset, src->handle.Get(),
-                                             copy.src_offset, copy.size);
-        if (trace)
-            Diagnostic(fmt::format("D3D12_UPLOAD_HAZARD id={} barrier={}", trace_id,
-                                   context.copy_hazard_count - hazards_before));
     }
     if (trace_readback) {
         CopyBuffer(trace_readback, dst, trace_writes, true);
@@ -403,7 +412,7 @@ std::span<u8> BufferCacheRuntime::BindMappedUniformBuffer(size_t stage, u32, u32
         return {};
     }
     auto staging = upload.Request(padded);
-    std::fill(staging.mapped_span.begin(), staging.mapped_span.end(), u8{0});
+    std::fill(staging.mapped_span.begin() + size, staging.mapped_span.end(), u8{0});
     bindings.stages[stage].uniform.push_back(
         {staging.buffer, static_cast<u32>(staging.offset), padded});
     return staging.mapped_span.first(size);
@@ -435,14 +444,25 @@ BoundBuffer BufferCacheRuntime::CopyUniform(const BoundBuffer& uniform) {
     const u32 offset = uniform.offset, size = uniform.size;
     const auto padded = UniformViewSize(size);
     // A version changes on every write-state use, including same-state UAV/copy writes.
-    if (auto copy = uniform_copies.Find(resource, resource->content_version, offset, size)) {
+    ResourcePtr copy;
+    {
+        const FrameProfile::Scope profile_lookup{context.Profile(), FramePhase::UniformCopyLookup};
+        copy = uniform_copies.Find(resource, resource->content_version, offset, size);
+    }
+    if (copy) {
         context.Profile().Count(FrameCount::UniformCopyCacheHits);
         return {std::move(copy), 0, padded};
     }
+    context.Profile().Count(FrameCount::UniformCopyCacheMisses);
     const FrameProfile::Scope profile_upload{context.Profile(), FramePhase::BufferUpload};
     context.Profile().Count(FrameCount::BufferUploadBytes, padded);
     context.Profile().Count(FrameCount::UniformUploadBytes, padded);
-    auto target = context.CreateBuffer(padded, D3D12_HEAP_TYPE_DEFAULT);
+    ResourcePtr target;
+    {
+        const FrameProfile::Scope profile_allocation{context.Profile(),
+                                                     FramePhase::UploadAllocation};
+        target = context.CreateBuffer(padded, D3D12_HEAP_TYPE_DEFAULT);
+    }
     const VideoCommon::BufferCopy data{offset, 0, size};
     CopyBuffer(target, resource, std::span{&data, 1}, false);
     if (padded > size) {

@@ -4,8 +4,9 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
-#include <deque>
+#include <list>
 #include <memory>
+#include <unordered_map>
 
 namespace D3D12 {
 // CBVs return zero outside their declared extent. Own just the final alignment padding.
@@ -18,37 +19,67 @@ constexpr std::uint32_t UniformViewSize(std::uint32_t size) {
 template <typename Resource, std::size_t Capacity = 128>
 class UniformCopyCache {
 public:
+    UniformCopyCache() = default;
+    UniformCopyCache(const UniformCopyCache&) = delete;
+    UniformCopyCache& operator=(const UniformCopyCache&) = delete;
     std::shared_ptr<Resource> Find(const std::shared_ptr<Resource>& source, std::uint64_t version,
                                    std::uint32_t offset, std::uint32_t size) {
-        std::erase_if(entries, [](const auto& entry) { return entry.source.expired(); });
-        for (const auto& entry : entries) {
-            if (entry.source.lock() == source && entry.version == version &&
-                entry.offset == offset && entry.size == size)
-                return entry.copy;
-        }
-        return {};
+        if (!source)
+            return {};
+        const auto found = lookup.find({source.get(), offset, size});
+        if (found == lookup.end())
+            return {};
+        const auto entry = found->second;
+        // A raw address in the key is only a lookup hint, never an identity lease.
+        if (entry->source.lock() != source || entry->version != version)
+            return {};
+        entries.splice(entries.begin(), entries, entry);
+        return entry->copy;
     }
     void Insert(const std::shared_ptr<Resource>& source, std::uint64_t version,
                 std::uint32_t offset, std::uint32_t size, std::shared_ptr<Resource> copy) {
-        // Replace stale snapshots for this range rather than filling the cache with versions.
-        std::erase_if(entries, [&](const auto& entry) {
-            return entry.source.expired() ||
-                   (entry.source.lock() == source && entry.offset == offset && entry.size == size);
-        });
-        if (entries.size() == Capacity)
+        if (!source)
+            return;
+        const Key key{source.get(), offset, size};
+        if (const auto found = lookup.find(key); found != lookup.end()) {
+            entries.erase(found->second);
+            lookup.erase(found);
+        }
+        if (entries.size() == Capacity) {
+            lookup.erase(entries.back().key);
+            entries.pop_back();
+        }
+        entries.push_front({key, source, version, std::move(copy)});
+        try {
+            lookup.emplace(key, entries.begin());
+        } catch (...) {
             entries.pop_front();
-        entries.push_back({source, version, offset, size, std::move(copy)});
+            throw;
+        }
     }
 
 private:
     static_assert(Capacity > 0);
+    struct Key {
+        Resource* source;
+        std::uint32_t offset, size;
+        bool operator==(const Key&) const = default;
+    };
+    struct KeyHash {
+        std::size_t operator()(const Key& key) const noexcept {
+            auto hash = std::hash<Resource*>{}(key.source);
+            for (const auto value : {key.offset, key.size})
+                hash ^= std::size_t{value} + 0x9e3779b9u + (hash << 6) + (hash >> 2);
+            return hash;
+        }
+    };
     struct Entry {
+        Key key;
         std::weak_ptr<Resource> source;
         std::uint64_t version;
-        std::uint32_t offset;
-        std::uint32_t size;
         std::shared_ptr<Resource> copy;
     };
-    std::deque<Entry> entries;
+    std::list<Entry> entries;
+    std::unordered_map<Key, typename std::list<Entry>::iterator, KeyHash> lookup;
 };
 } // namespace D3D12

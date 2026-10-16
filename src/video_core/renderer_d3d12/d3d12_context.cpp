@@ -357,8 +357,35 @@ FrameProfile::Scope::~Scope() {
     profile->Switch(previous);
 }
 void FrameProfile::Count(FrameCount counter, u64 amount) {
-    if (OnOwner())
-        counts[static_cast<size_t>(counter)] += amount;
+    if (!OnOwner())
+        return;
+    counts[static_cast<size_t>(counter)] += amount;
+    if (!amount)
+        return;
+    // Count at the category byte event, including callers outside the buffer cache.
+    // One event is one logical upload/snapshot, not one D3D12 copy command.
+    switch (counter) {
+    case FrameCount::VertexUploadBytes:
+        ++counts[static_cast<size_t>(FrameCount::VertexUploadCount)];
+        break;
+    case FrameCount::IndexUploadBytes:
+        ++counts[static_cast<size_t>(FrameCount::IndexUploadCount)];
+        break;
+    case FrameCount::UniformUploadBytes:
+        ++counts[static_cast<size_t>(FrameCount::UniformUploadCount)];
+        break;
+    case FrameCount::StorageUploadBytes:
+        ++counts[static_cast<size_t>(FrameCount::StorageUploadCount)];
+        break;
+    case FrameCount::TexelUploadBytes:
+        ++counts[static_cast<size_t>(FrameCount::TexelUploadCount)];
+        break;
+    case FrameCount::OtherUploadBytes:
+        ++counts[static_cast<size_t>(FrameCount::OtherUploadCount)];
+        break;
+    default:
+        break;
+    }
 }
 void FrameProfile::NoteTransition(u32 before, u32 after, bool buffer) {
     if (enabled && OnOwner())
@@ -437,7 +464,18 @@ void FrameProfile::EndFrame(bool presented) {
                                    "buffer_cache_bind",
                                    "texture_cache_update",
                                    "descriptor_and_pipeline",
-                                   "between_draws"};
+                                   "between_draws",
+                                   "index_read",
+                                   "index_hash",
+                                   "index_flush_caching",
+                                   "index_coherence",
+                                   "index_gpu_modified",
+                                   "index_restart_scan",
+                                   "upload_allocation",
+                                   "upload_transitions",
+                                   "upload_recording",
+                                   "staging_collect",
+                                   "uniform_copy_lookup"};
         constexpr std::array counters{"draws",
                                       "dispatches",
                                       "barriers",
@@ -511,7 +549,23 @@ void FrameProfile::EndFrame(bool presented) {
                                       "feedback_copy_bytes",
                                       "feedback_reused",
                                       "gpu_resolved_query_reports",
-                                      "query_report_fence_waits"};
+                                      "query_report_fence_waits",
+                                      "index_validated_cache_hits",
+                                      "index_native_restart_draws",
+                                      "index_read_bytes",
+                                      "index_downloads",
+                                      "index_download_bytes",
+                                      "staging_requests",
+                                      "staging_fast_requests",
+                                      "staging_collections",
+                                      "upload_copy_commands",
+                                      "vertex_upload_count",
+                                      "index_upload_count",
+                                      "uniform_upload_count",
+                                      "storage_upload_count",
+                                      "texel_upload_count",
+                                      "other_upload_count",
+                                      "uniform_copy_cache_misses"};
         static_assert(names.size() == static_cast<size_t>(FramePhase::Count));
         static_assert(counters.size() == static_cast<size_t>(FrameCount::Count));
         const double elapsed = static_cast<double>(wall - start_wall);
@@ -528,6 +582,20 @@ void FrameProfile::EndFrame(bool presented) {
             line += fmt::format(
                 " {}={} {}_per_frame={:.2f}", counters[i], counts[i], counters[i],
                 frames ? static_cast<double>(counts[i]) / static_cast<double>(frames) : 0.0);
+        constexpr std::array upload_categories{
+            std::pair{FrameCount::VertexUploadBytes, FrameCount::VertexUploadCount},
+            std::pair{FrameCount::IndexUploadBytes, FrameCount::IndexUploadCount},
+            std::pair{FrameCount::UniformUploadBytes, FrameCount::UniformUploadCount},
+            std::pair{FrameCount::StorageUploadBytes, FrameCount::StorageUploadCount},
+            std::pair{FrameCount::TexelUploadBytes, FrameCount::TexelUploadCount},
+            std::pair{FrameCount::OtherUploadBytes, FrameCount::OtherUploadCount},
+        };
+        for (const auto& [bytes_counter, count_counter] : upload_categories) {
+            const auto bytes_index = static_cast<size_t>(bytes_counter);
+            const auto count = counts[static_cast<size_t>(count_counter)];
+            line += fmt::format(" {}_avg={:.2f}", counters[bytes_index],
+                                count ? static_cast<double>(counts[bytes_index]) / count : 0.0);
+        }
         std::vector<std::pair<u64, u64>> top(transitions.begin(), transitions.end());
         std::sort(top.begin(), top.end(),
                   [](const auto& a, const auto& b) { return a.second > b.second; });
@@ -1409,6 +1477,8 @@ ResourcePtr Context::CreateBuffer(u64 size, D3D12_HEAP_TYPE heap) {
     return CreateResource(desc, heap, state);
 }
 void StagingRing::Collect() {
+    const FrameProfile::Scope profile_collect{context.Profile(), FramePhase::StagingCollect};
+    context.Profile().Count(FrameCount::StagingCollections);
     context.Collect();
     for (auto& page : pages) {
         if (context.IsFree(page.tick) && page.resource.use_count() == 1)
@@ -1416,10 +1486,24 @@ void StagingRing::Collect() {
     }
 }
 StagingBufferRef StagingRing::Request(size_t size) {
+    const FrameProfile::Scope profile_allocation{context.Profile(), FramePhase::UploadAllocation};
+    context.Profile().Count(FrameCount::StagingRequests);
     if (!size)
         throw std::invalid_argument("D3D12 empty staging allocation");
-    Collect();
     const u64 aligned = Align(size, 512);
+    // Append-only allocations need no fence query or completion callbacks. Reclaim
+    // only when existing space is exhausted (or at the explicit frame collection).
+    for (auto& page : pages) {
+        if (aligned <= page.resource->mapped.size() - page.cursor) {
+            context.Profile().Count(FrameCount::StagingFastRequests);
+            const auto offset = page.cursor;
+            page.cursor += aligned;
+            page.tick = context.CurrentTick();
+            return {page.resource, static_cast<size_t>(offset),
+                    page.resource->mapped.subspan(offset, size)};
+        }
+    }
+    Collect();
     for (auto& page : pages) {
         if (aligned <= page.resource->mapped.size() - page.cursor) {
             const auto offset = page.cursor;

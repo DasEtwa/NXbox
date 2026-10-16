@@ -8,6 +8,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 
 namespace D3D12 {
@@ -71,6 +72,7 @@ struct Layout {
 // at each restart/end; degenerates are preserved. Input/output must not overlap.
 // Analyze/AnalyzeGenerated give the exact allocation. Invalid enums, truncated
 // input, overflow and undersized output throw before writing any output.
+bool ContainsRestart(Format format, std::span<const std::byte> input, Restart restart);
 Layout Analyze(Topology topology, Format format, std::span<const std::byte> input,
                Restart restart = {});
 Layout AnalyzeGenerated(Topology topology, std::uint32_t vertex_count,
@@ -91,6 +93,7 @@ struct ConvertedIndexBuffer {
     D3D12_INDEX_BUFFER_VIEW view{};
     D3D_PRIMITIVE_TOPOLOGY topology{};
     std::uint32_t count{};
+    bool native{};
     ResourcePtr resource; // Own the allocation across submissions before the draw.
 };
 class IndexConverter {
@@ -102,6 +105,10 @@ public:
         IndexConversion::Provoking provoking = IndexConversion::Provoking::Preserve);
     ConvertedIndexBuffer ConvertCached(IndexConversion::CacheKey key,
                                        std::span<const std::byte> input, bool& cache_hit);
+    std::optional<ConvertedIndexBuffer> FindValidated(const IndexConversion::CacheKey& key,
+                                                      const ResourcePtr& source);
+    void RememberValidated(const IndexConversion::CacheKey& key, const ResourcePtr& source,
+                           const ConvertedIndexBuffer& result);
     ConvertedIndexBuffer Generate(
         IndexConversion::Topology topology, std::uint32_t vertex_count,
         std::uint32_t first_vertex = 0,
@@ -113,6 +120,13 @@ private:
     Context& context;
     StagingRing upload;
     IndexConversion::ConversionCache<ConvertedIndexBuffer> cache;
+    struct ValidatedIndexBuffer {
+        ConvertedIndexBuffer buffer; // Metadata only; resource is held weakly below.
+        std::weak_ptr<Resource> allocation;
+    };
+    IndexConversion::ConversionCache<
+        IndexConversion::ValidatedSnapshot<Resource, ValidatedIndexBuffer>>
+        validated{1024 * 1024};
 };
 } // namespace D3D12
 #endif

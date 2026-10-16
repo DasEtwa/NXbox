@@ -43,6 +43,10 @@ int main() {
   changed.restart_enabled = false;
   miss(changed);
 
+  changed = key;
+  ++changed.device_address;
+  miss(changed); // Remapping within the same resource must revalidate.
+
   auto second = key;
   ++second.address;
   auto third = second;
@@ -69,6 +73,24 @@ int main() {
     metadata_bound.Insert(changed, i, 1);
   }
   assert(metadata_bound.Size() == 4096 && metadata_bound.Bytes() == 4096);
+  struct Source {
+    std::uint64_t content_version{};
+  };
+  auto source = std::make_shared<Source>();
+  ValidatedSnapshot<Source, int> snapshot{source, 0, 17};
+  assert(snapshot.Matches(source) && snapshot.value == 17);
+  ++source->content_version; // CPU upload or GPU write, including same-state
+                             // writes.
+  assert(!snapshot.Matches(source));
+  snapshot.version = source->content_version;
+  assert(snapshot.Matches(source));
+  auto replacement = std::make_shared<Source>();
+  replacement->content_version = snapshot.version;
+  assert(!snapshot.Matches(replacement));
+  std::weak_ptr<Source> weak_identity = source;
+  source.reset();
+  assert(weak_identity.expired());
+  assert(!snapshot.Matches(replacement) && !snapshot.Matches({}));
   // An evicted allocation survives while a recorded draw still owns its lease.
   ConversionCache<std::shared_ptr<int>> leases{8};
   auto allocation = std::make_shared<int>(7);
