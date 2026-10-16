@@ -5,13 +5,13 @@ SPDX-License-Identifier: GPL-3.0-or-later
 -->
 
 <p align="center">
-  <img src="docs/assets/nxbox-banner.png" alt="NXbox: Nintendo Switch to Xbox Series X" width="100%">
+  <img src="docs/assets/nxbox-banner.png" alt="NXbox: Switch emulation on Xbox Series X" width="100%">
 </p>
 
 <h1 align="center">NXbox</h1>
 
 <p align="center">
-  <b>A Nintendo Switch emulator that runs natively on an Xbox Series X.</b><br>
+  <b>A Switch emulator that runs natively on an Xbox Series X.</b><br>
   A port of <a href="https://git.eden-emu.dev/eden-emu/eden">Eden</a> to the Xbox UWP sandbox: the Switch's ARM64 code runs
   through a JIT, and its graphics go to Direct3D 12: by default through OpenGL on Mesa, and, in testing, through a
   native Direct3D 12 renderer (<code>NXBOX_RENDERER=d3d12</code>).
@@ -43,22 +43,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
   <sub><code>bc1qm64el0gp0kvk7zqhl89x0vkngu2skqxd26vpjg</code></sub>
 </p>
 
-<table>
-  <tr>
-    <td><img src="docs/assets/screenshots/p5r-title.jpg" alt="Persona 5 Royal title screen on Xbox Series X"></td>
-    <td><img src="docs/assets/screenshots/p5r-casino.jpg" alt="Persona 5 Royal casino gameplay on Xbox Series X"></td>
-  </tr>
-  <tr>
-    <td><img src="docs/assets/screenshots/p5r-cutscene.jpg" alt="Persona 5 Royal animated cutscene on Xbox Series X"></td>
-    <td>
-      <b>Persona 5 Royal, on an Xbox Series X.</b><br><br>
-      It boots, plays its cutscenes and reaches the first playable area (the casino), with
-      audio. It still stutters on loads and has bugs: <b>no game is fully playable yet</b>.<br><br>
-      Captured from the console with NXbox, using a copy of the game the owner bought. NXbox
-      ships no games, firmware or keys.
-    </td>
-  </tr>
-</table>
+<p align="center"><sub>NXbox ships no games, firmware or keys. Bring your own, dumped from a console you own.</sub></p>
 
 > **Experimental. No game is 100% playable without bugs yet.** Super Mario 3D World, Breath of the
 > Wild and Persona 5 Royal reach gameplay on a console in Developer Mode, but running is not the same
@@ -89,8 +74,8 @@ Everything below was measured on a retail Xbox Series X in Developer Mode.
 | Audio | XAudio2 output |
 | Movies | Decoded on the CPU with FFmpeg |
 | Textures | ASTC decoded on the CPU on the OpenGL path; the native D3D12 renderer decodes ASTC on the GPU |
-| Input | Xbox controller, mapped to a Pro Controller |
-| Accounts | A default offline profile with a Mii is created on first boot; firmware dumped from your own console can be installed from `LocalState\firmware` |
+| Input | Xbox controller, mapped to the standard gamepad layout |
+| Accounts | A default offline NXbox profile is created on first boot; firmware dumped from your own console can be installed from `LocalState\firmware` |
 | Compatibility | No game is playable without bugs yet: see the [compatibility table](#compatibility) |
 
 <details>
@@ -142,7 +127,7 @@ Estimates are the maintainer's guess, not a promise; they move as bugs are found
 | Super Mario 3D World + Bowser's Fury | **In-game** | 60 FPS on the OpenGL path: enters 3D World and reaches the hub with correct colours, but some camera angles draw black polygons and some text is missing. The native D3D12 renderer draws the menus correctly at 60 FPS and reaches level 1-1, with lit geometry still black | 2–4 weeks |
 | The Legend of Zelda: Breath of the Wild (1.0, 1.6 + DLC) | **In-game** | Loads a save and runs in the Shrine of Resurrection at about 12 FPS with Link drawn correctly; some terrain is still broken. Bound by the OpenGL translation on the GPU thread, so it moves to the native renderer next | 1–3 months |
 | Persona 5 Royal | **In-game** | Reaches the first playable area with audio; stutters on loads and has open bugs | 3–6 weeks |
-| Mario Kart 8 Deluxe | **In-game** | With firmware dumped from the user's own console installed, it gets past the Mii picker and starts a Grand Prix race at up to 60 FPS on the OpenGL path; track geometry is still broken and fps drops during the race | 4–8 weeks |
+| Mario Kart 8 Deluxe | **In-game** | With firmware dumped from the user's own console installed, it gets past the character picker and starts a Grand Prix race at up to 60 FPS on the OpenGL path; track geometry is still broken and fps drops during the race | 4–8 weeks |
 | Bayonetta | Not tested | Planned after Breath of the Wild | — |
 
 ## How it works

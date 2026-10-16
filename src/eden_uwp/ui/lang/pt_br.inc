@@ -193,7 +193,7 @@
     {Text::CreditsRowTitle, L"Créditos"}, {Text::CreditsRowState, L"Ver"},
     {Text::CreditsRowHint, L"Quem fez o que o NXbox usa."}, {Text::CreditsTitle, L"Créditos"},
     {Text::CreditsBody,
-     L"O NXbox é um fork do Eden, um emulador de Switch de código aberto (GPL-3.0), levado para o "
+     L"O NXbox é um fork do Eden, um emulador de console de código aberto (GPL-3.0), levado para o "
      L"Xbox Series X.\n"
      L"\n"
      L"Cheats: o banco nx-cheats-db, de sthetix, baixado quando você abre a tela e que pertence "
@@ -231,17 +231,17 @@
     {Text::SyncDavPassword, L"Senha de aplicativo WebDAV"},
     {Text::SyncDavFailed, L"Use endereço HTTPS, usuário e senha de aplicativo. Tente novamente."},
     {Text::SystemMenuTitle, L"Menu do sistema"},
-    {Text::SystemMenuBoot, L"Iniciar no menu HOME do Switch"},
+    {Text::SystemMenuBoot, L"Iniciar no menu HOME do sistema"},
     {Text::SystemMenuHint, L"Use o firmware instalado. View + Menu abre o HOME."},
     {Text::HomeComboPrompt, L"Aperte de novo para ir ao início"},
-    {Text::OfficialSwitchInterface, L"Usar a interface oficial do Switch"},
+    {Text::OfficialSwitchInterface, L"Usar a interface do sistema (firmware)"},
     {Text::RequiresFirmware, L"Requer firmware"},
     {Text::BackToNXboxInterface, L"Voltar para a interface do NXbox"},
     {Text::NextendoTitle, L"Online: Nextendo Network"}, {Text::NextendoOn, L"Ativado"},
     {Text::NextendoOff, L"Desativado"},
     {Text::NextendoRowHint, L"Jogue nos servidores da comunidade com sua conta Nextendo."},
     {Text::NextendoInstructions,
-     L"Ative o Nextendo e entre na sua conta. Sua conta Nintendo nunca é usada."},
+     L"Ative o Nextendo e entre na sua conta. Nenhuma conta do console é usada."},
     {Text::NextendoToggle, L"Ativar/desativar"}, {Text::NextendoFriends, L"Amigos"},
     {Text::NextendoBusy, L"Conectando ao Nextendo…"},
     {Text::NextendoSignedIn, L"Conta conectada. Ative o online para jogar."},

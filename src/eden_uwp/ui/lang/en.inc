@@ -190,7 +190,7 @@
     {Text::CreditsRowState, L"View"}, {Text::CreditsRowHint, L"Who made what NXbox builds on."},
     {Text::CreditsTitle, L"Credits"},
     {Text::CreditsBody,
-     L"NXbox is a fork of Eden, an open-source Nintendo Switch emulator (GPL-3.0), brought to the "
+     L"NXbox is a fork of Eden, an open-source console emulator (GPL-3.0), brought to the "
      L"Xbox Series X.\n"
      L"\n"
      L"Cheats: the nx-cheats-db database by sthetix, downloaded when you open the screen and owned "
@@ -225,17 +225,17 @@
     {Text::SyncDavPassword, L"WebDAV app password"},
     {Text::SyncDavFailed, L"Use an HTTPS URL, username and app password. Try again."},
     {Text::SystemMenuTitle, L"System menu"},
-    {Text::SystemMenuBoot, L"Boot to Switch HOME menu"},
+    {Text::SystemMenuBoot, L"Boot to the system HOME menu"},
     {Text::SystemMenuHint, L"Use your installed firmware. View + Menu opens HOME."},
     {Text::HomeComboPrompt, L"Press again to go home"},
-    {Text::OfficialSwitchInterface, L"Use the official Switch interface"},
+    {Text::OfficialSwitchInterface, L"Use the system interface (firmware)"},
     {Text::RequiresFirmware, L"Requires firmware"},
     {Text::BackToNXboxInterface, L"Back to NXbox interface"},
     {Text::NextendoTitle, L"Online: Nextendo Network"}, {Text::NextendoOn, L"On"},
     {Text::NextendoOff, L"Off"},
     {Text::NextendoRowHint, L"Play on community servers with your Nextendo account."},
     {Text::NextendoInstructions,
-     L"Turn Nextendo on, then sign in. Your Nintendo account is never used."},
+     L"Turn Nextendo on, then sign in. No console account is ever used."},
     {Text::NextendoToggle, L"Toggle online"}, {Text::NextendoFriends, L"Friends"},
     {Text::NextendoBusy, L"Connecting to Nextendo…"},
     {Text::NextendoSignedIn, L"Signed in. Turn online on to play."},
