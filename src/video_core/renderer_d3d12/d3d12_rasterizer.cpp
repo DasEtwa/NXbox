@@ -2101,7 +2101,8 @@ bool RasterizerD3D12::PrepareDrawIndices(bool is_indexed, DrawParams& params,
                                             restart.enabled};
         // Storage/stream-output buffers can share the guest index resource after cache
         // merging. Keep the independent converted snapshot when a write state may alias it.
-        bool allow_native = regs.transform_feedback_enabled == 0;
+        bool allow_native = regs.transform_feedback_enabled == 0 &&
+                            !BisectEnabled("NXBOX_D3D12_NO_NATIVE_INDEX");
         for (size_t stage = 0; stage < NUM_GRAPHICS_STAGES && allow_native; ++stage) {
             if (const auto* info = pipeline.StageInfo(stage))
                 allow_native = info->storage_buffers_descriptors.empty() &&
@@ -2160,7 +2161,8 @@ bool RasterizerD3D12::PrepareDrawIndices(bool is_indexed, DrawParams& params,
                 }
                 // GPU UAV/copy uses advance the generation even for same-state writes.
                 if (const auto found = index_converter.FindValidated(validation_key, source);
-                    found && (!found->native || allow_native)) {
+                    found && !BisectEnabled("NXBOX_D3D12_NO_INDEX_VALIDATED") &&
+                    (!found->native || allow_native)) {
                     converted_indices = *found;
                     validated_hit = true;
                     context.Profile().Count(FrameCount::IndexConversionCacheHits);
@@ -3124,7 +3126,8 @@ bool RasterizerD3D12::AccelerateSurfaceCopy(const Tegra::Engines::Fermi2D::Surfa
     bool accelerated = false;
     // Exact native color copies preserve bits, including integer and sRGB formats.
     // Scaling, conversion, depth and unsupported operations retain the software path.
-    if (src.layer == 0 && dst.layer == 0 && src.depth == 1 && dst.depth == 1 &&
+    if (!BisectEnabled("NXBOX_D3D12_NO_FERMI_COPY") && src.layer == 0 && dst.layer == 0 &&
+        src.depth == 1 && dst.depth == 1 &&
         src.format == dst.format && format.Supported() && !format.depth && !format.converted_astc &&
         format.conversion == FormatConversion::None && format.block_width == 1 &&
         format.block_height == 1 &&
