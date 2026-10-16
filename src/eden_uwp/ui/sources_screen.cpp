@@ -53,6 +53,7 @@
 #include "eden_uwp/game_download.h"
 #include "eden_uwp/ui/anim.h"
 #include "eden_uwp/ui/art.h"
+#include "eden_uwp/ui/art_colors.h"
 #include "eden_uwp/ui/source_catalog.h"
 #include "eden_uwp/ui/strings.h"
 #include "eden_uwp/ui/text_entry.h"
@@ -121,6 +122,10 @@ struct Entry {
     std::uint64_t size = 0;
     Kind kind = Kind::Other;
     Tinfoil::Headers headers;
+    std::string icon_url;
+    std::string banner_url;
+    std::string art_origin;
+    Tinfoil::Headers art_headers;
     std::wstring key; // case-folded destination for Windows queue collision checks
 };
 
@@ -674,7 +679,12 @@ FetchResult FetchSource(Tinfoil::Traversal traversal, std::size_t remaining,
             Entry entry;
             entry.name = Widen(file.name);
             entry.url = file.url;
-            entry.headers = request->headers;
+            entry.icon_url = file.icon_url;
+            entry.banner_url = file.banner_url;
+            entry.art_origin = effective_url;
+            entry.headers = Tinfoil::Origin(effective_url) == Tinfoil::Origin(request->url)
+                                ? request->headers
+                                : Tinfoil::Headers{};
             for (const auto& header : index.headers) {
                 entry.headers.erase(std::remove_if(entry.headers.begin(), entry.headers.end(),
                                                    [&](const auto& old) {
@@ -684,6 +694,7 @@ FetchResult FetchSource(Tinfoil::Traversal traversal, std::size_t remaining,
                                     entry.headers.end());
                 entry.headers.push_back(header);
             }
+            entry.art_headers = entry.headers;
             if (Tinfoil::Origin(entry.url) != Tinfoil::Origin(request->url))
                 entry.headers.clear(); // Never send one shop's credentials to another host.
             entry.file = DiskName(entry.name, entry.url);
@@ -891,7 +902,6 @@ public:
     void InitializeShop() {
         shop_ = true;
         sources_ = LoadSources(local_state_);
-        banners_ = std::make_unique<BannerSource>(local_state_);
         ScanInstalled();
         // Read the selected profile through existing APIs. Never mutate account state.
         const Service::Account::ProfileManager profiles;
@@ -1124,6 +1134,7 @@ private:
         }
         ++fetch_serial_;
         if (!more) {
+            shop_art_ = std::make_unique<ShopArtSource>(local_state_);
             source_errors_.clear();
             entries_.clear();
             packages_.clear();
@@ -1837,33 +1848,72 @@ private:
 
     struct Art {
         Image image;
+        std::string url;
         bool final = false;
         Tween fade;
     };
 
-    Image* VisibleArt(const std::string& id, Clock::time_point now) {
-        if (id.empty() || !banners_)
+    Image* VisibleArt(const Tinfoil::Game& game, Clock::time_point now, bool detail = false) {
+        if (!shop_art_)
             return nullptr;
-        auto& art = art_[id];
-        banners_->Request(id);
+        const Entry* source = nullptr;
+        std::string url;
+        for (const auto item : game.items) {
+            const auto& entry = entries_[item];
+            const auto& preferred = detail ? entry.banner_url : entry.icon_url;
+            const auto& fallback = detail ? entry.icon_url : entry.banner_url;
+            if (!preferred.empty() || !fallback.empty()) {
+                source = &entry;
+                url = preferred.empty() ? fallback : preferred;
+                break;
+            }
+        }
+        if (!source)
+            return nullptr;
+        const auto key = game.base_id + (detail ? ":banner" : ":icon");
+        auto& art = art_[key];
+        if (art.url != url) {
+            art = Art{};
+            art.url = url;
+        }
+        shop_art_->Request(url, source->art_origin, source->art_headers);
         if (!art.final && decodes_ < 2) {
             fs::path file;
-            const auto state = banners_->Get(id, file);
-            if (state != BannerState::Pending) {
+            const auto state = shop_art_->Get(url, file);
+            if (state != ArtState::Pending) {
                 art.final = true;
-                if (state == BannerState::Ready) {
+                if (state == ArtState::Ready) {
                     ++decodes_;
                     Pixels pixels;
                     if (renderer_.DecodeImage(ReadFileBytes(file), pixels) &&
                         renderer_.UploadImage(pixels, art.image)) {
                         art.fade = Tween(0.0f);
-                        art.fade.To(1.0f, now, kDurationPanel);
+                        art.fade.To(1.0f, now, kDurationScreen);
                     } else
-                        banners_->Discard(id);
+                        shop_art_->Discard(url);
                 }
             }
         }
         return art.image.bitmap ? &art.image : nullptr;
+    }
+
+    void DrawArtPlaceholder(const Tinfoil::Game& game, const D2D1_RECT_F& rect) {
+        const auto colors =
+            EdenXbox::Ui::Art::Seeded(game.base_id.empty() ? game.name : game.base_id);
+        D2D1_GRADIENT_STOP stops[3];
+        for (std::size_t i = 0; i < 3; ++i) {
+            auto c = colors[i];
+            // Maximum linear luminance .10: white title text has at least 7:1 contrast.
+            while (EdenXbox::Ui::Art::Luminance(c) > .10f)
+                c = EdenXbox::Ui::Art::Scale(c, .95f);
+            stops[i] = {EdenXbox::Ui::Art::kGradientStops[i], D2D1::ColorF(c.r, c.g, c.b, 1)};
+        }
+        renderer_.FillGradient(rect, 22, stops, 3, Point2F(rect.left, rect.top),
+                               Point2F(rect.left, rect.bottom));
+        renderer_.DrawString(
+            Widen(game.name), Font::TileLabel,
+            RectF(rect.left + 14, rect.top + 14, rect.right - 14, rect.bottom - 14), Theme::kText,
+            HAlign::Center, VAlign::Middle);
     }
 
     void DrawBrowse(Clock::time_point now) {
@@ -1887,13 +1937,12 @@ private:
             if (static_cast<std::size_t>(i) < visible_.size()) {
                 const auto& game = games_[visible_[static_cast<std::size_t>(i)]];
                 name = Widen(game.name);
-                keep.push_back(game.base_id);
-                if (auto* image = VisibleArt(game.base_id, now))
-                    renderer_.DrawImage(*image, rect, 22.0f, art_[game.base_id].fade.Value(now));
+                keep.push_back(game.base_id + ":icon");
+                if (auto* image = VisibleArt(game, now))
+                    renderer_.DrawImage(*image, rect, 22.0f,
+                                        art_[game.base_id + ":icon"].fade.Value(now));
                 else
-                    renderer_.DrawString(name, Font::TileLabel,
-                                         RectF(x + 14.0f, y + 14.0f, x + 280.0f, y + 151.0f),
-                                         Theme::kText, HAlign::Center, VAlign::Middle);
+                    DrawArtPlaceholder(game, rect);
                 meta = game.size ? FormatBytes(game.size) : Tr(Text::SrcUnknownSize);
             } else {
                 name = Tr(Text::SrcLoadMore);
@@ -1938,9 +1987,11 @@ private:
         else
             DrawSheet(renderer_, sheet);
         renderer_.PushClip(sheet);
-        if (auto* image = VisibleArt(game.base_id, now))
+        if (auto* image = VisibleArt(game, now, true))
             renderer_.DrawImage(*image, RectF(96.0f, 185.0f + shift, 576.0f, 455.0f + shift), 22.0f,
                                 1.0f);
+        else
+            DrawArtPlaceholder(game, RectF(96.0f, 185.0f + shift, 576.0f, 455.0f + shift));
         renderer_.DrawString(Widen(game.name), Font::Heading,
                              RectF(624.0f, 208.0f + shift, 1824.0f, 320.0f + shift), Theme::kText);
         renderer_.DrawString(game.size ? FormatBytes(game.size) : Tr(Text::SrcUnknownSize),
@@ -2289,7 +2340,7 @@ private:
     std::vector<std::uint64_t> installed_sizes_;
     std::vector<fs::path> installed_paths_;
     std::optional<Tinfoil::Traversal> traversal_;
-    std::unique_ptr<BannerSource> banners_;
+    std::unique_ptr<ShopArtSource> shop_art_;
     std::map<std::string, Art> art_;
     int decodes_ = 0;
     int tab_ = 0;

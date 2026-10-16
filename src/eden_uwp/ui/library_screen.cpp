@@ -34,6 +34,7 @@
 #include "eden_uwp/title_settings.h"
 #include "eden_uwp/ui/anim.h"
 #include "eden_uwp/ui/art.h"
+#include "eden_uwp/ui/art_colors.h"
 #include "eden_uwp/ui/cheats_screen.h"
 #include "eden_uwp/ui/input.h"
 #include "eden_uwp/ui/library.h"
@@ -131,10 +132,11 @@ constexpr int kSettingUsb = 2;
 constexpr int kSettingCredits = 3;
 constexpr int kSettingNextendo = 4;
 constexpr int kSettingMultiplayer = 5;
-constexpr int kSettingSystemMenu = 6;
-constexpr int kSettingOfficialInterface = 7;
-constexpr int kSettingBackToNXbox = 8;
-constexpr int kSettingsRowCount = 9;
+constexpr int kSettingInternetArt = 6;
+constexpr int kSettingSystemMenu = 7;
+constexpr int kSettingOfficialInterface = 8;
+constexpr int kSettingBackToNXbox = 9;
+constexpr int kSettingsRowCount = 10;
 // Rows that fit on screen at once; the list scrolls to keep the focused row visible.
 constexpr int kSettingsVisibleRows = 7;
 
@@ -166,12 +168,10 @@ struct Visual {
     bool loaded = false;
     Image image;
     Palette palette = kNeutralPalette;
-    // The eShop banner of the hero. It is decoded when the download (or the cache) has it, and it
-    // fades in over 320 ms from then on. `banner_final` is set once there is nothing more to wait
-    // for: it is on the GPU, or the title has none.
-    Image banner;
-    Tween banner_fade{0.0f};
-    bool banner_final = false;
+    Image hero;
+    Image background;
+    bool background_checked = false;
+    Tween background_blend{0.0f, kEaseHero};
 };
 
 Palette MixPalette(const Palette& from, const Palette& to, float t) {
@@ -179,81 +179,10 @@ Palette MixPalette(const Palette& from, const Palette& to, float t) {
             Mix(from.bottom, to.bottom, t)};
 }
 
-// Scales a color down until its luma is at most `cap`, so the white text on it stays readable.
-D2D1_COLOR_F Dim(const D2D1_COLOR_F& color, float cap) {
-    const float luma = 0.2126f * color.r + 0.7152f * color.g + 0.0722f * color.b;
-    const float scale = luma > cap ? cap / luma : 1.0f;
-    return {color.r * scale, color.g * scale, color.b * scale, 1.0f};
-}
-
-// The hero gradient comes from the icon, not from a palette per category: its three dominant
-// colors, most dominant at the top, each darkened to keep the text legible.
 Palette ExtractPalette(const Pixels& pixels) {
-    struct Bin {
-        float weight = 0.0f;
-        float red = 0.0f;
-        float green = 0.0f;
-        float blue = 0.0f;
-    };
-    // 4 bits per channel. Vivid and bright pixels count for more than murky ones.
-    std::vector<Bin> bins(16 * 16 * 16);
-    for (std::size_t i = 0; i + 3 < pixels.bgra.size(); i += 4) {
-        if (pixels.bgra[i + 3] < 128) {
-            continue;
-        }
-        const float blue = static_cast<float>(pixels.bgra[i]) / 255.0f;
-        const float green = static_cast<float>(pixels.bgra[i + 1]) / 255.0f;
-        const float red = static_cast<float>(pixels.bgra[i + 2]) / 255.0f;
-        const float high = std::max({red, green, blue});
-        const float low = std::min({red, green, blue});
-        const float saturation = high > 0.0f ? (high - low) / high : 0.0f;
-        const float weight = 0.4f + 1.6f * saturation * high;
-        const std::size_t cell = (static_cast<std::size_t>(red * 15.0f + 0.5f) << 8) |
-                                 (static_cast<std::size_t>(green * 15.0f + 0.5f) << 4) |
-                                 static_cast<std::size_t>(blue * 15.0f + 0.5f);
-        Bin& bin = bins[cell];
-        bin.weight += weight;
-        bin.red += red * weight;
-        bin.green += green * weight;
-        bin.blue += blue * weight;
-    }
-
-    // The three heaviest bins that are not close to one already picked.
-    std::array<D2D1_COLOR_F, 3> picked{};
-    std::size_t found = 0;
-    for (; found < picked.size(); ++found) {
-        const Bin* best = nullptr;
-        for (const Bin& bin : bins) {
-            if (bin.weight <= 0.0f || (best != nullptr && bin.weight <= best->weight)) {
-                continue;
-            }
-            bool distinct = true;
-            for (std::size_t other = 0; other < found; ++other) {
-                const float dr = bin.red / bin.weight - picked[other].r;
-                const float dg = bin.green / bin.weight - picked[other].g;
-                const float db = bin.blue / bin.weight - picked[other].b;
-                if (dr * dr + dg * dg + db * db < 0.06f) {
-                    distinct = false;
-                    break;
-                }
-            }
-            if (distinct) {
-                best = &bin;
-            }
-        }
-        if (best == nullptr) {
-            break;
-        }
-        picked[found] = {best->red / best->weight, best->green / best->weight,
-                         best->blue / best->weight, 1.0f};
-    }
-    if (found == 0) {
-        return kNeutralPalette;
-    }
-    for (std::size_t i = found; i < picked.size(); ++i) {
-        picked[i] = picked[i - 1];
-    }
-    return {Dim(picked[0], 0.44f), Dim(picked[1], 0.30f), Dim(picked[2], 0.16f)};
+    const auto colors = Art::Dominant(pixels.bgra, pixels.width, pixels.height);
+    const auto convert = [](Art::Color c) { return D2D1::ColorF(c.r, c.g, c.b, 1.0f); };
+    return {convert(colors[0]), convert(colors[1]), convert(colors[2])};
 }
 
 // A size as a number and its unit ("14,2" "GB"), so the number can be emphasized.
@@ -293,8 +222,11 @@ public:
                   const std::filesystem::path& local_state,
                   std::atomic<bool>* return_home = nullptr,
                   std::atomic<bool>* guest_home_request = nullptr)
-        : renderer_(renderer), window_(window), input_(window), local_state_(local_state),
-          banners_(local_state) {
+        : renderer_(renderer), window_(window), input_(window), local_state_(local_state) {
+        PurgeLegacyArt(local_state_);
+        internet_art_ = !std::filesystem::exists(local_state_ / "internet-art.disabled");
+        if (internet_art_)
+            backgrounds_ = std::make_unique<BackgroundArtSource>(local_state_);
         return_home_ = return_home;
         guest_home_request_ = guest_home_request;
         input_.SetCancelFlag(return_home_);
@@ -386,7 +318,7 @@ private:
         keep_title_id_ = SelectedTitleId();
         games_.clear();
         visuals_.clear();
-        banner_order_.clear();
+
         lift_.clear();
         name_.clear();
         hero_from_ = Look{};
@@ -430,12 +362,27 @@ private:
             return visual;
         }
         Pixels pixels;
-        if (!renderer_.DecodeImage(ReadFileBytes(game.icon), pixels) ||
-            !renderer_.UploadImage(pixels, visual.image)) {
-            Diagnostic("UI library icon unusable for " + game.title_id);
-            return visual;
+        auto decoded_file = game.icon;
+        decoded_file.replace_extension(".bmp");
+        if (!renderer_.DecodeImage(ReadFileBytes(decoded_file), pixels)) {
+            if (!renderer_.DecodeImage(ReadFileBytes(game.icon), pixels)) {
+                Diagnostic("UI library icon unusable for " + game.title_id);
+                return visual;
+            }
+            CacheBitmap(decoded_file, pixels);
         }
+        if (!renderer_.UploadImage(pixels, visual.image))
+            return visual;
         visual.palette = ExtractPalette(pixels);
+        // New provenance/versioned filenames ensure old store images can never be loaded.
+        const auto hero_file =
+            game.icon.parent_path() / (game.icon.stem().string() + ".hero-v1.bmp");
+        Pixels hero;
+        if (!renderer_.DecodeImage(ReadFileBytes(hero_file), hero)) {
+            hero = Pixels{192, 76, Art::Hero(pixels.bgra, pixels.width, pixels.height)};
+            CacheBitmap(hero_file, hero);
+        }
+        renderer_.UploadImage(hero, visual.hero);
         return visual;
     }
 
@@ -448,67 +395,6 @@ private:
         }
         const Visual& visual = EnsureVisual(key);
         return Look{visual.palette, visual.image.bitmap ? key : -1, key};
-    }
-
-    // ---- The eShop banner of the hero ----
-
-    bool HasBanner(int index) const {
-        return index >= 0 && index < GameCount() && visuals_[Idx(index)].banner.bitmap;
-    }
-
-    // How much of the banner shows: 0 until it is on the GPU, then it fades in over 320 ms.
-    float BannerOpacity(int index, Clock::time_point now) const {
-        return HasBanner(index) ? visuals_[Idx(index)].banner_fade.Value(now) : 0.0f;
-    }
-
-    // Picks the banner up once the worker has downloaded it (or found it in the cache). Decoding
-    // and uploading happen here, on the render thread, once per game.
-    void PollBanner(int index, Clock::time_point now) {
-        if (index < 0 || index >= GameCount()) {
-            return;
-        }
-        Visual& visual = visuals_[Idx(index)];
-        if (visual.banner_final) {
-            return;
-        }
-        const GameEntry& game = Game(index);
-        std::filesystem::path file;
-        const BannerState state = banners_.Get(game.title_id, file);
-        if (state == BannerState::Pending) {
-            return;
-        }
-        visual.banner_final = true;
-        if (state == BannerState::None) {
-            return; // offline or no banner: the icon gradient stays
-        }
-        Pixels pixels;
-        if (!renderer_.DecodeImage(ReadFileBytes(file), pixels) ||
-            !renderer_.UploadImage(pixels, visual.banner)) {
-            Diagnostic("UI banner unusable for " + game.title_id);
-            banners_.Discard(game.title_id);
-            return;
-        }
-        visual.banner_fade = Tween(0.0f);
-        visual.banner_fade.To(1.0f, now, kDurationPanel);
-        banner_order_.push_back(index);
-        Diagnostic("UI banner shown " + game.title_id);
-        EvictBanners();
-    }
-
-    // A banner is 8 MB on the GPU: keep the last few, never the one on screen.
-    void EvictBanners() {
-        constexpr std::size_t kKeep = 3;
-        for (std::size_t i = 0; i < banner_order_.size() && banner_order_.size() > kKeep;) {
-            const int index = banner_order_[i];
-            if (index == selected_ || index == hero_from_.key || index == hero_to_.key) {
-                ++i;
-                continue;
-            }
-            Visual& visual = visuals_[Idx(index)];
-            visual.banner = Image{};
-            visual.banner_final = false; // asked for again if the game is selected later
-            banner_order_.erase(banner_order_.begin() + static_cast<std::ptrdiff_t>(i));
-        }
     }
 
     // ---- Input ----
@@ -530,7 +416,6 @@ private:
                 StartScan();
         }
         Refresh(now);
-        PollBanner(hero_key_, now);
     }
 
     void HandleInput(Clock::time_point now) {
@@ -840,6 +725,27 @@ private:
 
     // A on a settings row.
     void ActivateSetting(Clock::time_point now) {
+        if (settings_row_ == kSettingInternetArt) {
+            const auto file = local_state_ / "internet-art.disabled";
+            std::error_code ec;
+            bool saved = true;
+            if (internet_art_)
+                saved = Art::WriteBytes(file, {1});
+            else {
+                std::filesystem::remove(file, ec);
+                saved = !ec;
+            }
+            if (!saved) {
+                Toast(Tr(Text::ResolutionSaveFailed), now);
+                return;
+            }
+            internet_art_ = !internet_art_;
+            if (internet_art_)
+                backgrounds_ = std::make_unique<BackgroundArtSource>(local_state_);
+            else
+                backgrounds_.reset();
+            return;
+        }
         if (settings_row_ == kSettingBackToNXbox) {
             if (SaveOfficialSwitchInterface(local_state_, false)) {
                 official_interface_ = false;
@@ -987,10 +893,16 @@ private:
         from.key = shown < 0.5f ? hero_from_.key : hero_to_.key;
         hero_from_ = from;
         hero_to_ = LookFor(key);
-        if (key >= 0 && key < GameCount()) {
-            banners_.Request(Game(key).title_id);
+        // Only the two transitioning heroes need full-size GPU backgrounds.
+        for (std::size_t i = 0; i < visuals_.size(); ++i) {
+            if (static_cast<int>(i) == hero_from_.key || static_cast<int>(i) == hero_to_.key)
+                continue;
+            auto& visual = visuals_[i];
+            visual.background = {};
+            visual.background_checked = false;
+            visual.background_blend = Tween(0.0f, kEaseHero);
         }
-        hero_blend_ = Tween(0.0f);
+        hero_blend_ = Tween(0.0f, kEaseHero);
         hero_blend_.To(1.0f, now, kDurationScreen);
     }
 
@@ -1011,7 +923,7 @@ private:
         }
         DrawBackdrop(now);
         if (tab_ == Tab::Library) {
-            DrawHeroBanner(now);
+            DrawHeroBackground(now);
         }
         DrawScrim();
         if (tab_ == Tab::Library) {
@@ -1054,81 +966,80 @@ private:
         return renderer_.MeasureString(text, font).width;
     }
 
-    // The gradient that stands in for the banner while there is none (offline, no banner for the
-    // title, or still on its way).
+    // The gradient also gives games without control icons a deliberate empty state.
     void DrawBackdrop(Clock::time_point now) {
         const Palette palette =
             MixPalette(hero_from_.palette, hero_to_.palette, hero_blend_.Value(now));
         // Three stops with the middle one pulled forward (0 / 48 / 72%): a two-stop ramp is the
         // default gradient of every tool.
-        const D2D1_GRADIENT_STOP ramp[3] = {
-            {0.0f, palette.top}, {0.48f, palette.middle}, {0.72f, palette.bottom}};
+        const D2D1_GRADIENT_STOP ramp[3] = {{Art::kGradientStops[0], palette.top},
+                                            {Art::kGradientStops[1], palette.middle},
+                                            {Art::kGradientStops[2], palette.bottom}};
         renderer_.FillGradient(RectF(0.0f, 0.0f, kCanvasWidth, kHeroHeight), 0.0f, ramp, 3,
                                Point2F(0.0f, 0.0f), Point2F(0.0f, kHeroHeight));
     }
 
-    // The scrim is its own layer over the gradient and the banner: a veil under the tabs, clear
-    // through the middle, closing to the page black at the bottom of the hero (the approved
-    // preview: 180deg, 0.5 at 0%, 0 at 16% and 52%, 0.72 at 76%, black at 98%).
+    // Separate from cached artwork: the left side carries text. Even pure white artwork
+    // under the 82% black veil has luminance <= .028, giving secondary text WCAG AA.
     void DrawScrim() {
-        const D2D1_GRADIENT_STOP scrim[5] = {{0.0f, Theme::Rgb(0x000000, 0.5f)},
-                                             {0.16f, Theme::Rgb(0x000000, 0.0f)},
-                                             {0.52f, Theme::Rgb(0x000000, 0.0f)},
-                                             {0.76f, Theme::Rgb(0x000000, 0.72f)},
-                                             {0.98f, Theme::Rgb(0x000000, 1.0f)}};
-        renderer_.FillGradient(RectF(0.0f, 0.0f, kCanvasWidth, kHeroHeight), 0.0f, scrim, 5,
-                               Point2F(0.0f, 0.0f), Point2F(0.0f, kHeroHeight));
+        const auto clear = WithOpacity(Theme::kBackground, 0.0f);
+        const D2D1_GRADIENT_STOP bottom[] = {{0.0f, clear},
+                                             {0.5f, clear},
+                                             {Art::kBottomScrimStart, clear},
+                                             {1.0f, Theme::kBackground}};
+        const auto rect = RectF(0.0f, 0.0f, kCanvasWidth, kHeroHeight);
+        renderer_.FillGradient(rect, 0, bottom, 4, Point2F(0, 0), Point2F(0, kHeroHeight));
+        const D2D1_GRADIENT_STOP left[] = {
+            {0.0f, WithOpacity(Theme::kBackground, Art::kLeftScrimOpacity)},
+            {Art::kLeftScrimEnd, WithOpacity(Theme::kBackground, Art::kLeftScrimOpacity)},
+            {1.0f, clear}};
+        renderer_.FillGradient(rect, 0, left, 3, Point2F(0, 0), Point2F(kCanvasWidth, 0));
     }
 
-    // One banner covering the hero box, like CSS object-fit: cover with object-position 50% 18%.
-    void DrawBannerImage(const Image& banner, float opacity) {
-        const float scale = std::max(kCanvasWidth / banner.size.width,
-                                     kHeroHeight / banner.size.height);
-        const float width = banner.size.width * scale;
-        const float height = banner.size.height * scale;
-        const float left = (kCanvasWidth - width) * 0.5f;
-        const float top = (kHeroHeight - height) * 0.18f;
-        renderer_.PushClip(RectF(0.0f, 0.0f, kCanvasWidth, kHeroHeight));
-        renderer_.DrawImage(banner, RectF(left, top, left + width, top + height), 0.0f, opacity);
-        renderer_.PopClip();
-    }
-
-    // The full-bleed eShop banner. It fades in when it arrives, and crossfades with the previous
-    // game's banner when the selection changes.
-    void DrawHeroBanner(Clock::time_point now) {
+    void DrawHeroBackground(Clock::time_point now) {
         const float blend = hero_blend_.Value(now);
         const auto draw = [&](int key, float opacity) {
-            const float shown = opacity * BannerOpacity(key, now);
-            if (shown > 0.001f) {
-                DrawBannerImage(visuals_[Idx(key)].banner, shown);
+            if (key < 0 || key >= GameCount())
+                return;
+            auto& visual = EnsureVisual(key);
+            renderer_.DrawImage(visual.hero, RectF(0, 0, kCanvasWidth, kHeroHeight), 0, opacity);
+            if (!internet_art_ || !backgrounds_)
+                return;
+            const auto& game = Game(key);
+            if (!visual.background_checked) {
+                // NACP slot 0 is American English; slot 1 is British English.
+                std::string english;
+                for (std::size_t i = 0; i < std::min(std::size_t(2), game.nacp_names.size()); ++i)
+                    if (!game.nacp_names[i].empty()) {
+                        english = game.nacp_names[i];
+                        break;
+                    }
+                backgrounds_->Request(game.title_id, winrt::to_string(game.name), english);
+                std::filesystem::path file;
+                if (backgrounds_->Get(game.title_id, file) == ArtState::Ready) {
+                    visual.background_checked = true;
+                    Pixels pixels;
+                    if (renderer_.DecodeImage(ReadFileBytes(file), pixels) &&
+                        renderer_.UploadImage(pixels, visual.background))
+                        visual.background_blend.To(1.0f, now, kDurationScreen);
+                }
             }
+            renderer_.DrawImage(visual.background, RectF(0, 0, kCanvasWidth, kHeroHeight), 0,
+                                opacity * visual.background_blend.Value(now));
         };
-        if (hero_from_.key == hero_to_.key) {
-            draw(hero_to_.key, 1.0f);
-        } else {
-            // The old banner stays underneath while the new one fades in over it.
-            draw(hero_from_.key, HasBanner(hero_to_.key) ? 1.0f : 1.0f - blend);
-            draw(hero_to_.key, blend);
-        }
-    }
-
-    // How much of the selected game's banner is showing: the big title and the icon on the right
-    // give way to it, because the banner carries the game's logo.
-    float BannerCover(Clock::time_point now) const {
-        return HasGame() ? BannerOpacity(selected_, now) : 0.0f;
+        const bool has_next = hero_to_.key >= 0 && hero_to_.key < GameCount() &&
+                              EnsureVisual(hero_to_.key).hero.bitmap;
+        draw(hero_from_.key, has_next ? 1.0f : 1.0f - blend);
+        draw(hero_to_.key, blend);
     }
 
     void DrawHeroArt(Clock::time_point now) {
         const float blend = hero_blend_.Value(now);
-        const float uncovered = 1.0f - BannerCover(now);
-        if (uncovered <= 0.001f) {
-            return;
-        }
         const D2D1_RECT_F rect = RectF(kCanvasWidth - kMargin - kArtSize, kArtTop,
                                        kCanvasWidth - kMargin, kArtTop + kArtSize);
         const auto draw = [&](int art, float opacity) {
             if (art >= 0 && opacity > 0.001f) {
-                renderer_.DrawImage(EnsureVisual(art).image, rect, kArtRadius, opacity * uncovered);
+                renderer_.DrawImage(EnsureVisual(art).image, rect, kArtRadius, opacity);
             }
         };
         // The old icon stays underneath while the new one fades in over it.
@@ -1140,7 +1051,7 @@ private:
         }
         if (hero_to_.art >= 0) {
             renderer_.StrokeRounded(Inflate(rect, -0.5f), kArtRadius - 0.5f, 1.0f,
-                                    WithOpacity(Theme::kHairline, uncovered));
+                                    Theme::kHairline);
         }
     }
 
@@ -1175,7 +1086,7 @@ private:
                                                          std::to_wstring(scan_->Total()));
             }
         } else if (HasGame()) {
-            DrawGameHero(Game(selected_), now);
+            DrawGameHero(Game(selected_));
         } else if (GameCount() == 0 && keys_missing_) {
             // The folder has games, but nothing could be opened: say why, not "no games".
             DrawMessage(Tr(Text::MissingKeysTitle), Tr(Text::MissingKeysBody));
@@ -1239,9 +1150,8 @@ private:
         return x + 2.0f * kMetaGap + kMetaDot;
     }
 
-    void DrawGameHero(const GameEntry& game, Clock::time_point now) {
-        // With a banner there is no big title: the banner carries the logo.
-        DrawTitle(game.name, 1.0f - BannerCover(now));
+    void DrawGameHero(const GameEntry& game) {
+        DrawTitle(game.name);
 
         // Format, size and title ID in one monospaced line; the number of the size is the one
         // thing set in the brighter, heavier face.
@@ -1474,7 +1384,8 @@ private:
             }
             if (layer_ == Layer::Rail &&
                 (settings_row_ == kSettingSources || settings_row_ == kSettingUsb ||
-                 settings_row_ == kSettingCredits || settings_row_ == kSettingSystemMenu ||
+                 settings_row_ == kSettingCredits || settings_row_ == kSettingInternetArt ||
+                 settings_row_ == kSettingSystemMenu ||
                  settings_row_ == kSettingNextendo ||
                  settings_row_ == kSettingMultiplayer)) {
                 hints.push_back({Theme::kButtonA, L"A", Tr(Text::HintSelect)});
@@ -1545,6 +1456,8 @@ private:
              credits_row,
              nextendo_row,
              {Multiplayer::Tr(Multiplayer::Text::Title), L"", Theme::kTextSecondary, L""},
+             {Tr(Text::InternetArtwork), Tr(internet_art_ ? Text::SyncStateOn : Text::SyncStateOff),
+              Theme::kTextSecondary, Tr(Text::InternetArtworkHint)},
              {Tr(Text::SystemMenuTitle), Tr(Text::SystemMenuBoot), Theme::kTextSecondary,
               Tr(Text::SystemMenuHint)},
              {Tr(Text::OfficialSwitchInterface),
@@ -1675,12 +1588,12 @@ private:
     Input input_;
     std::filesystem::path local_state_;
     std::unique_ptr<ShopScreen> shop_;
+    bool internet_art_ = true;
+    std::unique_ptr<BackgroundArtSource> backgrounds_;
     int sources_count_ = 0; // sources saved by the Sources screen, shown on its Settings row
     Updater updater_;
     bool update_focused_ = false;
     bool update_open_ = false;
-    BannerSource banners_; // the eShop banners of the hero, fetched off the render thread
-    std::vector<int> banner_order_; // games whose banner is on the GPU, the oldest first
 
     UsbMode usb_mode_ = UsbMode::Unset;
     std::unique_ptr<UsbDetection> usb_detection_;

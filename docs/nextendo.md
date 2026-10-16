@@ -113,10 +113,10 @@ There is no plaintext token file or Nintendo credential reader.
 
 | Pattern / exact host | Destination |
 | --- | --- |
-| `nncs2-*.n.n.srv.nintendo.net` | NAT address |
-| `g2b309e01-lp1.s.n.srv.nintendo.net` (MK8D secure NEX) | NAT address |
-| `g2df33d01-lp1.p.srv.nintendo.net` (Splatoon 2 rendezvous) | NAT address |
-| `*.nintendo.net`, `*.nintendo.com` | Main address |
+| NAT discovery hosts (prefix `nncs2-`) | NAT address |
+| MK8D NAT hostname (MK8D secure NEX) | NAT address |
+| Splatoon 2 NAT hostname (Splatoon 2 rendezvous) | NAT address |
+| Vendor online service domains | Main address |
 | `*.nintendowifi.net`, `*.nintendo.co.jp` | Main address |
 | `demonware.net`, `*.demonware.net` | Main address |
 | Other known regional Nintendo domains | Blocked |

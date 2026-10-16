@@ -15,9 +15,9 @@ setup, OTA UI, pending sync, boot sync, or post-game SaveSync. Existing sync mar
 cloud saves must be reconciled from a normal NXbox launch. Silently choosing a cloud conflict winner
 would risk overwriting the player's save.
 
-The splash reads the cached title name and banner/icon from `LocalState/library`. A cache miss uses
-the title ID until the scan supplies the name. The existing art worker downloads missing eShop art;
-network availability never gates the boot. Without cached art while offline, the fallback is the
+The splash reads the cached title name and local control icon from `LocalState/library`. A cache
+miss uses the title ID until the scan supplies the name. Artwork never uses the network.
+Without a cached local icon, the fallback is the
 name/ID and phase on black. A missing game, disconnected drive, missing keys, or load failure keeps
 a localized game-specific error screen with B to exit, rather than opening the library or booting
 the previously selected game. A game with only an NSZ must first be prepared in the normal library.
@@ -149,7 +149,7 @@ between roots and can make existing saves appear lost.
 
 Shared logical content: `games` plus updates/DLC (or one external game directory), `eden/keys`,
 `eden/nand` including saves and user profiles, `eden/load` mods/cheats and their enable state,
-`eden/cache/shader` caches plus crash markers, library JSON/JPEG/eShop index, and the settings that select
+`eden/cache/shader` caches plus crash markers, library metadata and local control artwork, and the settings that select
 the same emulated user. Sync state/credentials need an explicit account and locking design; do not
 implicitly share `portal.json`, logs, crash dumps, `game.txt`, `game.url`, `move.txt`, or package-update
 staging. Once full mode exists, `title.txt` must take precedence over all private remembered titles.

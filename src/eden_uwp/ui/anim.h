@@ -62,12 +62,14 @@ private:
     float p2y_;
 };
 
+inline constexpr CubicBezier kEaseHero{0.22f, 1.0f, 0.36f, 1.0f};
 inline constexpr CubicBezier kEase{0.2f, 0.8f, 0.2f, 1.0f};
 
 // A value that eases from wherever it is to a new target.
 class Tween {
 public:
-    explicit Tween(float value = 0.0f) : from_(value), to_(value) {}
+    explicit Tween(float value = 0.0f, CubicBezier ease = kEase)
+        : ease_(ease), from_(value), to_(value) {}
 
     // Starts moving to `target` from the current value, so retargeting mid-flight does not jump.
     void To(float target, Clock::time_point now, Clock::duration span = kDurationItem) {
@@ -86,7 +88,7 @@ public:
         }
         const float elapsed = std::chrono::duration<float>(now - start_).count() /
                               std::chrono::duration<float>(span_).count();
-        return from_ + (to_ - from_) * kEase(elapsed);
+        return from_ + (to_ - from_) * ease_(elapsed);
     }
 
     float Target() const {
@@ -94,6 +96,7 @@ public:
     }
 
 private:
+    CubicBezier ease_;
     float from_;
     float to_;
     Clock::time_point start_{};

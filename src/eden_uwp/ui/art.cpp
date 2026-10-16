@@ -1,378 +1,426 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include <iterator>
 #include <windows.h>
-
 #include "eden_uwp/ui/art.h"
 
+#include <atomic>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
-#include <cstddef>
-#include <cstdint>
 #include <fstream>
-#include <iterator>
 #include <map>
 #include <mutex>
-#include <system_error>
 #include <thread>
-#include <utility>
 #include <vector>
-
-#include <fmt/format.h>
+#include <wincodec.h>
+#include <winrt/Windows.Data.Json.h>
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Storage.Streams.h>
+#include <winrt/Windows.Web.Http.Filters.h>
 #include <winrt/Windows.Web.Http.Headers.h>
 #include <winrt/Windows.Web.Http.h>
-
-#include "eden_uwp/diagnostic.h"
+#include <wrl/client.h>
+#include "eden_uwp/await_bounded.h"
+#include "eden_uwp/ui/art_index.h"
+#include "eden_uwp/ui/renderer.h"
 
 namespace EdenXbox::Ui {
-namespace {
-
 namespace fs = std::filesystem;
-
-constexpr const char* kIndexUrl =
-    "https://raw.githubusercontent.com/NspxMiguel/NXbox/main/dist/art/eshop-art.json";
-constexpr std::uint32_t kMaxIndexBytes = 32u << 20;
-constexpr std::uint32_t kMaxBannerBytes = 16u << 20;
-constexpr auto kIndexMaxAge = std::chrono::hours(24 * 7);
-
-class ScopedApartment {
-public:
-    ScopedApartment() {
-        winrt::init_apartment(winrt::apartment_type::multi_threaded);
-    }
-    ~ScopedApartment() {
-        winrt::uninit_apartment();
-    }
-    ScopedApartment(const ScopedApartment&) = delete;
-    ScopedApartment& operator=(const ScopedApartment&) = delete;
-};
-
-// GETs a body into `bytes`. False, with a log line, on a network error or a status other than 200.
-bool HttpGet(const std::string& url, std::uint32_t limit, std::vector<std::uint8_t>& bytes) {
-    try {
-        winrt::Windows::Web::Http::HttpClient client;
-        void(client.DefaultRequestHeaders().UserAgent().TryParseAdd(L"NXbox/1.0"));
-        const auto response =
-            client.GetAsync(winrt::Windows::Foundation::Uri{winrt::to_hstring(url)}).get();
-        if (response.StatusCode() != winrt::Windows::Web::Http::HttpStatusCode::Ok) {
-            Diagnostic(fmt::format("UI art http {} status={}", url,
-                                   static_cast<int>(response.StatusCode())));
-            return false;
-        }
-        const auto buffer = response.Content().ReadAsBufferAsync().get();
-        if (buffer.Length() == 0 || buffer.Length() > limit) {
-            Diagnostic(fmt::format("UI art http {} rejected size={}", url, buffer.Length()));
-            return false;
-        }
-        bytes.assign(buffer.data(), buffer.data() + buffer.Length());
-        return true;
-    } catch (const winrt::hresult_error& error) {
-        Diagnostic("UI art http " + url + " failed " + winrt::to_string(error.message()));
-        return false;
-    }
+namespace {
+// Stable filename within a worker's session directory; no URL or header is logged.
+std::string CacheKey(const std::string& value) {
+    std::uint64_t hash = 14695981039346656037ull;
+    for (unsigned char c : value)
+        hash = (hash ^ c) * 1099511628211ull;
+    return std::to_string(hash);
 }
-
-bool ReadText(const fs::path& file, std::string& text) {
-    std::ifstream in(file, std::ios::binary);
-    if (!in) {
-        return false;
-    }
-    text.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
-    return !text.empty();
-}
-
-// Written under a temporary name and renamed: a full disk used to leave an empty or truncated
-// file that later runs trusted (the error only shows when the stream is closed).
-bool WriteBytes(const fs::path& file, const std::vector<std::uint8_t>& bytes) {
-    fs::path partial = file;
-    partial += ".partial";
-    {
-        std::ofstream out(partial, std::ios::binary | std::ios::trunc);
-        out.write(reinterpret_cast<const char*>(bytes.data()),
-                  static_cast<std::streamsize>(bytes.size()));
-        out.close();
-        if (!out) {
-            std::error_code ec;
-            fs::remove(partial, ec);
-            return false;
-        }
-    }
-    std::error_code ec;
-    fs::rename(partial, file, ec);
-    if (ec) {
-        fs::remove(partial, ec);
-        return false;
-    }
-    return true;
-}
-
-// The text of the JSON string that follows `"key"` and a colon, starting the search at `from`.
-// The index is a flat, machine-written file, so a scan is enough and keeps the memory low (a
-// parsed tree of thousands of titles would take far more than the text). Returns npos when the
-// key is not there or is not followed by a string.
-std::size_t FindStringAfterKey(const std::string& text, const std::string& key, std::size_t from,
-                               std::string& value, std::size_t* after = nullptr) {
-    const std::string quoted = "\"" + key + "\"";
-    const auto skip = [&](std::size_t pos) {
-        while (pos < text.size() && (text[pos] == ' ' || text[pos] == '\n' || text[pos] == '\r' ||
-                                     text[pos] == '\t')) {
-            ++pos;
-        }
-        return pos;
-    };
-    std::size_t search = from;
+std::vector<std::uint8_t> Download(const std::string& url, const Tinfoil::Headers& headers = {}) {
+    using namespace winrt::Windows::Web::Http;
+    using namespace winrt::Windows::Storage::Streams;
+    constexpr auto timeout = std::chrono::seconds(15);
+    Filters::HttpBaseProtocolFilter filter;
+    filter.AllowAutoRedirect(false);
+    filter.AllowUI(false);
+    filter.CookieUsageBehavior(Filters::HttpCookieUsageBehavior::NoCookies);
+    HttpClient client{filter};
+    HttpRequestMessage message{HttpMethod::Get(),
+                               winrt::Windows::Foundation::Uri{winrt::to_hstring(url)}};
+    for (const auto& [name, value] : headers)
+        void(message.Headers().TryAppendWithoutValidation(winrt::to_hstring(name),
+                                                          winrt::to_hstring(value)));
+    const auto response = AwaitBounded(
+        client.SendRequestAsync(message, HttpCompletionOption::ResponseHeadersRead), timeout);
+    if (!response || response->StatusCode() != HttpStatusCode::Ok)
+        return {};
+    const auto stream = AwaitBounded(response->Content().ReadAsInputStreamAsync(), timeout);
+    if (!stream)
+        return {};
+    Buffer buffer{64u << 10};
+    std::vector<std::uint8_t> bytes;
     for (;;) {
-        std::size_t at = text.find(quoted, search);
-        if (at == std::string::npos) {
-            return std::string::npos;
-        }
-        search = at + quoted.size(); // a match that is not a key is skipped
-        at = skip(search);
-        if (at >= text.size() || text[at] != ':') {
-            continue;
-        }
-        at = skip(at + 1);
-        if (at < text.size() && text[at] == '[') {
-            at = skip(at + 1); // the first element of an array
-        }
-        if (at >= text.size() || text[at] != '"') {
-            continue;
-        }
-        const std::size_t end = text.find('"', at + 1);
-        if (end == std::string::npos) {
-            return std::string::npos;
-        }
-        value = text.substr(at + 1, end - at - 1);
-        if (after != nullptr) {
-            *after = end + 1;
-        }
-        return at;
+        const auto read = AwaitBounded(
+            stream->ReadAsync(buffer, buffer.Capacity(), InputStreamOptions::Partial), timeout);
+        if (!read || read->Length() > (16u << 20) - bytes.size())
+            return {};
+        if (!read->Length())
+            break;
+        bytes.insert(bytes.end(), read->data(), read->data() + read->Length());
     }
+    return bytes;
 }
-
 } // namespace
 
-struct BannerSource::Impl : std::enable_shared_from_this<BannerSource::Impl> {
-    explicit Impl(fs::path local_state_in, bool fetch_icon_in)
-        : fetch_icon(fetch_icon_in), local_state(std::move(local_state_in)) {}
+bool CacheBitmap(const fs::path& file, const Pixels& pixels) {
+    const auto bytes = Art::EncodeBitmap(pixels.bgra, pixels.width, pixels.height);
+    return !bytes.empty() && Art::WriteBytes(file, bytes);
+}
 
-    bool fetch_icon = false;
-
-    fs::path local_state;
+struct ShopArtSource::Impl {
+    struct Job {
+        std::string url;
+        Tinfoil::Headers headers;
+    };
+    explicit Impl(fs::path path)
+        : folder(std::move(path) / "shop-art" / std::to_string(ClockTicks())) {
+        // No responses from another authenticated session are reused.
+    }
+    static std::int64_t ClockTicks() {
+        return std::chrono::steady_clock::now().time_since_epoch().count();
+    }
+    fs::path folder;
     std::mutex mutex;
     std::condition_variable wake;
     bool stop = false;
-    std::map<std::string, BannerState> states;
-    std::vector<std::string> stack; // pending requests, the newest last
-    std::string index;              // the index text; empty when there is none
-    std::string base;
-    std::string extension;
-
-    fs::path BannerFile(const std::string& title_id) const {
-        return local_state / "library" / (title_id + ".banner.jpg");
+    std::map<std::string, ArtState> states;
+    std::vector<Job> stack;
+    fs::path File(const std::string& url) const {
+        return folder / (CacheKey(url) + ".image");
     }
-
-    void LoadIndex() {
-        const fs::path file = local_state / "library" / "eshop-art.json";
-        std::error_code ec;
-        fs::create_directories(file.parent_path(), ec);
-        bool fresh = false;
-        if (fs::exists(file, ec)) {
-            const auto stamp = fs::last_write_time(file, ec);
-            // An empty file is what a full disk left behind; it is never fresh.
-            if (!ec && fs::file_size(file, ec) > 0 && !ec) {
-                fresh = fs::file_time_type::clock::now() - stamp < kIndexMaxAge;
-            }
-        }
-        std::string text;
-        if (!fresh) {
-            std::vector<std::uint8_t> bytes;
-            if (HttpGet(kIndexUrl, kMaxIndexBytes, bytes) && WriteBytes(file, bytes)) {
-                Diagnostic(fmt::format("UI art index downloaded {} bytes", bytes.size()));
-            }
-        }
-        if (!ReadText(file, text)) {
-            Diagnostic("UI art index unavailable, the hero keeps the icon gradient");
-            return;
-        }
-        std::string found_base;
-        std::string found_extension;
-        if (FindStringAfterKey(text, "base", 0, found_base) == std::string::npos ||
-            FindStringAfterKey(text, "ext", 0, found_extension) == std::string::npos) {
-            Diagnostic("UI art index has no base or ext");
-            return;
-        }
-        const std::lock_guard<std::mutex> lock(mutex);
-        base = std::move(found_base);
-        extension = std::move(found_extension);
-        index = std::move(text);
-        Diagnostic(fmt::format("UI art index ready ({} bytes)", index.size()));
-    }
-
-    // The banner id of a title, or empty when the index does not know it.
-    std::string BannerId(const std::string& title_id) {
-        const std::lock_guard<std::mutex> lock(mutex);
-        if (index.empty()) {
-            return {};
-        }
-        // "titles":{ ... "<TITLEID>":["<banner>","<icon>"] ... }
-        const std::size_t titles = index.find("\"titles\"");
-        std::string id;
-        if (FindStringAfterKey(index, title_id, titles == std::string::npos ? 0 : titles, id) ==
-            std::string::npos) {
-            return {};
-        }
-        return id;
-    }
-
-    void FetchIcon(const std::string& title_id) {
-        const fs::path file = local_state / "library" / (title_id + ".jpg");
-        std::error_code ec;
-        if (fs::exists(file, ec) && fs::file_size(file, ec) > 0)
-            return;
-        std::string id;
-        std::size_t after = 0;
-        if (FindStringAfterKey(index, title_id, 0, id, &after) == std::string::npos)
-            return;
-        // The second string in the same array is the icon, never the next title's banner.
-        const auto comma = index.find_first_not_of(" \r\n\t", after);
-        if (comma == std::string::npos || index[comma] != ',')
-            return;
-        const auto begin = index.find_first_not_of(" \r\n\t", comma + 1);
-        if (begin == std::string::npos || index[begin] != '"')
-            return;
-        const auto end = index.find('"', begin + 1);
-        if (end == std::string::npos || end == begin + 1)
-            return;
-        id = index.substr(begin + 1, end - begin - 1);
-        std::vector<std::uint8_t> bytes;
-        if (HttpGet(base + id + extension, kMaxBannerBytes, bytes) && WriteBytes(file, bytes)) {
-            Diagnostic("UI art icon " + title_id + " cached");
-        }
-    }
-
-    BannerState Fetch(const std::string& title_id) {
-        const fs::path file = BannerFile(title_id);
-        std::error_code ec;
-        if (fs::exists(file, ec) && fs::file_size(file, ec) > 0) {
-            return BannerState::Ready; // cached by an earlier run
-        }
-        const std::string id = BannerId(title_id);
-        if (id.empty()) {
-            Diagnostic("UI art no banner for " + title_id);
-            return BannerState::None;
-        }
-        std::vector<std::uint8_t> bytes;
-        if (!HttpGet(base + id + extension, kMaxBannerBytes, bytes)) {
-            return BannerState::None;
-        }
-        // Written under a temporary name and renamed, so a half-written file never counts.
-        const fs::path partial = file.parent_path() / (title_id + ".banner.partial");
-        if (!WriteBytes(partial, bytes)) {
-            fs::remove(partial, ec);
-            return BannerState::None;
-        }
-        fs::rename(partial, file, ec);
-        if (ec) {
-            fs::remove(partial, ec);
-            return BannerState::None;
-        }
-        Diagnostic(fmt::format("UI art banner {} cached {} bytes", title_id, bytes.size()));
-        return BannerState::Ready;
+    ArtState Fetch(const Job& job) {
+        const auto bytes = Download(job.url, job.headers);
+        return !bytes.empty() && Art::WriteBytes(File(job.url), bytes) ? ArtState::Ready
+                                                                       : ArtState::None;
     }
 
     void Loop() {
+        bool apartment = false;
         try {
-            const ScopedApartment apartment;
-            LoadIndex();
+            winrt::init_apartment(winrt::apartment_type::multi_threaded);
+            apartment = true;
             for (;;) {
-                std::string title_id;
+                Job job;
                 {
                     std::unique_lock<std::mutex> lock(mutex);
                     wake.wait(lock, [&] { return stop || !stack.empty(); });
-                    if (stop) {
-                        return;
-                    }
-                    title_id = std::move(stack.back());
+                    if (stop)
+                        break;
+                    job = std::move(stack.back());
                     stack.pop_back();
                 }
-                BannerState result = BannerState::None;
+                auto result = ArtState::None;
                 try {
-                    if (fetch_icon)
-                        FetchIcon(title_id);
-                    result = Fetch(title_id);
-                } catch (const winrt::hresult_error& error) {
-                    Diagnostic("UI art fetch failed " + winrt::to_string(error.message()));
-                } catch (const std::exception& error) {
-                    Diagnostic(std::string("UI art fetch failed ") + error.what());
+                    result = Fetch(job);
+                } catch (...) { /* Keep the placeholder. */
                 }
                 const std::lock_guard<std::mutex> lock(mutex);
-                states[title_id] = result;
+                states[job.url] = result;
             }
-        } catch (const winrt::hresult_error& error) {
-            Diagnostic("UI art worker failed " + winrt::to_string(error.message()));
+        } catch (...) {
+            const std::lock_guard<std::mutex> lock(mutex);
+            stop = true;
+            for (auto& [url, state] : states)
+                state = ArtState::None;
         }
+        std::error_code ec;
+        fs::remove_all(folder, ec);
+        if (apartment)
+            winrt::uninit_apartment();
     }
 };
-
-BannerSource::BannerSource(fs::path local_state, bool fetch_icon)
-    : impl_(std::make_shared<Impl>(std::move(local_state), fetch_icon)) {
-    // The thread owns a reference, so the screen can go away while a download finishes.
+ShopArtSource::ShopArtSource(fs::path path) : impl_(std::make_shared<Impl>(std::move(path))) {
     std::thread([impl = impl_] { impl->Loop(); }).detach();
 }
-
-BannerSource::~BannerSource() {
+ShopArtSource::~ShopArtSource() {
     {
         const std::lock_guard<std::mutex> lock(impl_->mutex);
         impl_->stop = true;
     }
     impl_->wake.notify_all();
 }
-
-void BannerSource::Request(const std::string& title_id) {
-    if (title_id.empty()) {
+void ShopArtSource::Request(const std::string& url, const std::string& origin,
+                            const Tinfoil::Headers& headers) {
+    if (!Tinfoil::AllowedArt(url, origin))
         return;
-    }
     {
         const std::lock_guard<std::mutex> lock(impl_->mutex);
-        auto found = impl_->states.find(title_id);
-        if (found != impl_->states.end()) {
-            if (found->second != BannerState::Pending) {
-                return;
-            }
-            // Pending already: move it to the top of the stack, it is wanted now.
-            for (auto it = impl_->stack.begin(); it != impl_->stack.end(); ++it) {
-                if (*it == title_id) {
-                    impl_->stack.erase(it);
-                    break;
-                }
-            }
-        } else {
-            impl_->states.emplace(title_id, BannerState::Pending);
-        }
-        impl_->stack.push_back(title_id);
+        if (impl_->stop || impl_->states.count(url))
+            return;
+        impl_->states[url] = ArtState::Pending;
+        impl_->stack.push_back({url, headers});
     }
     impl_->wake.notify_one();
 }
-
-BannerState BannerSource::Get(const std::string& title_id, fs::path& file) const {
+ArtState ShopArtSource::Get(const std::string& url, fs::path& file) const {
     const std::lock_guard<std::mutex> lock(impl_->mutex);
-    const auto found = impl_->states.find(title_id);
-    if (found == impl_->states.end()) {
-        return BannerState::Pending;
-    }
-    if (found->second == BannerState::Ready) {
-        file = impl_->BannerFile(title_id);
-    }
+    const auto found = impl_->states.find(url);
+    if (found == impl_->states.end())
+        return ArtState::None;
+    if (found->second == ArtState::Ready)
+        file = impl_->File(url);
     return found->second;
 }
-
-void BannerSource::Discard(const std::string& title_id) {
+void ShopArtSource::Discard(const std::string& url) {
     const std::lock_guard<std::mutex> lock(impl_->mutex);
-    impl_->states[title_id] = BannerState::None;
+    impl_->states[url] = ArtState::None;
     std::error_code ec;
-    fs::remove(impl_->BannerFile(title_id), ec);
+    fs::remove(impl_->File(url), ec);
 }
 
+namespace {
+std::int64_t NowSeconds() {
+    return std::chrono::duration_cast<std::chrono::seconds>(
+               std::chrono::system_clock::now().time_since_epoch())
+        .count();
+}
+std::int64_t ReadStamp(const fs::path& file) {
+    std::int64_t stamp = 0;
+    std::ifstream(file) >> stamp;
+    return stamp;
+}
+void WriteStamp(const fs::path& file) {
+    const auto value = std::to_string(NowSeconds());
+    Art::WriteBytes(file, {value.begin(), value.end()});
+}
+Art::BackgroundIndex ParseIndex(const std::vector<std::uint8_t>& bytes) {
+    using namespace winrt::Windows::Data::Json;
+    if (bytes.empty())
+        return {};
+    const auto object =
+        JsonObject::Parse(winrt::to_hstring(std::string(bytes.begin(), bytes.end())));
+    Art::BackgroundIndex index;
+    for (const auto& pair : object) {
+        std::vector<std::string> files;
+        for (const auto& value : pair.Value().GetArray()) {
+            auto file = winrt::to_string(value.GetString());
+            if (!Art::SafeFilename(file))
+                return {};
+            files.push_back(std::move(file));
+        }
+        if (!files.empty())
+            index.emplace(winrt::to_string(pair.Key()), std::move(files));
+    }
+    return index;
+}
+std::vector<std::uint8_t> ReadBytes(const fs::path& file) {
+    std::error_code ec;
+    if (fs::file_size(file, ec) > (16u << 20) || ec)
+        return {};
+    std::ifstream in(file, std::ios::binary);
+    return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+}
+// Decode and center-crop on the worker, keeping full-resolution images off the UI thread.
+bool HeroBitmap(const std::vector<std::uint8_t>& bytes, const fs::path& file) {
+    using Microsoft::WRL::ComPtr;
+    if (bytes.empty())
+        return false;
+    ComPtr<IWICImagingFactory> wic;
+    ComPtr<IWICStream> stream;
+    ComPtr<IWICBitmapDecoder> decoder;
+    ComPtr<IWICBitmapFrameDecode> frame;
+    ComPtr<IWICBitmapScaler> scaler;
+    ComPtr<IWICFormatConverter> converter;
+    UINT width = 0, height = 0;
+    if (FAILED(CoCreateInstance(CLSID_WICImagingFactory2, nullptr, CLSCTX_INPROC_SERVER,
+                                IID_PPV_ARGS(&wic))) ||
+        FAILED(wic->CreateStream(&stream)) ||
+        FAILED(stream->InitializeFromMemory(const_cast<BYTE*>(bytes.data()),
+                                            static_cast<DWORD>(bytes.size()))) ||
+        FAILED(wic->CreateDecoderFromStream(stream.Get(), nullptr, WICDecodeMetadataCacheOnDemand,
+                                            &decoder)) ||
+        FAILED(decoder->GetFrame(0, &frame)) || FAILED(frame->GetSize(&width, &height)) || !width ||
+        !height || width > 16384 || height > 16384)
+        return false;
+    const double scale = std::max(1920.0 / width, 760.0 / height);
+    const auto w = static_cast<UINT>(std::ceil(width * scale));
+    const auto h = static_cast<UINT>(std::ceil(height * scale));
+    if (w > 16384 || h > 16384 || FAILED(wic->CreateBitmapScaler(&scaler)) ||
+        FAILED(scaler->Initialize(frame.Get(), w, h, WICBitmapInterpolationModeFant)) ||
+        FAILED(wic->CreateFormatConverter(&converter)) ||
+        FAILED(converter->Initialize(scaler.Get(), GUID_WICPixelFormat32bppPBGRA,
+                                     WICBitmapDitherTypeNone, nullptr, 0,
+                                     WICBitmapPaletteTypeCustom)))
+        return false;
+    WICRect crop{static_cast<INT>((w - 1920) / 2), static_cast<INT>((h - 760) / 2), 1920, 760};
+    Pixels pixels{1920, 760, std::vector<std::uint8_t>(1920 * 760 * 4)};
+    return SUCCEEDED(converter->CopyPixels(&crop, 1920 * 4, static_cast<UINT>(pixels.bgra.size()),
+                                           pixels.bgra.data())) &&
+           CacheBitmap(file, pixels);
+}
+} // namespace
+
+struct BackgroundArtSource::Impl {
+    struct Job {
+        std::string id, name, english;
+    };
+    explicit Impl(fs::path local) : folder(std::move(local) / "community-art") {}
+    fs::path folder;
+    std::mutex mutex;
+    std::condition_variable wake;
+    std::atomic<bool> stop{false};
+    std::map<std::string, ArtState> states;
+    std::map<std::string, std::int64_t> retry;
+    std::vector<Job> stack;
+    Art::BackgroundIndex index;
+    bool loaded = false;
+    std::int64_t next_refresh = 0;
+    fs::path File(const std::string& id) const {
+        return folder / (id + ".hero-v1.bmp");
+    }
+    void LoadIndex() {
+        if (stop)
+            return;
+        const auto file = folder / "backgrounds.json";
+        if (!loaded) {
+            try {
+                index = ParseIndex(ReadBytes(file));
+            } catch (...) {
+            }
+            if (index.empty()) {
+                auto previous = file;
+                previous += ".previous";
+                try {
+                    index = ParseIndex(ReadBytes(previous));
+                } catch (...) {
+                }
+            }
+            loaded = true;
+        }
+        const auto now = NowSeconds();
+        if (now < next_refresh ||
+            (!index.empty() && Art::Fresh(ReadStamp(folder / "index.checked"), now)))
+            return;
+        next_refresh = now + 3600; // Retry failures without hammering the source.
+        try {
+            const auto bytes = Download("https://raw.githubusercontent.com/NspxMiguel/NXbox/main/"
+                                        "dist/art/backgrounds.json");
+            auto fresh = ParseIndex(bytes);
+            // Replace only after validation, preserving the old copy on any failure.
+            if (!fresh.empty()) {
+                if (!stop && Art::ReplaceKeepingOld(file, bytes)) {
+                    index = std::move(fresh);
+                    WriteStamp(folder / "index.checked");
+                }
+            }
+        } catch (...) {
+        }
+    }
+    ArtState Fetch(const Job& job) {
+        std::error_code ec;
+        if (fs::is_regular_file(File(job.id), ec))
+            return ArtState::Ready;
+        LoadIndex();
+        const auto miss = folder / (job.id + ".missing");
+        if (Art::Fresh(ReadStamp(miss), NowSeconds()))
+            return ArtState::None;
+        // An unavailable index is a transient transport failure, not a title miss.
+        if (index.empty() || stop)
+            return ArtState::None;
+        const auto files = Art::Lookup(index, job.name, job.english);
+        for (const auto& filename : files) {
+            if (stop)
+                return ArtState::None;
+            try {
+                const auto bytes = Download("https://images.launchbox-app.com/" + filename);
+                if (!stop && HeroBitmap(bytes, File(job.id))) {
+                    fs::remove(miss, ec);
+                    return ArtState::Ready;
+                }
+            } catch (...) {
+            }
+        }
+        if (!stop)
+            WriteStamp(miss);
+        return ArtState::None;
+    }
+    void Loop() {
+        bool apartment = false;
+        try {
+            winrt::init_apartment(winrt::apartment_type::multi_threaded);
+            apartment = true;
+            while (!stop) {
+                Job job;
+                {
+                    std::unique_lock<std::mutex> lock(mutex);
+                    wake.wait_for(lock, std::chrono::hours(1),
+                                  [&] { return stop || !stack.empty(); });
+                    if (stop)
+                        break;
+                    if (stack.empty()) {
+                        lock.unlock();
+                        LoadIndex();
+                        continue;
+                    }
+                    job = std::move(stack.back());
+                    stack.pop_back();
+                }
+                auto result = ArtState::None;
+                try {
+                    result = Fetch(job);
+                } catch (...) {
+                }
+                const auto stamp = ReadStamp(folder / (job.id + ".missing"));
+                {
+                    const std::lock_guard<std::mutex> lock(mutex);
+                    states[job.id] = result;
+                    retry[job.id] = Art::Fresh(stamp, NowSeconds()) ? stamp + Art::kCacheWeek
+                                                                    : NowSeconds() + 3600;
+                }
+                // Publish a cached hero immediately; refresh metadata afterwards.
+                LoadIndex();
+            }
+        } catch (...) {
+            stop = true;
+        }
+        if (apartment)
+            winrt::uninit_apartment();
+    }
+};
+BackgroundArtSource::BackgroundArtSource(fs::path local)
+    : impl_(std::make_shared<Impl>(std::move(local))) {
+    std::thread([impl = impl_] { impl->Loop(); }).detach();
+}
+BackgroundArtSource::~BackgroundArtSource() {
+    {
+        const std::lock_guard<std::mutex> lock(impl_->mutex);
+        impl_->stop = true;
+    }
+    impl_->wake.notify_all();
+}
+void BackgroundArtSource::Request(const std::string& id, const std::string& name,
+                                  const std::string& english) {
+    if (id.size() != 16 || id.find_first_not_of("0123456789ABCDEFabcdef") != std::string::npos)
+        return;
+    {
+        const std::lock_guard<std::mutex> lock(impl_->mutex);
+        if (impl_->stop)
+            return;
+        const auto state = impl_->states.find(id);
+        if (state != impl_->states.end() &&
+            (state->second != ArtState::None || NowSeconds() < impl_->retry[id]))
+            return;
+        impl_->states[id] = ArtState::Pending;
+        impl_->stack.push_back({id, name, english});
+    }
+    impl_->wake.notify_one();
+}
+ArtState BackgroundArtSource::Get(const std::string& id, fs::path& file) const {
+    const std::lock_guard<std::mutex> lock(impl_->mutex);
+    const auto found = impl_->states.find(id);
+    if (found == impl_->states.end() || impl_->stop)
+        return ArtState::None;
+    if (found->second == ArtState::Ready)
+        file = impl_->File(id);
+    return found->second;
+}
 } // namespace EdenXbox::Ui

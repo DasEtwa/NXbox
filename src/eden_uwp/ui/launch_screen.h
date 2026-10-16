@@ -40,10 +40,8 @@ private:
     std::filesystem::path local_state_;
     std::string title_id_;
     std::wstring name_;
-    BannerSource banners_;
     std::unique_ptr<Renderer> renderer_;
     Image art_;
-    bool banner_ = false;
     std::chrono::steady_clock::time_point next_art_check_{};
 };
 

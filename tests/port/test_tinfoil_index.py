@@ -154,6 +154,27 @@ int main(int argc, char** argv) {
         const auto error = parse(R"({"error":"stop","directories":["other.json"]})");
         traversal.Follow(*grandchild, error);
         assert(!traversal.Next());
+    } else if (test == "shop_art") {
+        const auto index = parse(R"({"titledb":{"0100000000000000":{"iconUrl":"icons/local.jpg","bannerUrl":"/wide.jpg"}},"files":["Game [0100000000000000] [v0].nsp"]})");
+        assert(index.files.size() == 1);
+        assert(index.files[0].icon_url == "https://host/shop/icons/local.jpg");
+        assert(index.files[0].banner_url == "https://host/wide.jpg");
+        const auto lower = parse(R"({"titledb":{"0100abcdef000000":{"iconUrl":"/lower.jpg"}},"files":["Game [0100ABCDEF000000].nsp"]})");
+        assert(lower.files[0].icon_url == "https://host/lower.jpg");
+        const auto addon = parse(R"({"titledb":{"0100000000000800":{"iconUrl":"/update.jpg"}},"files":["Update [0100000000000800].nsp"]})");
+        assert(addon.files[0].icon_url == "https://host/update.jpg");
+        const auto absent = parse(R"({"files":["Game [0100000000000000].nsp"]})");
+        assert(absent.files[0].icon_url.empty() && absent.files[0].banner_url.empty());
+        const auto external = parse(R"({"titledb":{"0100000000000000":{"iconUrl":"https://other/icon.jpg","bannerUrl":"http://host/banner.jpg"}},"files":["Game [0100000000000000].nsp"]})");
+        assert(external.files[0].icon_url.empty() && external.files[0].banner_url.empty());
+        assert(!AllowedArt("https://user:pass@host/icon.jpg", base));
+        assert(!AllowedArt("https://img.nintendo.net/icon.jpg", "https://img.nintendo.net/shop"));
+        assert(!AllowedArt("https://img.nintendo.net./icon.jpg", "https://img.nintendo.net./shop"));
+        assert(!AllowedArt("https://host.evil/icon.jpg", base));
+        assert(!AllowedArt("https://host:444/icon.jpg", base));
+        assert(!AllowedArt("https://%6eintendo.net/icon.jpg", "https://%6eintendo.net/shop"));
+        assert(!AllowedArt("https://host\\other/icon.jpg", "https://host\\other/shop"));
+        assert(AllowedArt("https://host/icon.jpg", base));
     } else if (test == "classification") {
         assert(Classify("Game [0100000000000000] [v0].nsp") == Kind::Game);
         assert(Classify("Game [0100000000000000] [v65536].nsp") == Kind::Update);
@@ -240,6 +261,7 @@ for case in (
     "depth_cap",
     "count_cap",
     "cycles_and_header_inheritance",
+    "shop_art",
     "classification",
     "unicode",
     "entry_cap_and_invalid_urls",

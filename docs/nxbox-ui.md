@@ -146,7 +146,7 @@ releases it fully before the game boots.
 - Hero:
   - Offline: a three-stop gradient extracted from the icon (0% / 48% / 72%) with a scrim, and the
     icon itself.
-  - Increment 3 adds the eShop banner.
+  - The hero is generated from the local control icon.
 - Selecting a game and pressing A boots it: the path is handed to the existing boot path in
   `RunGameView`. With no games, the screen explains how to add one (USB `switch/games`, or a
   source in Settings).
@@ -166,7 +166,7 @@ releases it fully before the game boots.
 
 - Original plan: Settings → Sources (superseded by the Shop tab below), one list:
   - built-in GameBanana for mods;
-  - built-in titledb for eShop art by title ID (icon, banner);
+  - shop-provided artwork on the index origin, or a generated title placeholder;
   - user-added sources in the Tinfoil shop format (`{"files":[{"url","size"}],"directories":[...]}`),
     which download games, updates and DLC into `LocalState\games`.
 - No source of games ships configured; the user adds their own.
@@ -237,24 +237,53 @@ flow) was run on a host with fakes.
   released (`UI renderer released`, then the normal `GAME_*` lines); that the icons decode and the
   hero gradients look right; that Segoe UI, the monospaced face and the CJK fallback exist.
 
-### Hero banner status (2026-10-01)
+### Local covers and community backgrounds (2026-10-15)
 
-Written, syntax-checked against stand-in headers, not yet compiled on Windows or run on the console.
+- Covers in the library grid and detail sheet reuse `ui/library.cpp`'s Control NCA / RomFS
+  extraction from the user's NSP/XCI. The icon matching the Xbox system locale wins; otherwise
+  the first available `icon_*.dat` is used. Covers always remain local.
+- Original icons are cached as `LocalState/library/<TITLEID>.control.jpg`; decoded BGRA icons
+  are cached as `.control.bmp`. Metadata includes the icon language, so changing the system
+  locale or replacing the package rebuilds the icon and derived hero.
+- The fallback hero is generated from that control icon. A 32x32 area downscale feeds deterministic
+  three-cluster k-means, ordered by luminance; near-monochrome art gets darker shades of its
+  dominant color. Gradient stops are exactly 0%, 48%, 72%. A 64x64 downscale receives three
+  separable box blur passes, a slight saturation lift, a cover crop, and the palette overlay.
+  The resulting 192x76 BMP is cached as `.control.hero-v1.bmp` and upscaled on the GPU.
+- The scrim remains a separate layer: transparent in the upper half, closing from 82% to the
+  bottom, plus an 82% black veil across the left text zone. Even white artwork under this veil
+  supports AA contrast for the title and metadata. Selection crossfades take 400 ms with
+  `cubic-bezier(0.22, 1, 0.36, 1)` from `ui/anim.h`. Titles and cover icons remain visible.
+- Before reading old art, a retryable one-time migration removes legacy banner JPEGs,
+  their partial writes, old store icons and the old art index. It writes `library/own-art-v1`
+  only after successful cleanup. New cache names never read legacy artwork.
+- Shop `titledb` metadata may supply `iconUrl` and `bannerUrl`. Only HTTP(S) URLs on the index's
+  own origin are accepted, with that shop's headers and no redirects/cookies; vendor hosts are
+  rejected. Bounded background downloads keep rendering responsive. Missing art shows the
+  title on a deterministic gradient seeded by its title ID, with AA title contrast.
+- Hero backgrounds come from the [LaunchBox Games Database](https://gamesdb.launchbox-app.com/),
+  community artwork credited in Settings > Credits. Settings > Artwork from the internet is on
+  by default; turning it off persists locally, stops queued requests and hides downloaded art
+  (an already-running HTTP operation may finish). No API key is needed.
+- `tools/nxbox/build_art_index.py` downloads Metadata.zip on the development machine or weekly
+  `art-index.yml` workflow, never on the console. It writes only filename metadata into
+  `dist/art/backgrounds.json`. Fanart - Background ranks before Banner, then World/unregional,
+  North America, Europe and other regions, with stable filename ordering. Edition variants
+  with the same normalized name merge deterministically. No images are committed.
+- The console downloads the compact index from this repository's main branch into
+  `LocalState/community-art/backgrounds.json`, refreshes weekly and retains a validated old copy
+  on failure. Matching strips trademarks, punctuation, `the` and edition suffixes, with Latin
+  accent folding; the selected NACP title is tried before the English NACP title.
+- A dedicated art worker downloads only from `images.launchbox-app.com`, disables redirects
+  and cookies, center-crops/resizes to 1920x760 through WIC, and caches `<TITLEID>.hero-v1.bmp`.
+  Missing or unusable art is cached for seven days; failed index refreshes retry after an hour.
+  Arriving art crossfades over the blurred icon using the existing 400 ms hero curve. The scrim,
+  gradient and local cover remain in place; there is no second online source.
+- The previous store-art catalog and launcher artwork downloader are gone.
+  Native launcher assets use explicit local `--icon` / `--banner` files, or NXbox's own logo.
 
-- The hero shows the official eShop banner full bleed instead of the icon gradient. The index is
-  `dist/art/eshop-art.json` on `main` (`{"base","ext","titles":{"<TITLEID16>":["<banner>","<icon>"]}}`);
-  `ui/art.cpp` downloads it once into `LocalState\library\eshop-art.json` and refreshes it weekly (a
-  failed refresh keeps the old copy). Each banner (1920x1080 JPEG) is cached in
-  `LocalState\library\<TITLEID>.banner.jpg`, so a banner seen once also works offline. One worker
-  thread does all of it; the newest request is served first.
-- The banner covers the top 760 px with object-fit cover at 50% / 18%, under the preview's scrim
-  (0.5 at 0%, 0 at 16% and 52%, 0.72 at 76%, black at 98%). It fades in over 320 ms when it arrives
-  and crossfades with the previous game's banner. With a banner there is no big title (the banner
-  carries the logo) and no icon on the right; both fade out as the banner fades in. The meta line and
-  the pills stay where they were.
-- Fallback: offline, no banner for the title, or still downloading, the icon gradient, title and icon
-  show as before. At most three decoded banners stay on the GPU (8 MB each).
-- Log lines: `UI art index ...`, `UI art banner <id> cached`, `UI banner shown <id>`.
+Windows/MSVC build and console visual validation remain required; host tests exercise color
+selection, gradient geometry, the parser's origin restrictions and the source-artwork ban.
 
 ### Increment 2 status: the mod store (2026-10-01)
 
@@ -350,8 +379,7 @@ How it works:
   It scans without NSZ conversion and passes the matching path directly to `RunGame`; it never
   opens the library or falls back to the last game. Missing games/keys show a localized error with
   B to exit. Pending cloud sync is left for a normal launch; protocol sessions use local saves.
-- `ui/launch_screen.*` shows the cached name and eShop banner/icon on black, fetching missing art
-  through `art.cpp`. The phase line shows lookup, keys, shader count and starting in PT/EN. The
+- `ui/launch_screen.*` shows the cached name and local control icon on black, with no art downloads. The phase line shows lookup, keys, shader count and starting in PT/EN. The
   Direct2D CoreWindow target is released before OpenGL takes over; offscreen Direct2D frames are
   then presented through the game's context during shader loading. The final splash remains until
   the first guest frame. See [native tiles](nxbox-native-tiles.md) for ownership, diagnostic lines,
@@ -361,15 +389,15 @@ How it works:
   and exits as soon as acceptance arrives. It paints the packaged splash while waiting, without
   network work. One binary serves every game. `tools/nxbox/package_launcher.py` bundles it with
   `title.txt`, the display name and Square44/150, Wide310x150, StoreLogo and SplashScreen PNGs
-  generated from the eShop art (`dist/art/eshop-art.json`: icon for the square tiles, banner for the
-  wide ones; NXbox's own logo when the title has no art), and signs it with the NXbox certificate.
+  generated from explicit local images (NXbox's own logo when none are supplied), and signs it
+  with the NXbox certificate.
 
 Adding a tile:
 
 1. NXbox itself must be installed in a version that has the protocol (this one or later).
 2. Run the workflow **Package NXbox game tile** (Actions, Run workflow) with `title_id` (the 16
-   digits the library shows / `LocalState\library\<TITLEID>.json`) and `name`; `icon_url` and
-   `banner_url` are optional overrides.
+   digits the library shows / `LocalState\library\<TITLEID>.json`) and `name`.
+   This workflow uses NXbox's own logo; local packaging accepts `--icon` and `--banner`.
 3. Download the `nxbox-game-tile-<TITLEID>` artifact and install the `.appx` through the Device
    Portal like NXbox itself. Repeat per game.
 

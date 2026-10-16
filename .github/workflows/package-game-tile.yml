@@ -13,14 +13,6 @@ on:
         description: Name shown on the tile
         required: true
         type: string
-      icon_url:
-        description: Square art URL (optional; default is the eShop art index)
-        required: false
-        type: string
-      banner_url:
-        description: Wide art URL (optional; default is the eShop art index)
-        required: false
-        type: string
 permissions:
   contents: read
 jobs:
@@ -58,8 +50,6 @@ jobs:
           NXBOX_PFX_PASSWORD: ${{ secrets.NXBOX_PFX_PASSWORD }}
           TITLE_ID: ${{ inputs.title_id }}
           TILE_NAME: ${{ inputs.name }}
-          ICON_URL: ${{ inputs.icon_url }}
-          BANNER_URL: ${{ inputs.banner_url }}
         shell: pwsh
         run: |
           $arguments = @(
@@ -70,8 +60,6 @@ jobs:
             '--version', "1.0.$env:GITHUB_RUN_NUMBER.0",
             '--output', 'out'
           )
-          if ($env:ICON_URL) { $arguments += @('--icon-url', $env:ICON_URL) }
-          if ($env:BANNER_URL) { $arguments += @('--banner-url', $env:BANNER_URL) }
           python @arguments
           if ($LASTEXITCODE -ne 0) { throw 'Game tile packaging failed' }
       - uses: actions/upload-artifact@v4

@@ -52,22 +52,15 @@ class LauncherTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 launcher.validate_name(bad)
 
-    def test_art_urls_come_from_the_index(self):
-        index = {"base": "https://img.example/i/", "ext": ".jpg", "titles": {"AAAA": ["b1", "i1"]}}
-        self.assertEqual(
-            launcher.art_urls(index, "AAAA"),
-            ("https://img.example/i/b1.jpg", "https://img.example/i/i1.jpg"),
-        )
-        self.assertEqual(launcher.art_urls(index, "BBBB"), (None, None))
-
-    def test_repository_index_resolves_a_known_title(self):
-        import json
-
-        index = json.loads(launcher.ART_INDEX.read_text())
-        title = next(iter(index["titles"]))
-        banner, icon = launcher.art_urls(index, title)
-        self.assertTrue(banner.startswith(index["base"]) and banner.endswith(index["ext"]))
-        self.assertTrue(icon.startswith(index["base"]))
+    def test_art_uses_only_explicit_local_files(self):
+        source = self.root / "control.png"
+        Image.new("RGB", (32, 32), (80, 120, 160)).save(source)
+        icon, banner = launcher.load_art(source, None, False)
+        self.assertEqual(icon.getpixel((0, 0)), (80, 120, 160, 255))
+        self.assertIsNone(banner)
+        self.assertEqual(launcher.load_art(source, None, True), (None, None))
+        with self.assertRaises(FileNotFoundError):
+            launcher.load_art(self.root / "missing.png", None, False)
 
     def test_manifest_identity_name_and_escaping(self):
         manifest = launcher.build_manifest(TITLE, 'Link & "Zelda" <3', "1.0.0.0")
@@ -77,7 +70,8 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(identity.attrib["Name"], "NSPX.NXbox.Game.01007EF00011E000")
         nxbox = ET.parse(ROOT / "dist/nxbox/AppxManifest.xml").getroot()
         self.assertEqual(
-            identity.attrib["Publisher"], nxbox.find(f"{{{foundation}}}Identity").attrib["Publisher"]
+            identity.attrib["Publisher"],
+            nxbox.find(f"{{{foundation}}}Identity").attrib["Publisher"],
         )
         self.assertEqual(
             tree.find(f"{{{foundation}}}Properties/{{{foundation}}}DisplayName").text,
@@ -90,7 +84,9 @@ class LauncherTests(unittest.TestCase):
         self.assertIsNotNone(splash)
         self.assertEqual(splash.attrib["BackgroundColor"], "#000000")
         self.assertEqual(visual.attrib["BackgroundColor"], "#000000")
-        self.assertIsNotNone(tree.find(f"{{{foundation}}}Dependencies/{{{foundation}}}PackageDependency"))
+        self.assertIsNotNone(
+            tree.find(f"{{{foundation}}}Dependencies/{{{foundation}}}PackageDependency")
+        )
         # The launcher never owns the protocol; only NXbox does.
         self.assertNotIn("windows.protocol", manifest)
 

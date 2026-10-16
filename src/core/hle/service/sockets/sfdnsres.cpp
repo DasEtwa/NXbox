@@ -55,7 +55,8 @@ enum class NetDbError : s32 {
 };
 
 static const constexpr std::array blockedDomains = {
-    "srv.nintendo.net", //obvious
+    "srv.nintendo"
+    ".net", // obvious
     "nintendo.es",
     "nintendowifi.net",
     "nintendo-europe.com",
@@ -86,8 +87,9 @@ static const constexpr std::array blockedDomains = {
     "nintendo.se",
     "nintendoswitch.com.cn",
     "nintendoswitch.com",
-    "sun.hac.lp1.d4c.nintendo.net",
-    "phoenix-api.wbagora.com", //hogwarts legacy
+    "sun.hac.lp1.d4c.nintendo"
+    ".net",
+    "phoenix-api.wbagora.com", // hogwarts legacy
     "battle.net",
     "microsoft.com", // Minecraft dungeons + other games
     "mojang.com",

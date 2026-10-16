@@ -2,14 +2,12 @@
 """Build, sign and stage a per-game launcher tile ("Install as game").
 
 The package is the tiny nxbox-launcher.exe (src/nxbox_launcher) plus title.txt, a display name and
-art generated from the eShop art index (dist/art/eshop-art.json). Launching the tile opens
+art from explicit local image files (or NXbox's own logo). Launching the tile opens
 nxbox://play?title=<ID>, which NXbox handles by booting that library game.
 """
 
 import argparse
 import base64
-import io
-import json
 import os
 from pathlib import Path
 import re
@@ -18,7 +16,6 @@ import struct
 import subprocess
 import sys
 import tempfile
-import urllib.request
 import xml.etree.ElementTree as ET
 from xml.sax.saxutils import escape, quoteattr
 
@@ -28,8 +25,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import package_uwp  # noqa: E402  (shared SDK tool lookup)
 
 ROOT = Path(__file__).resolve().parents[2]
-ART_INDEX = ROOT / "dist/art/eshop-art.json"
-MAX_IMAGE_BYTES = 16 << 20
 
 # Shipped at 4x their nominal size, like dist/nxbox/Assets, so the dashboard shows them sharp.
 ASSET_SIZES = {
@@ -53,28 +48,6 @@ def validate_name(name: str) -> str:
     if not name or len(name) > 256 or any(ord(c) < 32 for c in name):
         raise ValueError("Display name must be 1 to 256 printable characters")
     return name
-
-
-def art_urls(index: dict, title_id: str):
-    """(banner_url, icon_url) of a title from the eShop art index; None for a missing one."""
-    entry = index.get("titles", {}).get(title_id)
-    if not entry:
-        return None, None
-    base, ext = index["base"], index["ext"]
-    banner = base + entry[0] + ext if len(entry) > 0 and entry[0] else None
-    icon = base + entry[1] + ext if len(entry) > 1 and entry[1] else None
-    return banner, icon
-
-
-def download(url: str) -> Image.Image:
-    if not url.startswith("https://"):
-        raise ValueError("Art must be downloaded over https")
-    request = urllib.request.Request(url, headers={"User-Agent": "nxbox-package-launcher"})
-    with urllib.request.urlopen(request, timeout=30) as response:
-        data = response.read(MAX_IMAGE_BYTES + 1)
-    if len(data) > MAX_IMAGE_BYTES:
-        raise ValueError("Art image is too large")
-    return Image.open(io.BytesIO(data))
 
 
 def fit_cover(image: Image.Image, size) -> Image.Image:
@@ -156,7 +129,9 @@ def build_manifest(title_id: str, name: str, version: str) -> str:
 """
 
 
-def stage(executable: Path, destination: Path, title_id: str, name: str, version: str, icon, banner):
+def stage(
+    executable: Path, destination: Path, title_id: str, name: str, version: str, icon, banner
+):
     title_id = validate_title_id(title_id)
     with executable.open("rb") as source:
         header = source.read(64)
@@ -179,23 +154,16 @@ def stage(executable: Path, destination: Path, title_id: str, name: str, version
     shutil.copy2(ROOT / "LICENSE.txt", notices / "Eden-LICENSE.txt")
 
 
-def load_art(title_id, icon_url, banner_url, no_art):
-    """Downloads the icon and banner; a failed download keeps the NXbox fallback art."""
+def load_art(icon_path, banner_path, no_art):
+    """Load only explicit local files; omitted images use the NXbox fallback."""
     if no_art:
         return None, None
-    index_banner, index_icon = (None, None)
-    if ART_INDEX.is_file():
-        index_banner, index_icon = art_urls(json.loads(ART_INDEX.read_text()), title_id)
     images = []
-    for label, url in (("icon", icon_url or index_icon), ("banner", banner_url or index_banner)):
+    for path in (icon_path, banner_path):
         image = None
-        if url:
-            try:
-                image = download(url)
-            except Exception as error:  # a missing image must not block the tile
-                print(f"warning: {label} {url} unavailable ({error}); using the fallback")
-        else:
-            print(f"warning: no {label} art for {title_id}; using the fallback")
+        if path:
+            with Image.open(path) as source:
+                image = source.convert("RGBA")
         images.append(image)
     return images[0], images[1]
 
@@ -205,15 +173,15 @@ def main():
     parser.add_argument("--exe", type=Path, required=True, help="built nxbox-launcher.exe")
     parser.add_argument("--title-id", required=True)
     parser.add_argument("--name", required=True)
-    parser.add_argument("--icon-url")
-    parser.add_argument("--banner-url")
-    parser.add_argument("--no-art", action="store_true", help="skip downloads, use NXbox art")
+    parser.add_argument("--icon", type=Path, help="local control icon image")
+    parser.add_argument("--banner", type=Path, help="local generated hero image")
+    parser.add_argument("--no-art", action="store_true", help="use NXbox art")
     parser.add_argument("--version", default="1.0.0.0")
     parser.add_argument("--output", type=Path, default=Path("out"))
     parser.add_argument("--stage-only", action="store_true")
     args = parser.parse_args()
     title_id = validate_title_id(args.title_id)
-    icon, banner = load_art(title_id, args.icon_url, args.banner_url, args.no_art)
+    icon, banner = load_art(args.icon, args.banner, args.no_art)
     args.output.mkdir(parents=True, exist_ok=True)
     staging = args.output / f"game-{title_id}"
     stage(args.exe, staging, title_id, args.name, args.version, icon, banner)
@@ -222,7 +190,15 @@ def main():
         return
     package = (args.output / f"NXbox_Game_{title_id}_{args.version}_x64.appx").resolve()
     subprocess.run(
-        [str(package_uwp.sdk_tool("makeappx")), "pack", "/d", str(staging.resolve()), "/p", str(package), "/o"],
+        [
+            str(package_uwp.sdk_tool("makeappx")),
+            "pack",
+            "/d",
+            str(staging.resolve()),
+            "/p",
+            str(package),
+            "/o",
+        ],
         check=True,
     )
     pfx_data = os.environ.get("NXBOX_PFX_BASE64")

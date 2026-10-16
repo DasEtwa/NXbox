@@ -46,6 +46,8 @@ add_executable(eden-uwp WIN32
     ui/anim.h
     ui/art.cpp
     ui/art.h
+    ui/art_cache.h
+    ui/art_colors.h
     ui/cheats.cpp
     ui/cheats.h
     ui/cheats_parse.h
