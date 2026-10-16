@@ -24,6 +24,8 @@ enum class Text {
     ShopInternalStorage,
     ShopExternalStorage,
 
+    InternetArtwork,
+    InternetArtworkHint,
     NavSettings,
     ActionPlay,
     ActionMods,

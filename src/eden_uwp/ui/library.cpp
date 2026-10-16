@@ -9,6 +9,7 @@
 #include "eden_uwp/ui/library.h"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cwchar>
 #include <cwctype>
@@ -23,9 +24,10 @@
 #include <utility>
 
 #include <fmt/format.h>
-#include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Data.Json.h>
+#include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Foundation.h>
+#include <winrt/Windows.System.UserProfile.h>
 
 #include "common/fs/fs.h"
 #include "common/fs/fs_util.h"
@@ -40,6 +42,7 @@
 #include "core/file_sys/vfs/vfs_real.h"
 #include "core/loader/loader.h"
 #include "eden_uwp/diagnostic.h"
+#include "eden_uwp/ui/art.h"
 #include "eden_uwp/usb_library.h"
 
 namespace EdenXbox::Ui {
@@ -57,7 +60,43 @@ struct CacheRecord {
     std::uint64_t size = 0;
     std::int64_t mtime = 0;
     std::vector<std::string> nacp_names;
+    std::string icon_language;
 };
+
+// Use the Xbox system locale, independently of the UI translation or emulation settings.
+std::string IconLanguage() {
+    try {
+        const auto languages =
+            winrt::Windows::System::UserProfile::GlobalizationPreferences::Languages();
+        if (languages.Size()) {
+            auto tag = winrt::to_string(languages.GetAt(0));
+            std::transform(tag.begin(), tag.end(), tag.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (tag == "en-gb")
+                return "BritishEnglish";
+            if (tag == "fr-ca")
+                return "CanadianFrench";
+            if (tag == "pt-br")
+                return "BrazilianPortuguese";
+            if (tag.starts_with("es-") && tag != "es-es")
+                return "LatinAmericanSpanish";
+            if (tag.starts_with("zh"))
+                return tag.find("hant") != std::string::npos || tag == "zh-tw" || tag == "zh-hk"
+                           ? "TraditionalChinese"
+                           : "SimplifiedChinese";
+            const std::pair<const char*, const char*> names[] = {
+                {"ja", "Japanese"},   {"en", "AmericanEnglish"}, {"fr", "French"}, {"de", "German"},
+                {"it", "Italian"},    {"es", "Spanish"},         {"ko", "Korean"}, {"nl", "Dutch"},
+                {"pt", "Portuguese"}, {"ru", "Russian"}};
+            for (const auto& [prefix, name] : names)
+                if (tag == prefix || tag.starts_with(std::string(prefix) + "-"))
+                    return name;
+        }
+    } catch (const winrt::hresult_error&) {
+        // A missing locale must not prevent offline library scanning.
+    }
+    return "AmericanEnglish";
+}
 
 // What reading a package yields.
 struct PackageInfo {
@@ -142,6 +181,7 @@ bool ReadRecord(const fs::path& json_file, CacheRecord& record) {
         if (!JsonObject::TryParse(winrt::to_hstring(text), object)) {
             return false;
         }
+        record.icon_language = winrt::to_string(object.GetNamedString(L"icon_language"));
         record.title_id = winrt::to_string(object.GetNamedString(L"title_id"));
         record.name = object.GetNamedString(L"name").c_str();
         record.path = object.GetNamedString(L"path").c_str();
@@ -162,6 +202,8 @@ bool ReadRecord(const fs::path& json_file, CacheRecord& record) {
 bool WriteRecord(const fs::path& json_file, const GameEntry& game) {
     try {
         JsonObject object;
+        object.SetNamedValue(L"icon_language",
+                             JsonValue::CreateStringValue(winrt::to_hstring(IconLanguage())));
         object.SetNamedValue(L"title_id",
                              JsonValue::CreateStringValue(winrt::to_hstring(game.title_id)));
         object.SetNamedValue(L"name", JsonValue::CreateStringValue(game.name));
@@ -268,9 +310,8 @@ std::string ReadPackage(FileSys::RealVfsFilesystem& vfs, const fs::path& file, P
         info.name = file.stem().wstring();
     }
 
-    // The Switch's own square icon, a JPEG next to control.nacp. Any other language will do when
-    // the American English one is missing.
-    FileSys::VirtualFile icon = content->GetFile("icon_AmericanEnglish.dat");
+    // Reuse the library's control RomFS extraction; prefer the system language, then any icon.
+    FileSys::VirtualFile icon = content->GetFile("icon_" + IconLanguage() + ".dat");
     if (!icon) {
         for (const FileSys::VirtualFile& candidate : content->GetFiles()) {
             const std::string name = candidate->GetName();
@@ -297,17 +338,17 @@ std::optional<GameEntry> LoadGame(FileSys::RealVfsFilesystem& vfs, const fs::pat
 
     const auto hit = cached.find(file.wstring());
     if (hit != cached.end() && game.size != 0 && hit->second.size == game.size &&
-        hit->second.mtime == game.mtime) {
+        hit->second.mtime == game.mtime && hit->second.icon_language == IconLanguage()) {
         game.title_id = hit->second.title_id;
         game.name = hit->second.name;
         game.nacp_names = hit->second.nacp_names;
-        const fs::path icon = library_dir / (game.title_id + ".jpg");
+        const fs::path icon = library_dir / (game.title_id + ".control.jpg");
         std::error_code icon_error;
-        if (fs::exists(icon, icon_error)) {
+        if (fs::file_size(icon, icon_error) > 0 && !icon_error) {
             game.icon = icon;
+            ++stats.cached;
+            return game;
         }
-        ++stats.cached;
-        return game;
     }
 
     PackageInfo info;
@@ -327,15 +368,14 @@ std::optional<GameEntry> LoadGame(FileSys::RealVfsFilesystem& vfs, const fs::pat
     game.title_id = fmt::format("{:016X}", info.title_id);
     game.name = info.name;
     game.nacp_names = info.nacp_names;
-    if (!info.icon.empty()) {
-        const fs::path icon = library_dir / (game.title_id + ".jpg");
-        std::ofstream out(icon, std::ios::binary | std::ios::trunc);
-        out.write(reinterpret_cast<const char*>(info.icon.data()),
-                  static_cast<std::streamsize>(info.icon.size()));
-        if (out) {
-            game.icon = icon;
-        }
-    }
+    const fs::path icon = library_dir / (game.title_id + ".control.jpg");
+    std::error_code ec;
+    // Source or locale changed: invalidate all derived art, even if the new package has no icon.
+    fs::remove(icon, ec);
+    fs::remove(library_dir / (game.title_id + ".control.bmp"), ec);
+    fs::remove(library_dir / (game.title_id + ".control.hero-v1.bmp"), ec);
+    if (!info.icon.empty() && Art::WriteBytes(icon, info.icon))
+        game.icon = icon;
     if (!WriteRecord(library_dir / (game.title_id + ".json"), game)) {
         Diagnostic("UI library cache write failed for " + game.title_id);
     }
@@ -548,6 +588,7 @@ void LibraryScan::ConvertCompressed(const std::vector<fs::path>& compressed,
 }
 
 std::vector<GameEntry> LibraryScan::Scan() {
+    PurgeLegacyArt(local_state_);
     const auto started = std::chrono::steady_clock::now();
     const fs::path games_dir = local_state_ / "games";
     const fs::path library_dir = local_state_ / "library";
@@ -597,8 +638,7 @@ std::vector<GameEntry> LibraryScan::Scan() {
         if (!error) {
             for (const fs::directory_entry& entry : iterator) {
                 CacheRecord record;
-                // <TITLEID16>.json only: the folder also holds <TITLEID16>.mods.json and the art
-                // index, which is large and not a game record.
+                // <TITLEID16>.json only; mod records and artwork are not library metadata.
                 if (Lowercase(entry.path().extension().wstring()) == L".json" &&
                     entry.path().stem().wstring().size() == 16 &&
                     ReadRecord(entry.path(), record)) {

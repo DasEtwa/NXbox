@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LaunchBox>
+  <GameImage><DatabaseID>1</DatabaseID><FileName>banner.jpg</FileName><Type>Banner</Type><Region>World</Region></GameImage>
+  <Game><DatabaseID>1</DatabaseID><Name>The Pokémon™: Adventure — Deluxe Edition</Name><Platform>Nintendo Switch</Platform></Game>
+  <Game><DatabaseID>2</DatabaseID><Name>The Pokémon Adventure</Name><Platform>Nintendo Switch</Platform></Game>
+  <Game><DatabaseID>3</DatabaseID><Name>Other Platform</Name><Platform>Windows</Platform></Game>
+  <Game><DatabaseID>4</DatabaseID><Name>No Art</Name><Platform>Nintendo Switch</Platform></Game>
+  <GameImage><DatabaseID>1</DatabaseID><FileName>japan.jpg</FileName><Type>Fanart - Background</Type><Region>Japan</Region></GameImage>
+  <GameImage><DatabaseID>1</DatabaseID><FileName>us.jpg</FileName><Type>Fanart - Background</Type><Region>North America</Region></GameImage>
+  <GameImage><DatabaseID>1</DatabaseID><FileName>world.jpg</FileName><Type>Fanart - Background</Type><Region>World</Region></GameImage>
+  <GameImage><DatabaseID>2</DatabaseID><FileName>europe.jpg</FileName><Type>Fanart - Background</Type><Region>Europe</Region></GameImage>
+  <GameImage><DatabaseID>2</DatabaseID><FileName>world.jpg</FileName><Type>Fanart - Background</Type><Region>World</Region></GameImage>
+  <GameImage><DatabaseID>2</DatabaseID><FileName>../escape.jpg</FileName><Type>Fanart - Background</Type></GameImage>
+  <GameImage><DatabaseID>3</DatabaseID><FileName>wrong.jpg</FileName><Type>Fanart - Background</Type></GameImage>
+  <GameImage><DatabaseID>4</DatabaseID><FileName>cover.jpg</FileName><Type>Box - Front</Type></GameImage>
+  <Game><DatabaseID>5</DatabaseID><Name>Banner Only</Name><Platform>Nintendo Switch</Platform></Game>
+  <GameImage><DatabaseID>5</DatabaseID><FileName>only.png</FileName><Type>Banner</Type></GameImage>
+</LaunchBox>

@@ -15,8 +15,8 @@ namespace EdenXbox::Ui {
 LaunchScreen::LaunchScreen(const winrt::Windows::UI::Core::CoreWindow& window,
                            const std::filesystem::path& local_state, std::string title_id)
     : local_state_(local_state), title_id_(std::move(title_id)),
-      name_(winrt::to_hstring(title_id_).c_str()), banners_(local_state, true),
-      renderer_(std::make_unique<Renderer>()) {
+      name_(winrt::to_hstring(title_id_).c_str()), renderer_(std::make_unique<Renderer>()) {
+    PurgeLegacyArt(local_state_);
     // Cached metadata is only for display; LibraryScan still validates the actual game path.
     try {
         const auto file = local_state_ / "library" / (title_id_ + ".json");
@@ -33,7 +33,6 @@ LaunchScreen::LaunchScreen(const winrt::Windows::UI::Core::CoreWindow& window,
         // Missing or old metadata must not block a launch.
     }
     renderer_->Initialize(window);
-    banners_.Request(title_id_);
     Diagnostic("PROTOCOL_SPLASH " + title_id_);
 }
 
@@ -56,27 +55,19 @@ bool LaunchScreen::LoadImage(const std::filesystem::path& path, Image& image) {
 }
 
 void LaunchScreen::LoadArt() {
-    if (banner_ || std::chrono::steady_clock::now() < next_art_check_) {
+    if (art_.bitmap || std::chrono::steady_clock::now() < next_art_check_) {
         return;
     }
     next_art_check_ = std::chrono::steady_clock::now() + std::chrono::seconds(1);
-    // Read a cached banner immediately, even when the index refresh is still offline/pending.
-    const auto banner = local_state_ / "library" / (title_id_ + ".banner.jpg");
-    Image image;
-    if (LoadImage(banner, image)) {
-        art_ = std::move(image);
-        banner_ = true;
-    } else if (!art_.bitmap) {
-        LoadImage(local_state_ / "library" / (title_id_ + ".jpg"), art_);
-    }
+    if (!art_.bitmap)
+        LoadImage(local_state_ / "library" / (title_id_ + ".control.jpg"), art_);
 }
 
 void LaunchScreen::Draw(const LaunchStatus& status, Text failure, Pixels* capture) {
     LoadArt();
     renderer_->BeginFrame();
     if (art_.bitmap) {
-        renderer_->DrawImage(
-            art_, banner_ ? D2D1::RectF(0, 0, 1920, 1080) : D2D1::RectF(720, 120, 1200, 600), 0, 1);
+        renderer_->DrawImage(art_, D2D1::RectF(720, 120, 1200, 600), 0, 1);
     }
     auto clear = Theme::kBackground;
     clear.a = 0;
@@ -135,7 +126,6 @@ void LaunchScreen::ReadFrame(Pixels& pixels) {
 void LaunchScreen::Release() {
     art_ = {};
     renderer_.reset();
-    banner_ = false;
     next_art_check_ = {};
 }
 

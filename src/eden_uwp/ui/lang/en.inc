@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+{Text::InternetArtwork, L"Artwork from the internet"},
+    {Text::InternetArtworkHint, L"Community backgrounds from LaunchBox."},
 {Text::NavLibrary, L"Library"}, {Text::NavSettings, L"Settings"}, {Text::ActionPlay, L"Play"},
     {Text::ActionMods, L"Mods"}, {Text::ActionDetails, L"Details"},
     {Text::ResolutionTitle, L"Resolution"}, {Text::Resolution1X, L"1x (720p/1080p)"},
@@ -182,6 +184,7 @@
     {Text::CreditsRowState, L"View"}, {Text::CreditsRowHint, L"Who made what NXbox builds on."},
     {Text::CreditsTitle, L"Credits"},
     {Text::CreditsBody,
+     L"Backgrounds: LaunchBox Games Database (community artwork).\n"
      L"NXbox is a fork of Eden, an open-source console emulator (GPL-3.0), brought to the "
      L"Xbox Series X.\n"
      L"\n"

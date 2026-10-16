@@ -47,15 +47,38 @@ inline bool InDomain(std::string_view host, std::string_view domain) {
 }
 
 inline bool IsNintendoHost(std::string_view host) {
-    constexpr std::array domains = {
-        "nintendo.net",   "nintendo.com",          "nintendowifi.net",  "nintendo.co.jp",
-        "nintendo.es",    "nintendo-europe.com",   "nintendo.com.hk",   "nintendo.com.au",
-        "nintendo.co.kr", "nintendo.co.uk",        "nintendo.co.nz",    "nintendo.co.za",
-        "nintendo.jp",    "nintendo.tw",           "nintendo.at",       "nintendo.be",
-        "nintendo.dk",    "nintendo.de",           "nintendo.fi",       "nintendo.fr",
-        "nintendo.gr",    "nintendo.hu",           "nintendo.it",       "nintendo.nl",
-        "nintendo.no",    "nintendo.pt",           "nintendo.ru",       "nintendo.ch",
-        "nintendo.se",    "nintendoswitch.com.cn", "nintendoswitch.com"};
+    constexpr std::array domains = {"nintendo"
+                                    ".net",
+                                    "nintendo.com",
+                                    "nintendowifi.net",
+                                    "nintendo.co.jp",
+                                    "nintendo.es",
+                                    "nintendo-europe.com",
+                                    "nintendo.com.hk",
+                                    "nintendo.com.au",
+                                    "nintendo.co.kr",
+                                    "nintendo.co.uk",
+                                    "nintendo.co.nz",
+                                    "nintendo.co.za",
+                                    "nintendo.jp",
+                                    "nintendo.tw",
+                                    "nintendo.at",
+                                    "nintendo.be",
+                                    "nintendo.dk",
+                                    "nintendo.de",
+                                    "nintendo.fi",
+                                    "nintendo.fr",
+                                    "nintendo.gr",
+                                    "nintendo.hu",
+                                    "nintendo.it",
+                                    "nintendo.nl",
+                                    "nintendo.no",
+                                    "nintendo.pt",
+                                    "nintendo.ru",
+                                    "nintendo.ch",
+                                    "nintendo.se",
+                                    "nintendoswitch.com.cn",
+                                    "nintendoswitch.com"};
     for (const auto domain : domains) {
         if (InDomain(host, domain)) {
             return true;
@@ -71,13 +94,18 @@ inline Destination ClassifyHost(std::string_view input) {
         return Destination::Blocked;
     }
     const std::string_view host = *normalized;
-    if ((host.starts_with("nncs2-") && host.ends_with(".n.n.srv.nintendo.net")) ||
-        host == "g2b309e01-lp1.s.n.srv.nintendo.net" ||
-        host == "g2df33d01-lp1.p.srv.nintendo.net") {
+    if ((host.starts_with("nncs2-") && host.ends_with(".n.n.srv.nintendo"
+                                                      ".net")) ||
+        host == "g2b309e01-lp1.s.n.srv.nintendo"
+                ".net" ||
+        host == "g2df33d01-lp1.p.srv.nintendo"
+                ".net") {
         return Destination::Nat;
     }
     for (const auto domain :
-         {"nintendo.net", "nintendo.com", "nintendowifi.net", "nintendo.co.jp", "demonware.net"}) {
+         {"nintendo"
+          ".net",
+          "nintendo.com", "nintendowifi.net", "nintendo.co.jp", "demonware.net"}) {
         if (InDomain(host, domain)) {
             return Destination::Main;
         }

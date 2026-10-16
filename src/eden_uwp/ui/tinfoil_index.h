@@ -30,6 +30,8 @@ struct File {
     std::string url; // absolute, without the display-name fragment
     std::uint64_t size = 0;
     Kind kind = Kind::Other;
+    std::string icon_url;
+    std::string banner_url;
 };
 struct Index {
     Status status = Status::Unsupported;
@@ -453,6 +455,24 @@ inline std::optional<std::string> Resolve(const std::string& base, const std::st
     return detail::IsHttpUrl(target) ? std::optional<std::string>(target) : std::nullopt;
 }
 
+// Artwork is restricted to the index origin, without userinfo, and rejects vendor hosts
+// even if a user adds such a host as a shop. Redirects are disabled by the transport.
+inline std::string Origin(const std::string& url);
+inline bool AllowedArt(const std::string& url, const std::string& index_url) {
+    if (!detail::IsHttpUrl(url) || Origin(url) != Origin(index_url))
+        return false;
+    const auto start = url.find("://") + 3;
+    const auto authority = url.substr(start, url.find_first_of("/?#", start) - start);
+    if (authority.find_first_of("@%\\") != std::string::npos || url.find('\\') != std::string::npos)
+        return false;
+    auto host = detail::Lower(authority.substr(0, authority.find(':')));
+    if (!host.empty() && host.back() == '.')
+        host.pop_back();
+    // Reject every vendor domain, not only the former artwork endpoint.
+    return host.find("nintendo") == std::string::npos &&
+           host.find("nintendowifi") == std::string::npos;
+}
+
 // Known locations are retained even when this Xbox transport cannot browse them.
 inline Unsupported LocationSupport(const std::string& url) {
     const auto lower = detail::Lower(url);
@@ -723,6 +743,22 @@ inline Index ParseIndex(std::string_view body, const std::string& base) {
                 file.name.erase(0, at + 1);
         }
         file.kind = Classify(file.name);
+        const auto package = ParsePackage(file.name);
+        const auto& titledb = root.At("titledb");
+        // Common indexes use either hex case, and add-on-only shops may have no base entry.
+        const detail::Value* title = &titledb.At(package.base_id);
+        if (title->type != detail::Value::Type::Object)
+            title = &titledb.At(detail::Lower(package.base_id));
+        if (title->type != detail::Value::Type::Object)
+            title = &titledb.At(package.title_id);
+        if (title->type != detail::Value::Type::Object)
+            title = &titledb.At(detail::Lower(package.title_id));
+        const auto art_url = [&](const char* field) {
+            const auto resolved = Resolve(base, title->At(field).String());
+            return resolved && AllowedArt(*resolved, base) ? *resolved : std::string{};
+        };
+        file.icon_url = art_url("iconUrl");
+        file.banner_url = art_url("bannerUrl");
         file.size = detail::Size(item.At("size"));
         index.files.push_back(std::move(file)); // keep duplicate files, as the screen did
     }

@@ -1,4 +1,11 @@
-`eshop-art.json`: title ID → eShop banner and icon image ids (base games only), derived from the
-public titledb (blawar/titledb `US.en.json`). The URL is `base + id + ext`. NXbox downloads this file
-once from the repository to show official Switch art in the library. Regenerate with the script in
-the commit that added it.
+# Community backgrounds
+
+Run `python3 tools/nxbox/build_art_index.py` from the repository root to generate
+`backgrounds.json` from the keyless [LaunchBox Games Database](https://gamesdb.launchbox-app.com/).
+For an offline export, pass `--metadata /path/to/Metadata.zip` (or Metadata.xml).
+Only Nintendo Switch Fanart - Background and Banner filenames are distributed;
+no image bytes or API credentials belong here. The weekly `art-index.yml` workflow
+regenerates and commits the compact index on the default branch.
+
+Images are community contributions, credited in NXbox Settings > Credits. Covers
+come from the user's own game packages; unavailable backgrounds use the blurred icon.
