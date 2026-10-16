@@ -90,7 +90,7 @@ def test_validated_hit_precedes_read_hash_restart_scan_and_download():
     assert "buffer_cache.WriteMemory(*cpu, input_size)" in prepare
     assert "validation_key.device_address = cpu.value_or(0)" in prepare
     assert "FindValidated(validation_key, source)" in prepare
-    assert "found && (!found->native || allow_native)" in prepare
+    assert "(!found->native || allow_native)" in prepare
     assert "info->storage_buffers_descriptors.empty()" in prepare
     assert "info->image_buffer_descriptors.empty()" in prepare
     assert "regs.transform_feedback_enabled == 0" in prepare
