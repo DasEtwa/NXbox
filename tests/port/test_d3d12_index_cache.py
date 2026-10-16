@@ -41,10 +41,10 @@ def test_index_cache_profile_and_lifetime_wiring():
         assert f'"index_conversion_{suffix}"' in context
     assert "D3D12_FRAME_PROFILE thread=" in context
     assert "counters[i], counts[i]" in context
-    assert "cpu && buffer_cache.IsRegionGpuModified(*cpu, input.size())" in rasterizer
+    assert "cpu && buffer_cache.IsRegionGpuModified(*cpu, input_size)" in rasterizer
     assert "index_converter.ConvertCached(key, input, cache_hit)" in rasterizer
     cached = converter.split("ConvertedIndexBuffer IndexConverter::ConvertCached(")[1].split(
-        "ConvertedIndexBuffer IndexConverter::Generate("
+        "std::optional<ConvertedIndexBuffer> IndexConverter::FindValidated("
     )[0]
     assert "Common::CityHash64" in cached
     hit, miss = cached.split("cache_hit = false;", 1)

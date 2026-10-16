@@ -451,7 +451,10 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         draw_view_plan.resources.clear();
         draw_sampler_plan.resources.clear();
     };
-    gpu_memory->FlushCaching();
+    {
+        const FrameProfile::Scope profile_flush{context.Profile(), FramePhase::IndexFlushCaching};
+        gpu_memory->FlushCaching();
+    }
     if (!pipeline_cache) {
         if (!draw_logged) {
             LOG_WARNING(Render, "D3D12 P3: no pipeline cache registered, draws are skipped");
@@ -2073,57 +2076,160 @@ bool RasterizerD3D12::PrepareDrawIndices(bool is_indexed, DrawParams& params,
         static_cast<u32>(topology) <= static_cast<u32>(IndexConversion::TriangleStripAdjacency) &&
         (IndexConversion::NeedsConversion(topology, format, restart, provoking) ||
          !state.inline_index_draw_indexes.empty())) {
-        gpu_memory->FlushCaching();
+        // PrepareDraw already drained inline invalidations before acquiring the cache lock.
         if (static_cast<u32>(format) > 2) {
             SkipDraw("invalid index_buffer.format");
             return false;
         }
         const size_t width = size_t{1} << static_cast<u32>(format);
-        if (u64{state.index_buffer.count} * width > 64 * 1024 * 1024) {
+        const size_t input_size = size_t{state.index_buffer.count} * width;
+        if (input_size > 64 * 1024 * 1024) {
             SkipDraw("index conversion exceeds 64 MiB draw budget");
             return false;
         }
-        std::vector<std::byte> input(size_t{state.index_buffer.count} * width);
+        const bool inline_indices = !state.inline_index_draw_indexes.empty();
         const auto address =
             state.index_buffer.StartAddress() + size_t{state.index_buffer.first} * width;
-        if (!state.inline_index_draw_indexes.empty()) {
-            if (input.size() > state.inline_index_draw_indexes.size()) {
-                SkipDraw("inline_index_draw_indexes truncated");
-                return false;
-            }
-            std::memcpy(input.data(), state.inline_index_draw_indexes.data(), input.size());
-        } else {
-            if (const auto cpu = gpu_memory->GpuToCpuAddress(address);
-                cpu && buffer_cache.IsRegionGpuModified(*cpu, input.size())) {
-                const FrameProfile::Scope profile_download{context.Profile(),
-                                                           FramePhase::BufferDownload};
-                buffer_cache.DownloadMemory(*cpu, input.size());
-            }
-            gpu_memory->ReadBlock(address, input.data(), input.size());
+        const IndexConversion::CacheKey key{state.index_buffer.StartAddress(),
+                                            0,
+                                            state.index_buffer.count,
+                                            state.index_buffer.first,
+                                            static_cast<u32>(format),
+                                            static_cast<u32>(topology),
+                                            restart.index,
+                                            static_cast<u32>(provoking),
+                                            restart.enabled};
+        // Storage/stream-output buffers can share the guest index resource after cache
+        // merging. Keep the independent converted snapshot when a write state may alias it.
+        bool allow_native = regs.transform_feedback_enabled == 0;
+        for (size_t stage = 0; stage < NUM_GRAPHICS_STAGES && allow_native; ++stage) {
+            if (const auto* info = pipeline.StageInfo(stage))
+                allow_native = info->storage_buffers_descriptors.empty() &&
+                               info->image_buffer_descriptors.empty();
         }
-        if (state.inline_index_draw_indexes.empty()) {
-            const IndexConversion::CacheKey key{state.index_buffer.StartAddress(),
-                                                0,
-                                                state.index_buffer.count,
-                                                state.index_buffer.first,
-                                                static_cast<u32>(format),
-                                                static_cast<u32>(topology),
-                                                restart.index,
-                                                static_cast<u32>(provoking),
-                                                restart.enabled};
-            bool cache_hit{};
-            converted_indices = index_converter.ConvertCached(key, input, cache_hit);
-            if (cache_hit) {
-                context.Profile().Count(FrameCount::IndexConversionCacheHits);
+        auto validation_key = key;
+        ResourcePtr source;
+        const u8* host{};
+        bool validated_hit{};
+        if (!inline_indices && input_size) {
+            const FrameProfile::Scope profile_coherence{context.Profile(),
+                                                        FramePhase::IndexCoherence};
+            host = gpu_memory->GetSpan(address, input_size);
+            if (host) {
+                // ReadBlock also publishes overlapping image/query writes. Preserve that
+                // coherence before trusting a buffer generation or reading a raw span.
+                const auto cpu = gpu_memory->GpuToCpuAddress(address);
+                validation_key.device_address = cpu.value_or(0);
+                bool external_write{};
+                if (cpu) {
+                    const FrameProfile::Scope profile_gpu_modified{context.Profile(),
+                                                                   FramePhase::IndexGpuModified};
+                    external_write = MustFlushRegion(*cpu, input_size,
+                                                     VideoCommon::CacheType::TextureCache |
+                                                         VideoCommon::CacheType::QueryCache);
+                }
+                if (external_write) {
+                    const FrameProfile::Scope profile_download{context.Profile(),
+                                                               FramePhase::BufferDownload};
+                    context.Profile().Count(FrameCount::IndexDownloads);
+                    context.Profile().Count(FrameCount::IndexDownloadBytes, input_size);
+                    FlushRegion(*cpu, input_size, VideoCommon::CacheType::All);
+                    buffer_cache.WriteMemory(*cpu, input_size);
+                }
+
+                // Obtain the current identity first: creation/replacement also makes its
+                // range CPU-dirty. Clean hits need no upload-range enumeration.
+                const auto [buffer, offset] =
+                    buffer_cache.ObtainBuffer(address, static_cast<u32>(input_size),
+                                              VideoCommon::ObtainBufferSynchronize::NoSynchronize,
+                                              VideoCommon::ObtainBufferOperation::DoNothing);
+                (void)offset;
+                source = buffer->Handle();
+                if (cpu && buffer_cache.IsRegionCpuModified(*cpu, input_size)) {
+                    buffer_runtime.synchronizing_indices = true;
+                    SCOPE_EXIT {
+                        buffer_runtime.synchronizing_indices = false;
+                    };
+                    // Consume CPU dirtiness and advance the resource generation before lookup.
+                    const auto [synchronized, synchronized_offset] = buffer_cache.ObtainBuffer(
+                        address, static_cast<u32>(input_size),
+                        VideoCommon::ObtainBufferSynchronize::FullSynchronize,
+                        VideoCommon::ObtainBufferOperation::DoNothing);
+                    (void)synchronized_offset;
+                    source = synchronized->Handle();
+                }
+                // GPU UAV/copy uses advance the generation even for same-state writes.
+                if (const auto found = index_converter.FindValidated(validation_key, source);
+                    found && (!found->native || allow_native)) {
+                    converted_indices = *found;
+                    validated_hit = true;
+                    context.Profile().Count(FrameCount::IndexConversionCacheHits);
+                    context.Profile().Count(FrameCount::IndexValidatedCacheHits);
+                }
+            }
+        }
+        if (!validated_hit) {
+            std::span<const std::byte> input;
+            if (inline_indices) {
+                if (input_size > state.inline_index_draw_indexes.size()) {
+                    SkipDraw("inline_index_draw_indexes truncated");
+                    return false;
+                }
+                input = {reinterpret_cast<const std::byte*>(state.inline_index_draw_indexes.data()),
+                         input_size};
+            } else {
+                {
+                    const FrameProfile::Scope profile_coherence{context.Profile(),
+                                                                FramePhase::IndexGpuModified};
+                    if (const auto cpu = gpu_memory->GpuToCpuAddress(address);
+                        cpu && buffer_cache.IsRegionGpuModified(*cpu, input_size)) {
+                        const FrameProfile::Scope profile_download{context.Profile(),
+                                                                   FramePhase::BufferDownload};
+                        context.Profile().Count(FrameCount::IndexDownloads);
+                        context.Profile().Count(FrameCount::IndexDownloadBytes, input_size);
+                        buffer_cache.DownloadMemory(*cpu, input_size);
+                    }
+                }
+                const FrameProfile::Scope profile_read{context.Profile(), FramePhase::IndexRead};
+                context.Profile().Count(FrameCount::IndexReadBytes, input_size);
+                if (host) {
+                    input = {reinterpret_cast<const std::byte*>(host), input_size};
+                } else {
+                    index_read_scratch.resize(input_size);
+                    gpu_memory->ReadBlock(address, index_read_scratch.data(), input_size);
+                    input = index_read_scratch;
+                }
+            }
+            bool native{};
+            if (!inline_indices && allow_native &&
+                !IndexConversion::NeedsConversion(topology, format, {}, provoking)) {
+                const FrameProfile::Scope profile_scan{context.Profile(),
+                                                       FramePhase::IndexRestartScan};
+                native = !IndexConversion::ContainsRestart(format, input, restart);
+            }
+            if (native) {
+                converted_indices = ConvertedIndexBuffer{};
+                converted_indices->native = true;
+            } else if (!inline_indices) {
+                bool cache_hit{};
+                converted_indices = index_converter.ConvertCached(key, input, cache_hit);
+                if (cache_hit) {
+                    context.Profile().Count(FrameCount::IndexConversionCacheHits);
+                } else {
+                    count_conversion();
+                    context.Profile().Count(FrameCount::IndexConversionBytes, input.size());
+                }
             } else {
                 count_conversion();
                 context.Profile().Count(FrameCount::IndexConversionBytes, input.size());
+                converted_indices =
+                    index_converter.Convert(topology, format, input, restart, provoking);
             }
-        } else {
-            count_conversion();
-            context.Profile().Count(FrameCount::IndexConversionBytes, input.size());
-            converted_indices =
-                index_converter.Convert(topology, format, input, restart, provoking);
+            index_converter.RememberValidated(validation_key, source, *converted_indices);
+        }
+        if (converted_indices->native) {
+            context.Profile().Count(FrameCount::IndexNativeRestartDraws);
+            converted_indices.reset(); // Bind through the normal index buffer cache below.
         }
     } else if (!is_indexed &&
                (topology == IndexConversion::Topology::Quads ||

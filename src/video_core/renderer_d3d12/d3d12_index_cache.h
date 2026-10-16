@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <iterator>
 #include <list>
+#include <memory>
 #include <unordered_map>
 #include <utility>
 
@@ -14,6 +15,7 @@ struct CacheKey {
     std::uint64_t address{}, content_hash{};
     std::uint32_t count{}, first{}, format{}, topology{}, restart_index{}, provoking{};
     bool restart_enabled{};
+    std::uint64_t device_address{}; // Validation must distinguish guest remaps within one buffer.
     bool operator==(const CacheKey&) const = default;
 };
 struct CacheKeyHash {
@@ -31,7 +33,19 @@ struct CacheKeyHash {
         mix(key.restart_index);
         mix(key.provoking);
         mix(key.restart_enabled);
+        mix(key.device_address);
         return result;
+    }
+};
+// Identity plus write generation avoids hashing immutable input again. Weak identity
+// rejects allocator/address reuse without keeping guest buffer resources alive.
+template <typename Resource, typename Value>
+struct ValidatedSnapshot {
+    std::weak_ptr<Resource> source;
+    std::uint64_t version{};
+    Value value;
+    bool Matches(const std::shared_ptr<Resource>& current) const {
+        return current && source.lock() == current && version == current->content_version;
     }
 };
 // Values own immutable allocations. Eviction drops only the cache's reference;

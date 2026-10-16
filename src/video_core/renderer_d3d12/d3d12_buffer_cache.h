@@ -46,6 +46,7 @@ public:
     BufferCacheRuntime(Context& context, BindingState& bindings)
         : context{context}, bindings{bindings}, upload{context, D3D12_HEAP_TYPE_UPLOAD},
           readback{context, D3D12_HEAP_TYPE_READBACK} {}
+    bool synchronizing_indices{};
     bool PreferCachedUniformBuffers() const {
         return true;
     }

@@ -3,6 +3,7 @@
 #include "video_core/renderer_d3d12/d3d12_upload_cache.h"
 #include <array>
 #include <cassert>
+#include <stdexcept>
 #include <vector>
 
 int main() {
@@ -49,6 +50,38 @@ int main() {
   assert(weak_source.expired());
   assert(cache.Find(other, 1, 0, 17) == copy);
 
+  // Snapshot hits refresh LRU order; replacing a version does not evict another
+  // range.
+  UniformCopyCache<Bytes, 2> lru;
+  lru.Insert(other, 1, 0, 16, copy);
+  lru.Insert(other, 1, 16, 16, copy);
+  assert(lru.Find(other, 1, 0, 16));
+  lru.Insert(other, 1, 32, 16, changed);
+  assert(!lru.Find(other, 1, 16, 16));
+  assert(lru.Find(other, 1, 0, 16));
+  lru.Insert(other, 2, 0, 16, changed);
+  assert(!lru.Find(other, 1, 0, 16));
+  assert(lru.Find(other, 2, 0, 16) == changed);
+  assert(lru.Find(other, 1, 32, 16) == changed);
+  assert(!lru.Find({}, 1, 0, 16));
+
+  // Reusing the exact source address must not revive an expired weak identity.
+  alignas(unsigned) std::byte storage[sizeof(unsigned)];
+  const auto make_source = [&] {
+    auto pointer = std::construct_at(reinterpret_cast<unsigned *>(storage), 7u);
+    return std::shared_ptr<unsigned>(
+        pointer, [](unsigned *value) { std::destroy_at(value); });
+  };
+  UniformCopyCache<unsigned, 2> identities;
+  auto identity = make_source();
+  auto snapshot = std::make_shared<unsigned>(42);
+  identities.Insert(identity, 1, 0, 4, snapshot);
+  identity.reset();
+  identity = make_source();
+  assert(!identities.Find(identity, 1, 0, 4));
+  identities.Insert(identity, 1, 0, 4, snapshot);
+  assert(identities.Find(identity, 1, 0, 4) == snapshot);
+
   using namespace IndexConversion;
   assert(!RestartCanMatch(Format::Uint8, 256));
   assert(!RestartCanMatch(Format::Uint16, 0xffffffff));
@@ -79,4 +112,34 @@ int main() {
                          Provoking::Preserve));
   assert(NeedsConversion(Topology::TriangleStrip, Format::Uint16, {},
                          Provoking::Preserve));
+  // Scan packed, potentially unaligned little-endian data. Compare the full
+  // register.
+  const std::array<std::byte, 7> packed{
+      std::byte{0}, std::byte{0xff}, std::byte{0xff}, std::byte{0},
+      std::byte{0}, std::byte{1},    std::byte{0}};
+  const auto unaligned = std::span{packed}.subspan(1);
+  assert(ContainsRestart(Format::Uint16, unaligned, {true, 65535}));
+  assert(!ContainsRestart(Format::Uint16, unaligned, {true, 0xffffffff}));
+  assert(!ContainsRestart(Format::Uint16, unaligned, {}));
+  assert(!ContainsRestart(Format::Uint16, input, {true, 42}));
+  assert(ContainsRestart(Format::Uint8, unaligned, {true, 255}));
+  assert(!ContainsRestart(Format::Uint8, unaligned, {true, 256}));
+  assert(!ContainsRestart(Format::Uint32, {}, {true, 0}));
+  const std::array<std::uint32_t, 3> wide{0, 0xffffffff, 1};
+  assert(ContainsRestart(Format::Uint32, std::as_bytes(std::span{wide}),
+                         {true, 0xffffffff}));
+  bool truncated = false;
+  try {
+    ContainsRestart(Format::Uint32, unaligned, {});
+  } catch (const std::invalid_argument &) {
+    truncated = true;
+  }
+  assert(truncated);
+  bool invalid_format = false;
+  try {
+    ContainsRestart(static_cast<Format>(99), {}, {});
+  } catch (const std::invalid_argument &) {
+    invalid_format = true;
+  }
+  assert(invalid_format);
 }

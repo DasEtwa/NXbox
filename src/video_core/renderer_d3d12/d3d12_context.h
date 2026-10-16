@@ -71,6 +71,17 @@ enum class FramePhase : size_t {
     TextureCacheUpdate,
     DescriptorAndPipeline,
     BetweenDraws,
+    IndexRead,
+    IndexHash,
+    IndexFlushCaching,
+    IndexCoherence,
+    IndexGpuModified,
+    IndexRestartScan,
+    UploadAllocation,
+    UploadTransitions,
+    UploadRecording,
+    StagingCollect,
+    UniformCopyLookup,
     Count
 };
 enum class FrameCount : size_t {
@@ -148,6 +159,22 @@ enum class FrameCount : size_t {
     FeedbackReused,
     GpuResolvedQueryReports,
     QueryReportFenceWaits,
+    IndexValidatedCacheHits,
+    IndexNativeRestartDraws,
+    IndexReadBytes,
+    IndexDownloads,
+    IndexDownloadBytes,
+    StagingRequests,
+    StagingFastRequests,
+    StagingCollections,
+    UploadCopyCommands,
+    VertexUploadCount,
+    IndexUploadCount,
+    UniformUploadCount,
+    StorageUploadCount,
+    TexelUploadCount,
+    OtherUploadCount,
+    UniformCopyCacheMisses,
     Count
 };
 // Monotonic CPU samples, independent of the host clock API, for exclusive phases.

@@ -11,6 +11,8 @@
 #include <utility>
 #include <vector>
 
+#include "common/gpu_thread_profile.h"
+
 using u32 = std::uint32_t;
 using GPUVAddr = std::uint64_t;
 constexpr u32 MacroRegistersStart = 0xE00;

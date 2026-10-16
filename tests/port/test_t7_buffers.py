@@ -160,8 +160,8 @@ struct Resource {
 using ResourcePtr=std::shared_ptr<Resource>;
 struct Buffer { ResourcePtr resource; ResourcePtr Handle() const { return resource; } };
 struct StagingRef { ResourcePtr buffer; size_t offset; std::span<u8> mapped_span; };
-enum class FramePhase { BufferUpload };
-enum class FrameCount { BufferUploadBytes, UniformUploadBytes, UniformCopyCacheHits };
+enum class FramePhase { BufferUpload, UploadAllocation, UniformCopyLookup };
+enum class FrameCount { BufferUploadBytes, UniformUploadBytes, UniformCopyCacheHits, UniformCopyCacheMisses };
 struct FrameProfile {
     struct Scope { Scope(FrameProfile&, FramePhase) {} };
     u64 upload_bytes{};

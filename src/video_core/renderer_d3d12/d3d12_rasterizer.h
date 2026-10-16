@@ -149,6 +149,7 @@ private:
     BufferCache buffer_cache;
     TextureCache texture_cache;
     IndexConverter index_converter;
+    std::vector<std::byte> index_read_scratch;
     std::optional<ConvertedIndexBuffer> converted_indices;
     ClearRenderer clear_renderer;
     ComputeDispatch compute_dispatch;

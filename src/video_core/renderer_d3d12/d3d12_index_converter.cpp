@@ -240,6 +240,17 @@ auto Writer(Format format, std::span<std::byte> output) {
     };
 }
 } // namespace
+bool ContainsRestart(Format format, std::span<const std::byte> input, Restart restart) {
+    const auto width = Width(format);
+    if (input.size() % width)
+        throw std::invalid_argument("Truncated index input");
+    if (!restart.enabled || !RestartCanMatch(format, restart.index))
+        return false;
+    for (std::size_t i = 0; i < input.size() / width; ++i)
+        if (Read(input, width, i) == restart.index)
+            return true;
+    return false;
+}
 Layout Analyze(Topology topology, Format format, std::span<const std::byte> input,
                Restart restart) {
     ListTopology(topology);
@@ -312,6 +323,7 @@ ConvertedIndexBuffer IndexConverter::Upload(const IndexConversion::Layout& layou
              layout.format == Format::Uint16 ? DXGI_FORMAT_R16_UINT : DXGI_FORMAT_R32_UINT},
             topology,
             layout.count,
+            false,
             allocation.buffer};
 }
 ConvertedIndexBuffer IndexConverter::Convert(IndexConversion::Topology topology,
@@ -330,8 +342,11 @@ ConvertedIndexBuffer IndexConverter::Convert(IndexConversion::Topology topology,
 ConvertedIndexBuffer IndexConverter::ConvertCached(IndexConversion::CacheKey key,
                                                    std::span<const std::byte> input,
                                                    bool& cache_hit) {
-    key.content_hash =
-        Common::CityHash64(reinterpret_cast<const char*>(input.data()), input.size());
+    {
+        const FrameProfile::Scope profile_hash{context.Profile(), FramePhase::IndexHash};
+        key.content_hash =
+            Common::CityHash64(reinterpret_cast<const char*>(input.data()), input.size());
+    }
     if (const auto* found = cache.Find(key)) {
         cache_hit = true;
         context.Retain(found->resource);
@@ -348,6 +363,8 @@ ConvertedIndexBuffer IndexConverter::ConvertCached(IndexConversion::CacheKey key
     // Dedicated upload allocation: no staging-ring page can overwrite cached bytes.
     StagingBufferRef allocation{};
     if (layout.bytes) {
+        const FrameProfile::Scope profile_allocation{context.Profile(),
+                                                     FramePhase::UploadAllocation};
         allocation.buffer = context.CreateBuffer(layout.bytes, D3D12_HEAP_TYPE_UPLOAD);
         allocation.mapped_span = allocation.buffer->mapped.first(layout.bytes);
     }
@@ -357,6 +374,30 @@ ConvertedIndexBuffer IndexConverter::ConvertCached(IndexConversion::CacheKey key
     // Charge the actual D3D12 allocation (including heap alignment), not just payload bytes.
     cache.Insert(key, result, result.resource ? result.resource->allocation_size : 0);
     return result;
+}
+std::optional<ConvertedIndexBuffer> IndexConverter::FindValidated(
+    const IndexConversion::CacheKey& key, const ResourcePtr& source) {
+    const auto* found = validated.Find(key);
+    if (!found || !found->Matches(source))
+        return std::nullopt;
+    auto result = found->value.buffer;
+    if (!result.native && result.count) {
+        result.resource = found->value.allocation.lock();
+        if (!result.resource)
+            return std::nullopt; // Content-cache eviction requires fresh validation.
+        context.Retain(result.resource);
+    }
+    return result;
+}
+void IndexConverter::RememberValidated(const IndexConversion::CacheKey& key,
+                                       const ResourcePtr& source,
+                                       const ConvertedIndexBuffer& result) {
+    if (!source)
+        return;
+    auto metadata = result;
+    metadata.resource.reset();
+    validated.Insert(key, {source, source->content_version, {metadata, result.resource}},
+                     sizeof(ValidatedIndexBuffer));
 }
 ConvertedIndexBuffer IndexConverter::Generate(IndexConversion::Topology topology, std::uint32_t n,
                                               std::uint32_t first,
