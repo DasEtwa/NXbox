@@ -486,7 +486,7 @@ void Image::Transfer(const StagingBufferRef& input,
                 throw std::invalid_argument("D3D12 partial BC copy must be block aligned");
             const bool direct_upload =
                 !download && map.buffer->heap == D3D12_HEAP_TYPE_UPLOAD &&
-                !BisectEnabled("NXBOX_D3D12_NO_DIRECT_TEXTURE_UPLOAD") &&
+                BisectEnabled("NXBOX_D3D12_DIRECT_TEXTURE_UPLOAD") &&
                 CanDirectTextureUpload(CheckedAdd(map.offset, base), row_stride, slice_stride,
                                        footprint.Footprint.RowPitch, padded_slice) &&
                 padded_size <= map.mapped_span.size() - base;
