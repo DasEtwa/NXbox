@@ -16,6 +16,9 @@ DRIVER = r"""
 #include <deque>
 #include <functional>
 #include <mutex>
+#include <cstring>
+#include <memory>
+#include <unordered_map>
 #include <optional>
 #include <span>
 #include <thread>
@@ -23,9 +26,13 @@ DRIVER = r"""
 using u32 = std::uint32_t;
 using u64 = std::uint64_t;
 using VAddr = u64;
+struct StagingBufferRef {
+    std::shared_ptr<u64> buffer;
+    std::span<unsigned char> mapped_span;
+};
 enum class QueryType { Counter };
 namespace VideoCommon {
-enum class QueryFlagBits : u32 { IsInvalidated=1, IsRewritten=2, HasTimestamp=4, IsHostSynced=8 };
+enum class QueryFlagBits : u32 { IsInvalidated=1, IsRewritten=2, HasTimestamp=4, IsHostSynced=8, IsHostManaged=16, IsFinalValueSynced=32 };
 QueryFlagBits operator|(QueryFlagBits a, QueryFlagBits b) { return QueryFlagBits(u32(a)|u32(b)); }
 QueryFlagBits operator&(QueryFlagBits a, QueryFlagBits b) { return QueryFlagBits(u32(a)&u32(b)); }
 QueryFlagBits& operator|=(QueryFlagBits& a, QueryFlagBits b) { return a=a|b; }
@@ -48,6 +55,9 @@ public:
     virtual size_t WriteCounter(VAddr,bool,u32,std::optional<u32>) = 0;
     virtual bool HasPendingSync() const = 0;
     virtual void SyncWrites() = 0;
+    virtual bool HasUnsyncedQueries() const = 0;
+    virtual void PushUnsyncedQueries() = 0;
+    virtual void PopUnsyncedQueries() = 0;
     virtual void Free(size_t) { ++freed; }
     std::atomic<int> freed{};
 protected:
@@ -63,11 +73,19 @@ protected:
 }
 struct QueryCacheRuntime {
     u64 next{};
-    int synced{};
+    int synced{}, copies{};
+    bool gpu{};
     std::function<void()> on_sync;
     void EnableCounter(QueryType,bool) {}
     void ResetCounter(QueryType) {}
-    u64 ReadCounter(QueryType,u32) { return ++next; }
+    struct CounterResult { u64 value; StagingBufferRef result; };
+    CounterResult ReadCounter(QueryType,u32) {
+        ++next;
+        if (!gpu) return {next, {}};
+        auto buffer = std::make_shared<u64>(next);
+        return {0, {buffer, {reinterpret_cast<unsigned char*>(buffer.get()), sizeof(u64)}}};
+    }
+    void WriteCounterReport(u64,u64) { ++copies; }
     template<class T> void SyncValues(std::span<T> values) {
         synced += values.size();
         if(on_sync) on_sync();
@@ -112,6 +130,21 @@ int main() {
     { std::scoped_lock lock{guard}; finished=true; cv.notify_all(); }
     worker.join();
     assert(streamer.freed == 6401 && runtime.synced == 6401 && !streamer.HasPendingSync());
+    runtime.gpu = true;
+    const auto a = streamer.WriteCounter(16, true, 0);
+    const auto b = streamer.WriteCounter(32, false, 0);
+    assert(streamer.HasUnsyncedQueries() && !streamer.HasPendingSync());
+    assert(runtime.copies == 2);
+    streamer.PushUnsyncedQueries();
+    assert(!streamer.HasUnsyncedQueries());
+    const auto c = streamer.WriteCounter(48, true, 0);
+    streamer.PushUnsyncedQueries();
+    streamer.PopUnsyncedQueries();
+    streamer.Free(a);
+    streamer.Free(b);
+    streamer.PopUnsyncedQueries();
+    streamer.Free(c);
+    assert(streamer.freed == 6404 && runtime.synced == 6401 && runtime.copies == 3);
 }
 """
 

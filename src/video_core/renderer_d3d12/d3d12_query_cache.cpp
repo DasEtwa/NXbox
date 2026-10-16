@@ -4,7 +4,9 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <deque>
 #include <stdexcept>
+#include <unordered_map>
 
 #include "common/logging.h"
 #include "common/settings.h"
@@ -13,6 +15,8 @@
 #include "video_core/rasterizer_interface.h"
 #include "video_core/renderer_d3d12/d3d12_buffer_cache.h"
 #include "video_core/renderer_d3d12/d3d12_query_helpers.h"
+#include "video_core/renderer_d3d12/d3d12_query_resolve.h"
+#include "video_core/renderer_d3d12/d3d12_shader.h"
 #include "video_core/renderer_d3d12/d3d12_transform_feedback.h"
 
 namespace D3D12 {
@@ -29,6 +33,10 @@ constexpr u64 PipelineOffset = sizeof(u64);
 constexpr u64 SOOffset = PipelineOffset + sizeof(D3D12_QUERY_DATA_PIPELINE_STATISTICS);
 constexpr u64 ResultStride = SOOffset + 4 * sizeof(D3D12_QUERY_DATA_SO_STATISTICS);
 constexpr size_t TypeCount = static_cast<size_t>(QueryType::MaxQueryTypes);
+constexpr u64 CounterBytes = TypeCount * 4 * sizeof(u64);
+bool SynchronousQueries() {
+    return Settings::IsGPULevelHigh() || BisectEnabled("NXBOX_D3D12_SYNC_QUERIES");
+}
 ComPtr<ID3D12QueryHeap> CreateHeap(Context& context, D3D12_QUERY_HEAP_TYPE type, u32 count) {
     if (BisectEnabled("NXBOX_D3D12_NO_QUERIES"))
         return {};
@@ -61,8 +69,19 @@ public:
     }
     size_t WriteCounter(VAddr address, bool timestamp, u32,
                         std::optional<u32> stream = std::nullopt) override {
-        const auto query =
-            BuildQuery(timestamp, address, runtime.ReadCounter(type, stream.value_or(0)));
+        const auto counter = runtime.ReadCounter(type, stream.value_or(0));
+        const auto query = BuildQuery(timestamp, address, counter.value);
+        if (counter.result.buffer) {
+            auto& entry = slot_queries[query];
+            entry.flags = VideoCommon::QueryFlagBits::IsHostManaged |
+                          (timestamp ? VideoCommon::QueryFlagBits::HasTimestamp
+                                     : VideoCommon::QueryFlagBits{});
+            runtime.WriteCounterReport(address, timestamp ? 8 : 4);
+            std::scoped_lock lock{pending_mutex};
+            snapshots.emplace(query, counter.result);
+            unsynced.push_back(query);
+            return query;
+        }
         {
             std::scoped_lock lock{pending_mutex};
             pending.push_back(query);
@@ -92,9 +111,30 @@ public:
         }
         runtime.SyncValues<VideoCommon::SyncValuesStruct>(values);
     }
+    bool HasUnsyncedQueries() const override {
+        std::scoped_lock lock{pending_mutex};
+        return !unsynced.empty();
+    }
+    void PushUnsyncedQueries() override {
+        std::scoped_lock lock{pending_mutex};
+        batches.push_back(std::move(unsynced));
+        unsynced.clear();
+    }
+    void PopUnsyncedQueries() override {
+        // FenceManager calls this only after the batch's native fence completes.
+        // No command recording or wait is allowed on its completion thread.
+        std::scoped_lock lock{pending_mutex};
+        for (const auto index : batches.front()) {
+            auto& query = slot_queries[index];
+            std::memcpy(&query.value, snapshots.at(index).mapped_span.data(), sizeof(u64));
+            query.flags |= VideoCommon::QueryFlagBits::IsFinalValueSynced;
+        }
+        batches.pop_front();
+    }
     void Free(size_t index) override {
         std::scoped_lock lock{pending_mutex};
         std::erase(pending, index);
+        snapshots.erase(index);
         SimpleStreamer::Free(index);
     }
 
@@ -102,7 +142,9 @@ private:
     QueryCacheRuntime& runtime;
     QueryType type;
     mutable std::mutex pending_mutex;
-    std::vector<size_t> pending;
+    std::vector<size_t> pending, unsynced;
+    std::deque<std::vector<size_t>> batches;
+    std::unordered_map<size_t, StagingBufferRef> snapshots;
 };
 } // namespace
 
@@ -115,7 +157,9 @@ struct QueryCacheRuntimeImpl {
           guest{0, runtime},
           occlusion{CreateHeap(context, D3D12_QUERY_HEAP_TYPE_OCCLUSION, SlotCount)},
           pipeline{CreateHeap(context, D3D12_QUERY_HEAP_TYPE_PIPELINE_STATISTICS, SlotCount)},
-          results{context.CreateBuffer(ResultStride * SlotCount, D3D12_HEAP_TYPE_READBACK)} {
+          results{context.CreateBuffer(ResultStride * SlotCount, synchronous
+                                                                     ? D3D12_HEAP_TYPE_READBACK
+                                                                     : D3D12_HEAP_TYPE_DEFAULT)} {
         for (auto& heap : so) {
             heap = CreateHeap(context, D3D12_QUERY_HEAP_TYPE_SO_STATISTICS, SlotCount);
         }
@@ -138,6 +182,129 @@ struct QueryCacheRuntimeImpl {
             throw std::logic_error("D3D12 query operation inside draw");
         }
     }
+    void EnsureGpuCounters() {
+        if (gpu_counters)
+            return;
+        std::string shader;
+        const auto define = [&](const char* name, u64 value) {
+            shader += "#define " + std::string{name} + " " + std::to_string(value) + "\n";
+        };
+        define("TYPE_COUNT", TypeCount);
+        define("RESULT_STRIDE", ResultStride);
+        define("SO_OFFSET", SOOffset);
+        define("ZPassPixelCount", static_cast<u32>(QueryType::ZPassPixelCount));
+        define("ZPassPixelCount64", static_cast<u32>(QueryType::ZPassPixelCount64));
+        define("StreamingPrimitivesSucceeded",
+               static_cast<u32>(QueryType::StreamingPrimitivesSucceeded));
+        define("StreamingPrimitivesNeeded", static_cast<u32>(QueryType::StreamingPrimitivesNeeded));
+        define("StreamingPrimitivesNeededMinusSucceeded",
+               static_cast<u32>(QueryType::StreamingPrimitivesNeededMinusSucceeded));
+        define("TotalStreamingPrimitivesNeededMinusSucceeded",
+               static_cast<u32>(QueryType::TotalStreamingPrimitivesNeededMinusSucceeded));
+        define("PrimitivesGenerated", static_cast<u32>(QueryType::PrimitivesGenerated));
+        define("VtgPrimitivesOut", static_cast<u32>(QueryType::VtgPrimitivesOut));
+        define("VerticesGenerated", static_cast<u32>(QueryType::VerticesGenerated));
+        define("VertexShaderInvocations", static_cast<u32>(QueryType::VertexShaderInvocations));
+        define("GeometryShaderInvocations", static_cast<u32>(QueryType::GeometryShaderInvocations));
+        define("GeometryShaderPrimitivesGenerated",
+               static_cast<u32>(QueryType::GeometryShaderPrimitivesGenerated));
+        define("ClipperInvocations", static_cast<u32>(QueryType::ClipperInvocations));
+        define("ClipperPrimitivesGenerated",
+               static_cast<u32>(QueryType::ClipperPrimitivesGenerated));
+        define("PixelShaderInvocations", static_cast<u32>(QueryType::PixelShaderInvocations));
+        define("TessellationInitInvocations",
+               static_cast<u32>(QueryType::TessellationInitInvocations));
+        define("TessellationShaderInvocations",
+               static_cast<u32>(QueryType::TessellationShaderInvocations));
+        shader += QueryResolveShader;
+        std::array<D3D12_ROOT_PARAMETER, 5> parameters{};
+        parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        parameters[0].Constants = {0, 0, 5};
+        for (u32 i = 1; i < parameters.size(); ++i) {
+            parameters[i].ParameterType =
+                i < 3 ? D3D12_ROOT_PARAMETER_TYPE_SRV : D3D12_ROOT_PARAMETER_TYPE_UAV;
+            parameters[i].Descriptor = {(i - 1) % 2, 0};
+        }
+        D3D12_ROOT_SIGNATURE_DESC root_desc{};
+        root_desc.NumParameters = static_cast<UINT>(parameters.size());
+        root_desc.pParameters = parameters.data();
+        ComPtr<ID3DBlob> blob, errors;
+        Check(D3D12SerializeRootSignature(&root_desc, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &errors),
+              "serialize query resolve root", context.Device());
+        Check(context.Device()->CreateRootSignature(
+                  0, blob->GetBufferPointer(), blob->GetBufferSize(), IID_PPV_ARGS(&resolve_root)),
+              "create query resolve root", context.Device());
+        ShaderCompiler compiler;
+        const auto code = compiler.Compile(shader, L"main", L"cs_6_0");
+        D3D12_COMPUTE_PIPELINE_STATE_DESC desc{};
+        desc.pRootSignature = resolve_root.Get();
+        desc.CS = {code.data(), code.size()};
+        Check(context.Device()->CreateComputePipelineState(&desc, IID_PPV_ARGS(&resolve_pipeline)),
+              "create query resolve pipeline", context.Device());
+        gpu_counters = context.CreateBuffer(CounterBytes * 2, D3D12_HEAP_TYPE_DEFAULT);
+        gpu_report = context.CreateBuffer(8, D3D12_HEAP_TYPE_DEFAULT);
+        auto zero = upload.Request(CounterBytes * 2);
+        std::memset(zero.mapped_span.data(), 0, CounterBytes * 2);
+        context.Commands()->SetPredication(nullptr, 0, D3D12_PREDICATION_OP_EQUAL_ZERO);
+        context.Transition(gpu_counters, D3D12_RESOURCE_STATE_COPY_DEST);
+        context.Retain(zero.buffer);
+        context.MarkWork("query accumulator initialization");
+        context.BeforeCopyWrite(gpu_counters, 0, CounterBytes * 2);
+        context.Commands()->CopyBufferRegion(gpu_counters->handle.Get(), 0,
+                                             zero.buffer->handle.Get(), zero.offset,
+                                             CounterBytes * 2);
+    }
+    void DispatchResolve(u32 operation, u32 type = 0, u32 stream = 0,
+                         const StagingBufferRef& metadata = {}) {
+        EnsureGpuCounters();
+        context.Commands()->SetPredication(nullptr, 0, D3D12_PREDICATION_OP_EQUAL_ZERO);
+        context.InvalidateRecordedState();
+        context.Transition(results, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        context.Transition(gpu_counters, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        context.Transition(gpu_report, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        context.Retain(results);
+        context.Retain(gpu_counters);
+        context.Retain(gpu_report);
+        if (metadata.buffer)
+            context.Retain(metadata.buffer);
+        context.AfterCompletion([root = resolve_root, pipeline = resolve_pipeline] {});
+        context.GlobalUavBarrier();
+        auto* commands = context.Commands();
+        commands->OMSetRenderTargets(0, nullptr, FALSE, nullptr);
+        commands->SetComputeRootSignature(resolve_root.Get());
+        commands->SetPipelineState(resolve_pipeline.Get());
+        const std::array constants{operation, bank * BankSize + accumulated, count - accumulated,
+                                   type, stream};
+        commands->SetComputeRoot32BitConstants(0, 5, constants.data(), 0);
+        commands->SetComputeRootShaderResourceView(1, results->handle->GetGPUVirtualAddress());
+        // Reset/report do not read metadata, but still bind a valid buffer address.
+        commands->SetComputeRootShaderResourceView(
+            2, metadata.buffer ? metadata.buffer->handle->GetGPUVirtualAddress() + metadata.offset
+                               : results->handle->GetGPUVirtualAddress());
+        commands->SetComputeRootUnorderedAccessView(3,
+                                                    gpu_counters->handle->GetGPUVirtualAddress());
+        commands->SetComputeRootUnorderedAccessView(4, gpu_report->handle->GetGPUVirtualAddress());
+        context.MarkWork("query GPU reduction");
+        commands->Dispatch(static_cast<UINT>((TypeCount * 4 + 31) / 32), 1, 1);
+        context.Profile().Count(FrameCount::Dispatches);
+        context.GlobalUavBarrier();
+    }
+    void AccumulateGpu() {
+        RequireClosed();
+        EnsureGpuCounters();
+        if (accumulated == count)
+            return;
+        auto metadata = upload.Request((count - accumulated) * 4 * sizeof(u32));
+        for (u32 i = accumulated; i < count; ++i) {
+            const auto& draw = draws[bank * BankSize + i];
+            const std::array<u32, 4> flags{draw.occlusion, draw.geometry, draw.pipeline,
+                                           draw.streams};
+            std::memcpy(metadata.mapped_span.data() + (i - accumulated) * sizeof(flags),
+                        flags.data(), sizeof(flags));
+        }
+        DispatchResolve(0, 0, 0, metadata);
+        accumulated = count;
+    }
     void Collect() {
         RequireClosed();
         bool any = count != 0;
@@ -158,6 +325,13 @@ struct QueryCacheRuntimeImpl {
     }
     // A full bank is left for the GPU; the next one is reused once its own work has completed.
     void Rotate() {
+        if (!synchronous) {
+            AccumulateGpu();
+            bank = (bank + 1) % BankCount;
+            count = 0;
+            accumulated = 0;
+            return; // Resolve, reduction and reuse are ordered on the same queue.
+        }
         bank_count[bank] = count;
         bank_tick[bank] = context.CurrentTick();
         bank = (bank + 1) % BankCount;
@@ -250,6 +424,7 @@ struct QueryCacheRuntimeImpl {
         std::memcpy(&value, result.mapped_span.data(), 8);
         return value;
     }
+    const bool synchronous{SynchronousQueries()};
     Context& context;
     Tegra::MaxwellDeviceMemoryManager& memory;
     BufferCache& cache;
@@ -259,7 +434,10 @@ struct QueryCacheRuntimeImpl {
     std::array<std::unique_ptr<CounterStreamer>, TypeCount> streamers;
     ComPtr<ID3D12QueryHeap> occlusion, pipeline;
     std::array<ComPtr<ID3D12QueryHeap>, 4> so;
-    ResourcePtr results, predicate;
+    ResourcePtr results, predicate, gpu_counters, gpu_report;
+    ComPtr<ID3D12RootSignature> resolve_root;
+    ComPtr<ID3D12PipelineState> resolve_pipeline;
+    u32 accumulated{};
     struct Draw {
         bool occlusion{}, geometry{}, pipeline{}, recorded{};
         u32 streams{};
@@ -365,6 +543,8 @@ void QueryCacheRuntime::EndDraw() {
     }
     auto& context = impl->context;
     context.Retain(impl->results);
+    if (!impl->synchronous)
+        context.Transition(impl->results, D3D12_RESOURCE_STATE_COPY_DEST);
     // EndQuery and ResolveQueryData leave graphics state alone; keep the draw cache.
     auto* commands = context.Commands();
     const auto end = [&](ID3D12QueryHeap* heap, D3D12_QUERY_TYPE type, u64 offset) {
@@ -393,29 +573,59 @@ void QueryCacheRuntime::CancelDraw() {
         EndDraw();
     PauseHostConditionalRendering();
 }
-u64 QueryCacheRuntime::ReadCounter(QueryType type, u32 stream) {
+QueryCacheRuntime::CounterResult QueryCacheRuntime::ReadCounter(QueryType type, u32 stream) {
     if (BisectEnabled("NXBOX_D3D12_NO_QUERIES"))
-        return 0;
+        return {};
+    impl->RequireClosed();
     if (stream >= 4 || static_cast<size_t>(type) >= TypeCount) {
         throw std::out_of_range("Invalid D3D12 query counter");
     }
     if (type != QueryType::StreamingByteCount && type != QueryType::ZPassPixelCount &&
         type != QueryType::ZPassPixelCount64)
         impl->pipeline_wanted = true;
-    impl->Collect();
-    if (type == QueryType::StreamingByteCount) {
-        return impl->feedback.ReadFilledSize(stream);
+    if (impl->synchronous) {
+        impl->Collect();
+        if (type == QueryType::StreamingByteCount)
+            return {impl->feedback.ReadFilledSize(stream), {}};
+        const auto index = static_cast<size_t>(type);
+        return {CounterDifference(impl->totals[index][stream], impl->baselines[index][stream]), {}};
     }
-    const auto index = static_cast<size_t>(type);
-    return CounterDifference(impl->totals[index][stream], impl->baselines[index][stream]);
+    PauseHostConditionalRendering();
+    impl->AccumulateGpu();
+    impl->DispatchResolve(1, static_cast<u32>(type), stream);
+    if (type == QueryType::StreamingByteCount) {
+        // The byte counter is the SO cursor, not a sum of primitive statistics.
+        impl->feedback.CopyFilledSize(stream, impl->gpu_report);
+    }
+    auto result = impl->readback.Request(8);
+    auto& context = impl->context;
+    context.Transition(impl->gpu_report, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    context.MarkWork("query snapshot copy");
+    context.BeforeCopyWrite(result.buffer, result.offset, 8);
+    context.Commands()->CopyBufferRegion(result.buffer->handle.Get(), result.offset,
+                                         impl->gpu_report->handle.Get(), 0, 8);
+    return {0, result};
+}
+void QueryCacheRuntime::WriteCounterReport(DAddr address, u64 size) {
+    CopyValue(address, impl->gpu_report, 0, size);
+    impl->context.Profile().Count(FrameCount::GpuResolvedQueryReports);
 }
 void QueryCacheRuntime::ResetCounter(QueryType type) {
-    impl->Collect();
+    if (BisectEnabled("NXBOX_D3D12_NO_QUERIES"))
+        return;
+    impl->RequireClosed();
     const auto index = static_cast<size_t>(type);
     if (index >= TypeCount) {
         throw std::out_of_range("Invalid D3D12 query reset");
     }
-    impl->baselines[index] = impl->totals[index];
+    if (impl->synchronous) {
+        impl->Collect();
+        impl->baselines[index] = impl->totals[index];
+        return;
+    }
+    PauseHostConditionalRendering();
+    impl->AccumulateGpu();
+    impl->DispatchResolve(2, static_cast<u32>(type), 0);
 }
 void QueryCacheRuntime::EnableCounter(QueryType type, bool enabled) {
     impl->RequireClosed();

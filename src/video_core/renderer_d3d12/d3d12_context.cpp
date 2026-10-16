@@ -464,7 +464,8 @@ void FrameProfile::EndFrame(bool presented) {
                                       "feedback_disjoint",
                                       "feedback_avoided",
                                       "feedback_copy_bytes",
-                                      "feedback_reused"};
+                                      "feedback_reused",
+                                      "gpu_resolved_query_reports"};
         static_assert(names.size() == static_cast<size_t>(FramePhase::Count));
         static_assert(counters.size() == static_cast<size_t>(FrameCount::Count));
         const double elapsed = static_cast<double>(wall - start_wall);

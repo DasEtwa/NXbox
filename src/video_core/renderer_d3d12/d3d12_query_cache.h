@@ -29,7 +29,7 @@ struct QueryCacheRuntimeImpl;
 // before BeginDraw; pass whether the last stage is a geometry shader. Clear and
 // dispatch do not participate. NotifySegment pauses/resumes predication; BeginDraw
 // also reapplies it after list resets. Never submit while a draw query is open.
-// Results are resolved synchronously at report/reset/bank exhaustion. Guest report
+// Results are accumulated and reported on the GPU; CPU values retire with fences. Guest report
 // timestamps remain Tegra::GPU::GetTicks() in QueryCacheBase; CaptureTimestamp is
 // an independent host GPU timestamp facility, never a substitute guest clock.
 // Pipeline IAPrimitives is the fallback for generated primitives without a GS;
@@ -74,7 +74,12 @@ public:
     void BeginDraw(bool has_geometry_shader = false);
     void EndDraw();
     void CancelDraw();
-    u64 ReadCounter(VideoCommon::QueryType type, u32 stream = 0);
+    struct CounterResult {
+        u64 value{};
+        StagingBufferRef result;
+    };
+    CounterResult ReadCounter(VideoCommon::QueryType type, u32 stream = 0);
+    void WriteCounterReport(DAddr address, u64 size);
     void ResetCounter(VideoCommon::QueryType type);
     void EnableCounter(VideoCommon::QueryType type, bool enabled);
     struct Timestamp {

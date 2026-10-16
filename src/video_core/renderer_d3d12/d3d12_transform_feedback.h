@@ -37,6 +37,7 @@ public:
     void Unbind(bool reset_cursor = false, bool cache_draw_state = false);
     u32 StreamMask() const;
     u64 ReadFilledSize(u32 stream);
+    void CopyFilledSize(u32 stream, const ResourcePtr& destination);
 
 private:
     void EnsureCounters();

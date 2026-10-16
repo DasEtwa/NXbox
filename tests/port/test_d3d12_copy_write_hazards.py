@@ -88,6 +88,8 @@ class CopyWriteHazards(unittest.TestCase):
                 "readback, 0, 4",
             ],
             "d3d12_query_cache.cpp": [
+                "gpu_counters, 0, CounterBytes * 2",
+                "result.buffer, result.offset, 8",
                 "result.buffer, result.offset, 8",
                 "resource, destination, size",
                 "impl->predicate, 0, 8",
@@ -96,6 +98,7 @@ class CopyWriteHazards(unittest.TestCase):
             "d3d12_transform_feedback.cpp": [
                 "counters, 0, 32",
                 "counters, u64{slot} * 8, 8",
+                "destination, 0, 8",
                 "result.buffer, result.offset, 8",
             ],
             "d3d12_texture_cache.cpp": [

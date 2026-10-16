@@ -18,7 +18,11 @@ class LazyPipelineQueries(unittest.TestCase):
         self.assertLess(begin.index("if (!draw.recorded)"), begin.index("BeginQuery"))
         end = re.search(r"void QueryCacheRuntime::EndDraw\(\) \{(.*?)\n\}", source, re.S).group(1)
         self.assertLess(end.index("if (!draw.recorded)"), end.index("++impl->count"))
-        read = re.search(r"u64 QueryCacheRuntime::ReadCounter\(.*?\{(.*?)\n\}", source, re.S).group(1)
+        read = re.search(
+            r"QueryCacheRuntime::CounterResult QueryCacheRuntime::ReadCounter\(.*?\{(.*?)\n\}",
+            source,
+            re.S,
+        ).group(1)
         self.assertIn("impl->pipeline_wanted = true;", read)
 
     def test_full_bank_rotates_without_finish(self):

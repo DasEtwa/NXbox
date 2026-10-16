@@ -175,6 +175,22 @@ u32 TransformFeedback::StreamMask() const {
     }
     return mask;
 }
+void TransformFeedback::CopyFilledSize(u32 stream, const ResourcePtr& destination) {
+    if (stream >= 4)
+        throw std::out_of_range("Invalid stream output stream");
+    for (u32 i = 0; i < 4; ++i) {
+        if (buffers[i] && layout.streams[i] == stream) {
+            context.Transition(counters, D3D12_RESOURCE_STATE_COPY_SOURCE);
+            context.Transition(destination, D3D12_RESOURCE_STATE_COPY_DEST);
+            context.MarkWork("query SO cursor copy");
+            context.BeforeCopyWrite(destination, 0, 8);
+            context.Commands()->CopyBufferRegion(destination->handle.Get(), 0,
+                                                 counters->handle.Get(), i * 8, 8);
+            return;
+        }
+    }
+    // The report shader already wrote zero when no stream has a filled-size cursor.
+}
 u64 TransformFeedback::ReadFilledSize(u32 stream) {
     if (stream >= 4) {
         throw std::out_of_range("Invalid stream output stream");
