@@ -56,6 +56,126 @@ class GpuQueryReports(unittest.TestCase):
         copy = function_body(source, "void QueryCacheRuntime::CopyValue(")
         self.assertIn("ObtainBufferOperation::MarkAsWritten", copy)
 
+    def test_counter_reports_never_copy_to_guest_buffers(self):
+        source = (D3D12 / "d3d12_query_cache.cpp").read_text()
+        write = function_body(source, "size_t WriteCounter(")
+        read = function_body(source, "QueryCacheRuntime::ReadCounter(")
+        self.assertNotIn("WriteCounterReport", source)
+        self.assertNotIn("SyncValues", write)
+        self.assertNotIn("CopyValue", read)
+        self.assertNotIn("ObtainCPUBuffer", read)
+        self.assertIn("CopyBufferRegion(result.buffer->handle.Get()", read)
+        self.assertIn("FrameCount::GpuResolvedQueryReports", read)
+        compare = function_body(source, "bool QueryCacheRuntime::CompareConditional(")
+        self.assertIn("host_managed(first) || host_managed(second)", compare)
+        fallback = function_body(compare, "if (host_managed(first)")
+        self.assertIn("EndHostConditionalRendering();", fallback)
+        self.assertIn("return false;", fallback)
+
+    def test_guest_delivery_and_one_wait_for_an_unfinished_batch(self):
+        source = (ROOT / "src/video_core/query_cache/query_cache.h").read_text()
+        header = (ROOT / "src/video_core/query_cache/query_cache_base.h").read_text()
+        methods = "\n".join(
+            "template<class Traits> "
+            + result
+            + " QueryCacheBase<Traits>::"
+            + signature
+            + " {"
+            + function_body(source, "QueryCacheBase<Traits>::" + signature)
+            + "}"
+            for result, signature in (
+                ("bool", "IsQueryDirty(QueryCacheBase<Traits>::QueryLocation location)"),
+                ("bool", "SemiFlushQueryDirty(QueryCacheBase<Traits>::QueryLocation location)"),
+                ("void", "RequestGuestHostSync()"),
+            )
+        )
+        flush = function_body(header, "void FlushRegion(")
+        driver = r"""
+#include <array>
+#include <cassert>
+#include <cstdint>
+#include <cstring>
+#include <functional>
+using u8=unsigned char; using u32=std::uint32_t; using u64=std::uint64_t;
+using VAddr=u64;
+enum class QueryFlagBits : u32 {
+    IsFinalValueSynced=1, IsGuestSynced=2, IsHostManaged=4, HasTimestamp=8
+};
+QueryFlagBits operator&(QueryFlagBits a,QueryFlagBits b) { return QueryFlagBits(u32(a)&u32(b)); }
+QueryFlagBits operator|(QueryFlagBits a,QueryFlagBits b) { return QueryFlagBits(u32(a)|u32(b)); }
+QueryFlagBits& operator|=(QueryFlagBits& a,QueryFlagBits b) { return a=a|b; }
+bool True(QueryFlagBits v) { return u32(v)!=0; }
+bool False(QueryFlagBits v) { return !True(v); }
+struct Query { u64 guest_address,value; QueryFlagBits flags; };
+struct Memory {
+    std::array<u8,64> bytes{};
+    template<class T> T* GetPointer(u64 addr) { return reinterpret_cast<T*>(bytes.data()+addr); }
+};
+struct Runtime { int waits{}; void ReportQueryFenceWait() { ++waits; } };
+struct Rasterizer { std::function<void()> complete; void ReleaseFences() { complete(); } };
+struct Impl {
+    std::array<Query,2> queries{{{0,0x123456789ULL,QueryFlagBits::IsHostManaged},
+                              {16,0xabcdef1234567890ULL,QueryFlagBits::IsHostManaged|QueryFlagBits::HasTimestamp}}};
+    Memory device_memory;
+    Runtime runtime;
+    Rasterizer rasterizer;
+    Query* ObtainQuery(int index) { return index<2 ? &queries[index] : nullptr; }
+};
+template<class Traits> struct QueryCacheBase {
+    using QueryLocation=int;
+    Impl storage; Impl* impl=&storage;
+    bool IsQueryDirty(QueryLocation);
+    bool SemiFlushQueryDirty(QueryLocation);
+    void RequestGuestHostSync();
+    template<bool, class F> void IterateCache(VAddr address,std::size_t,F f) { f(int(address/16)); }
+    void FlushRegion(VAddr addr,std::size_t size) { __FLUSH__ }
+};
+__METHODS__
+int main() {
+    QueryCacheBase<int> cache;
+    auto& state=cache.storage;
+    state.device_memory.bytes.fill(0x55);
+    state.rasterizer.complete=[&] {
+        // The fence manager publishes every snapshot and executes guest callbacks
+        // for the whole batch before returning from ReleaseFences.
+        for(int i=0;i<2;++i) {
+            state.queries[i].flags|=QueryFlagBits::IsFinalValueSynced;
+            cache.SemiFlushQueryDirty(i);
+        }
+    };
+    assert(cache.IsQueryDirty(0) && cache.IsQueryDirty(1));
+    cache.FlushRegion(0,4);
+    cache.FlushRegion(16,8);
+    assert(state.runtime.waits==1);
+    assert(!cache.IsQueryDirty(0) && !cache.IsQueryDirty(1));
+    u32 low{}; u64 wide{};
+    std::memcpy(&low,state.device_memory.bytes.data(),4);
+    std::memcpy(&wide,state.device_memory.bytes.data()+16,8);
+    assert(low==0x23456789U && wide==0xabcdef1234567890ULL);
+    // Four-byte reports preserve the following bytes; timestamp delivery remains
+    // the completion callback's responsibility, not SemiFlushQueryDirty's.
+    assert(state.device_memory.bytes[4]==0x55 && state.device_memory.bytes[24]==0x55);
+    state.queries[0].flags=QueryFlagBits::IsHostManaged|QueryFlagBits::IsFinalValueSynced;
+    cache.FlushRegion(0,4);
+    assert(state.runtime.waits==1 && !cache.IsQueryDirty(0));
+    assert(!cache.SemiFlushQueryDirty(9));
+}
+""".replace("__FLUSH__", flush).replace("__METHODS__", methods)
+        with tempfile.TemporaryDirectory(prefix="nxbox-query-delivery-") as folder:
+            cpp, binary = Path(folder) / "delivery.cpp", Path(folder) / "delivery"
+            cpp.write_text(driver)
+            result = subprocess.run(
+                ["clang++", "-std=c++20", str(cpp), "-o", str(binary)],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            subprocess.run([str(binary)], check=True, timeout=10)
+        runtime = (D3D12 / "d3d12_query_cache.cpp").read_text()
+        wait = function_body(runtime, "void QueryCacheRuntime::ReportQueryFenceWait()")
+        self.assertIn("FrameCount::QueryReportFenceWaits", wait)
+        self.assertIn('"query_report_fence_waits"', (D3D12 / "d3d12_context.cpp").read_text())
+
     def test_production_shader_reduction_and_reset_semantics(self):
         # Execute the HLSL bodies with byte-buffer mocks. This tests the actual
         # shader's mappings/branches and uint2 arithmetic without a Windows SDK.

@@ -272,8 +272,8 @@ change emulation behavior and are intended only to isolate device removal:
 | `NXBOX_D3D12_NO_COMPUTE` | Skip guest compute dispatches; retain helper compute and GPU work accounting. |
 | `NXBOX_D3D12_NO_DRAWS` | Skip direct/indirect guest draws; retain clears, compositor presentation and GPU work accounting. |
 | `NXBOX_D3D12_NO_QUERIES` | Disable native query heaps, begin/end/resolve, timestamps and host predication; return zero counters/timestamps and retain guest report writes. |
-| `NXBOX_D3D12_SYNC_QUERIES` | Set to `1` to restore synchronous query collection (submit and CPU wait at each report/reset). Otherwise native query results, accumulated totals, reset baselines and guest report copies stay on the GPU; CPU snapshots are consumed only after their batch fence completes. Query mode is selected when the runtime is created. `NXBOX_D3D12_NO_QUERIES` takes precedence. `gpu_resolved_query_reports` counts GPU reports; `forced_submits_query_bank` still counts actual forced collection submits. |
-| `NXBOX_D3D12_CPU_PREDICATE` | Evaluate every conditional render on the CPU (readback and fence wait per check). By default single values and comparisons against a known zero are resolved on the GPU, and other two-report comparisons render unconditionally unless GPU accuracy is high, as in the Vulkan backend. |
+| `NXBOX_D3D12_SYNC_QUERIES` | Set to `1` to restore synchronous query collection (submit and CPU wait at each report/reset). Otherwise native query results, accumulated totals and reset baselines stay on the GPU. Reports are copied only to readback snapshots; after the batch fence completes, the query cache writes their values directly to guest memory and marks them `IsGuestSynced`. Counter reports do not copy into guest GPU buffers or mark buffer-cache regions GPU-modified. A guest read of an unfinished report drains the batch once; subsequent reports in that batch are already available. Query mode is selected when the runtime is created. `NXBOX_D3D12_NO_QUERIES` takes precedence. `gpu_resolved_query_reports` counts GPU snapshots; `query_report_fence_waits` counts guest reads that request a fence drain because the final query value is still pending (not completion-thread waits); `forced_submits_query_bank` still counts actual forced collection submits. |
+| `NXBOX_D3D12_CPU_PREDICATE` | Evaluate every conditional render on the CPU (readback and fence wait per check). Host-managed counter reports use Maxwell's guest-memory comparison path. For other values, single values and comparisons against a known zero are resolved on the GPU by default, and other two-report comparisons render unconditionally unless GPU accuracy is high, as in the Vulkan backend. |
 
 Initialization order is device/SM6 support, direct queue/fence/allocator/list,
 rasterizer heaps and transform-feedback counter upload recording, swapchain and
@@ -367,7 +367,9 @@ installed only on the main thread.
 Query reports register their cache entry before publishing an asynchronous callback.
 The native completion requirement also prevents low-accuracy settings from recycling
 a query slot while its callback still references it. Pending-list locks are released
-before D3D12 uploads to allow completion reentry.
+before D3D12 uploads to allow completion reentry. Host-managed counter predicates use
+Maxwell's guest-memory comparison path so they cannot read stale GPU buffer contents.
+Other predicates retain native D3D12 predication.
 
 Host tests cover asynchronous callback ordering without another guest command,
 completion failure waking a forced drain, staging pressure with live CPU leases,

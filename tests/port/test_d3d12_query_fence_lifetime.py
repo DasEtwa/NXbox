@@ -35,7 +35,7 @@ namespace VideoCommon {
 enum class QueryType { Payload, Counter };
 enum class QueryPropertiesFlags : u32 { None=0, HasTimeout=1, IsAFence=2 };
 enum class QueryFlagBits : u32 { None=0, HasTimestamp=1, IsFinalValueSynced=2,
-    IsInvalidated=4, IsFence=8, IsRewritten=16 };
+    IsInvalidated=4, IsFence=8, IsRewritten=16, IsGuestSynced=32 };
 template<class T> T operator|(T a,T b) { return T(u32(a)|u32(b)); }
 template<class T> T operator&(T a,T b) { return T(u32(a)&u32(b)); }
 template<class T> T& operator|=(T& a,T b) { return a=a|b; }
@@ -113,6 +113,7 @@ int main() {
     assert(native.Value()==0);
     native.impl->rasterizer.pending[0]();
     assert(native.Value()==42);
+    assert(True(native.impl->payload.queries[0].flags & QueryFlagBits::IsGuestSynced));
     native.Retire();
     assert(native.impl->payload.freed==1 && native.cached_queries[0].empty());
     // A fence already reached by the GPU can retire inside SignalFence itself.

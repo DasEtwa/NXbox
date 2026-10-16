@@ -134,7 +134,7 @@ int main() {
     const auto a = streamer.WriteCounter(16, true, 0);
     const auto b = streamer.WriteCounter(32, false, 0);
     assert(streamer.HasUnsyncedQueries() && !streamer.HasPendingSync());
-    assert(runtime.copies == 2);
+    assert(runtime.copies == 0);
     streamer.PushUnsyncedQueries();
     assert(!streamer.HasUnsyncedQueries());
     const auto c = streamer.WriteCounter(48, true, 0);
@@ -144,7 +144,7 @@ int main() {
     streamer.Free(b);
     streamer.PopUnsyncedQueries();
     streamer.Free(c);
-    assert(streamer.freed == 6404 && runtime.synced == 6401 && runtime.copies == 3);
+    assert(streamer.freed == 6404 && runtime.synced == 6401 && runtime.copies == 0);
 }
 """
 

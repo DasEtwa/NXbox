@@ -78,7 +78,6 @@ public:
             entry.flags = VideoCommon::QueryFlagBits::IsHostManaged |
                           (timestamp ? VideoCommon::QueryFlagBits::HasTimestamp
                                      : VideoCommon::QueryFlagBits{});
-            runtime.WriteCounterReport(address, timestamp ? 8 : 4);
             std::scoped_lock lock{pending_mutex};
             snapshots.emplace(query, counter.result);
             unsynced.push_back(query);
@@ -483,6 +482,9 @@ VideoCommon::StreamerInterface* QueryCacheRuntime::GetStreamerInterface(QueryTyp
     const auto index = static_cast<size_t>(type);
     return index < TypeCount ? impl->streamers[index].get() : nullptr;
 }
+void QueryCacheRuntime::ReportQueryFenceWait() {
+    impl->context.Profile().Count(FrameCount::QueryReportFenceWaits);
+}
 void QueryCacheRuntime::ReportPending() { ++impl->pending_reports; }
 void QueryCacheRuntime::ReportCompleted(bool invalidated) {
     --impl->pending_reports;
@@ -611,11 +613,8 @@ QueryCacheRuntime::CounterResult QueryCacheRuntime::ReadCounter(QueryType type, 
     context.BeforeCopyWrite(result.buffer, result.offset, 8);
     context.Commands()->CopyBufferRegion(result.buffer->handle.Get(), result.offset,
                                          impl->gpu_report->handle.Get(), 0, 8);
+    context.Profile().Count(FrameCount::GpuResolvedQueryReports);
     return {0, result};
-}
-void QueryCacheRuntime::WriteCounterReport(DAddr address, u64 size) {
-    CopyValue(address, impl->gpu_report, 0, size);
-    impl->context.Profile().Count(FrameCount::GpuResolvedQueryReports);
 }
 void QueryCacheRuntime::ResetCounter(QueryType type) {
     if (BisectEnabled("NXBOX_D3D12_NO_QUERIES"))
@@ -718,6 +717,17 @@ bool QueryCacheRuntime::CompareConditional(VideoCommon::LookupData first,
         return false;
     impl->RequireClosed();
     if (!first.address) {
+        EndHostConditionalRendering();
+        return false;
+    }
+    // Host-managed reports live in readback snapshots, not in the guest GPU buffer.
+    // Let Maxwell read guest memory through the query cache, draining the batch once
+    // if necessary, rather than predicate on an old buffer-cache copy.
+    const auto host_managed = [](VideoCommon::LookupData object) {
+        return object.found_query &&
+               True(object.found_query->flags & VideoCommon::QueryFlagBits::IsHostManaged);
+    };
+    if (host_managed(first) || host_managed(second)) {
         EndHostConditionalRendering();
         return false;
     }
