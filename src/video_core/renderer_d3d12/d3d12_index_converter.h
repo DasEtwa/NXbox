@@ -85,12 +85,13 @@ Layout Generate(Topology topology, std::uint32_t vertex_count, std::span<std::by
 
 #ifdef _WIN32
 #include "video_core/renderer_d3d12/d3d12_context.h"
+#include "video_core/renderer_d3d12/d3d12_index_cache.h"
 namespace D3D12 {
 struct ConvertedIndexBuffer {
     D3D12_INDEX_BUFFER_VIEW view{};
     D3D_PRIMITIVE_TOPOLOGY topology{};
     std::uint32_t count{};
-    ResourcePtr resource; // Keep the upload page leased across cache submissions before the draw.
+    ResourcePtr resource; // Own the allocation across submissions before the draw.
 };
 class IndexConverter {
 public:
@@ -99,6 +100,8 @@ public:
         IndexConversion::Topology topology, IndexConversion::Format format,
         std::span<const std::byte> input, IndexConversion::Restart restart = {},
         IndexConversion::Provoking provoking = IndexConversion::Provoking::Preserve);
+    ConvertedIndexBuffer ConvertCached(IndexConversion::CacheKey key,
+                                       std::span<const std::byte> input, bool& cache_hit);
     ConvertedIndexBuffer Generate(
         IndexConversion::Topology topology, std::uint32_t vertex_count,
         std::uint32_t first_vertex = 0,
@@ -109,6 +112,7 @@ private:
                                 StagingBufferRef& allocation);
     Context& context;
     StagingRing upload;
+    IndexConversion::ConversionCache<ConvertedIndexBuffer> cache;
 };
 } // namespace D3D12
 #endif

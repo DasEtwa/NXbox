@@ -289,6 +289,7 @@ Layout Generate(Topology topology, std::uint32_t n, std::span<std::byte> output,
 } // namespace D3D12::IndexConversion
 
 #ifdef _WIN32
+#include "common/cityhash.h"
 namespace D3D12 {
 IndexConverter::IndexConverter(Context& context)
     : context{context}, upload{context, D3D12_HEAP_TYPE_UPLOAD} {}
@@ -325,6 +326,37 @@ ConvertedIndexBuffer IndexConverter::Convert(IndexConversion::Topology topology,
     IndexConversion::Convert(topology, format, input,
                              std::as_writable_bytes(allocation.mapped_span), restart, provoking);
     return Upload(layout, allocation);
+}
+ConvertedIndexBuffer IndexConverter::ConvertCached(IndexConversion::CacheKey key,
+                                                   std::span<const std::byte> input,
+                                                   bool& cache_hit) {
+    key.content_hash =
+        Common::CityHash64(reinterpret_cast<const char*>(input.data()), input.size());
+    if (const auto* found = cache.Find(key)) {
+        cache_hit = true;
+        context.Retain(found->resource);
+        return *found;
+    }
+    cache_hit = false;
+    const auto topology = static_cast<IndexConversion::Topology>(key.topology);
+    const auto format = static_cast<IndexConversion::Format>(key.format);
+    const IndexConversion::Restart restart{key.restart_enabled, key.restart_index};
+    const auto provoking = static_cast<IndexConversion::Provoking>(key.provoking);
+    const auto layout = IndexConversion::Analyze(topology, format, input, restart);
+    if (layout.bytes > UINT_MAX)
+        throw std::overflow_error("Index buffer view exceeds UINT size");
+    // Dedicated upload allocation: no staging-ring page can overwrite cached bytes.
+    StagingBufferRef allocation{};
+    if (layout.bytes) {
+        allocation.buffer = context.CreateBuffer(layout.bytes, D3D12_HEAP_TYPE_UPLOAD);
+        allocation.mapped_span = allocation.buffer->mapped.first(layout.bytes);
+    }
+    IndexConversion::Convert(topology, format, input,
+                             std::as_writable_bytes(allocation.mapped_span), restart, provoking);
+    auto result = Upload(layout, allocation);
+    // Charge the actual D3D12 allocation (including heap alignment), not just payload bytes.
+    cache.Insert(key, result, result.resource ? result.resource->allocation_size : 0);
+    return result;
 }
 ConvertedIndexBuffer IndexConverter::Generate(IndexConversion::Topology topology, std::uint32_t n,
                                               std::uint32_t first,
