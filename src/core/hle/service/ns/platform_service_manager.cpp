@@ -127,6 +127,10 @@ IPlatformServiceManager::IPlatformServiceManager(Core::System& system_, const ch
 
         if (!romfs) {
             romfs = FileSys::SystemArchive::SynthesizeSystemArchive(static_cast<u64>(font.first));
+            LOG_WARNING(Service_NS, "Shared font {:016X} not in system NAND; using the substitute",
+                        font.first);
+        } else {
+            LOG_INFO(Service_NS, "Shared font {:016X} loaded from system NAND", font.first);
         }
 
         if (!romfs) {
