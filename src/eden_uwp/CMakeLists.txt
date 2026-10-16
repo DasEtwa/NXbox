@@ -171,3 +171,10 @@ foreach(_credential CLIENT_ID CLIENT_SECRET)
 endforeach()
 configure_file(save_sync/credentials.h.in ${CMAKE_CURRENT_BINARY_DIR}/save_sync_credentials.h @ONLY)
 target_include_directories(eden-uwp PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+
+# Stage the same runtime assets as package_uwp.py for MSVC build-directory runs.
+add_custom_command(TARGET eden-uwp POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${PROJECT_SOURCE_DIR}/dist/nxbox/Assets/avatars"
+        "$<TARGET_FILE_DIR:eden-uwp>/Assets/avatars"
+    VERBATIM)

@@ -56,6 +56,8 @@ def stage(executable: Path, destination: Path, version: str, kind: str = "cpu"):
     assets.mkdir()
     for name in ("StoreLogo", "Square44x44Logo", "Square150x150Logo"):
         shutil.copy2(ROOT / "dist/nxbox/Assets" / f"{name}.png", assets / f"{name}.png")
+    # Runtime portraits are package content; keep nested assets when staging the appx.
+    shutil.copytree(ROOT / "dist/nxbox/Assets/avatars", assets / "avatars")
     manifest = (ROOT / "dist/nxbox/AppxManifest.xml").read_text()
     manifest = manifest.replace('Version="0.1.0.0"', f'Version="{version}"')
     if kind == "graphics":
@@ -70,6 +72,7 @@ def stage(executable: Path, destination: Path, version: str, kind: str = "cpu"):
     notices = destination / "Notices"
     notices.mkdir()
     shutil.copy2(ROOT / "LICENSE.txt", notices / "Eden-LICENSE.txt")
+    shutil.copy2(ROOT / "tools/nxbox/avatars/LICENSE.md", notices / "NXbox-avatars-LICENSE.md")
     if kind in {"cpu", "game"}:
         shutil.copy2(ROOT / "homebrew/jit-smoke/LICENSE.libnx.md", notices / "libnx-LICENSE.md")
     if kind in {"graphics", "game"}:

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build PNG embeddings, PC pixel catalogue and contact sheet from original RGBA masters.
+"""Build package PNGs, PC pixel catalogue and contact sheet from original RGBA masters.
 
 Requires Pillow 12.3.0. AI production prompts are archived in avatars/prompts.json.
 Re-running this script is deterministic; it never regenerates the fixed NXbox logo.
@@ -30,35 +30,65 @@ COLORS = [
     ("white", (255, 255, 255)),
     ("black", (0, 0, 0)),
 ]
-CHARACTERS = [
-    "fox-pilot",
-    "robot",
-    "knight",
-    "slime",
-    "cat-mage",
-    "astronaut",
-    "dragon",
-    "forest-spirit",
-    "racer",
-    "ghost",
-    "frog-ninja",
-    "penguin",
-    "cactus",
-    "bee",
-    "octopus-dj",
-    "skeleton-musician",
-    "alien",
-    "samurai",
-    "witch",
-    "golem",
-    "dino",
-    "pirate",
-    "bear",
-    "phoenix",
+COLORS += [
+    ("rose", (255, 199, 211)),
+    ("peach", (255, 212, 177)),
+    ("butter", (255, 239, 166)),
+    ("mint", (182, 236, 207)),
+    ("seafoam", (177, 229, 224)),
+    ("ice", (191, 226, 250)),
+    ("periwinkle", (198, 204, 249)),
+    ("lavender", (222, 199, 246)),
+    ("lilac", (237, 206, 234)),
+    ("cream", (248, 239, 217)),
+    ("navy", (18, 35, 68)),
+    ("forest", (17, 60, 43)),
+    ("petrol", (16, 61, 70)),
+    ("plum", (67, 29, 67)),
+    ("burgundy", (88, 29, 48)),
+    ("chocolate", (70, 43, 30)),
+    ("charcoal", (36, 38, 41)),
+    ("slate", (65, 78, 92)),
+    ("copper", (183, 104, 61)),
+    ("sand", (216, 190, 144)),
+    ("olive", (107, 117, 56)),
+    ("coral", (245, 115, 98)),
+    ("ocean", (22, 112, 173)),
+    ("raspberry", (189, 53, 110)),
+    ("sunrise", (255, 190, 121)),
+    ("lagoon", (83, 208, 190)),
+    ("dusk", (157, 152, 219)),
+    ("ember", (218, 107, 68)),
 ]
+GRADIENT_ENDS = {
+    "sunrise": (242, 114, 143),
+    "lagoon": (35, 109, 171),
+    "dusk": (71, 75, 125),
+    "ember": (110, 42, 58),
+}
+CHARACTERS = json.loads((ART / "catalog.json").read_text())
+
+
+def background_rgb(color, y, height=256):
+    name, rgb = color
+    end = GRADIENT_ENDS.get(name, rgb)
+    return tuple(
+        (a * (height - 1 - y) + b * y + (height - 1) // 2) // (height - 1) for a, b in zip(rgb, end)
+    )
 
 
 def generate():
+    ids = [c["id"] for c in CHARACTERS]
+    if len(ids) < 120 or len(ids) != len(set(ids)):
+        raise ValueError("Expected at least 120 unique character IDs")
+    categories = {"animals", "fantasy", "sci-fi", "sports", "food", "monsters", "robots", "people"}
+    for character in CHARACTERS:
+        if not re.fullmatch(r"[a-z]+(?:-[a-z]+)*", character["id"]):
+            raise ValueError("Invalid character ID")
+        if character["category"] not in categories:
+            raise ValueError("Unknown character category")
+        if not (ART / (character["id"] + ".png")).is_file():
+            raise FileNotFoundError(character["id"])
     header = ROOT / "src/core/constants_nxbox.h"
     # Preserve the existing logo byte-for-byte, including the original JPEG encoder settings.
     default = re.search(
@@ -73,15 +103,17 @@ def generate():
         "// clang-format off",
         "#pragma once",
         "#include <array>",
-        "#include <span>",
         '#include "common/common_types.h"',
         "namespace Core::Constants {",
         default,
     ]
     entries = []
-    sheet = Image.new("RGB", (6 * 384, 4 * 160), (24, 24, 24))
+    sheet = Image.new("RGB", (10 * 160, ((len(CHARACTERS) + 9) // 10) * 188), (24, 24, 24))
+    package = ROOT / "dist/nxbox/Assets/avatars"
+    package.mkdir(parents=True, exist_ok=True)
     draw = ImageDraw.Draw(sheet)
-    for index, name in enumerate(CHARACTERS):
+    for index, character in enumerate(CHARACTERS):
+        name = character["id"]
         path = ART / f"{name}.png"
         master = Image.open(path).convert("RGBA")
         if master.size != (512, 512):
@@ -93,41 +125,49 @@ def generate():
         output = BytesIO()
         image.save(output, "PNG", optimize=True)
         data = output.getvalue()
-        lines.append(f"inline constexpr std::array<u8, {len(data)}> NXBOX_CHARACTER_{index} = {{")
-        lines.extend(
-            "    " + ", ".join(f"0x{b:02x}" for b in data[i : i + 16]) + ","
-            for i in range(0, len(data), 16)
-        )
-        lines.append("};")
+        (package / f"{name}.png").write_bytes(data)
         # Premultiply identically to WIC, then share exact 256px pixels with the PC app.
         pixels = bytearray(image.tobytes())
         for i in range(0, len(pixels), 4):
             for channel in range(3):
                 pixels[i + channel] = (pixels[i + channel] * pixels[i + 3] + 127) // 255
-        entries.append({"id": name, "rgba": base64.b64encode(zlib.compress(pixels, 9)).decode()})
-        for col, color in enumerate([COLORS[2][1], COLORS[7][1], COLORS[11][1]]):
-            tile = Image.new("RGBA", (128, 128), color + (255,))
-            tile.alpha_composite(master.resize((128, 128), Image.Resampling.LANCZOS))
-            sheet.paste(tile.convert("RGB"), ((index % 6) * 384 + col * 128, (index // 6) * 160))
-        draw.text(((index % 6) * 384 + 8, (index // 6) * 160 + 136), name, fill="white")
-    lines.append(
-        f"inline constexpr std::array<std::span<const u8>, {len(entries)}> NXBOX_CHARACTER_AVATARS = {{"
-    )
-    lines.extend(f"    NXBOX_CHARACTER_{i}," for i in range(len(entries)))
+        entries.append({**character, "rgba": base64.b64encode(zlib.compress(pixels, 9)).decode()})
+        color = COLORS[index % len(COLORS)]
+        tile = Image.new("RGBA", (160, 160))
+        for y in range(160):
+            ImageDraw.Draw(tile).line((0, y, 159, y), fill=background_rgb(color, y, 160) + (255,))
+        tile.alpha_composite(master.resize((160, 160), Image.Resampling.LANCZOS))
+        x, y = (index % 10) * 160, (index // 10) * 188
+        sheet.paste(tile.convert("RGB"), (x, y))
+        draw.text((x + 3, y + 162), name, fill="white")
+        draw.text((x + 3, y + 175), character["category"], fill=(170, 170, 170))
     lines.extend(
         [
-            "};",
-            "struct AvatarColor { const char* name; std::array<u8, 3> rgb; };",
-            "inline constexpr std::array<AvatarColor, 12> NXBOX_AVATAR_COLORS = {{",
+            "struct AvatarCharacter { const char* id; const char* category; };",
+            f"inline constexpr std::array<AvatarCharacter, {len(entries)}> NXBOX_CHARACTERS = {{{{",
         ]
     )
-    lines.extend('    {"%s", {%d, %d, %d}},' % (name, *rgb) for name, rgb in COLORS)
+    lines.extend('    {"%s", "%s"},' % (c["id"], c["category"]) for c in CHARACTERS)
+    lines.extend(
+        [
+            "}};",
+            "struct AvatarColor { const char* name; std::array<u8, 3> rgb; std::array<u8, 3> end; };",
+            f"inline constexpr std::array<AvatarColor, {len(COLORS)}> NXBOX_AVATAR_COLORS = {{{{",
+        ]
+    )
+    lines.extend(
+        '    {"%s", {%d, %d, %d}, {%d, %d, %d}},' % (name, *rgb, *GRADIENT_ENDS.get(name, rgb))
+        for name, rgb in COLORS
+    )
     lines.extend(["}};", "} // namespace Core::Constants", "// clang-format on", ""])
     header.write_text("\n".join(lines))
     (ROOT / "tools/nxbox-pack/src/avatar-catalog.json").write_text(
         json.dumps(
             {
-                "colors": [{"name": name, "rgb": rgb} for name, rgb in COLORS],
+                "colors": [
+                    {"name": name, "rgb": rgb, "end": GRADIENT_ENDS.get(name, rgb)}
+                    for name, rgb in COLORS
+                ],
                 "characters": entries,
             },
             separators=(",", ":"),

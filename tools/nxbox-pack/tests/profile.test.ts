@@ -140,7 +140,7 @@ test("detailed avatars fit the guest's 128 KiB limit without truncation", () => 
   expect(Array.from(jpeg.slice(-2))).toEqual([255, 217]);
 });
 
-test("mode setup creates the first-launch flag and refuses malformed existing state", async () => {
+test("mode setting preserves the legacy initialized field and refuses malformed existing state", async () => {
   const temporary = await mkdtemp(join(tmpdir(), "nxbox-mode-test-"));
   const writes: unknown[] = [];
   let exists = false;

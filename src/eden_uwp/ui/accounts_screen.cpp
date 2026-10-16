@@ -2,10 +2,15 @@
 #include "eden_uwp/ui/accounts_screen.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <memory>
+#include <string_view>
 #include <thread>
+#include <vector>
+#include <winrt/Windows.ApplicationModel.h>
 #include <winrt/Windows.Foundation.h>
+#include <winrt/Windows.Storage.h>
 
 #include "common/fs/fs.h"
 #include "common/scope_exit.h"
@@ -28,16 +33,36 @@ using D2D1::RectF;
 using winrt::Windows::UI::Core::CoreWindow;
 using Manager = Service::Account::ProfileManager;
 
-enum class Page { Question, List, Detail, Presets, Colors, Remove, DeleteSaves };
+enum class Page { List, Detail, Picture, Presets, Colors, Remove, DeleteSaves };
+constexpr std::array<const char*, 8> kCategories = {"animals", "fantasy",  "sci-fi", "sports",
+                                                    "food",    "monsters", "robots", "people"};
+constexpr std::array<Text, 8> kCategoryLabels = {
+    Text::AvatarAnimals, Text::AvatarFantasy,  Text::AvatarSciFi,  Text::AvatarSports,
+    Text::AvatarFood,    Text::AvatarMonsters, Text::AvatarRobots, Text::AvatarPeople};
+
+constexpr std::array<Text, 40> kAvatarColorLabels = {
+    Text::AvatarRed,      Text::AvatarOrange, Text::AvatarYellow,     Text::AvatarLime,
+    Text::AvatarGreen,    Text::AvatarTeal,   Text::AvatarSkyBlue,    Text::AvatarBlue,
+    Text::AvatarPurple,   Text::AvatarPink,   Text::AvatarWhite,      Text::AvatarBlack,
+    Text::AvatarRose,     Text::AvatarPeach,  Text::AvatarButter,     Text::AvatarMint,
+    Text::AvatarSeafoam,  Text::AvatarIce,    Text::AvatarPeriwinkle, Text::AvatarLavender,
+    Text::AvatarLilac,    Text::AvatarCream,  Text::AvatarNavy,       Text::AvatarForest,
+    Text::AvatarPetrol,   Text::AvatarPlum,   Text::AvatarBurgundy,   Text::AvatarChocolate,
+    Text::AvatarCharcoal, Text::AvatarSlate,  Text::AvatarCopper,     Text::AvatarSand,
+    Text::AvatarOlive,    Text::AvatarCoral,  Text::AvatarOcean,      Text::AvatarRaspberry,
+    Text::AvatarSunrise,  Text::AvatarLagoon, Text::AvatarDusk,       Text::AvatarEmber};
 
 class AccountsScreen {
 public:
     AccountsScreen(Renderer& renderer, const CoreWindow& window, Input& input,
-                   const std::filesystem::path& local_state, bool launch, bool setup_only = false)
+                   const std::filesystem::path& local_state, bool launch, bool picture_only = false)
         : renderer_(renderer), window_(window), input_(input), local_state_(local_state),
-          state_(Accounts::Load(local_state)), setup_only_(setup_only), launch_(launch) {
-        page_ = Accounts::NeedsSetup(state_.initialized) ? Page::Question : Page::List;
-        if (launch_ && state_.initialized && state_.multi) {
+          state_(Accounts::Load(local_state)), picture_only_(picture_only), launch_(launch) {
+        page_ = picture_only_ ? Page::Picture : Page::List;
+        if (picture_only_ && state_.multi && !state_.selected_uuid.empty())
+            account_ = profiles_.GetUserIndex(Common::UUID{state_.selected_uuid}).value_or(0);
+        FilterCharacters();
+        if (launch_ && state_.multi) {
             row_ = static_cast<int>(
                 profiles_
                     .GetUserIndex(Common::UUID{state_.selected_uuid.empty()
@@ -91,12 +116,41 @@ private:
                                       pixels))
                 renderer_.UploadImage(pixels, images_[i]);
         }
-        for (std::size_t i = 0; i < presets_.size(); ++i) {
-            const auto bytes = Core::Constants::NXBOX_CHARACTER_AVATARS[i];
+    }
+
+    void LoadPresets() {
+        for (const auto index : visible_) {
+            if (presets_[index].brush)
+                continue;
             Pixels pixels;
-            if (renderer_.DecodeImage(std::vector<u8>(bytes.begin(), bytes.end()), pixels))
-                renderer_.UploadImage(pixels, presets_[i]);
+            if (!renderer_.DecodeImage(CharacterBytes(index), pixels) ||
+                !renderer_.UploadImage(pixels, presets_[index]))
+                failed_ = true;
         }
+    }
+
+    void ShowPresets() {
+        page_ = Page::Presets;
+        row_ = 0;
+        LoadPresets();
+    }
+
+    std::vector<u8> CharacterBytes(std::size_t index) const {
+        const std::filesystem::path installed{std::wstring_view(
+            winrt::Windows::ApplicationModel::Package::Current().InstalledLocation().Path())};
+        return ReadFileBytes(installed / "Assets" / "avatars" /
+                             (std::string(Core::Constants::NXBOX_CHARACTERS[index].id) + ".png"));
+    }
+
+    void FilterCharacters() {
+        visible_.clear();
+        for (std::size_t i = 0; i < Core::Constants::NXBOX_CHARACTERS.size(); ++i)
+            if (std::string_view(Core::Constants::NXBOX_CHARACTERS[i].category) ==
+                kCategories[category_])
+                visible_.push_back(i);
+        row_ = 0;
+        if (page_ == Page::Presets)
+            LoadPresets();
     }
 
     std::wstring Name(std::size_t index) const {
@@ -136,8 +190,7 @@ private:
                         account_ = profiles_.GetUserCount() - 1;
                         failed_ = !profiles_.SetAvatar(uuid, Core::Constants::NXBOX_ACCOUNT_JPEG);
                         profiles_.WriteUserSaveFile();
-                        page_ = Page::Presets;
-                        row_ = 0;
+                        ShowPresets();
                         ReloadImages();
                     }
                 } else {
@@ -155,18 +208,18 @@ private:
         }
         if (input_.Pressed(Button::B)) {
             if (page_ == Page::Colors) {
-                page_ = moru_ ? Page::Detail : Page::Presets;
-                row_ = moru_ ? 5 : character_;
+                page_ = moru_ ? (picture_only_ ? Page::Picture : Page::Detail) : Page::Presets;
+                row_ =
+                    moru_
+                        ? (picture_only_ ? 1 : 5)
+                        : static_cast<int>(std::find(visible_.begin(), visible_.end(), character_) -
+                                           visible_.begin());
             } else if (page_ == Page::Presets) {
-                page_ = Page::Detail;
-                row_ = 2;
-            } else if (page_ == Page::Question) {
-                row_ = 0;
-                if (launch_)
-                    AnswerQuestion();
-                else
-                    page_ = Page::List;
+                page_ = picture_only_ ? Page::Picture : Page::Detail;
+                row_ = picture_only_ ? 0 : 2;
             } else if (page_ == Page::List) {
+                done_ = true;
+            } else if (picture_only_) {
                 done_ = true;
             } else {
                 page_ = Page::List;
@@ -175,20 +228,30 @@ private:
             return;
         }
         if (page_ == Page::Presets) {
+            if (input_.Pressed(Button::LeftShoulder) || input_.Pressed(Button::RightShoulder)) {
+                category_ = (category_ + (input_.Pressed(Button::RightShoulder) ? 1 : 7)) % 8;
+                FilterCharacters();
+            }
             if (input_.Pressed(Button::Left))
                 row_ = std::max(0, row_ - 1);
             if (input_.Pressed(Button::Right))
-                row_ = std::min(static_cast<int>(presets_.size()) - 1, row_ + 1);
+                row_ = std::min(static_cast<int>(visible_.size()) - 1, row_ + 1);
             if (input_.Pressed(Button::Up))
                 row_ = std::max(0, row_ - 6);
             if (input_.Pressed(Button::Down))
-                row_ = std::min(static_cast<int>(presets_.size()) - 1, row_ + 6);
+                row_ = std::min(static_cast<int>(visible_.size()) - 1, row_ + 6);
         } else if (page_ == Page::Colors) {
             const int previous = row_;
             if (input_.Pressed(Button::Left))
                 row_ = std::max(0, row_ - 1);
             if (input_.Pressed(Button::Right))
-                row_ = std::min(11, row_ + 1);
+                row_ = std::min(static_cast<int>(Core::Constants::NXBOX_AVATAR_COLORS.size()) - 1,
+                                row_ + 1);
+            if (input_.Pressed(Button::Up))
+                row_ = std::max(0, row_ - 10);
+            if (input_.Pressed(Button::Down))
+                row_ = std::min(static_cast<int>(Core::Constants::NXBOX_AVATAR_COLORS.size()) - 1,
+                                row_ + 10);
             if (previous != row_)
                 UpdatePreview();
         } else {
@@ -203,7 +266,7 @@ private:
                                                                                              : 0)
                                : 1);
             if (page_ == Page::Detail)
-                count = state_.multi ? 6 : 4;
+                count = 6;
             if (input_.Pressed(Button::Up) || input_.Pressed(Button::Left))
                 row_ = std::max(0, row_ - 1);
             if (input_.Pressed(Button::Down) || input_.Pressed(Button::Right))
@@ -212,12 +275,13 @@ private:
         if (!input_.Pressed(Button::A))
             return;
         switch (page_) {
-        case Page::Question:
-            AnswerQuestion();
-            break;
         case Page::List:
             if (!launch_ && row_ == 0) {
-                page_ = Page::Question;
+                const auto previous = state_;
+                state_.initialized = true;
+                state_.multi = !state_.multi;
+                if (!Persist())
+                    state_ = previous;
                 row_ = 0;
             } else if (!launch_ && row_ > static_cast<int>(profiles_.GetUserCount())) {
                 adding_ = true;
@@ -232,26 +296,26 @@ private:
                 }
             }
             break;
+        case Page::Picture:
+            if (row_ == 0) {
+                ShowPresets();
+            } else {
+                ChooseMoru();
+            }
+            break;
         case Page::Detail:
             if (row_ == 0)
                 Select();
             else if (row_ == 1) {
                 adding_ = false;
                 entry_ = std::make_unique<TextEntry>(Tr(Text::AccountName), Name(account_));
-            } else if (row_ == 2 && state_.multi) {
-                page_ = Page::Presets;
-                row_ = 0;
-            } else if (row_ == 4 && state_.multi) {
+            } else if (row_ == 2) {
+                ShowPresets();
+            } else if (row_ == 4) {
                 if (RunMoruScreen(renderer_, window_, input_))
                     closed_ = true;
-            } else if (row_ == 5 && state_.multi) {
-                if (RunMoruScreen(renderer_, window_, input_, &moru_))
-                    closed_ = true;
-                if (moru_) {
-                    page_ = Page::Colors;
-                    row_ = 0;
-                    UpdatePreview();
-                }
+            } else if (row_ == 5) {
+                ChooseMoru();
             } else if (row_ == 3 && profiles_.GetUserCount() > 1) {
                 page_ = Page::Remove;
                 row_ = 0;
@@ -259,7 +323,7 @@ private:
             break;
         case Page::Presets:
             moru_.reset();
-            character_ = row_;
+            character_ = static_cast<int>(visible_[row_]);
             page_ = Page::Colors;
             row_ = 0;
             UpdatePreview();
@@ -268,8 +332,8 @@ private:
             failed_ = !SaveAvatar();
             if (!failed_) {
                 ReloadImages();
-                page_ = Page::Detail;
-                row_ = 2;
+                page_ = picture_only_ ? Page::Picture : Page::Detail;
+                row_ = picture_only_ ? 0 : 2;
             }
             break;
         case Page::Remove:
@@ -298,6 +362,16 @@ private:
         input_.ConsumeUntilRelease();
     }
 
+    void ChooseMoru() {
+        if (RunMoruScreen(renderer_, window_, input_, &moru_))
+            closed_ = true;
+        if (moru_) {
+            page_ = Page::Colors;
+            row_ = 0;
+            UpdatePreview();
+        }
+    }
+
     bool UpdatePreview() {
         preview_ = {};
         composite_ = {};
@@ -305,19 +379,22 @@ private:
             composite_.width = composite_.height = 256;
             composite_.bgra = Moru::Rasterize(Moru::MakeScene(*moru_));
         } else {
-            const auto bytes = Core::Constants::NXBOX_CHARACTER_AVATARS[character_];
-            if (!renderer_.DecodeImage(std::vector<u8>(bytes.begin(), bytes.end()), composite_) ||
+            if (!renderer_.DecodeImage(CharacterBytes(character_), composite_) ||
                 composite_.width != 256 || composite_.height != 256) {
                 failed_ = true;
                 return false;
             }
         }
-        const auto& rgb = Core::Constants::NXBOX_AVATAR_COLORS[row_].rgb;
+        const auto& color = Core::Constants::NXBOX_AVATAR_COLORS[row_];
         for (std::size_t i = 0; i < composite_.bgra.size(); i += 4) {
             const auto alpha = composite_.bgra[i + 3];
-            for (std::size_t channel = 0; channel < 3; ++channel)
+            const auto y = static_cast<unsigned>((i / 4) / 256);
+            for (std::size_t channel = 0; channel < 3; ++channel) {
+                const auto background =
+                    AvatarBackgroundChannel(color.rgb[2 - channel], color.end[2 - channel], y);
                 composite_.bgra[i + channel] =
-                    CompositeAvatarChannel(composite_.bgra[i + channel], alpha, rgb[2 - channel]);
+                    CompositeAvatarChannel(composite_.bgra[i + channel], alpha, background);
+            }
             composite_.bgra[i + 3] = 255;
         }
         failed_ = !renderer_.UploadImage(composite_, preview_);
@@ -325,7 +402,7 @@ private:
     }
 
     bool SaveAvatar() {
-        if (!state_.multi || !UpdatePreview())
+        if (!UpdatePreview())
             return false;
         std::vector<u8> rgb(256 * 256 * 3);
         for (std::size_t pixel = 0; pixel < 256 * 256; ++pixel)
@@ -347,19 +424,6 @@ private:
         return false;
     }
 
-    void AnswerQuestion() {
-        state_.initialized = true;
-        state_.multi = row_ == 1;
-        if (!Persist())
-            return;
-        row_ = 0;
-        page_ = Page::List;
-        if (setup_only_ || (launch_ && !state_.multi)) {
-            accepted_ = true;
-            done_ = true;
-        }
-    }
-
     void DrawRow(int row, const std::wstring& label, const Image* image = nullptr) {
         const float y = 285.0f + static_cast<float>(row) * 62.0f;
         const auto rect = RectF(96.0f, y, 1500.0f, y + 54.0f);
@@ -373,22 +437,18 @@ private:
     }
 
     void Draw() {
-        const Text title = page_ == Page::Question      ? Text::AccountsQuestion
-                           : page_ == Page::Remove      ? Text::AccountRemoveQuestion
+        const Text title = page_ == Page::Remove        ? Text::AccountRemoveQuestion
                            : page_ == Page::DeleteSaves ? Text::AccountDeleteQuestion
                            : page_ == Page::Colors      ? Text::AccountBackground
+                           : page_ == Page::Picture     ? Text::ProfilePicture
                            : page_ == Page::Presets     ? Text::AccountCharacter
                                                         : Text::AccountsTitle;
         renderer_.DrawString(Tr(title), Font::Heading, RectF(96, 115, 1800, 210), Theme::kText);
-        if (page_ == Page::Detail || page_ == Page::Remove || page_ == Page::DeleteSaves)
+        if (page_ == Page::Detail || page_ == Page::Picture || page_ == Page::Remove ||
+            page_ == Page::DeleteSaves)
             renderer_.DrawString(Name(account_), Font::Nav, RectF(96, 210, 1800, 270),
                                  Theme::kTextSecondary);
-        if (page_ == Page::Question) {
-            renderer_.DrawString(Tr(Text::AccountsBody), Font::Body, RectF(96, 210, 1800, 270),
-                                 Theme::kTextSecondary);
-            DrawRow(0, Tr(Text::AccountsNo));
-            DrawRow(1, Tr(Text::AccountsYes));
-        } else if (page_ == Page::List) {
+        if (page_ == Page::List) {
             if (!launch_)
                 DrawRow(0, Tr(state_.multi ? Text::AccountsMulti : Text::AccountsSingle));
             if (state_.multi) {
@@ -401,42 +461,61 @@ private:
                 if (!launch_ && profiles_.GetUserCount() < Service::Account::MAX_USERS)
                     DrawRow(static_cast<int>(profiles_.GetUserCount()) + 1, Tr(Text::AccountAdd));
             }
+        } else if (page_ == Page::Picture) {
+            DrawRow(0, Tr(Text::AccountCharacter));
+            DrawRow(1, Tr(Text::MoruIcon));
         } else if (page_ == Page::Detail) {
             DrawRow(0, Tr(Text::AccountUse));
             DrawRow(1, Tr(Text::AccountRename));
             DrawRow(2, Tr(Text::AccountAvatar));
             DrawRow(3, Tr(profiles_.GetUserCount() > 1 ? Text::AccountRemove : Text::AccountLast));
-            if (state_.multi) {
-                DrawRow(4, Tr(Text::MoruTitle));
-                DrawRow(5, Tr(Text::MoruIcon));
-            }
+            DrawRow(4, Tr(Text::MoruTitle));
+            DrawRow(5, Tr(Text::MoruIcon));
         } else if (page_ == Page::Presets) {
-            for (int i = 0; i < static_cast<int>(presets_.size()); ++i) {
+            for (int i = 0; i < 8; ++i) {
+                const float x = 96.0f + i * 214.0f;
+                const auto tab = RectF(x, 210, x + 202, 262);
+                renderer_.DrawString(Tr(kCategoryLabels[i]), Font::Body, tab, Theme::kText,
+                                     HAlign::Center, VAlign::Middle);
+                if (i == category_)
+                    DrawRing(renderer_, tab, 26.0f, 1.0f);
+            }
+            const int first = std::max(0, row_ / 6 - 3) * 6;
+            for (int i = first; i < std::min(first + 24, static_cast<int>(visible_.size())); ++i) {
                 const float x = 440.0f + (i % 6) * 180.0f;
-                const float y = 270.0f + (i / 6) * 156.0f;
+                const float y = 290.0f + ((i - first) / 6) * 156.0f;
                 const auto rect = RectF(x, y, x + 140, y + 140);
                 renderer_.FillRounded(rect, 22.0f, Theme::kTextSecondary);
-                renderer_.DrawImage(presets_[i], rect, 22.0f, 1.0f);
+                renderer_.DrawImage(presets_[visible_[i]], rect, 22.0f, 1.0f);
                 if (i == row_)
                     DrawRing(renderer_, rect, 22.0f, 1.0f);
             }
+            renderer_.DrawString(Tr(Text::AvatarCategoryHint), Font::Body,
+                                 RectF(96, 920, 1800, 970), Theme::kTextSecondary);
         } else if (page_ == Page::Colors) {
-            renderer_.DrawImage(preview_, RectF(760, 265, 1160, 665), 24.0f, 1.0f);
-            static constexpr std::array<Text, 12> labels = {
-                Text::AvatarRed,    Text::AvatarOrange, Text::AvatarYellow,  Text::AvatarLime,
-                Text::AvatarGreen,  Text::AvatarTeal,   Text::AvatarSkyBlue, Text::AvatarBlue,
-                Text::AvatarPurple, Text::AvatarPink,   Text::AvatarWhite,   Text::AvatarBlack};
-            renderer_.DrawString(Tr(labels[row_]), Font::Nav, RectF(96, 680, 1800, 735),
+            renderer_.DrawImage(preview_, RectF(820, 270, 1100, 550), 24.0f, 1.0f);
+            renderer_.DrawString(Tr(kAvatarColorLabels[row_]), Font::Nav, RectF(96, 555, 1800, 610),
                                  Theme::kText, HAlign::Center, VAlign::Middle);
-            for (int i = 0; i < 12; ++i) {
-                const auto& rgb = Core::Constants::NXBOX_AVATAR_COLORS[i].rgb;
-                const float x = 360.0f + i * 102.0f;
-                const auto rect = RectF(x, 770, x + 78, 848);
-                renderer_.FillRounded(
-                    rect, 39.0f, D2D1::ColorF(rgb[0] / 255.0f, rgb[1] / 255.0f, rgb[2] / 255.0f));
-                renderer_.StrokeRounded(rect, 39.0f, 1.0f, Theme::kTextTertiary);
+            for (int i = 0; i < static_cast<int>(Core::Constants::NXBOX_AVATAR_COLORS.size());
+                 ++i) {
+                const auto& color = Core::Constants::NXBOX_AVATAR_COLORS[i];
+                const float x = 470.0f + (i % 10) * 98.0f;
+                const float y = 630.0f + (i / 10) * 80.0f;
+                const auto rect = RectF(x, y, x + 64, y + 64);
+                const auto tint = [](const std::array<u8, 3>& rgb) {
+                    return D2D1::ColorF(rgb[0] / 255.0f, rgb[1] / 255.0f, rgb[2] / 255.0f);
+                };
+                if (color.rgb == color.end) {
+                    renderer_.FillRounded(rect, 32.0f, tint(color.rgb));
+                } else {
+                    const D2D1_GRADIENT_STOP stops[] = {{0.0f, tint(color.rgb)},
+                                                        {1.0f, tint(color.end)}};
+                    renderer_.FillGradient(rect, 32.0f, stops, 2, D2D1::Point2F(x, y),
+                                           D2D1::Point2F(x, y + 64));
+                }
+                renderer_.StrokeRounded(rect, 32.0f, 1.0f, Theme::kTextTertiary);
                 if (i == row_)
-                    DrawRing(renderer_, rect, 39.0f, 1.0f);
+                    DrawRing(renderer_, rect, 32.0f, 1.0f);
             }
         } else {
             DrawRow(0, Tr(page_ == Page::Remove ? Text::AccountsNo : Text::AccountKeepSaves));
@@ -459,7 +538,7 @@ private:
     Accounts::State state_;
     Manager profiles_;
     std::array<Image, Service::Account::MAX_USERS> images_;
-    std::array<Image, Core::Constants::NXBOX_CHARACTER_AVATARS.size()> presets_;
+    std::array<Image, Core::Constants::NXBOX_CHARACTERS.size()> presets_;
     Image preview_;
     Pixels composite_;
     std::optional<Service::Mii::StoreData> moru_;
@@ -468,15 +547,17 @@ private:
     Page page_ = Page::List;
     int row_ = 0;
     std::size_t account_ = 0;
-    bool setup_only_ = false;
+    std::vector<std::size_t> visible_;
+    int category_ = 0;
+    bool picture_only_ = false;
     bool launch_ = false, adding_ = false, failed_ = false;
     bool closed_ = false, done_ = false, accepted_ = false;
 };
 } // namespace
 
 bool RunAccountsScreen(Renderer& renderer, const CoreWindow& window, Input& input,
-                       const std::filesystem::path& local_state) {
-    AccountsScreen screen(renderer, window, input, local_state, false);
+                       const std::filesystem::path& local_state, bool picture_only) {
+    AccountsScreen screen(renderer, window, input, local_state, false, picture_only);
     screen.Run();
     return screen.Closed();
 }
@@ -491,7 +572,7 @@ bool PrepareAccounts(const CoreWindow& window, const std::filesystem::path& loca
     Renderer renderer;
     renderer.Initialize(window);
     Input input(window);
-    AccountsScreen screen(renderer, window, input, local_state, true, !choose_for_launch);
+    AccountsScreen screen(renderer, window, input, local_state, true);
     return screen.Run();
 }
 } // namespace EdenXbox::Ui

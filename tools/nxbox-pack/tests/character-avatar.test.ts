@@ -1,4 +1,6 @@
 import { expect, test } from "bun:test";
+import { existsSync } from "node:fs";
+import catalog from "../src/avatar-catalog.json";
 import {
   avatarCharacters,
   avatarColors,
@@ -7,11 +9,11 @@ import {
 } from "../src/character-avatar";
 import { parseProfileArgs } from "../src/profile";
 
-test("original catalogue has at least 24 unique characters and 12 named colors", () => {
-  expect(avatarCharacters.length).toBeGreaterThanOrEqual(24);
+test("original catalogue has at least 120 unique characters and 40 named colors", () => {
+  expect(avatarCharacters.length).toBeGreaterThanOrEqual(120);
   expect(new Set(avatarCharacters).size).toBe(avatarCharacters.length);
-  expect(avatarColors.length).toBe(12);
-  expect(new Set(avatarColors.map((c) => c.name)).size).toBe(12);
+  expect(avatarColors.length).toBeGreaterThanOrEqual(40);
+  expect(new Set(avatarColors.map((c) => c.name)).size).toBe(avatarColors.length);
 });
 test("premultiplied fixture composites alpha over the selected background", () => {
   const fixture = new Uint8Array([100, 50, 25, 128, 0, 0, 0, 0, 200, 100, 50, 255]);
@@ -51,4 +53,25 @@ test("every character produces a bounded 256px JPEG without a browser or native 
     expect(Array.from(jpeg.slice(sof + 4, sof + 10))).toEqual([8, 1, 0, 1, 0, 3]);
   }
   expect(() => characterAvatar("../bad", "blue")).toThrow();
+});
+
+test("all characters have a category and a packaged PNG", () => {
+  for (const character of catalog.characters) {
+    expect(character.category.length).toBeGreaterThan(0);
+    expect(
+      existsSync(
+        new URL(`../../../dist/nxbox/Assets/avatars/${character.id}.png`, import.meta.url),
+      ),
+    ).toBe(true);
+  }
+});
+test("two-tone backgrounds interpolate vertically with identical rounding to the console", () => {
+  const pixels = new Uint8Array(256 * 256 * 4);
+  const result = compositeAvatar(pixels, [255, 100, 0], [0, 50, 255]);
+  expect(Array.from(result.slice(0, 4))).toEqual([255, 100, 0, 255]);
+  const middle = 128 * 256 * 4;
+  expect(Array.from(result.slice(middle, middle + 4))).toEqual([127, 75, 128, 255]);
+  expect(Array.from(result.slice(-4))).toEqual([0, 50, 255, 255]);
+  for (const color of avatarColors.filter((c) => c.name === "dusk" || c.name === "sunrise"))
+    expect(characterAvatar("fox-pilot", color.name).length).toBeLessThanOrEqual(0x20000);
 });

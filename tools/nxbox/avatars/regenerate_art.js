@@ -28,4 +28,4 @@ const build = await tools.exec_command({
     max_output_tokens: 1000,
 });
 if (build.exit_code !== 0) throw new Error(build.output);
-text("Regenerated masters, embedded portraits, PC catalogue and contact sheet. Review sheet.png.");
+text("Regenerated masters, package portraits, PC catalogue and contact sheet. Review sheet.png.");

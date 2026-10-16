@@ -1,0 +1,482 @@
+[
+  {
+    "id": "fox-pilot",
+    "category": "animals"
+  },
+  {
+    "id": "robot",
+    "category": "robots"
+  },
+  {
+    "id": "knight",
+    "category": "fantasy"
+  },
+  {
+    "id": "slime",
+    "category": "monsters"
+  },
+  {
+    "id": "cat-mage",
+    "category": "fantasy"
+  },
+  {
+    "id": "astronaut",
+    "category": "sci-fi"
+  },
+  {
+    "id": "dragon",
+    "category": "fantasy"
+  },
+  {
+    "id": "forest-spirit",
+    "category": "fantasy"
+  },
+  {
+    "id": "racer",
+    "category": "sports"
+  },
+  {
+    "id": "ghost",
+    "category": "monsters"
+  },
+  {
+    "id": "newt-lamplighter",
+    "category": "animals"
+  },
+  {
+    "id": "penguin",
+    "category": "animals"
+  },
+  {
+    "id": "cactus",
+    "category": "food"
+  },
+  {
+    "id": "bee",
+    "category": "animals"
+  },
+  {
+    "id": "jellyfish-astronomer",
+    "category": "animals"
+  },
+  {
+    "id": "skeleton-musician",
+    "category": "monsters"
+  },
+  {
+    "id": "alien",
+    "category": "sci-fi"
+  },
+  {
+    "id": "samurai",
+    "category": "people"
+  },
+  {
+    "id": "witch",
+    "category": "fantasy"
+  },
+  {
+    "id": "golem",
+    "category": "monsters"
+  },
+  {
+    "id": "dino",
+    "category": "animals"
+  },
+  {
+    "id": "pirate",
+    "category": "people"
+  },
+  {
+    "id": "bear",
+    "category": "animals"
+  },
+  {
+    "id": "phoenix",
+    "category": "fantasy"
+  },
+  {
+    "id": "otter-potter",
+    "category": "animals"
+  },
+  {
+    "id": "lynx-botanist",
+    "category": "animals"
+  },
+  {
+    "id": "badger-baker",
+    "category": "animals"
+  },
+  {
+    "id": "owl-librarian",
+    "category": "animals"
+  },
+  {
+    "id": "hare-weaver",
+    "category": "animals"
+  },
+  {
+    "id": "seal-diver",
+    "category": "animals"
+  },
+  {
+    "id": "panda-sculptor",
+    "category": "animals"
+  },
+  {
+    "id": "wolf-poet",
+    "category": "animals"
+  },
+  {
+    "id": "capybara-gardener",
+    "category": "animals"
+  },
+  {
+    "id": "raven-jeweler",
+    "category": "animals"
+  },
+  {
+    "id": "ibex-guide",
+    "category": "animals"
+  },
+  {
+    "id": "tortoise-scholar",
+    "category": "animals"
+  },
+  {
+    "id": "crystal-oracle",
+    "category": "fantasy"
+  },
+  {
+    "id": "cloud-shepherd",
+    "category": "fantasy"
+  },
+  {
+    "id": "coral-guardian",
+    "category": "fantasy"
+  },
+  {
+    "id": "moth-sage",
+    "category": "fantasy"
+  },
+  {
+    "id": "mushroom-herbalist",
+    "category": "fantasy"
+  },
+  {
+    "id": "moon-smith",
+    "category": "fantasy"
+  },
+  {
+    "id": "river-nymph",
+    "category": "fantasy"
+  },
+  {
+    "id": "sand-seer",
+    "category": "fantasy"
+  },
+  {
+    "id": "opal-griffin",
+    "category": "fantasy"
+  },
+  {
+    "id": "copper-satyr",
+    "category": "fantasy"
+  },
+  {
+    "id": "jade-kirin",
+    "category": "fantasy"
+  },
+  {
+    "id": "pearl-siren",
+    "category": "fantasy"
+  },
+  {
+    "id": "nebula-cartographer",
+    "category": "sci-fi"
+  },
+  {
+    "id": "lunar-geologist",
+    "category": "sci-fi"
+  },
+  {
+    "id": "solar-engineer",
+    "category": "sci-fi"
+  },
+  {
+    "id": "comet-courier",
+    "category": "sci-fi"
+  },
+  {
+    "id": "orbital-medic",
+    "category": "sci-fi"
+  },
+  {
+    "id": "plasma-diver",
+    "category": "sci-fi"
+  },
+  {
+    "id": "asteroid-miner",
+    "category": "sci-fi"
+  },
+  {
+    "id": "chrono-archivist",
+    "category": "sci-fi"
+  },
+  {
+    "id": "cosmic-manta",
+    "category": "sci-fi"
+  },
+  {
+    "id": "prism-navigator",
+    "category": "sci-fi"
+  },
+  {
+    "id": "spore-researcher",
+    "category": "sci-fi"
+  },
+  {
+    "id": "star-surveyor",
+    "category": "sci-fi"
+  },
+  {
+    "id": "fencer",
+    "category": "sports"
+  },
+  {
+    "id": "climber",
+    "category": "sports"
+  },
+  {
+    "id": "swimmer",
+    "category": "sports"
+  },
+  {
+    "id": "cyclist",
+    "category": "sports"
+  },
+  {
+    "id": "goalkeeper",
+    "category": "sports"
+  },
+  {
+    "id": "archer",
+    "category": "sports"
+  },
+  {
+    "id": "skater",
+    "category": "sports"
+  },
+  {
+    "id": "surfer",
+    "category": "sports"
+  },
+  {
+    "id": "judoka",
+    "category": "sports"
+  },
+  {
+    "id": "rower",
+    "category": "sports"
+  },
+  {
+    "id": "tennis-player",
+    "category": "sports"
+  },
+  {
+    "id": "snowboarder",
+    "category": "sports"
+  },
+  {
+    "id": "pear-chef",
+    "category": "food"
+  },
+  {
+    "id": "artichoke-bard",
+    "category": "food"
+  },
+  {
+    "id": "dumpling-steamer",
+    "category": "food"
+  },
+  {
+    "id": "pretzel-baker",
+    "category": "food"
+  },
+  {
+    "id": "cocoa-truffle",
+    "category": "food"
+  },
+  {
+    "id": "fig-confectioner",
+    "category": "food"
+  },
+  {
+    "id": "chestnut-roaster",
+    "category": "food"
+  },
+  {
+    "id": "radish-sailor",
+    "category": "food"
+  },
+  {
+    "id": "croissant-curator",
+    "category": "food"
+  },
+  {
+    "id": "olive-gourmet",
+    "category": "food"
+  },
+  {
+    "id": "pumpkin-cook",
+    "category": "food"
+  },
+  {
+    "id": "pomegranate-host",
+    "category": "food"
+  },
+  {
+    "id": "velvet-beetle",
+    "category": "monsters"
+  },
+  {
+    "id": "amber-cyclops",
+    "category": "monsters"
+  },
+  {
+    "id": "lichen-beast",
+    "category": "monsters"
+  },
+  {
+    "id": "glass-gargoyle",
+    "category": "monsters"
+  },
+  {
+    "id": "ink-wraith",
+    "category": "monsters"
+  },
+  {
+    "id": "reef-ogre",
+    "category": "monsters"
+  },
+  {
+    "id": "flint-gremlin",
+    "category": "monsters"
+  },
+  {
+    "id": "velour-yeti",
+    "category": "monsters"
+  },
+  {
+    "id": "lantern-beast",
+    "category": "monsters"
+  },
+  {
+    "id": "quartz-mimic",
+    "category": "monsters"
+  },
+  {
+    "id": "puddle-imp",
+    "category": "monsters"
+  },
+  {
+    "id": "thorn-walker",
+    "category": "monsters"
+  },
+  {
+    "id": "ceramic-gardener",
+    "category": "robots"
+  },
+  {
+    "id": "brass-clockmaker",
+    "category": "robots"
+  },
+  {
+    "id": "cobalt-courier",
+    "category": "robots"
+  },
+  {
+    "id": "copper-chef",
+    "category": "robots"
+  },
+  {
+    "id": "glass-botanist",
+    "category": "robots"
+  },
+  {
+    "id": "slate-musician",
+    "category": "robots"
+  },
+  {
+    "id": "porcelain-medic",
+    "category": "robots"
+  },
+  {
+    "id": "titanium-diver",
+    "category": "robots"
+  },
+  {
+    "id": "enamel-curator",
+    "category": "robots"
+  },
+  {
+    "id": "solar-beekeeper",
+    "category": "robots"
+  },
+  {
+    "id": "pewter-tailor",
+    "category": "robots"
+  },
+  {
+    "id": "mosaic-archivist",
+    "category": "robots"
+  },
+  {
+    "id": "elder-astronomer",
+    "category": "people"
+  },
+  {
+    "id": "young-ceramist",
+    "category": "people"
+  },
+  {
+    "id": "grandfather-gardener",
+    "category": "people"
+  },
+  {
+    "id": "teen-naturalist",
+    "category": "people"
+  },
+  {
+    "id": "woman-architect",
+    "category": "people"
+  },
+  {
+    "id": "man-dancer",
+    "category": "people"
+  },
+  {
+    "id": "elder-storyteller",
+    "category": "people"
+  },
+  {
+    "id": "teen-inventor",
+    "category": "people"
+  },
+  {
+    "id": "chef-with-vitiligo",
+    "category": "people"
+  },
+  {
+    "id": "silver-haired-tailor",
+    "category": "people"
+  },
+  {
+    "id": "woman-mariner",
+    "category": "people"
+  },
+  {
+    "id": "young-cellist",
+    "category": "people"
+  }
+]

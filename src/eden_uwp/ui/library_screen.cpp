@@ -24,6 +24,7 @@
 #include <winrt/Windows.Storage.h>
 
 #include "common/scope_exit.h"
+#include "eden_uwp/accounts.h"
 #include "eden_uwp/diagnostic.h"
 #include "eden_uwp/firmware.h"
 #include "eden_uwp/home_ui_settings.h"
@@ -135,10 +136,11 @@ constexpr int kSettingNextendo = 4;
 constexpr int kSettingMultiplayer = 5;
 constexpr int kSettingSystemMenu = 6;
 constexpr int kSettingOfficialInterface = 7;
-constexpr int kSettingAccounts = 8;
-constexpr int kSettingMoru = 9;
-constexpr int kSettingBackToNXbox = 10;
-constexpr int kSettingsRowCount = 11;
+constexpr int kSettingAccounts = 9;
+constexpr int kSettingProfilePicture = 8;
+constexpr int kSettingMoru = 10;
+constexpr int kSettingBackToNXbox = 11;
+constexpr int kSettingsRowCount = 12;
 // Rows that fit on screen at once; the list scrolls to keep the focused row visible.
 constexpr int kSettingsVisibleRows = 7;
 
@@ -312,6 +314,7 @@ public:
         NextendoOnline::Initialize(local_state_);
         firmware_status_ = GetFirmwareStatus();
         sync_account_ = GetSyncAccount();
+        accounts_multi_ = Accounts::Load(local_state_).multi;
         sources_count_ = CountSources(local_state_);
         usb_mode_ = LoadUsbMode(local_state_);
         usb_detection_ = std::make_unique<UsbDetection>(local_state_);
@@ -825,14 +828,16 @@ private:
                 closed_ = true;
             return;
         }
-        if (settings_row_ == kSettingAccounts) {
+        if (settings_row_ == kSettingAccounts || settings_row_ == kSettingProfilePicture) {
             if (return_home_) {
                 return_home_->store(true); // Edit accounts only after the guest releases its saves.
                 return;
             }
             const InputTransition transition(input_);
-            if (RunAccountsScreen(renderer_, window_, input_, local_state_))
+            if (RunAccountsScreen(renderer_, window_, input_, local_state_,
+                                  settings_row_ == kSettingProfilePicture))
                 closed_ = true;
+            accounts_multi_ = Accounts::Load(local_state_).multi;
             return;
         }
         if (settings_row_ == kSettingBackToNXbox) {
@@ -1467,7 +1472,8 @@ private:
                 (settings_row_ == kSettingSources || settings_row_ == kSettingUsb ||
                  settings_row_ == kSettingCredits || settings_row_ == kSettingSystemMenu ||
                  settings_row_ == kSettingNextendo || settings_row_ == kSettingAccounts ||
-                 settings_row_ == kSettingMoru || settings_row_ == kSettingMultiplayer)) {
+                 settings_row_ == kSettingMoru || settings_row_ == kSettingProfilePicture ||
+                 settings_row_ == kSettingMultiplayer)) {
                 hints.push_back({Theme::kButtonA, L"A", Tr(Text::HintSelect)});
             }
         } else if (HasGame()) {
@@ -1542,19 +1548,29 @@ private:
               Tr(official_interface_ ? Text::SyncStateOn : Text::SyncStateOff),
               Theme::kTextSecondary,
               Tr(firmware_status_.home_available ? Text::SystemMenuHint : Text::RequiresFirmware)},
-             {Tr(Text::AccountsTitle), L"", Theme::kTextSecondary, L""},
+             {Tr(Text::ProfilePicture), L"", Theme::kTextSecondary, L""},
+             {Tr(Text::MultipleAccounts),
+              Tr(accounts_multi_ ? Text::SyncStateOn : Text::SyncStateOff), Theme::kTextSecondary,
+              L""},
              {Tr(Text::MoruTitle), L"", Theme::kTextSecondary, L""},
              {Tr(Text::BackToNXboxInterface), L"", Theme::kTextSecondary, L""}}};
         constexpr float kRowTop = 340.0f;
-        constexpr float kRowHeight = 88.0f;
-        constexpr float kRowPitch = 92.0f;
+        constexpr float kRowHeight = 80.0f;
+        constexpr float kRowPitch = 84.0f;
         constexpr float kRowRadius = 22.0f;
         const int row_count = return_home_ ? kSettingsRowCount : kSettingsRowCount - 1;
         const int first_row =
             std::max(0, std::min(settings_row_ - 3, row_count - kSettingsVisibleRows));
         const int last_row = std::min(row_count, first_row + kSettingsVisibleRows);
         for (int i = first_row; i < last_row; ++i) {
-            const float y = kRowTop + static_cast<float>(i - first_row) * kRowPitch;
+            const bool account_section =
+                first_row <= kSettingProfilePicture && i >= kSettingProfilePicture;
+            const float y = kRowTop + static_cast<float>(i - first_row) * kRowPitch +
+                            (account_section ? 38.0f : 0.0f);
+            if (i == kSettingProfilePicture)
+                renderer_.DrawString(Tr(Text::AccountSection), Font::Body,
+                                     RectF(kMargin + 28, y - 38, kCanvasWidth - kMargin, y - 4),
+                                     Theme::kTextSecondary);
             const D2D1_RECT_F row = RectF(kMargin, y, kCanvasWidth - kMargin, y + kRowHeight);
             const bool disabled = (i == kSettingOfficialInterface || i == kSettingSystemMenu) &&
                                   !firmware_status_.home_available;
@@ -1693,6 +1709,7 @@ private:
     std::atomic<bool>* return_home_ = nullptr;
     std::atomic<bool>* guest_home_request_ = nullptr;
     bool official_interface_ = false;
+    bool accounts_multi_ = false;
     int settings_row_ = 0;
     SyncAccount sync_account_ = SyncAccount::SignedOut;
     int launched_ = -1;

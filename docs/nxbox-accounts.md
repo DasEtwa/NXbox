@@ -1,9 +1,11 @@
 # NXbox accounts
 
-A new install asks once whether to use multiple accounts. **No** is focused by default; A accepts it
-and B also accepts No during initial setup. The answer is stored in `LocalState/accounts.json`
-(`initialized`, `multi`, `selected_uuid`). Settings > Accounts can change it later. Cancelling the
-Settings question preserves the previous mode.
+A new install starts immediately in single-account mode with the NXbox logo. There is no
+first-launch account question. Near the bottom of Settings, the **Account** section contains
+**Profile picture**, **Multiple accounts** (off by default), and **My Morus**. Profile picture opens
+a character-or-Moru choice in either account mode. Multiple accounts opens the account management
+list, where its first row toggles the mode. The compatible `LocalState/accounts.json` format still
+stores `initialized`, `multi`, and `selected_uuid`; `initialized` no longer gates UI.
 
 Single mode uses the first stored account, hides the account list in NXbox, and exposes only that
 account through the guest account list/count APIs. Switching modes keeps the other accounts and
@@ -12,10 +14,10 @@ launches and direct boot; the last selected UUID is focused. A confirms, B cance
 Global/per-title `current_user` overrides cannot replace the selected account. Account editing from
 the in-game Settings overlay first returns to the library so the guest releases its save files.
 
-Settings > Accounts supports up to eight profiles (the emulated console's limit): add, select,
-rename, choose an original character and background color, and remove. Names fit in 32 UTF-8 bytes.
-Removal first asks to remove the account; a second question defaults to keeping its saves. Choosing
-Delete only this account's saves removes these two NAND directories:
+Settings > Account > Multiple accounts supports up to eight profiles (the emulated console's limit):
+add, select, rename, choose an original character and background color, and remove. Names fit in 32
+UTF-8 bytes. Removal first asks to remove the account; a second question defaults to keeping its
+saves. Choosing Delete only this account's saves removes these two NAND directories:
 
 - `user/save/0000000000000000/<UUID in U128 word order>` (legacy layout)
 - `user/save/account/<UUID raw byte order>` (future layout)
@@ -27,8 +29,8 @@ automatically. Cloud copies are not deleted.
 ## Default avatar and migration
 
 New profiles start as **NXbox**, with a 256×256 JPEG derived from the packaged UWP tile
-`dist/nxbox/Assets/Square150x150Logo.png`. The fixed logo remains byte-for-byte unchanged.
-Twenty-four original glossy character portraits are stored as transparent 512×512 PNG masters in
+`dist/nxbox/Assets/Square150x150Logo.png`. The fixed logo remains byte-for-byte unchanged. 120
+original soft 3D character portraits are stored as transparent 512×512 PNG masters in
 `tools/nxbox/avatars/`. The art was produced with OpenAI's built-in image generator, one prompt per
 character; `prompts.json` archives the production prompts. `avatars/regenerate_art.js` is a Codex
 `functions.exec` orchestration script that calls the built-in image generator for each portrait and
@@ -37,7 +39,17 @@ and needs no API key. Art generation is stochastic; review every replacement on 
 No existing characters or reference images were used. Artwork is licensed to NSPX under MIT
 (`avatars/LICENSE.md`).
 
-`src/core/constants_nxbox.h` embeds transparent 256×256 PNGs and twelve named solid colors.
+`src/core/constants_nxbox.h` embeds only the fixed NXbox logo; character metadata and forty named
+backgrounds remain small constexpr tables. `dist/nxbox/Assets/avatars/<id>.png` contains the 120
+optimized transparent 256×256 runtime portraits. The UWP frontend loads them from
+`Package::Current().InstalledLocation()`. CMake stages that directory after an MSVC build;
+`package_uwp.py` copies it into the appx, and nxbox-pack preserves it in per-game packages. Pillow's
+lossless PNG optimizer is used (no pngquant or oxipng is installed in the authoring environment).
+`avatars/catalog.json` assigns every stable character ID to Animals, Fantasy, Sci-fi, Sports, Food,
+Monsters, Robots, or People. The retained `fox-pilot` ID now depicts a lavender-aproned ceramic
+artisan, without aviation clothing or accessories. The palette keeps the original twelve colors,
+adds pastels and darks, and includes four vertical two-tone gradients: sunrise, lagoon, dusk, and
+ember. Each gradient interpolates RGB with integer rounding from top to bottom.
 `tools/nxbox-pack/src/avatar-catalog.json` carries the same downsampled pixels as compressed
 premultiplied RGBA for standalone PC binaries. Regenerate both catalogues and `avatars/sheet.png`
 from the PNG masters with Python + Pillow 12.3.0:
@@ -76,15 +88,14 @@ installed NXbox package to edit. Each independent game app has its own LocalStat
 before continuing and reopen it after the command finishes. The optional `--insecure-portal` flag
 has the same meaning as in the pack workflow. An avatar name must match exactly one existing
 profile; duplicate names are rejected. Run the app once first so its profile database exists.
-Changing multi mode preserves the stored UUID and unknown JSON fields, and marks initial setup
-answered.
+Changing multi mode preserves the stored UUID and unknown JSON fields, and keeps the legacy
+`initialized` field set for compatibility.
 
-Character choices work offline without a browser or native decoder. IDs are: `fox-pilot`, `robot`,
-`knight`, `slime`, `cat-mage`, `astronaut`, `dragon`, `forest-spirit`, `racer`, `ghost`,
-`frog-ninja`, `penguin`, `cactus`, `bee`, `octopus-dj`, `skeleton-musician`, `alien`, `samurai`,
-`witch`, `golem`, `dino`, `pirate`, `bear`, `phoenix`. Colors are `red`, `orange`, `yellow`, `lime`,
-`green`, `teal`, `sky-blue`, `blue`, `purple`, `pink`, `white`, `black`. Both flags are required;
-either order is accepted. Unknown IDs/colors and repeated flags are rejected.
+Character choices work offline without a browser or native decoder. All 120 stable IDs and
+categories are listed in [`catalog.json`](../tools/nxbox/avatars/catalog.json); forty color names
+and their RGB endpoints are listed in [`generate_avatars.py`](../tools/nxbox/generate_avatars.py).
+Both flags are required; either order is accepted. Unknown IDs/colors and repeated flags are
+rejected.
 
 For custom images, PNG, JPEG, WebP, GIF and BMP files up to 20 MB are accepted. The command opens an
 ephemeral loopback page in the PC's default browser, whose built-in decoders provide RGBA pixels. It
@@ -107,7 +118,7 @@ python3 -m unittest discover -s tests/port
 cd tools/nxbox-pack && bun test && bun run check
 ```
 
-The portable tests exercise initial-setup/picker policy, migration positive/negative cases, avatar
+The portable tests exercise no-prompt/picker policy, migration positive/negative cases, avatar
 paths and embedded PNG dimensions/uniqueness, transparent masters, catalogue counts, and alpha-over
 pixel fixtures. Bun tests exercise binary profile parsing, command validation, JSON preservation,
 UUID-targeted Portal transfers and JPEG headers. The UWP app still needs MSVC CI and Xbox
@@ -116,15 +127,14 @@ save isolation. The state-file replacement uses the UWP-compatible
 [ReplaceFileFromAppW](https://learn.microsoft.com/en-us/windows/win32/api/fileapifromapp/nf-fileapifromapp-replacefilefromappw).
 Browser decoding also needs an interactive PC smoke test for each supported format.
 
-`NXBOX_UI_SCRIPT` uses the existing shared Input clock. On fresh LocalState, send an initial A to
-accept single mode before scripting the existing save-sync setup/library. For multi mode send Down,
-A instead; the launch picker then requires another A. In multi mode, Settings > Accounts > account >
-Change icon opens a six-column character grid. D-pad moves the focus ring; A chooses the character.
-The next page shows a 400px composite preview and a row of twelve colors with localized names.
-Left/Right changes the preview; A confirms and writes the 256×256 JPEG to the existing UUID path. B
-returns to the character grid without writing; B again returns to the account. A new account keeps
-the NXbox logo until a composite is confirmed. Single mode retains its existing fixed-profile
-behavior and exposes no avatar choices.
+`NXBOX_UI_SCRIPT` uses the existing shared Input clock. Fresh LocalState goes straight to the
+existing save-sync setup/library, with no initial account-mode input. Settings > Account > Profile
+picture > Choose a character opens the six-column grid in both account modes. LB/RB switches the
+eight visible category tabs; D-pad moves the ring and scrolls larger categories. A chooses a
+character. The next page shows a composite preview and forty named swatches in a 10×4 grid.
+Left/Right/Up/Down update the preview, including gradients; A writes a 256×256 JPEG to the existing
+UUID path. B returns without writing. The Moru option uses the same background picker and
+confirmation path. New accounts keep the NXbox logo until a composite is confirmed.
 
 The console decodes the PNG using the renderer's WIC path (premultiplied BGRA), composites each
 channel as `min(255, foreground + (background*(255-alpha)+127)/255)`, and uses the existing stb JPEG
@@ -138,25 +148,25 @@ added.
 
 ## Moru
 
-**Settings > My Morus** opens the system character collection in either account mode.
-In multi-account mode, each account's detail page also offers **My Morus** and
-**Use a Moru as icon**. Morus belong to the emulated system, rather than to an individual
-account. The collection shows up to eight rows at once and scrolls through the database.
-Create opens a draft; A edits an existing entry, or chooses it when opened as an icon picker.
-X always edits an existing entry. Up/Down selects a category, Left/Right changes its value
-with a live preview; A also advances a part choice. Gender, height and build have slider
-tracks. Nickname opens the existing on-screen keyboard. Random changes parts and proportions
-while retaining the nickname and identity. Save persists; Discard and Delete require a
-separate confirmation. B from the editor opens the discard confirmation. All input uses the
-shared `Input`, including `NXBOX_UI_SCRIPT`, with no independent polling or timer.
+**Settings > Account > My Morus** opens the system character collection in either account mode. In
+either mode, Profile picture offers **Use a Moru as icon**. In multi-account mode, each account's
+detail page also offers **My Morus** and **Use a Moru as icon**. Morus belong to the emulated
+system, rather than to an individual account. The collection shows up to eight rows at once and
+scrolls through the database. Create opens a draft; A edits an existing entry, or chooses it when
+opened as an icon picker. X always edits an existing entry. Up/Down selects a category, Left/Right
+changes its value with a live preview; A also advances a part choice. Gender, height and build have
+slider tracks. Nickname opens the existing on-screen keyboard. Random changes parts and proportions
+while retaining the nickname and identity. Save persists; Discard and Delete require a separate
+confirmation. B from the editor opens the discard confirmation. All input uses the shared `Input`,
+including `NXBOX_UI_SCRIPT`, with no independent polling or timer.
 
-The editor's original 2D rounded shapes are defined in `moru_parts.h`; no console assets,
-fonts, sounds or logos are used. One 256-unit scene drives both the existing Direct2D renderer
-and a supersampled premultiplied BGRA raster for icons. Selecting a saved Moru opens the
-existing twelve-colour background picker. Confirmation uses exactly the character avatar's
-alpha-over formula, stb JPEG quality reduction, 128 KiB limit and UUID-based `SetAvatar` path.
-Cancelling the picker or background step does not write a profile image. The icon is a snapshot;
-later edits or deletion of the Moru do not change an already saved profile JPEG.
+The editor's original 2D rounded shapes are defined in `moru_parts.h`; no console assets, fonts,
+sounds or logos are used. One 256-unit scene drives both the existing Direct2D renderer and a
+supersampled premultiplied BGRA raster for icons. Selecting a saved Moru opens the forty-colour
+background picker. Confirmation uses exactly the character avatar's alpha-over formula, stb JPEG
+quality reduction, 128 KiB limit and UUID-based `SetAvatar` path. Cancelling the picker or
+background step does not write a profile image. The icon is a snapshot; later edits or deletion of
+the Moru do not change an already saved profile JPEG.
 
 ### Stored data and ranges
 
