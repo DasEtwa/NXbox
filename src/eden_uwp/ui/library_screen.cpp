@@ -1094,11 +1094,19 @@ private:
                                              {1.0f, Theme::kBackground}};
         const auto rect = RectF(0.0f, 0.0f, kCanvasWidth, kHeroHeight);
         renderer_.FillGradient(rect, 0, bottom, 4, Point2F(0, 0), Point2F(0, kHeroHeight));
-        const D2D1_GRADIENT_STOP left[] = {
-            {0.0f, WithOpacity(Theme::kBackground, Art::kLeftScrimOpacity)},
-            {Art::kLeftScrimEnd, WithOpacity(Theme::kBackground, Art::kLeftScrimOpacity)},
-            {1.0f, clear}};
-        renderer_.FillGradient(rect, 0, left, 3, Point2F(0, 0), Point2F(kCanvasWidth, 0));
+        // A linear fall-off leaves a visible vertical seam where the flat veil ends, so the
+        // fade follows smoothstep (no slope jump at either end), sampled into stops.
+        constexpr int kFadeStops = 9;
+        D2D1_GRADIENT_STOP left[kFadeStops + 1];
+        left[0] = {0.0f, WithOpacity(Theme::kBackground, Art::kLeftScrimOpacity)};
+        for (int i = 0; i < kFadeStops; ++i) {
+            const float t = static_cast<float>(i) / (kFadeStops - 1);
+            const float eased = t * t * (3.0f - 2.0f * t);
+            left[i + 1] = {Art::kLeftScrimEnd + (1.0f - Art::kLeftScrimEnd) * t,
+                           WithOpacity(Theme::kBackground, Art::kLeftScrimOpacity * (1.0f - eased))};
+        }
+        renderer_.FillGradient(rect, 0, left, kFadeStops + 1, Point2F(0, 0),
+                               Point2F(kCanvasWidth, 0));
     }
 
     void DrawHeroBackground(Clock::time_point now) {
