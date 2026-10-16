@@ -7,6 +7,7 @@
 #include "common/assert.h"
 #include "common/gpu_thread_profile.h"
 #include "common/logging.h"
+#include "common/scope_exit.h"
 #include "video_core/engines/fermi_2d.h"
 #include "video_core/engines/sw_blitter/blitter.h"
 #include "video_core/memory_manager.h"
@@ -115,6 +116,10 @@ void Fermi2D::Blit() {
 
     memory_manager.FlushCaching();
     if (!rasterizer->AccelerateSurfaceCopy(src, regs.dst, config)) {
+        software_blit_active = true;
+        SCOPE_EXIT {
+            software_blit_active = false;
+        };
         sw_blitter->Blit(src, regs.dst, config);
     }
 }

@@ -3,11 +3,13 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <optional>
 #include "video_core/renderer_d3d12/d3d12_blit_image.h"
 #include "video_core/renderer_d3d12/d3d12_compute_pass.h"
 #include "video_core/renderer_d3d12/d3d12_context.h"
 #include "video_core/renderer_d3d12/d3d12_formats.h"
+#include "video_core/renderer_d3d12/d3d12_texture_transfer.h"
 #include "video_core/texture_cache/image_view_base.h"
 #include "video_core/texture_cache/texture_cache_base.h"
 
@@ -72,6 +74,20 @@ public:
     }
     void AccelerateImageUpload(Image&, const StagingBufferRef&,
                                std::span<const VideoCommon::SwizzleParameters>, u32, u32);
+    void RecordSoftwareBlit(GPUVAddr address) {
+        software_writes[software_write_cursor++ % software_writes.size()] = {address, frame_tick,
+                                                                             true};
+    }
+    bool CanDiscardBlitDestination(const Image& image,
+                                   const Tegra::Engines::Fermi2D::Surface& surface,
+                                   const Tegra::Engines::Fermi2D::Config& copy) const;
+    void RecordBlitDiscard(const Image& image);
+    void RecordTextureWrite(Image& image);
+    void RecordTextureUpload(Image& image);
+    bool CanBlitImages(const Image& dst, const Image& src,
+                       const Tegra::Engines::Fermi2D::Surface& dst_surface,
+                       const Tegra::Engines::Fermi2D::Surface& src_surface,
+                       const Tegra::Engines::Fermi2D::Config& copy) const;
     void InsertUploadMemoryBarrier() {}
     void TransitionImageLayout(Image&);
     bool HasBrokenTextureViewFormats() const {
@@ -102,6 +118,15 @@ public:
 
 private:
     std::unique_ptr<ComputePasses> compute_passes;
+    struct SoftwareWrite {
+        GPUVAddr address{};
+        u64 frame{};
+        bool valid{};
+    };
+    std::array<SoftwareWrite, 64> software_writes{};
+    size_t software_write_cursor{};
+    RepeatedTextureUploads repeated_uploads;
+    std::chrono::steady_clock::time_point upload_log_time{std::chrono::steady_clock::now()};
     std::unique_ptr<BlitImageHelper> blit_helper;
     StagingRing upload;
     StagingRing readback;
@@ -140,6 +165,7 @@ public:
     FormatInfo HostFormat() const {
         return host_format;
     }
+    std::string_view upload_reason{"initial_or_recreated"};
     u64 allocation_tick{};
 
 private:

@@ -691,6 +691,9 @@ void TextureCache<P>::WriteMemory(DAddr cpu_addr, size_t size) {
         if (True(image.flags & ImageFlagBits::CpuModified)) {
             return;
         }
+        if constexpr (requires { runtime.RecordTextureWrite(image); }) {
+            runtime.RecordTextureWrite(image);
+        }
         image.flags |= ImageFlagBits::CpuModified;
         if (True(image.flags & ImageFlagBits::Tracked)) {
             UntrackImage(image, image_id);
@@ -946,8 +949,27 @@ bool TextureCache<P>::BlitImage(const Tegra::Engines::Fermi2D::Surface& dst,
     const ImageId dst_id = images.dst_id;
     const ImageId src_id = images.src_id;
 
+    if constexpr (requires {
+                      runtime.CanBlitImages(slot_images[dst_id], slot_images[src_id], dst, src,
+                                            copy);
+                  }) {
+        if (!runtime.CanBlitImages(slot_images[dst_id], slot_images[src_id], dst, src, copy)) {
+            return false;
+        }
+    }
+
     PrepareImage(src_id, false, false);
-    PrepareImage(dst_id, true, false);
+    bool discard_dst = false;
+    if constexpr (requires { runtime.CanDiscardBlitDestination(slot_images[dst_id], dst, copy); }) {
+        discard_dst = src_id != dst_id && slot_images[dst_id].aliased_images.empty() &&
+                      False(slot_images[src_id].flags & ImageFlagBits::Rescaled) &&
+                      False(slot_images[dst_id].flags & ImageFlagBits::Rescaled) &&
+                      runtime.CanDiscardBlitDestination(slot_images[dst_id], dst, copy);
+        if (discard_dst) {
+            runtime.RecordBlitDiscard(slot_images[dst_id]);
+        }
+    }
+    PrepareImage(dst_id, true, discard_dst);
 
     Image& dst_image = slot_images[dst_id];
     Image& src_image = slot_images[src_id];
@@ -1355,6 +1377,9 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
         return;
     }
 
+    if constexpr (requires { runtime.RecordTextureUpload(image); }) {
+        runtime.RecordTextureUpload(image);
+    }
     image.flags &= ~ImageFlagBits::CpuModified;
 
     TrackImage(image, image_id);
