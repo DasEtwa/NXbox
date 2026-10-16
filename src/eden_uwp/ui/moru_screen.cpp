@@ -10,7 +10,9 @@
 #include "core/hle/service/mii/mii_database_manager.h"
 #include "core/hle/service/mii/mii_util.h"
 #include "core/hle/service/mii/types/char_info.h"
+#include "eden_uwp/applet_boot.h"
 #include "eden_uwp/diagnostic.h"
+#include "eden_uwp/firmware.h"
 #include "eden_uwp/moru_parts.h"
 #include "eden_uwp/ui/strings.h"
 #include "eden_uwp/ui/text_entry.h"
@@ -43,8 +45,10 @@ std::wstring Nickname(const StoreData& data) {
 class MoruScreen {
 public:
     MoruScreen(Renderer& renderer, const CoreWindow& window, Input& input,
-               std::optional<StoreData>* selected)
-        : renderer_(renderer), window_(window), input_(input), selected_(selected) {
+               std::optional<StoreData>* selected, std::string* launch_target)
+        : renderer_(renderer), window_(window), input_(input), selected_(selected),
+          launch_target_(launch_target),
+          system_creator_(launch_target && !selected && GetFirmwareStatus().mii_edit_available) {
         if (selected_)
             selected_->reset();
         sample_ = NewDraft();
@@ -72,6 +76,12 @@ public:
     }
 
 private:
+    int CreateRow() const {
+        return system_creator_ ? 1 : 0;
+    }
+    int ListCount() const {
+        return static_cast<int>(entries_.size()) + CreateRow() + 1;
+    }
     enum class Page { List, Editor, Discard, Delete };
     StoreData NewDraft() const {
         StoreData data;
@@ -101,9 +111,9 @@ private:
             database_->Get(data, i, metadata_);
             entries_.push_back(data);
         }
-        list_row_ = std::clamp(list_row_, 0, static_cast<int>(entries_.size()));
+        list_row_ = std::clamp(list_row_, 0, ListCount() - 1);
         if (page_ == Page::List)
-            row_ = std::clamp(row_, 0, static_cast<int>(entries_.size()));
+            row_ = std::clamp(row_, 0, ListCount() - 1);
         return true;
     }
     void Edit(bool create) {
@@ -115,7 +125,7 @@ private:
         if (create) {
             draft_ = NewDraft();
         } else {
-            draft_ = entries_.at(static_cast<std::size_t>(row_ - 1));
+            draft_ = entries_.at(static_cast<std::size_t>(row_ - CreateRow() - 1));
         }
         list_row_ = row_;
         row_ = 0;
@@ -148,7 +158,7 @@ private:
         if (!Load())
             return false;
         page_ = Page::List;
-        row_ = std::min(list_row_, static_cast<int>(entries_.size()));
+        row_ = std::min(list_row_, ListCount() - 1);
         return true;
     }
     void Update() {
@@ -182,7 +192,7 @@ private:
                 Load();
             return;
         }
-        const int count = page_ == Page::List     ? static_cast<int>(entries_.size()) + 1
+        const int count = page_ == Page::List     ? ListCount()
                           : page_ == Page::Editor ? (creating_ ? DeleteRow : DeleteRow + 1)
                                                   : 2;
         if (input_.Pressed(Button::Up))
@@ -198,7 +208,7 @@ private:
                 Moru::Choose(draft_, field, choice + 1);
             return;
         }
-        if (page_ == Page::List && row_ > 0 && input_.Pressed(Button::X)) {
+        if (page_ == Page::List && row_ > CreateRow() && input_.Pressed(Button::X)) {
             Edit(false);
             input_.ConsumeUntilRelease();
             return;
@@ -207,10 +217,13 @@ private:
             return;
         switch (page_) {
         case Page::List:
-            if (row_ == 0)
+            if (system_creator_ && row_ == 0) {
+                *launch_target_ = std::string(SwitchMiiEditBootTarget);
+                done_ = true;
+            } else if (row_ == CreateRow())
                 Edit(true);
             else if (selected_) {
-                *selected_ = entries_[static_cast<std::size_t>(row_ - 1)];
+                *selected_ = entries_[static_cast<std::size_t>(row_ - CreateRow() - 1)];
                 done_ = true;
             } else
                 Edit(false);
@@ -290,13 +303,18 @@ private:
             renderer_.DrawString(Tr(Text::MoruLoadFailed), Font::Body, RectF(96, 300, 1700, 500),
                                  Theme::kTextSecondary);
         } else if (page_ == Page::List) {
-            const int count = static_cast<int>(entries_.size()) + 1;
+            const int count = ListCount();
             const int first = std::clamp(row_ - 3, 0, std::max(0, count - VisibleRows));
             for (int i = first; i < std::min(count, first + VisibleRows); ++i)
                 DrawRow(i - first, i == row_,
-                        i == 0 ? Tr(Text::MoruCreate) : Nickname(entries_[i - 1]));
-            if (row_ > 0)
-                DrawPreview(entries_[row_ - 1]);
+                        system_creator_ && i == 0 ? Tr(Text::MoruSystemCreator)
+                        : i == CreateRow()        ? Tr(Text::MoruCreate)
+                                                  : Nickname(entries_[i - CreateRow() - 1]));
+            if (system_creator_ && row_ == 0) {
+                renderer_.DrawString(Tr(Text::MoruSystemCreatorHint), Font::Body,
+                                     RectF(1100, 300, 1760, 600), Theme::kTextSecondary);
+            } else if (row_ > CreateRow())
+                DrawPreview(entries_[row_ - CreateRow() - 1]);
             else if (entries_.empty()) {
                 // The empty state shows the next step and an original face, without persisting it.
                 DrawPreview(sample_);
@@ -352,7 +370,7 @@ private:
         }
         std::vector<Hint> hints = {{Theme::kButtonA, L"A", Tr(Text::HintSelect)},
                                    {Theme::kButtonB, L"B", Tr(Text::HintBack)}};
-        if (page_ == Page::List && row_ > 0)
+        if (page_ == Page::List && row_ > CreateRow())
             hints.push_back({Theme::kButtonX, L"X", Tr(Text::MoruEdit)});
         if (page_ == Page::Editor)
             hints.push_back({Theme::kTextSecondary, L"↔", Tr(Text::MoruAdjust)});
@@ -366,6 +384,8 @@ private:
     CoreWindow window_;
     Input& input_;
     std::optional<StoreData>* selected_;
+    std::string* launch_target_;
+    bool system_creator_ = false;
     std::unique_ptr<Service::Mii::DatabaseManager> database_;
     Service::Mii::DatabaseSessionMetadata metadata_{};
     std::vector<StoreData> entries_;
@@ -379,8 +399,8 @@ private:
 };
 } // namespace
 bool RunMoruScreen(Renderer& renderer, const CoreWindow& window, Input& input,
-                   std::optional<StoreData>* selected) {
-    MoruScreen screen(renderer, window, input, selected);
+                   std::optional<StoreData>* selected, std::string* launch_target) {
+    MoruScreen screen(renderer, window, input, selected, launch_target);
     return screen.Run();
 }
 } // namespace EdenXbox::Ui

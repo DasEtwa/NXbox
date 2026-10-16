@@ -295,6 +295,9 @@
     {Text::AvatarWhite, L"White"}, {Text::AvatarBlack, L"Black"},
     {Text::AccountConfirmAvatar, L"Save icon"},
 
+    {Text::MoruSystemCreator, L"Open the system creator"},
+    {Text::MoruSystemCreatorHint,
+     L"Uses the installed firmware. Saved characters appear here and in games."},
     {Text::MoruTitle, L"My Morus"}, {Text::MoruCreate, L"Create Moru"},
     {Text::MoruEdit, L"Edit Moru"}, {Text::MoruEmpty, L"Create your first Moru to use in games."},
     {Text::MoruSave, L"Save"}, {Text::MoruDiscard, L"Discard changes"},

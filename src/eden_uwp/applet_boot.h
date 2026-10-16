@@ -5,6 +5,7 @@
 
 namespace EdenXbox {
 inline constexpr std::string_view SwitchHomeBootTarget = "nxbox-system-home";
+inline constexpr std::string_view SwitchMiiEditBootTarget = "nxbox-system-mii-edit";
 
 // View + Menu leaves the individual Switch Minus/Plus mappings available.
 class HomeButtonEdge {

@@ -287,6 +287,12 @@ public:
     }
 
 private:
+    void LaunchFirmwareApplet(Clock::time_point now) {
+        launched_ = -1;
+        launching_ = true;
+        launch_started_ = now;
+        input_.ConsumeUntilRelease();
+    }
     // ---- State ----
 
     int GameCount() const {
@@ -834,8 +840,10 @@ private:
                 return;
             }
             const InputTransition transition(input_);
-            if (RunMoruScreen(renderer_, window_, input_))
+            if (RunMoruScreen(renderer_, window_, input_, nullptr, &result_))
                 closed_ = true;
+            if (!result_.empty())
+                LaunchFirmwareApplet(now);
             return;
         }
         if (SelectedSetting() == Setting::Accounts ||
@@ -846,8 +854,10 @@ private:
             }
             const InputTransition transition(input_);
             if (RunAccountsScreen(renderer_, window_, input_, local_state_,
-                                  SelectedSetting() == Setting::ProfilePicture))
+                                  SelectedSetting() == Setting::ProfilePicture, &result_))
                 closed_ = true;
+            if (!result_.empty())
+                LaunchFirmwareApplet(now);
             accounts_multi_ = Accounts::Load(local_state_).multi;
             return;
         }
@@ -877,10 +887,7 @@ private:
                 return;
             }
             result_ = std::string(SwitchHomeBootTarget);
-            launched_ = -1;
-            launching_ = true;
-            launch_started_ = now;
-            input_.ConsumeUntilRelease();
+            LaunchFirmwareApplet(now);
             return;
         }
         if (SelectedSetting() == Setting::Multiplayer) {
