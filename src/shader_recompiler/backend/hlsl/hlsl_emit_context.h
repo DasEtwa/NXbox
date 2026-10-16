@@ -133,6 +133,7 @@ public:
     Stage stage{};
     bool uses_cc_carry{};
     bool uses_register_state{};
+    bool uses_return_flag{};
     bool uses_shared_wide{};
     std::set<u32> goto_variables;
     std::unordered_set<IR::Inst*> handled_pseudo;

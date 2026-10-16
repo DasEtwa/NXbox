@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Dispatch follows the GLSL backend's typed opcode emitters.
 #include <algorithm>
+#include <cstdlib>
 #include <tuple>
 #include <type_traits>
 #include "shader_recompiler/backend/hlsl/emit_hlsl.h"
@@ -99,10 +100,73 @@ void EmitPhiCopies(EmitContext& ctx, const IR::Program& program, IR::Block* pred
     for (const auto& [destination, temporary] : moves)
         ctx.Add("{} = {};", destination, temporary);
 }
-void EmitCode(EmitContext& ctx, const IR::Program& program) {
-    size_t loop_index = 0;
+// A return nested in structured control flow is an extra exit edge. DXC keeps it as a branch
+// to the shared exit block, and the Xbox driver's structurizer then needs memory without bound:
+// the firmware Mii editor pixel shader (six nested returns, depth 13) took the app past its
+// 5 GB limit while compiling. Every nested return becomes `nx_returned = true` and the code
+// after the region that holds it is guarded by `if (!nx_returned)`, so each exit stays
+// structured. NXBOX_HLSL_RAW_RETURNS=1 keeps the old form for bisecting.
+bool LowersNestedReturns(const IR::Program& program) {
+    static const bool raw = [] {
+        const char* env = std::getenv("NXBOX_HLSL_RAW_RETURNS");
+        return env && env[0] == '1';
+    }();
+    if (raw)
+        return false;
+    using Node = IR::AbstractSyntaxNode;
+    size_t depth = 0;
     for (const auto& node : program.syntax_list) {
-        using Node = IR::AbstractSyntaxNode;
+        switch (node.type) {
+        case Node::Type::If:
+        case Node::Type::Loop:
+            ++depth;
+            break;
+        case Node::Type::EndIf:
+        case Node::Type::Repeat:
+            --depth;
+            break;
+        case Node::Type::Return:
+        case Node::Type::Unreachable:
+            if (depth)
+                return true;
+            break;
+        default:
+            break;
+        }
+    }
+    return false;
+}
+
+void EmitCode(EmitContext& ctx, const IR::Program& program) {
+    using Node = IR::AbstractSyntaxNode;
+    const bool lower_returns = ctx.uses_return_flag = LowersNestedReturns(program);
+    // One entry per open If/Loop; [0] is the function body. `guards` counts the
+    // `if (!nx_returned) {` scopes opened inside the region, `returns` whether it can return.
+    struct Region {
+        size_t guards{};
+        bool returns{};
+    };
+    std::vector<Region> regions(1);
+    const auto close_guards = [&] {
+        for (; regions.back().guards; --regions.back().guards)
+            ctx.Add("}}");
+    };
+    const auto open_guard = [&] {
+        ctx.Add("if (!nx_returned) {{");
+        ++regions.back().guards;
+    };
+    // Ends the innermost region; the code after it only runs if nothing inside returned.
+    const auto leave_region = [&] {
+        const bool returns = regions.back().returns;
+        regions.pop_back();
+        if (returns) {
+            regions.back().returns = true;
+            open_guard();
+        }
+    };
+    size_t loop_index = 0;
+    for (size_t i = 0; i < program.syntax_list.size(); ++i) {
+        const auto& node = program.syntax_list[i];
         switch (node.type) {
         case Node::Type::Block:
             ctx.Add("{{");
@@ -113,29 +177,51 @@ void EmitCode(EmitContext& ctx, const IR::Program& program) {
             break;
         case Node::Type::If:
             ctx.Add("if ({}) {{", ctx.var_alloc.Consume(node.data.if_node.cond));
+            regions.emplace_back();
             break;
         case Node::Type::EndIf:
+            close_guards();
             ctx.Add("}}");
+            leave_region();
             break;
         case Node::Type::Loop:
             // Guest loops must stay loops: driver unrolling can explode native PSO compilation.
             ctx.Add("[loop] while (true) {{");
+            regions.emplace_back();
             break;
-        case Node::Type::Repeat:
-            ctx.Add("if (--loop{} < 0 || !({})) break; }}", loop_index++,
-                    ctx.var_alloc.Consume(node.data.repeat.cond));
+        case Node::Type::Repeat: {
+            close_guards();
+            const bool returns = regions.back().returns;
+            ctx.Add("if ({}--loop{} < 0 || !({})) break; }}", returns ? "nx_returned || " : "",
+                    loop_index++, ctx.var_alloc.Consume(node.data.repeat.cond));
+            leave_region();
             break;
+        }
         case Node::Type::Break:
             ctx.Add("if ({}) break;", ctx.var_alloc.Consume(node.data.break_node.cond));
             break;
         case Node::Type::Return:
         case Node::Type::Unreachable:
+            if (lower_returns && regions.size() > 1) {
+                ctx.Add("nx_returned = true;");
+                regions.back().returns = true;
+                // Whatever still follows in this region is dead; only guard it if something does.
+                const auto next = i + 1 < program.syntax_list.size()
+                                      ? program.syntax_list[i + 1].type
+                                      : Node::Type::EndIf;
+                if (next != Node::Type::EndIf && next != Node::Type::Repeat)
+                    open_guard();
+                break;
+            }
+            close_guards();
             if (program.stage != Stage::Geometry)
                 ctx.FinishOutput();
             ctx.Add("{}", ctx.ReturnStatement());
             break;
         }
     }
+    // Guards opened after the last nested return end before the epilogue.
+    close_guards();
 }
 } // namespace
 u32 RequiredShaderModel(const IR::Program& program) {
@@ -211,6 +297,8 @@ std::string EmitHLSL(const Profile& profile, const RuntimeInfo& runtime_info, IR
             "uint nx_branch = 0u; bool nx_z = false, nx_s = false, nx_c = false, nx_o = false;\n";
     for (const auto index : ctx.goto_variables)
         ctx.header += fmt::format("bool nx_goto_{} = false;\n", index);
+    if (ctx.uses_return_flag)
+        ctx.header += "bool nx_returned = false;\n";
     size_t loop_index = 0;
     for (const auto& node : program.syntax_list)
         if (node.type == IR::AbstractSyntaxNode::Type::Repeat)

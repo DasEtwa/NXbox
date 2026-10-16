@@ -654,6 +654,61 @@ void PackedSignedAttributes() {
   std::ofstream("hlsl_packed10.hlsl") << text;
 }
 } // namespace
+// A return nested in structured control flow must become a flag plus guards: DXC keeps it as an
+// extra exit edge and the Xbox driver's compile of such a shader runs out of memory.
+void NestedReturns() {
+  using Node = IR::AbstractSyntaxNode;
+  Fixture f{Stage::Compute};
+  f.program.info.storage_buffers_descriptors.push_back(
+      {.count = 1, .is_written = true});
+  IR::Block inner{f.pool};
+  IR::Block after{f.pool};
+  f.program.blocks.push_back(&inner);
+  f.program.blocks.push_back(&after);
+  const auto condition = f.Add(IR::Opcode::ConditionRef, {IR::Value{true}});
+  inner.AppendNewInst(IR::Opcode::WriteStorage32,
+                      {IR::Value{0u}, IR::Value{0u}, IR::Value{1u}});
+  after.AppendNewInst(IR::Opcode::WriteStorage32,
+                      {IR::Value{0u}, IR::Value{4u}, IR::Value{2u}});
+  const auto push = [&](Node node) { f.program.syntax_list.push_back(node); };
+  // { if (c) { { if (c) { inner; return; } } after; return; } }
+  push({.data = {.if_node = {.cond = IR::U1{condition}}},
+        .type = Node::Type::If});
+  push({.data = {.if_node = {.cond = IR::U1{condition}}},
+        .type = Node::Type::If});
+  push({.data = {.block = &inner}, .type = Node::Type::Block});
+  push({.type = Node::Type::Return});
+  push({.type = Node::Type::EndIf});
+  push({.data = {.block = &after}, .type = Node::Type::Block});
+  push({.type = Node::Type::EndIf});
+  push({.type = Node::Type::Return});
+  Bindings bindings;
+  const auto text = f.Emit(bindings);
+  Contains(text, "bool nx_returned = false;");
+  Contains(text, "nx_returned = true;");
+  Contains(text, "if (!nx_returned) {");
+  const auto count = [&](std::string_view token) {
+    size_t n = 0;
+    for (auto at = text.find(token); at != text.npos;
+         at = text.find(token, at + 1))
+      ++n;
+    return n;
+  };
+  // Only the top-level return and the function epilogue may leave the function.
+  Require(count("return;") == 2, "Nested returns must not leave the function");
+  // The guard opened after the inner region closes before the outer region does.
+  Require(count("if (!nx_returned) {") == 2 && count("{") == count("}"),
+          "Return guards must be balanced");
+  std::ofstream("hlsl_returns.hlsl") << text;
+  Bindings repeated;
+  Require(text == f.Emit(repeated), "Return lowering modified IR");
+  // A program whose only returns are at the top level keeps the plain form.
+  Fixture plain{Stage::Compute};
+  plain.program.syntax_list.push_back({.type = Node::Type::Return});
+  Bindings plain_bindings;
+  Require(plain.Emit(plain_bindings).find("nx_returned") == std::string::npos,
+          "Top-level returns must not use the flag");
+}
 int main() {
   try {
     Vertex();
@@ -673,6 +728,7 @@ int main() {
     MixedSharedMemory();
     PixelHelperAndAlphaTest();
     UnsupportedRollback();
+    NestedReturns();
   } catch (const std::exception &error) {
     std::cerr << error.what() << '\n';
     return 1;

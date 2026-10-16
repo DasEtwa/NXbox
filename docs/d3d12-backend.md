@@ -473,3 +473,13 @@ LLVM counts describe the DXIL program rather than native GPU ISA. The counts exp
 possible causes without claiming that a GEP necessarily spills or that each
 TEXCOORD declaration is a live hardware interpolant. Guest structured loops now
 carry `[loop]` to prevent speculative unrolling in DXC/driver lowering.
+
+Guest `EXIT` nested in structured control flow is not emitted as `return`. DXC turns each
+such return into an extra branch to the shared exit block, and the Xbox driver's compile of
+that unstructured CFG needs memory without bound: the firmware Mii editor pixel shader
+(six nested returns at depth up to 13, only 40 KB of DXIL) took the process past its 5 GB
+limit within 25 s, while the same shader with its returns removed or turned into flags
+compiled in about a second. The emitter now writes `nx_returned = true;` and guards what
+follows the region with `if (!nx_returned) {`, so every exit stays structured (a loop's
+repeat test also checks the flag). Programs whose returns are all at the top level are
+emitted as before. `NXBOX_HLSL_RAW_RETURNS=1` restores the old form for bisecting.
