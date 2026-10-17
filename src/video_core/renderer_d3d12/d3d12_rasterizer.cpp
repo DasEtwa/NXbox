@@ -1038,7 +1038,7 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
                              native_pipeline->VertexGuestHash() == GlyphTraceHash;
     ResourcePtr glyph_readback;
     if (glyph_trace)
-        glyph_readback = context.CreateBuffer(GlyphTraceBytes, D3D12_HEAP_TYPE_READBACK);
+        glyph_readback = context.CreateBuffer(GlyphTraceBytes * 2, D3D12_HEAP_TYPE_READBACK);
     // Keep the actual per-attribute IA resources, including temporary copies.
     std::array<ResourcePtr, Pso::kNumVertexAttributes> trace_vertex_resources{};
     constexpr size_t VertexTraceBytes = 48;
@@ -1852,6 +1852,59 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
                     context.Transition(host.resource, previous);
                     query_runtime.ResumeHostConditionalRendering();
                 }
+                // Constant buffers 0 and 1 as the guest holds them, and constant buffer 1 as the
+                // host bound it (descriptor order).
+                const auto& stage_cbufs = maxwell3d->state.shader_stages[stage].const_buffers;
+                std::array<u8, GlyphTraceBytes> guest_cbuf0{}, guest_cbuf1{};
+                gpu_memory->ReadBlockUnsafe(stage_cbufs[0].address, guest_cbuf0.data(),
+                                            guest_cbuf0.size());
+                gpu_memory->ReadBlockUnsafe(stage_cbufs[1].address, guest_cbuf1.data(),
+                                            guest_cbuf1.size());
+                u32 host_cbuf1_copy = 0;
+                {
+                    size_t uniform_index = 0;
+                    for (const auto& cbuf_desc : info->constant_buffer_descriptors) {
+                        if (cbuf_desc.index == 1 &&
+                            uniform_index < bindings.stages[stage].uniform.size()) {
+                            const auto& cbuf = bindings.stages[stage].uniform[uniform_index];
+                            if (cbuf.resource && cbuf.size) {
+                                host_cbuf1_copy = std::min<u32>(GlyphTraceBytes, cbuf.size);
+                                query_runtime.PauseHostConditionalRendering();
+                                const auto previous = cbuf.resource->state;
+                                context.Transition(cbuf.resource,
+                                                   D3D12_RESOURCE_STATE_COPY_SOURCE);
+                                context.BeforeCopyWrite(glyph_readback, GlyphTraceBytes,
+                                                        host_cbuf1_copy);
+                                context.Commands()->CopyBufferRegion(
+                                    glyph_readback->handle.Get(), GlyphTraceBytes,
+                                    cbuf.resource->handle.Get(), cbuf.offset, host_cbuf1_copy);
+                                context.Transition(cbuf.resource, previous);
+                                query_runtime.ResumeHostConditionalRendering();
+                            }
+                            break;
+                        }
+                        uniform_index += cbuf_desc.count;
+                    }
+                }
+                // Attribute 0 (the unit-quad corners) as the guest vertex stream holds it.
+                std::array<u8, 192> guest_vertex{};
+                u32 vertex_stride = 0;
+                u32 vertex_offset = 0;
+                {
+                    const auto& attribute0 = native_pipeline->State().attributes[0];
+                    if (attribute0.enabled == 1) {
+                        const auto& stream = regs.vertex_streams[attribute0.slot];
+                        vertex_stride = stream.stride.Value();
+                        vertex_offset = attribute0.offset;
+                        gpu_memory->ReadBlockUnsafe(stream.Address() + attribute0.offset,
+                                                    guest_vertex.data(),
+                                                    std::min<size_t>(guest_vertex.size(),
+                                                                     size_t{vertex_stride} * 8));
+                    }
+                }
+                const bool is_indexed_draw = submitted.is_indexed;
+                const u32 draw_vertices = submitted.num_vertices;
+                const u32 base_vertex_value = submitted.base_vertex;
                 const auto hex = [](std::span<const u8> bytes) {
                     std::string out;
                     for (size_t i = 0; i < bytes.size(); ++i)
@@ -1865,7 +1918,23 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
                 const u32 host_size = host.size;
                 context.AfterCompletion([readback = glyph_readback, guest_bytes, hex, frame,
                                          instances, base_instance, ssbo, ssbo_size, host_copy,
-                                         host_offset, host_size, draw_index = glyph_trace_draws] {
+                                         host_offset, host_size, guest_cbuf0, guest_cbuf1,
+                                         host_cbuf1_copy, guest_vertex, vertex_stride,
+                                         vertex_offset, is_indexed_draw, draw_vertices,
+                                         base_vertex_value, draw_index = glyph_trace_draws] {
+                    Diagnostic(fmt::format(
+                        "D3D12_GLYPH_DRAW draw={} indexed={} vertices={} base_vertex={} "
+                        "base_instance={} vb0_stride={} vb0_offset={} vb0={}",
+                        draw_index, is_indexed_draw, draw_vertices, base_vertex_value,
+                        base_instance, vertex_stride, vertex_offset, hex(guest_vertex)));
+                    Diagnostic(fmt::format("D3D12_GLYPH_CBUF0 draw={} guest={}", draw_index,
+                                           hex(guest_cbuf0)));
+                    Diagnostic(fmt::format("D3D12_GLYPH_CBUF1 draw={} guest={}", draw_index,
+                                           hex(guest_cbuf1)));
+                    Diagnostic(fmt::format(
+                        "D3D12_GLYPH_CBUF1_HOST draw={} copied={} host={}", draw_index,
+                        host_cbuf1_copy,
+                        hex(readback->mapped.subspan(GlyphTraceBytes, host_cbuf1_copy))));
                     Diagnostic(fmt::format(
                         "D3D12_GLYPH_SSBO draw={} frame={} instances={} base_instance={} "
                         "gpu={:x} align16={} size={} host_offset={} host_size={}",

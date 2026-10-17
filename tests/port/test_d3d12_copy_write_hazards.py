@@ -86,6 +86,7 @@ class CopyWriteHazards(unittest.TestCase):
                 "padded, 0, copied",
                 "padded, copied, required - copied",
                 "glyph_readback, 0, host_copy",
+                "glyph_readback, GlyphTraceBytes, host_cbuf1_copy",
                 "readback, 0, 4",
             ],
             "d3d12_query_cache.cpp": [
