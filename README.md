@@ -13,8 +13,9 @@ SPDX-License-Identifier: GPL-3.0-or-later
 <p align="center">
   <b>A Switch emulator that runs natively on an Xbox Series X.</b><br>
   A port of <a href="https://git.eden-emu.dev/eden-emu/eden">Eden</a> to the Xbox UWP sandbox: the Switch's ARM64 code runs
-  through a JIT, and its graphics go to Direct3D 12: by default through OpenGL on Mesa, and, in testing, through a
-  native Direct3D 12 renderer (<code>NXBOX_RENDERER=d3d12</code>).
+  through a JIT, and its graphics go straight to Direct3D 12 through a native renderer written for the console, with
+  OpenGL on Mesa kept as a fallback.<br>
+  <a href="https://github.com/NspxMiguel/NXbox/releases/latest"><b>Download the latest release</b></a>
 </p>
 
 <p align="center">
@@ -47,17 +48,29 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 > **Experimental. No game is 100% playable without bugs yet.** Super Mario 3D World, Breath of the
 > Wild and Persona 5 Royal reach gameplay on a console in Developer Mode, but running is not the same
-> as working well: each has open bugs (see the [compatibility table](#compatibility)). There is no
-> public release yet: builds come from CI.
+> as working well: each has open bugs (see the [compatibility table](#compatibility)). Signed builds are on the
+> [releases page](https://github.com/NspxMiguel/NXbox/releases), and NXbox updates itself from there.
 
-> **\*New\* Native Direct3D 12 renderer.** The default path translates the Switch GPU to OpenGL and
-> then, through Mesa, to Direct3D 12. The new renderer (`NXBOX_RENDERER=d3d12`) talks to Direct3D 12
-> directly: Switch shaders are translated to HLSL and compiled with Microsoft's DXC, with no OpenGL or
-> Mesa in between. It draws Super Mario 3D World's game-select screen correctly at 1920×1080 and
-> 60 FPS, including text the OpenGL path drops, and reaches level 1-1, where lit geometry still
-> renders black. Every one of the 4,511 shaders captured from four games translates to HLSL and
-> compiles with DXC, checked offline by a corpus harness (`tools/nxbox/shader_corpus`). It is still
-> opt-in. Plan and progress: [docs/d3d12-backend.md](docs/d3d12-backend.md).
+> **Native Direct3D 12 renderer, on by default.** Switch shaders are translated to HLSL and compiled
+> with Microsoft's DXC, with no OpenGL or Mesa in between. Super Mario 3D World plays level 1-1 lit at
+> about 59 FPS on a Series X. The older OpenGL-on-Mesa path stays available as a fallback
+> (`renderer_backend=0` in `LocalState\eden_settings.txt`). Plan and progress:
+> [docs/d3d12-backend.md](docs/d3d12-backend.md).
+
+## What NXbox adds
+
+Eden is the emulator; NXbox is everything it takes to use it on an Xbox, built for a controller and a TV:
+
+- **A console-style game library** with cover art, a first-run setup, and per-game settings.
+- **Xbox controller first:** the system font shows Xbox button icons in games that use it, and setup
+  lets you choose whether A or B confirms.
+- **Mods from GameBanana** installed with one button and turned off with another, and **cheats** from
+  the community database (see [credits](#credits-and-lineage)).
+- **Characters:** Moru, a built-in character creator, and the system's own Mii creator.
+- **Shader caches shared over the LAN**, so a second console does not compile them again.
+- **[NXbox Pack](tools/nxbox-pack/README.md)** turns a game you own into its own Xbox app that boots
+  straight into the game.
+- **Updates itself** from the releases page.
 
 ## Where it stands
 
@@ -66,14 +79,14 @@ Everything below was measured on a retail Xbox Series X in Developer Mode.
 | Area | State |
 | --- | --- |
 | CPU | Switch ARM64 code runs through the Dynarmic JIT inside the UWP sandbox, with a 128 MiB code cache |
-| Graphics (default) | OpenGL 4.6 on Direct3D 12 through a patched Mesa `d3d12` driver, built in CI |
-| Graphics (**\*New\***, opt-in) | Native Direct3D 12 renderer (`NXBOX_RENDERER=d3d12`): Switch shaders go Maxwell → IR → HLSL → DXC → DXIL. Super Mario 3D World plays level 1-1 lit at ~59 FPS on a Series X; BotW renders the Shrine of Resurrection at ~12 FPS. MSAA, async fences and recyclable buffer heaps are in; renderer errors are logged and the game keeps running, and a failed D3D12 start falls back to OpenGL. All 4,511 corpus shaders compile with DXC; tessellation is still limited |
+| Graphics (fallback) | OpenGL 4.6 on Direct3D 12 through a patched Mesa `d3d12` driver, built in CI |
+| Graphics (default) | Native Direct3D 12 renderer: Switch shaders go Maxwell → IR → HLSL → DXC → DXIL. Super Mario 3D World plays level 1-1 lit at ~59 FPS on a Series X; BotW renders the Shrine of Resurrection at ~12 FPS. MSAA, async fences and recyclable buffer heaps are in; renderer errors are logged and the game keeps running, and a failed D3D12 start falls back to OpenGL. All 4,511 corpus shaders compile with DXC; tessellation is still limited |
 | Frame pacing | OpenGL path: 60 FPS in Super Mario 3D World's hub, 30 FPS in Persona 5 Royal, about 12 FPS in Breath of the Wild, bound by the OpenGL/Mesa translation on the GPU thread (`NXBOX_THREAD_PROFILE=1` shows the ARM cores mostly idle). Loads still freeze the picture for a few seconds |
 | Shaders | Per-title pipeline cache, precompiled at boot so scene changes do not compile shaders. A cache can be shared between consoles over the LAN |
 | Memory | Guest memory is committed on demand. Persona 5 Royal peaks around 4.0 GB and Breath of the Wild around 4.5 GB of the 5 GiB app budget |
 | Audio | XAudio2 output |
 | Movies | Decoded on the CPU with FFmpeg |
-| Textures | ASTC decoded on the CPU on the OpenGL path; the native D3D12 renderer decodes ASTC on the GPU |
+| Textures | ASTC decoded on the CPU; small compressed texture arrays are decoded on the CPU on Xbox, where sampling them natively reads the wrong rows |
 | Input | Xbox controller, mapped to the standard gamepad layout |
 | Accounts | A default offline NXbox profile is created on first boot; firmware dumped from your own console can be installed from `LocalState\firmware` |
 | Compatibility | No game is playable without bugs yet: see the [compatibility table](#compatibility) |
@@ -97,8 +110,8 @@ Written up in the [port notes](docs/nxbox-port.md).
 
 ## What to expect
 
-- **There is no release date.** Nothing is promised until it is stable; releases will appear on the
-  [releases page](https://github.com/NspxMiguel/NXbox/releases) when there is something to try.
+- **Releases are experimental.** The [releases page](https://github.com/NspxMiguel/NXbox/releases)
+  has signed builds to try; nothing is promised until it is stable.
 - **No game is playable yet.** The table below is the honest state of each target.
 - **Current focus: Super Mario 3D World, then The Legend of Zelda: Breath of the Wild**, and the new
   native Direct3D 12 renderer that both will move to. Mario Kart 8 Deluxe and Bayonetta come after.
@@ -124,7 +137,7 @@ Estimates are the maintainer's guess, not a promise; they move as bugs are found
 
 | Game | State | What happens today | Playable estimate |
 | --- | --- | --- | --- |
-| Super Mario 3D World + Bowser's Fury | **In-game** | 60 FPS on the OpenGL path: enters 3D World and reaches the hub with correct colours, but some camera angles draw black polygons and some text is missing. The native D3D12 renderer draws the menus correctly at 60 FPS and reaches level 1-1, with lit geometry still black | 2–4 weeks |
+| Super Mario 3D World + Bowser's Fury | **In-game** | On the native D3D12 renderer: menus, the World 1 map and level 1-1 draw lit at about 59 FPS with correct button icons. Open bugs: stutter the first time a new animation plays, and stray shadow streaks in some scenes | 2–4 weeks |
 | The Legend of Zelda: Breath of the Wild (1.0, 1.6 + DLC) | **In-game** | Loads a save and runs in the Shrine of Resurrection at about 12 FPS with Link drawn correctly; some terrain is still broken. Bound by the OpenGL translation on the GPU thread, so it moves to the native renderer next | 1–3 months |
 | Persona 5 Royal | **In-game** | Reaches the first playable area with audio; stutters on loads and has open bugs | 3–6 weeks |
 | Mario Kart 8 Deluxe | **In-game** | With firmware dumped from the user's own console installed, it gets past the character picker and starts a Grand Prix race at up to 60 FPS on the OpenGL path; track geometry is still broken and fps drops during the race | 4–8 weeks |
@@ -135,10 +148,10 @@ Estimates are the maintainer's guess, not a promise; they move as bugs are found
 ```mermaid
 flowchart LR
     game["Switch game (.nsp)"] --> core["Eden core<br/>HLE services · Dynarmic JIT"]
-    core --> gl["OpenGL 4.6 renderer (default)"]
+    core --> gl["OpenGL 4.6 renderer (fallback)"]
     gl --> mesa["Mesa d3d12 (patched)"]
     mesa --> d3d["Direct3D 12 on Xbox"]
-    core --> native["Native D3D12 renderer (in testing)<br/>Maxwell → HLSL → DXC"]
+    core --> native["Native D3D12 renderer (default)<br/>Maxwell → HLSL → DXC"]
     native --> d3d
     core --> audio["XAudio2"]
     pad["Xbox controller"] --> core
@@ -162,9 +175,8 @@ You need an Xbox Series X|S in **Developer Mode** and your own dumps:
 > compatibility, performance and memory behaviour there cannot be checked or guaranteed. Reports
 > from Series S owners (with `LocalState\nxbox_crash.txt`) are welcome in the issues.
 
-1. Install a package from the
-   [package workflow](https://github.com/NspxMiguel/NXbox/actions/workflows/package-nxbox.yml)
-   through the Device Portal. It must run as a **Game**: as an App it only gets 1 GB of memory
+1. Download the `.appx` from the [latest release](https://github.com/NspxMiguel/NXbox/releases/latest)
+   and install it through the Device Portal. It must run as a **Game**: as an App it only gets 1 GB of memory
    and games crash with `bad allocation`; as a Game it gets 5 GB. Either turn on
    `DefaultUWPContentTypeToGame` in the Device Portal's settings *before* installing (NXbox Pack
    does this for you), or afterwards in Dev Home select NXbox → **View details** and set
@@ -177,9 +189,8 @@ You need an Xbox Series X|S in **Developer Mode** and your own dumps:
 
 **\*New\*** [NXbox Pack](tools/nxbox-pack/README.md) does steps 1–4 for one game at a time: drag the
 game, your keys and any updates/DLC into its window, and it installs that game as its own app that
-boots straight into the game. To try the native renderer, create the text file
-`LocalState\nxbox_env.txt` (it does not exist until you make it; upload it with the Device
-Portal's file explorer) containing the line `NXBOX_RENDERER=d3d12`, then restart NXbox.
+boots straight into the game. To go back to the OpenGL path, add the line `renderer_backend=0` to
+`LocalState\eden_settings.txt` with the Device Portal's file explorer, then restart NXbox.
 
 Two other ways to get games in are built but not yet tested on the console: **Add games** imports
 games and keys from a USB drive (copy to the console, or move into `NXbox\games` to play from the
@@ -218,7 +229,9 @@ ctest --test-dir build-port-tests -C Release --output-on-failure
 
 ## Credits and lineage
 
-**NXbox is a fork, not an emulator written from scratch.**
+**NXbox is a fork, not an emulator written from scratch.** NXbox by NSPX. Code written for NXbox
+carries an NSPX copyright line, and redistributing it requires keeping the attribution described in
+[NOTICE.md](NOTICE.md).
 
 - [Eden](https://git.eden-emu.dev/eden-emu/eden) provides the emulator.
 - [juanresendiz813/eden-xbox](https://github.com/juanresendiz813/eden-xbox) provided the starting
