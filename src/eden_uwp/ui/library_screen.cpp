@@ -807,7 +807,7 @@ private:
             if (RendererSettings::SaveButtonLayout(local_state_, next))
                 button_layout_ = next;
             else
-                Toast(Tr(Text::ButtonLayoutSaveFailed));
+                Toast(Tr(Text::ButtonLayoutSaveFailed), now);
             return;
         }
         if (SelectedSetting() == Setting::XboxButtonIcons) {
