@@ -9,6 +9,7 @@
 #include <exception>
 #include <fstream>
 #include <limits>
+#include <regex>
 #include <set>
 #include <stdexcept>
 #include <thread>
@@ -45,6 +46,34 @@ void DumpGraphicsHlsl(u64 guest_hash, Shader::Stage stage, const std::string& so
                       fmt::format("gfx_{:016x}_{}.hlsl", guest_hash, static_cast<int>(stage)),
                   std::ios::binary}
         << source;
+}
+
+// Diagnostic for array-texture sampling in pixel shaders.
+// NXBOX_D3D12_TEX_PROBE_LOAD=1 replaces tex0.Sample with a nearest Load at mip 0 (bypasses the
+// sampler); NXBOX_D3D12_TEX_PROBE_LAYER=<n> forces the array layer. Both only touch shaders
+// that sample a single Texture2DArray tex0.
+void ApplyTextureProbe(Shader::Stage stage, std::string& source) {
+    static const char* const load_env = std::getenv("NXBOX_D3D12_TEX_PROBE_LOAD");
+    static const char* const layer_env = std::getenv("NXBOX_D3D12_TEX_PROBE_LAYER");
+    if ((!load_env && !layer_env) || stage != Shader::Stage::Fragment)
+        return;
+    const std::string anchor = "SamplerState samp0 : register(s0, space0);\n";
+    const auto at = source.find(anchor);
+    if (at == std::string::npos || source.find("Texture2DArray<float4> tex0 :") == std::string::npos)
+        return;
+    std::string helper = "float4 nx_probe_tex0(float3 c) {\n";
+    if (layer_env)
+        helper += fmt::format("    c.z = {}.0;\n", std::strtol(layer_env, nullptr, 10));
+    if (load_env) {
+        helper += "    uint w, h, e, l;\n    tex0.GetDimensions(0, w, h, e, l);\n"
+                  "    return tex0.Load(int4(int2(c.xy * float2(w, h)), int(c.z + 0.5), 0));\n}\n";
+    } else {
+        helper += "    return tex0.Sample(samp0, c);\n}\n";
+    }
+    source.insert(at + anchor.size(), helper);
+    static const std::regex sample{R"(tex0\.Sample\(samp0, (v\d+)\))"};
+    const auto head = source.substr(0, at + anchor.size() + helper.size());
+    source = head + std::regex_replace(source.substr(head.size()), sample, "nx_probe_tex0($1)");
 }
 
 // How long a draw waits for its PSO the first time it is requested (NXBOX_D3D12_PSO_WAIT_MS).
@@ -960,6 +989,7 @@ std::shared_ptr<GraphicsPipeline> BuildAsyncGraphics(
         }
         sources[index] =
             Shader::Backend::HLSL::EmitHLSL(translation.profile, runtime, program, bindings);
+        ApplyTextureProbe(program.stage, sources[index]);
         DumpGraphicsHlsl(guest_hashes[index], program.stage, sources[index]);
         const auto counts = CountStageTables(program.info);
         stages.push_back({program.stage,
@@ -1407,6 +1437,7 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(
             }
             sources[index] =
                 Shader::Backend::HLSL::EmitHLSL(translation.profile, runtime, program, bindings);
+            ApplyTextureProbe(program.stage, sources[index]);
             DumpGraphicsHlsl(guest_hashes[index], program.stage, sources[index]);
             const auto counts = CountStageTables(program.info);
             stages.push_back({program.stage,
