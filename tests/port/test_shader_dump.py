@@ -1,7 +1,5 @@
 # SPDX-FileCopyrightText: Copyright 2026 NSPX
 # SPDX-License-Identifier: GPL-3.0-or-later
-
-# SPDX-License-Identifier: GPL-3.0-or-later
 """Exercise dump paths and retained artifacts without UWP or a graphics driver."""
 
 import shutil

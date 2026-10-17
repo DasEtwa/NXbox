@@ -1,6 +1,4 @@
 // SPDX-FileCopyrightText: Copyright 2026 NSPX
-// SPDX-License-Identifier: GPL-3.0-or-later
-
 /* SPDX-License-Identifier: MIT
  * Synchronous submission and CPU journal, enabled unless NXBOX_SYNC_BATCH=0.
  * No COM references are retained by the journal. Include after d3d12_context.h;

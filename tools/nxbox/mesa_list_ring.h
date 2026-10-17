@@ -1,6 +1,4 @@
 // SPDX-FileCopyrightText: Copyright 2026 NSPX
-// SPDX-License-Identifier: GPL-3.0-or-later
-
 /* SPDX-License-Identifier: MIT
  * Per-command-list recording history. COM private data owns the journal, so
  * destruction and pointer reuse cannot leak or misattribute another list's log.

@@ -1,7 +1,5 @@
 # SPDX-FileCopyrightText: Copyright 2026 NSPX
 # SPDX-License-Identifier: GPL-3.0-or-later
-
-# SPDX-License-Identifier: GPL-3.0-or-later
 """Fixture-backed coverage of Tinfoil locations and autoindex formats."""
 
 from pathlib import Path

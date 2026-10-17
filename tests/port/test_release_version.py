@@ -1,7 +1,5 @@
 # SPDX-FileCopyrightText: Copyright 2026 NSPX
 # SPDX-License-Identifier: GPL-3.0-or-later
-
-# SPDX-License-Identifier: GPL-3.0-or-later
 """Release version and rollback checks, without Windows or GitHub access."""
 
 import importlib.util

@@ -1,7 +1,5 @@
 # SPDX-FileCopyrightText: Copyright 2026 NSPX
 # SPDX-License-Identifier: GPL-3.0-or-later
-
-# SPDX-License-Identifier: GPL-3.0-or-later
 """Exercise offline account policy and real Mii serialization without the emulator runtime."""
 
 import os

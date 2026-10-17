@@ -1,7 +1,5 @@
 # SPDX-FileCopyrightText: Copyright 2026 NSPX
 # SPDX-License-Identifier: GPL-3.0-or-later
-
-# SPDX-License-Identifier: GPL-3.0-or-later
 """Run production JIT bookkeeping/assertions with host stubs, without a Windows SDK.
 
 This checks lookup/link lifetimes and assertion semantics, not emitted x86 code.

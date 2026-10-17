@@ -1,7 +1,5 @@
 // SPDX-FileCopyrightText: Copyright 2026 NSPX
 // SPDX-License-Identifier: GPL-3.0-or-later
-
-// SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 // RasterizerD3D12::Draw(): call Convert for guest indices, Generate otherwise, before
 // IASetIndexBuffer/DrawIndexedInstanced with the returned list topology/count.

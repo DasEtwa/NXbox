@@ -1,7 +1,5 @@
 # SPDX-FileCopyrightText: Copyright 2026 NSPX
 # SPDX-License-Identifier: GPL-3.0-or-later
-
-# SPDX-License-Identifier: GPL-3.0-or-later
 """Build, sign and stage a per-game launcher tile ("Install as game").
 
 The package is the tiny nxbox-launcher.exe (src/nxbox_launcher) plus title.txt, a display name and

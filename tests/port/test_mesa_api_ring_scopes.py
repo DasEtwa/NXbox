@@ -1,7 +1,5 @@
 # SPDX-FileCopyrightText: Copyright 2026 NSPX
 # SPDX-License-Identifier: GPL-3.0-or-later
-
-# SPDX-License-Identifier: GPL-3.0-or-later
 """Verify every wrapper's lexical scope against its pre-instrumentation source.
 
 The host has no Windows SDK or Mesa-generated configuration. Instead of fake

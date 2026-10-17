@@ -1,7 +1,5 @@
 // SPDX-FileCopyrightText: Copyright 2026 NSPX
 // SPDX-License-Identifier: GPL-3.0-or-later
-
-// SPDX-License-Identifier: GPL-3.0-or-later
 {Text::InternetArtwork, L"Artes da internet"},
     {Text::InternetArtworkHint, L"Fundos da comunidade LaunchBox."},
     {Text::NavLibrary, L"Biblioteca"}, {Text::NavSettings, L"Configurações"},

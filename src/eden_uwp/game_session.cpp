@@ -1,7 +1,5 @@
 // SPDX-FileCopyrightText: Copyright 2026 NSPX
 // SPDX-License-Identifier: GPL-3.0-or-later
-
-// SPDX-License-Identifier: GPL-3.0-or-later
 #include "eden_uwp/firmware.h"
 #include "eden_uwp/game_session.h"
 #include "eden_uwp/shader_share.h"

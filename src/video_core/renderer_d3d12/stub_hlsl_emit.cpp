@@ -1,7 +1,5 @@
 // SPDX-FileCopyrightText: Copyright 2026 NSPX
 // SPDX-License-Identifier: GPL-3.0-or-later
-
-// SPDX-License-Identifier: GPL-3.0-or-later
 #include "video_core/renderer_d3d12/stub_hlsl_emit.h"
 
 #include "shader_recompiler/backend/hlsl/emit_hlsl.h"

@@ -1,8 +1,6 @@
 // SPDX-FileCopyrightText: Copyright 2026 NSPX
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// SPDX-License-Identifier: GPL-3.0-or-later
-
 // The Windows headers come first: the Eden headers #undef the A/W macros of the Win32 calls they
 // name their methods after.
 #include <windows.h>

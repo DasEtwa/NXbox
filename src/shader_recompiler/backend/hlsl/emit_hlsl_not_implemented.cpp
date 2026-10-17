@@ -1,7 +1,5 @@
 // SPDX-FileCopyrightText: Copyright 2026 NSPX
 // SPDX-License-Identifier: GPL-3.0-or-later
-
-// SPDX-License-Identifier: GPL-3.0-or-later
 #include "shader_recompiler/backend/hlsl/emit_hlsl_instructions.h"
 #include "shader_recompiler/backend/hlsl/hlsl_emit_context.h"
 namespace Shader::Backend::HLSL {

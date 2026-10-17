@@ -1,6 +1,4 @@
 // SPDX-FileCopyrightText: Copyright 2026 NSPX
-// SPDX-License-Identifier: GPL-3.0-or-later
-
 /* SPDX-License-Identifier: MIT
  * Direct failure evidence, independent of the environment journals and their
  * locks. Included only with the real Windows SDK (host COM mocks do not define

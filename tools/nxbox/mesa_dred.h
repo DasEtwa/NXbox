@@ -1,6 +1,4 @@
 // SPDX-FileCopyrightText: Copyright 2026 NSPX
-// SPDX-License-Identifier: GPL-3.0-or-later
-
 /* SPDX-License-Identifier: MIT
  * Diagnostic support copied into the pinned Mesa tree by patch_dred().
  * Define NXBOX_DRED_IMPLEMENTATION in d3d12_screen.cpp only.

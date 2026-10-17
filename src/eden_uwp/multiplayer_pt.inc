@@ -1,7 +1,5 @@
 // SPDX-FileCopyrightText: Copyright 2026 NSPX
 // SPDX-License-Identifier: GPL-3.0-or-later
-
-// SPDX-License-Identifier: GPL-3.0-or-later
 NXBOX_MULTIPLAYER_TEXT(Title, L"Multiplayer local")
 NXBOX_MULTIPLAYER_TEXT(Nickname, L"Seu apelido")
 NXBOX_MULTIPLAYER_TEXT(Address, L"Endereço da sala")

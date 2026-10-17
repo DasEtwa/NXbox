@@ -1,7 +1,5 @@
 // SPDX-FileCopyrightText: Copyright 2026 NSPX
 // SPDX-License-Identifier: GPL-3.0-or-later
-
-// SPDX-License-Identifier: GPL-3.0-or-later
 {Text::InternetArtwork, L"Artwork from the internet"},
     {Text::InternetArtworkHint, L"Community backgrounds from LaunchBox."},
     {Text::NavLibrary, L"Library"}, {Text::NavSettings, L"Settings"}, {Text::ActionPlay, L"Play"},

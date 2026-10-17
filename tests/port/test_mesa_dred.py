@@ -1,7 +1,5 @@
 # SPDX-FileCopyrightText: Copyright 2026 NSPX
 # SPDX-License-Identifier: GPL-3.0-or-later
-
-# SPDX-License-Identifier: GPL-3.0-or-later
 """Verify DRED patch generation against pinned Mesa, without an SDK or GPU.
 
 These tests validate composition and diagnostic contracts, not C++ compilation

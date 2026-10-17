@@ -1,7 +1,5 @@
 // SPDX-FileCopyrightText: Copyright 2026 NSPX
 // SPDX-License-Identifier: GPL-3.0-or-later
-
-// SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 // RasterizerD3D12::Clear(layer_count): decode regs.clear_surface.raw and
 // regs.clear_control (respect_stencil_mask), and supply clear values plus resolved

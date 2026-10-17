@@ -1,7 +1,5 @@
 // SPDX-FileCopyrightText: Copyright 2026 NSPX
 // SPDX-License-Identifier: GPL-3.0-or-later
-
-// SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 // Composite integration (renderer_d3d12.cpp, intentionally not edited here):
 // Own one Presenter alongside Impl::context; construction compiles all DXIL/PSOs.
