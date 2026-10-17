@@ -60,6 +60,7 @@
 #include "core/perf_stats.h"
 #include "eden_uwp/accounts.h"
 #include "eden_uwp/alloc_track.h"
+#include "eden_uwp/jit_dualmap_probe.h"
 #include "eden_uwp/applet_boot.h"
 #include "eden_uwp/await_bounded.h"
 #include "eden_uwp/diagnostic.h"
@@ -695,6 +696,11 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
                                winrt::Windows::System::MemoryManager::AppMemoryUsageLimit() >> 20));
     };
     memory_stage("begin");
+    // NXBOX_JIT_DUALMAP_PROBE=1: one-shot check of section aliasing for the JIT cache (logged only).
+    if (const char* probe = std::getenv("NXBOX_JIT_DUALMAP_PROBE");
+        probe != nullptr && probe[0] == '1') {
+        NxboxJitDualMapProbe();
+    }
     // The app's memory limit is the wall BotW hits while loading the world. Ask the shell for more;
     // it may refuse (the result and the limit afterwards are logged either way).
     for (const std::uint64_t gib : {10ULL, 8ULL, 7ULL, 6ULL}) {
@@ -1367,7 +1373,7 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
             // Host work in the window, as total/longest milliseconds and call count, so each
             // hitch can be traced to shader builds, texture uploads, decoding or cache eviction.
             std::string stall_line = "GAME_STALL";
-            constexpr std::array<std::pair<NxboxStall::Kind, const char*>, 21> stall_kinds{{
+            constexpr std::array<std::pair<NxboxStall::Kind, const char*>, 29> stall_kinds{{
                 {NxboxStall::Kind::Shader, "shader"},
                 {NxboxStall::Kind::Upload, "upload"},
                 {NxboxStall::Kind::Convert, "convert"},
@@ -1379,6 +1385,14 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
                 {NxboxStall::Kind::JitTranslate, "jittranslate"},
                 {NxboxStall::Kind::JitOptimize, "jitoptimize"},
                 {NxboxStall::Kind::JitEmit, "jitemit"},
+                {NxboxStall::Kind::JitEmitInsts, "jitemitinsts"},
+                {NxboxStall::Kind::JitEmitCapture, "jitemitcapture"},
+                {NxboxStall::Kind::JitEmitTerminal, "jitemitterm"},
+                {NxboxStall::Kind::JitEmitRanges, "jitemitranges"},
+                {NxboxStall::Kind::JitEmitRegister, "jitemitregister"},
+                {NxboxStall::Kind::JitEmitPatch, "jitemitpatch"},
+                {NxboxStall::Kind::JitEmitWx, "jitemitwx"},
+                {NxboxStall::Kind::JitEmitCommit, "jitemitcommit"},
                 {NxboxStall::Kind::JitInvalidate, "jitinvalidate"},
                 {NxboxStall::Kind::Io, "io"},
                 {NxboxStall::Kind::Aes, "aes"},

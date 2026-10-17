@@ -357,7 +357,12 @@ EmitX64::BlockDescriptor EmitX64::RegisterBlock(const IR::LocationDescriptor& de
     // Windows has no perf-map writer; do not format a name for its no-op callback.
     PerfMapRegister(entrypoint, code.getCurr(), LocationDescriptorToFriendlyName(descriptor));
 #endif
-    Patch(descriptor, entrypoint);
+    {
+#if NXBOX_STALL_PROFILE
+        const NxboxStall::Scope scope{NxboxStall::Kind::JitEmitPatch};
+#endif
+        Patch(descriptor, entrypoint);
+    }
 
     BlockDescriptor block_desc{entrypoint, size};
     block_descriptors.insert({IR::LocationDescriptor{descriptor.Value()}, block_desc});

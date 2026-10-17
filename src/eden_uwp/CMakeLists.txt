@@ -13,6 +13,8 @@ add_executable(eden-uwp WIN32
     mesa_window.h
     alloc_track.cpp
     alloc_track.h
+    jit_dualmap_probe.cpp
+    jit_dualmap_probe.h
     firmware.cpp
     firmware.h
     accounts.cpp

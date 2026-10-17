@@ -374,6 +374,9 @@ void BlockOfCode::EnsureMemoryCommitted([[maybe_unused]] size_t codesize) {
     if (committed_size < size_ + codesize) {
         const size_t mask = JitPageSize() - 1;
         const size_t next_size = std::min(maxSize_, (std::max(size_ + codesize, committed_size + PRELUDE_COMMIT_SIZE) + mask) & ~mask);
+#    if NXBOX_STALL_PROFILE
+        const NxboxStall::Scope commit_scope{NxboxStall::Kind::JitEmitCommit};
+#    endif
         // Never recommit old RX pages with RW permissions.
         if (!DYNARMIC_VIRTUAL_ALLOC(top_ + committed_size, next_size - committed_size, MEM_COMMIT, PAGE_READWRITE))
             UNREACHABLE_MSG("NXBOX JIT commit failed: error={}", GetLastError());

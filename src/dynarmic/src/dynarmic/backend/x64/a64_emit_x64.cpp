@@ -8,6 +8,10 @@
 
 #include "dynarmic/backend/x64/a64_emit_x64.h"
 
+#if __has_include("../../../../../common/nxbox_stall.h")
+#    include "../../../../../common/nxbox_stall.h"
+#endif
+
 #include <fmt/format.h>
 #include <fmt/ostream.h>
 #include "common/assert.h"
@@ -79,7 +83,12 @@ A64EmitX64::BlockDescriptor A64EmitX64::Emit(IR::Block& block,
     }
 
     const auto constant_references = code.ConstantReferences();
-    code.EnableWriting();
+    {
+#if NXBOX_STALL_PROFILE
+    const NxboxStall::Scope scope{NxboxStall::Kind::JitEmitWx};
+#endif
+        code.EnableWriting();
+    }
     new (&this->reg_alloc) RegAlloc{[this] {
         std::bitset<32> gprs = any_gpr;
         if (conf.fastmem_pointer)
@@ -119,6 +128,10 @@ A64EmitX64::BlockDescriptor A64EmitX64::Emit(IR::Block& block,
 #undef A64OPC
     };
 
+    {
+#if NXBOX_STALL_PROFILE
+    const NxboxStall::Scope scope{NxboxStall::Kind::JitEmitInsts};
+#endif
     for (auto& inst : block.instructions) {
         auto const opcode = inst.GetOpcode();
         if (conf.collect_memory_access_context && IR::IsMemoryReadOrWrite(opcode)) {
@@ -153,9 +166,14 @@ finish_this_inst:
     }
 
     reg_alloc.AssertNoMoreUses();
+    }
     if (conf.enable_cycle_counting)
         EmitAddCycles(block.CycleCount());
     code.mov(rbp, code.qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, abi_base_pointer)]);
+    {
+#if NXBOX_STALL_PROFILE
+    const NxboxStall::Scope scope{NxboxStall::Kind::JitEmitCapture};
+#endif
     if (capture && DiskCacheEligible(block) && ctx.deferred_emits.empty() &&
         code.ConstantReferences() == constant_references) {
         // Snapshot only the audited body, before any mutable terminal links are emitted.
@@ -179,11 +197,17 @@ finish_this_inst:
             capture->relocation.terminal = Terminal::FastDispatch;
         }
     }
+    }
+    {
+#if NXBOX_STALL_PROFILE
+    const NxboxStall::Scope scope{NxboxStall::Kind::JitEmitTerminal};
+#endif
     EmitTerminal(block.terminal, ctx.Location().SetSingleStepping(false), ctx.IsSingleStep());
     code.int3();
     for (auto& deferred_emit : ctx.deferred_emits)
         deferred_emit();
     code.int3();
+    }
 
     const size_t size = size_t(code.getCurr() - entrypoint);
 
@@ -191,10 +215,25 @@ finish_this_inst:
     const A64::LocationDescriptor end_location{block.EndLocation()};
 
     const auto range = boost::icl::discrete_interval<u64>::closed(descriptor.PC(), end_location.PC() - 1);
-    block_ranges.AddRange(range, descriptor);
+    {
+#if NXBOX_STALL_PROFILE
+    const NxboxStall::Scope scope{NxboxStall::Kind::JitEmitRanges};
+#endif
+        block_ranges.AddRange(range, descriptor);
+    }
 
-    auto bdesc = RegisterBlock(descriptor, entrypoint, size);
-    code.DisableWriting();
+    auto bdesc = [&] {
+#if NXBOX_STALL_PROFILE
+    const NxboxStall::Scope scope{NxboxStall::Kind::JitEmitRegister};
+#endif
+        return RegisterBlock(descriptor, entrypoint, size);
+    }();
+    {
+#if NXBOX_STALL_PROFILE
+    const NxboxStall::Scope scope{NxboxStall::Kind::JitEmitWx};
+#endif
+        code.DisableWriting();
+    }
     shared_labels.clear();
     return bdesc;
 }

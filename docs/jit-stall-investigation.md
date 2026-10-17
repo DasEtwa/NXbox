@@ -67,6 +67,7 @@ The next console run prints these fields on `GAME_STALL`
 | `jit_key_new`, `jit_key_repeat` | First-seen full descriptors versus descriptors compiled again. PC repeats with new keys suggest FPCR/single-step variants; repeated keys plus evictions support recompilation. Repeated keys without corresponding removals/clears merit lookup investigation. Mostly new PCs supports continued code discovery. |
 | `jit_pc_unknown`, `jit_key_unknown` | History saturation; absent values cannot be classified after the tracking limit. Do not treat them as new PCs/keys. |
 | `jittranslate`, `jitoptimize`, `jitemit`, `jitprotect`, `jitinvalidate` | Timed total-ms/max-ms/call-count triples. High `jitprotect` relative to `jitemit` implicates W^X; high `jitoptimize` or `jittranslate` identifies another compile stage. Timings nest: do not sum them into JIT time. Protection also occurs during initialization and invalidation. |
+| `jitemitinsts`, `jitemitcapture`, `jitemitterm`, `jitemitranges`, `jitemitregister`, `jitemitpatch`, `jitemitwx`, `jitemitcommit` | Sub-phases of `jitemit` (total-ms/max-ms/call-count). `jitemitinsts`: register allocation plus the per-opcode emit handlers. `jitemitcapture`: disk-cache host-body snapshot. `jitemitterm`: terminal emission (links, RSB, fast-dispatch lookups) and deferred emits. `jitemitranges`: guest-range interval map insertion. `jitemitregister`: `RegisterBlock` (block map insert plus `Patch`). `jitemitpatch`: incoming-link `Patch()` fixups, nested inside `jitemitregister`. `jitemitwx`: `EnableWriting` plus `DisableWriting`, which contain `jitprotect` and the instruction-cache flush. `jitemitcommit`: `VirtualAllocFromApp` commit of fresh cache pages (UWP), usually nested inside `jitemitinsts` or `jitemitterm` because commits happen while code is appended. Everything except `jitemitpatch` (inside register) and `jitemitcommit` is disjoint; what `jitemit` leaves unexplained is the prologue and the cycle-count epilogue. |
 | `jit_protect_bytes` | Sum of requested protection spans, including repeated flips; not memory allocated. |
 
 Raw counters use brackets, e.g. `jit_inv_calls=[42]`, and cache gauges use
@@ -211,3 +212,16 @@ On the next Windows/UWP build and console run:
 4. If protection still dominates despite the byte reduction, use the remaining
    call counts to distinguish fixed syscall cost from span cost before attempting
    dual mappings. This patch removes whole-cache flipping, not the W^X policy.
+
+## Dual-mapping probe (`NXBOX_JIT_DUALMAP_PROBE=1`)
+
+At game-session start on UWP, `src/eden_uwp/jit_dualmap_probe.cpp` maps one pagefile-backed
+section as a writable view and an executable view, runs `mov eax, 0x2A; ret` through the
+executable view inside SEH, rewrites the immediate through the writable view without a
+protection change, and times 10,000 aliased write + `FlushInstructionCache` iterations against
+10,000 `VirtualProtectFromApp` RW->RX->RW round trips. It logs every attempt plus one summary line:
+
+`JIT_DUALMAP_PROBE create=<ok|err:code> rw=<ok|err:code> rx=<ok:mapviewoffile3|ok:mapviewoffile|err:...> exec1=<ok|fault|wrong> exec2=<ok|fault|wrong> alias_us=<total> protect_us=<total>`
+
+`alias_us` and `protect_us` are totals over the 10,000 iterations (-1 when not measured).
+Without the variable nothing runs. This is measurement only; the JIT still uses the protect path.
