@@ -29,9 +29,11 @@ Xbyak::Address ConstantPool::GetConstant(BlockOfCode& code, const Xbyak::Address
     auto it = constant_info.find(constant);
     if (it == constant_info.end()) {
         ASSERT(insertion_point < pool.size());
+        // `pool` and target_constant are executable (code) addresses: they are what the RIP-relative
+        // operand below refers to. The store itself must go through the writable view.
         ConstantT& target_constant = pool[insertion_point];
         code.PrepareWriteRange(&target_constant, sizeof(target_constant));
-        target_constant = constant;
+        *static_cast<ConstantT*>(code.Writable(&target_constant)) = constant;
         it = constant_info.insert({constant, &target_constant}).first;
         ++insertion_point;
     }

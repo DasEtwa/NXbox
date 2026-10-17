@@ -1,0 +1,68 @@
+diff -ru a/xbyak/xbyak.h b/xbyak/xbyak.h
+--- a/xbyak/xbyak.h
++++ b/xbyak/xbyak.h
+@@ -1,6 +1,8 @@
+ #pragma once
+ #ifndef XBYAK_XBYAK_H_
+ #define XBYAK_XBYAK_H_
++// NXBOX: CodeArray::setExecDelta() exists (dual-mapped code memory); see the patch note in CodeArray.
++#define XBYAK_NXBOX_EXEC_DELTA 1
+ /*!
+ 	@file xbyak.h
+ 	@brief Xbyak ; JIT assembler for x86(IA32)/x64 by C++
+@@ -1674,6 +1676,14 @@
+ 	uint8_t *top_;
+ 	size_t size_;
+ 	bool isCalledCalcJmpAddress_;
++	/*
++		NXBOX: dual-mapped code memory. top_ is the address bytes are STORED to (the writable view).
++		execDelta_ is (executable view - writable view); every address that is computed from, or handed
++		out for, the code buffer (getCode/getCurr/Label::getAddress, rel32 of absolute jumps and calls,
++		[rip + addr], putL, align) uses the executable address. Offsets (labels, size_) are unchanged.
++		0 (the default) keeps the stock single-mapping behavior. Not supported with AutoGrow.
++	*/
++	ptrdiff_t execDelta_;
+ 
+ 	bool useProtect() const { return alloc_->useProtect(); }
+ 	/*
+@@ -1717,6 +1727,7 @@
+ 		, top_(type_ == USER_BUF ? reinterpret_cast<uint8_t*>(userPtr) : alloc_->alloc((std::max<size_t>)(maxSize, 1)))
+ 		, size_(0)
+ 		, isCalledCalcJmpAddress_(false)
++		, execDelta_(0)
+ 		, curMode_(PROTECT_RW)
+ 	{
+ 		if (maxSize_ > 0 && top_ == 0) XBYAK_THROW(ERR_CANT_ALLOC)
+@@ -1777,12 +1788,19 @@
+ 	void dw(uint32_t code) { db(code, 2); }
+ 	void dd(uint32_t code) { db(code, 4); }
+ 	void dq(uint64_t code) { db(code, 8); }
+-	const uint8_t *getCode() const { return top_; }
++	// NXBOX: getCode/getCurr return EXECUTABLE addresses (identical to the write address unless execDelta_ != 0).
++	void setExecDelta(ptrdiff_t delta)
++	{
++		if (isAutoGrow()) XBYAK_THROW(ERR_NOT_SUPPORTED)
++		execDelta_ = delta;
++	}
++	ptrdiff_t getExecDelta() const { return execDelta_; }
++	const uint8_t *getCode() const { return top_ + execDelta_; }
+ 	template<class F>
+-	const F getCode() const { return reinterpret_cast<F>(top_); }
+-	const uint8_t *getCurr() const { return &top_[size_]; }
++	const F getCode() const { return reinterpret_cast<F>(top_ + execDelta_); }
++	const uint8_t *getCurr() const { return &top_[size_] + execDelta_; }
+ 	template<class F>
+-	const F getCurr() const { return reinterpret_cast<F>(&top_[size_]); }
++	const F getCurr() const { return reinterpret_cast<F>(&top_[size_] + execDelta_); }
+ 	size_t getSize() const { return size_; }
+ 	void setSize(size_t size)
+ 	{
+@@ -3077,7 +3095,7 @@
+ 				db(uint64_t(0), jmpSize);
+ 				save(size_ - jmpSize, offset, jmpSize, inner::LaddTop);
+ 			} else {
+-				db(size_t(top_) + offset, jmpSize);
++				db(size_t(getCode()) + offset, jmpSize);
+ 			}
+ 			return;
+ 		}

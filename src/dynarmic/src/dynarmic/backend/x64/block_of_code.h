@@ -52,7 +52,31 @@ public:
     void DisableWriting();
 
     /// Make an existing patch or constant writable until DisableWriting (UWP only).
+    /// `address` is an executable (code) address.
     void PrepareWriteRange(const void* address, size_t size);
+
+    /// Dual-mapped code memory (NXBOX_JIT_DUALMAP=1, UWP): every pointer into the code buffer that this
+    /// class, getCurr()/getCode() and the emitters hand out is an EXECUTABLE (RX view) address. Stores
+    /// into already-emitted code (constant pool, unwind data, anything that is not emitted through
+    /// Xbyak) must go through this: it maps an executable code address to the address of the same byte
+    /// in the writable view. Identity when the code buffer is not dual-mapped. Only valid for
+    /// addresses inside the code buffer.
+    void* Writable(const void* code_address) const {
+#ifdef XBYAK_NXBOX_EXEC_DELTA
+        return const_cast<u8*>(static_cast<const u8*>(code_address)) - getExecDelta();
+#else
+        return const_cast<void*>(code_address);
+#endif
+    }
+
+    /// True when the code buffer is a dual-mapped RW/RX section pair.
+    bool IsDualMapped() const {
+#ifdef DYNARMIC_UWP_APPCONTAINER
+        return dual_map;
+#else
+        return false;
+#endif
+    }
 
     /// Clears this block of code and resets code pointer to beginning.
     void ClearCache();
@@ -195,6 +219,10 @@ private:
     bool writing = true;
     std::vector<WriteRange> write_ranges;
     void RecordWriteRange(size_t begin, size_t end);
+    // Must be declared before constant_pool: it installs the executable-view delta that the
+    // constant pool's constructor (which emits and allocates from the code buffer) already needs.
+    bool ConfigureWx();
+    bool dual_map = ConfigureWx();
 #endif
     std::uint64_t constant_references = 0;
     ConstantPool constant_pool;

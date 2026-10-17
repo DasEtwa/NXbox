@@ -206,26 +206,33 @@ struct ExceptionHandler::Impl final {
         exception_handler_with_cb_offset = ULONG(exception_handler_with_cb - code.getCode<u8*>());
 
         code.align(16);
+        // AllocateFromCodeSpace returns executable addresses; every store below goes through
+        // Writable() (identity unless the code buffer is dual-mapped), while the RVAs and the pointer
+        // given to RtlAddFunctionTable stay in the executable view the unwinder sees.
         UNWIND_INFO* unwind_info = static_cast<UNWIND_INFO*>(code.AllocateFromCodeSpace(sizeof(UNWIND_INFO)));
-        unwind_info->Version = 1;
-        unwind_info->Flags = UNW_FLAG_EHANDLER;
-        unwind_info->SizeOfProlog = prolog_info.prolog_size;
-        unwind_info->CountOfCodes = static_cast<UBYTE>(prolog_info.number_of_unwind_code_entries);
-        unwind_info->FrameRegister = 0;  // No frame register present
-        unwind_info->FrameOffset = 0;    // Unused because FrameRegister == 0
+        UNWIND_INFO* unwind_info_w = static_cast<UNWIND_INFO*>(code.Writable(unwind_info));
+        unwind_info_w->Version = 1;
+        unwind_info_w->Flags = UNW_FLAG_EHANDLER;
+        unwind_info_w->SizeOfProlog = prolog_info.prolog_size;
+        unwind_info_w->CountOfCodes = static_cast<UBYTE>(prolog_info.number_of_unwind_code_entries);
+        unwind_info_w->FrameRegister = 0;  // No frame register present
+        unwind_info_w->FrameOffset = 0;    // Unused because FrameRegister == 0
         // UNWIND_INFO::UnwindCode field:
         const size_t size_of_unwind_code = sizeof(UNWIND_CODE) * prolog_info.unwind_code.size();
         UNWIND_CODE* unwind_code = static_cast<UNWIND_CODE*>(code.AllocateFromCodeSpace(size_of_unwind_code));
-        memcpy(unwind_code, prolog_info.unwind_code.data(), size_of_unwind_code);
+        memcpy(code.Writable(unwind_code), prolog_info.unwind_code.data(), size_of_unwind_code);
         // UNWIND_INFO::ExceptionInfo field:
-        except_info = static_cast<UNW_EXCEPTION_INFO*>(code.AllocateFromCodeSpace(sizeof(UNW_EXCEPTION_INFO)));
+        // except_info is only ever stored through (here and in SetCallback, which runs after the
+        // prelude has been published), so keep the writable alias.
+        except_info = static_cast<UNW_EXCEPTION_INFO*>(code.Writable(code.AllocateFromCodeSpace(sizeof(UNW_EXCEPTION_INFO))));
         except_info->ExceptionHandler = exception_handler_without_cb_offset;
 
         code.align(16);
         rfuncs = static_cast<RUNTIME_FUNCTION*>(code.AllocateFromCodeSpace(sizeof(RUNTIME_FUNCTION)));
-        rfuncs->BeginAddress = static_cast<DWORD>(0);
-        rfuncs->EndAddress = static_cast<DWORD>(code.GetTotalCodeSize());
-        rfuncs->UnwindData = static_cast<DWORD>(reinterpret_cast<u8*>(unwind_info) - code.getCode());
+        RUNTIME_FUNCTION* rfuncs_w = static_cast<RUNTIME_FUNCTION*>(code.Writable(rfuncs));
+        rfuncs_w->BeginAddress = static_cast<DWORD>(0);
+        rfuncs_w->EndAddress = static_cast<DWORD>(code.GetTotalCodeSize());
+        rfuncs_w->UnwindData = static_cast<DWORD>(reinterpret_cast<u8*>(unwind_info) - code.getCode());
 
         RtlAddFunctionTable(rfuncs, 1, reinterpret_cast<DWORD64>(code.getCode()));
     }

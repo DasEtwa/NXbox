@@ -127,6 +127,8 @@ Use option (c), page-granular W^X. Do not assume Developer Mode grants RWX:
   branch displacements, saved patch sites, dispatch/RSB pointers and Windows
   unwind offsets. Adding an alias offset only at publication would be incorrect.
   That redesign cannot be validated safely here without a target build/run.
+  (Superseded: the console probe passed and the opt-in implementation is described in
+  "Dual-mapped code memory" below.)
 
 ### Implementation and invariants
 
@@ -225,3 +227,67 @@ protection change, and times 10,000 aliased write + `FlushInstructionCache` iter
 
 `alias_us` and `protect_us` are totals over the 10,000 iterations (-1 when not measured).
 Without the variable nothing runs. This is measurement only; the JIT still uses the protect path.
+
+## Dual-mapped code memory (`NXBOX_JIT_DUALMAP=1`)
+
+The probe above proved on the console that one pagefile-backed section can be mapped twice
+(RW view + RX view), that code written through the RW view runs through the RX view, and that
+a write plus `FlushInstructionCache` costs ~0.007 us against ~12.9 us for a
+`VirtualProtectFromApp` round trip. The x64 backend now uses that, opt-in:
+
+```
+NXBOX_JIT_DUALMAP=1
+```
+
+Default (unset, or anything but `1`) is the page-granular W^X path described above, unchanged.
+The variable is read once per process. Every `BlockOfCode` (A64 **and** A32, they share it)
+logs `NXBOX JIT_WX mode=dualmap|protect reason=...` at creation: `reason=env` for dualmap;
+for protect `flag_off`, `xbyak_unpatched`, `create_section_failed:<err>`, `map_rw_failed:<err>`
+or `map_rx_failed:<err>`. Any failure falls back to the protect path, nothing else changes.
+
+### Address-space invariant
+
+**Every code address is an RX-view address; only stores use the RW view.** That covers
+`getCode()`/`getCurr()`, labels, rel32/rel8 displacements, `jmp(const void*)`/`call(const void*)`,
+`qword[rip + pointer]`, `putL`, block entrypoints, `patch_information` sites, the RSB and fast
+dispatch tables, fastmem fault-site keys (the faulting RIP is an RX address), the Windows
+unwind/function-table registration and `AllocateFromCodeSpace()` results. Offsets (`size_`,
+label offsets) are view independent.
+
+### How
+
+- `.patch/xbyak/0001-exec-delta-dualmap.patch` (wired in `cpmfile.json`, applied by CPMUtil to the
+  pinned Xbyak v7.40.1) keeps `top_` as the write pointer and adds `execDelta_` (RX - RW).
+  `getCode()`/`getCurr()` return `top_ + execDelta_` (+ cursor), which makes every absolute
+  computation in Xbyak use RX addresses: `opJmpAbs` (`jmp`/`call` to a pointer), RIP-relative
+  `ptr[rip + pointer]`, `align()`, `Label::getAddress()`, and `LabelManager`'s absolute-label
+  mode. `putL_inner` was the one site that used `top_` directly and now uses `getCode()`. Stores
+  (`db`, `rewrite`) keep using `top_`. The patch defines `XBYAK_NXBOX_EXEC_DELTA`; without it (a
+  system Xbyak) dynarmic compiles unchanged and reports `reason=xbyak_unpatched`.
+- `UwpXbyakAllocator::alloc` creates the section (`CreateFileMappingFromApp`,
+  `PAGE_EXECUTE_READWRITE`, whole cache size, committed up front), maps the RW view
+  (`MapViewOfFileFromApp(FILE_MAP_WRITE)`) and the RX view (`MapViewOfFile3FromApp`
+  `PAGE_EXECUTE_READ`, else `FILE_MAP_EXECUTE|FILE_MAP_READ`), and returns the RW base as `top_`.
+  `BlockOfCode::ConfigureWx()` (a member initializer that runs before the constant pool is built)
+  looks the RX base up and calls `setExecDelta`.
+- `EnableWriting()`, `DisableWriting()` and `PrepareWriteRange()` do no protection change.
+  `DisableWriting()` calls `FlushInstructionCache` on the RX bytes appended since
+  `EnableWriting()` plus the exact patched ranges (merged); it is timed under `jitprotect`.
+- Stores into already-emitted code go through `BlockOfCode::Writable(rx_address)`: the constant
+  pool entries, the unwind info / `RUNTIME_FUNCTION` / handler RVA fields of the Windows exception
+  handler (incl. `SetCallback`, which runs after the prelude is published) and the zero fill in
+  `AllocateFromCodeSpace`. Block linking (`Patch`/`Unpatch`) re-emits through Xbyak after
+  `SetCodePtr(rx_site)`, i.e. through the RW view. `SpaceRemaining()` compares against
+  `getCode() + maxSize_`.
+
+### Enabling and reading it
+
+Set the environment variable before launching the title and look for the `JIT_WX` line in
+`eden_uwp_diag.txt`. Compare `jitprotect`, `jitemitwx` and `jit` per `GAME_STALL` window
+against a run without the variable. Memory note: the section is committed whole, so the commit
+charge is the full code cache (up to 512 MiB) instead of growing in 16 MiB steps; physical
+pages are still touched on demand.
+
+Host-side model: `tests/port/xbyak_dualmap.cpp` (driven by `tests/port/test_jit_dualmap.py`)
+emits through an RW alias and checks displacements/addresses against the RX alias; on x86-64
+Linux it also executes through the RX alias and re-patches a branch in place.
