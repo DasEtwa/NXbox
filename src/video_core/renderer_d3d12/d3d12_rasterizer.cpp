@@ -1428,8 +1428,15 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
                 static const bool sample_copy = BisectEnabled("NXBOX_D3D12_SAMPLE_COPY");
                 if (sample_copy && sampled && sampled == view.ImageHandle() &&
                     desc.type == Shader::TextureType::ColorArray2D) {
-                    if (const auto copy = CopyFeedback(sampled, &view.range))
+                    if (const auto copy = CopyFeedback(sampled, &view.range)) {
+                        static bool reported = false;
+                        if (!reported) {
+                            reported = true;
+                            Diagnostic(fmt::format("D3D12_SAMPLE_COPY substituted gpu={:x}",
+                                                   view.GpuAddr()));
+                        }
                         sampled = copy;
+                    }
                 }
                 if (descriptors.WriteImageSrv(srv_table, srv_i, view,
                                               SrvDimension(desc.type, desc.is_multisample),

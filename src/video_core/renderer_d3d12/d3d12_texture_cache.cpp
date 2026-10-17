@@ -247,6 +247,21 @@ Image::Image(TextureCacheRuntime& runtime, const VideoCommon::ImageInfo& info, G
         host_format = BcnFallbackFormat(host_format);
         flags |= VideoCommon::ImageFlagBits::CostlyLoad;
     }
+    // The same Xbox quirk hits native BCn 2D arrays: SM3DW's glyph sheets are BC4 1024x1024
+    // arrays whose layers 1 and 2 sample about 130 rows below where CopyTextureRegion and
+    // readback place them (button icons showed as katakana, a copy of the resource did not
+    // help). Decoding the layers on the CPU keeps the data where the sampler reads it.
+    // The texel cap keeps big arrays native. NXBOX_D3D12_NATIVE_BC_ARRAYS=1 keeps all native.
+    static const bool native_bc_arrays = BisectEnabled("NXBOX_D3D12_NATIVE_BC_ARRAYS");
+    constexpr u64 MaxDecodedArrayTexels = u64{4} * 1024 * 1024;
+    if (!native_bc_arrays && host_format.block_width == 4 &&
+        VideoCore::Surface::IsPixelFormatBCn(info.format) &&
+        info.type == VideoCommon::ImageType::e2D && info.resources.layers > 1 &&
+        info.resources.layers % 6 != 0 && info.num_samples == 1 &&
+        u64{info.size.width} * info.size.height * info.resources.layers <= MaxDecodedArrayTexels) {
+        host_format = BcnFallbackFormat(host_format);
+        flags |= VideoCommon::ImageFlagBits::CostlyLoad;
+    }
     resource = MakeTexture(runtime.context, info, host_format);
     if (!resource && host_format.block_width == 4 &&
         (VideoCore::Surface::IsPixelFormatBCn(info.format) ||
