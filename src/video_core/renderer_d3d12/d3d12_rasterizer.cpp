@@ -1422,6 +1422,15 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
                         }
                     }
                 }
+                // Diagnostic: NXBOX_D3D12_SAMPLE_COPY=1 samples array textures through a fresh
+                // copy of the cached resource. If glyphs change, the original resource's GPU
+                // state (upload ordering, metadata, barriers) is at fault, not its guest data.
+                static const bool sample_copy = BisectEnabled("NXBOX_D3D12_SAMPLE_COPY");
+                if (sample_copy && sampled && sampled == view.ImageHandle() &&
+                    desc.type == Shader::TextureType::ColorArray2D) {
+                    if (const auto copy = CopyFeedback(sampled, &view.range))
+                        sampled = copy;
+                }
                 if (descriptors.WriteImageSrv(srv_table, srv_i, view,
                                               SrvDimension(desc.type, desc.is_multisample),
                                               sampled)) {
