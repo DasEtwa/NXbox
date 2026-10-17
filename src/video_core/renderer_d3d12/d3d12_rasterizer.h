@@ -192,6 +192,7 @@ private:
     u32 draw_trace_lines{};
     u32 cbuf_trace_lines{};
     u32 vb_trace_draws{};
+    u32 glyph_trace_draws{};
     u64 feedback_frame{};
     u64 feedback_copies{};
     u64 feedback_readonly_depth{};

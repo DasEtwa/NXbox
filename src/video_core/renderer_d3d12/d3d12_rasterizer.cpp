@@ -1022,6 +1022,23 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
                                     texture_cache.CaptureFrame() == draw_trace_frame &&
                                     draw_trace_lines < 3000 && vb_trace_draws < 64 &&
                                     !submitted.is_indexed && submitted.num_vertices <= 64;
+    // Diagnostic (NXBOX_D3D12_GLYPH_TRACE=<first frame>): for the text-quad vertex shader, log
+    // the instance records the guest wrote next to what the host storage buffer holds, and the
+    // texture bound to each array-sampled slot.
+    static const u64 glyph_trace_frame = [] {
+        const char* value = std::getenv("NXBOX_D3D12_GLYPH_TRACE");
+        return value ? std::strtoull(value, nullptr, 10) : 0ULL;
+    }();
+    constexpr u64 GlyphTraceHash = 0xeec542b30fd5cb27ULL;
+    constexpr u32 GlyphTraceBytes = 512;
+    const bool glyph_trace = glyph_trace_frame != 0 &&
+                             texture_cache.CaptureFrame() >= glyph_trace_frame &&
+                             texture_cache.CaptureFrame() < glyph_trace_frame + 3 &&
+                             glyph_trace_draws < 60 &&
+                             native_pipeline->VertexGuestHash() == GlyphTraceHash;
+    ResourcePtr glyph_readback;
+    if (glyph_trace)
+        glyph_readback = context.CreateBuffer(GlyphTraceBytes, D3D12_HEAP_TYPE_READBACK);
     // Keep the actual per-attribute IA resources, including temporary copies.
     std::array<ResourcePtr, Pso::kNumVertexAttributes> trace_vertex_resources{};
     constexpr size_t VertexTraceBytes = 48;
@@ -1427,6 +1444,18 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
                     } else {
                         need(sampled, SrvState);
                     }
+                }
+                if (glyph_trace && sampled && stage != 0) {
+                    const auto res = sampled->handle->GetDesc();
+                    const auto& srv = view.Description();
+                    Diagnostic(fmt::format(
+                        "D3D12_GLYPH_TEX frame={} stage={} gpu={:x} res_fmt={} res={}x{}x{} "
+                        "mips={} srv_dim={} first_layer={} layers={} desc_type={}",
+                        texture_cache.CaptureFrame(), stage, view.GpuAddr(),
+                        static_cast<int>(res.Format), res.Width, res.Height, res.DepthOrArraySize,
+                        res.MipLevels, static_cast<int>(srv.ViewDimension),
+                        view.range.base.layer, view.range.extent.layers,
+                        static_cast<int>(desc.type)));
                 }
                 const Sampler& sampler = texture_cache.GetSampler(*sampler_it++);
                 descriptors.WriteSampler(sampler_table, smp_i, sampler, desc.is_depth);
@@ -1954,6 +1983,70 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
                     }
                     query_runtime.ResumeHostConditionalRendering();
                 }
+            }
+        }
+        if (glyph_trace) {
+            ++glyph_trace_draws;
+            for (size_t stage = 0; stage < NUM_GRAPHICS_STAGES; ++stage) {
+                const Shader::Info* info = pipeline->StageInfo(stage);
+                if (!info || info->storage_buffers_descriptors.empty() ||
+                    bindings.stages[stage].storage.empty())
+                    continue;
+                const auto& desc = info->storage_buffers_descriptors[0];
+                const GPUVAddr cbuf_slot =
+                    maxwell3d->state.shader_stages[stage].const_buffers[desc.cbuf_index].address +
+                    desc.cbuf_offset;
+                const GPUVAddr ssbo = gpu_memory->Read<u64>(cbuf_slot);
+                const u64 ssbo_size = gpu_memory->Read<u64>(cbuf_slot + 8);
+                std::array<u8, GlyphTraceBytes> guest_bytes{};
+                if (ssbo)
+                    gpu_memory->ReadBlockUnsafe(ssbo, guest_bytes.data(), guest_bytes.size());
+                const auto& host = bindings.stages[stage].storage[0];
+                u32 host_copy = 0;
+                if (host.resource && host.size) {
+                    host_copy = std::min<u32>(GlyphTraceBytes, host.size);
+                    query_runtime.PauseHostConditionalRendering();
+                    context.Transition(glyph_readback, D3D12_RESOURCE_STATE_COPY_DEST);
+                    const auto previous = host.resource->state;
+                    context.Transition(host.resource, D3D12_RESOURCE_STATE_COPY_SOURCE);
+                    commands->CopyBufferRegion(glyph_readback->handle.Get(), 0,
+                                               host.resource->handle.Get(), host.offset,
+                                               host_copy);
+                    context.Transition(host.resource, previous);
+                    query_runtime.ResumeHostConditionalRendering();
+                }
+                const auto hex = [](std::span<const u8> bytes) {
+                    std::string out;
+                    for (size_t i = 0; i < bytes.size(); ++i)
+                        out += fmt::format("{:02x}{}", bytes[i], (i % 16) == 15 ? " " : "");
+                    return out;
+                };
+                const u64 frame = texture_cache.CaptureFrame();
+                const u32 instances = submitted.num_instances;
+                const u32 base_instance = submitted.base_instance;
+                const u32 host_offset = host.offset;
+                const u32 host_size = host.size;
+                context.AfterCompletion([readback = glyph_readback, guest_bytes, hex, frame,
+                                         instances, base_instance, ssbo, ssbo_size, host_copy,
+                                         host_offset, host_size, draw_index = glyph_trace_draws] {
+                    Diagnostic(fmt::format(
+                        "D3D12_GLYPH_SSBO draw={} frame={} instances={} base_instance={} "
+                        "gpu={:x} align16={} size={} host_offset={} host_size={}",
+                        draw_index, frame, instances, base_instance, ssbo, ssbo & 15, ssbo_size,
+                        host_offset, host_size));
+                    // Records start at the guest address; the host range starts 16-aligned down.
+                    for (u32 record = 0; record < 3; ++record) {
+                        const size_t guest_at = record * 64;
+                        const size_t host_at = guest_at + (ssbo & 15);
+                        Diagnostic(fmt::format(
+                            "D3D12_GLYPH_REC draw={} rec={} guest={} host={}", draw_index, record,
+                            hex(std::span<const u8>{guest_bytes}.subspan(guest_at, 64)),
+                            host_at + 64 <= host_copy
+                                ? hex(readback->mapped.subspan(host_at, 64))
+                                : std::string{"n/a"}));
+                    }
+                });
+                break;
             }
         }
         draw(commands);
