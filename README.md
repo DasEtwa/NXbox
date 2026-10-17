@@ -59,7 +59,29 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 ## What NXbox adds
 
-Eden is the emulator; NXbox is everything it takes to use it on an Xbox, built for a controller and a TV:
+Eden is the emulator; NXbox is everything it takes to use it on an Xbox, built for a controller and a TV.
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/assets/screens/library.jpg" alt="NXbox game library with Mario Kart 8 Deluxe selected"></td>
+    <td width="50%"><img src="docs/assets/screens/sm3dw-world1.jpg" alt="Super Mario 3D World's World 1 map running on Xbox Series X"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>The library, on an Xbox Series X</sub></td>
+    <td align="center"><sub>Super Mario 3D World on the native Direct3D 12 renderer</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/assets/screens/moru.jpg" alt="Moru, the built-in character creator"></td>
+    <td><img src="docs/assets/screens/confirm-button.jpg" alt="Setup: choose whether A or B confirms"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Moru, the built-in character creator</sub></td>
+    <td align="center"><sub>Setup: confirm with A or with B</sub></td>
+  </tr>
+</table>
+
+<sub>Screenshots taken on a retail Xbox Series X. Game artwork belongs to its owners.</sub>
+
 
 - **A console-style game library** with cover art, a first-run setup, and per-game settings.
 - **Xbox controller first:** the system font shows Xbox button icons in games that use it, and setup
