@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 NSPX
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // NXbox shared shader cache server: one OpenGL pipeline cache per title.
 //   GET /<title_id>/opengl.bin  -> the cache, or 404
 //   PUT /<title_id>/opengl.bin  -> stored when it is a valid cache larger than the current one

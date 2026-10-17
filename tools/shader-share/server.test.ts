@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 NSPX
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 import { afterAll, expect, test, beforeAll } from 'bun:test';
 const port = 18791;
 let server: ReturnType<typeof Bun.spawn>;

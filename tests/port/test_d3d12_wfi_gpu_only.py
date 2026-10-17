@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright 2026 NSPX
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Guest wait-for-idle ran a CPU Finish ~34 times per frame in SM3DW. It must stay a GPU-side
 barrier like the Vulkan backend, with the CPU wait kept only behind NXBOX_D3D12_WFI_FINISH."""
 

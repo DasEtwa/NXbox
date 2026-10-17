@@ -1,4 +1,5 @@
 // SPDX-FileCopyrightText: Copyright 2020 yuzu Emulator Project
+// SPDX-FileCopyrightText: Copyright 2026 NSPX
 // SPDX-License-Identifier: GPL-2.0-or-later
 cbuffer NxboxRootConstants : register(b0, space1) {
     uint3 origin;

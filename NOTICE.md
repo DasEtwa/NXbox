@@ -5,6 +5,20 @@ GPL version 3 or later; see [LICENSE.txt](LICENSE.txt). Existing source notices 
 third-party libraries are kept as they are. This file adds the credits for the parts of NXbox that
 were inspired by, or fetch data from, other projects.
 
+## Attribution required for NXbox code (GPL-3.0 section 7(b))
+
+Source files that carry the line `SPDX-FileCopyrightText: Copyright 2026 NSPX` were written for
+NXbox. As an additional term permitted by section 7(b) of the GNU GPL version 3, anyone who conveys
+those files, or a work that contains them, must:
+
+1. keep that copyright line in every such file, and
+2. keep the attribution "NXbox by NSPX (https://github.com/NspxMiguel/NXbox)" in the Appropriate
+   Legal Notices of the work, such as its credits or about screen, and in its README or release
+   notes.
+
+Files that also carry another project's notice, such as Eden's, keep that notice too. This term
+covers only the NSPX-copyrighted material; everything else stays under the plain GPL.
+
 ## Credits and third-party notices
 
 ### Cheats: nx-cheats-db, CNX Updater and the projects behind it

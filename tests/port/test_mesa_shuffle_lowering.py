@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright 2026 NSPX
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The DXIL compiler must lower shuffle_xor/up/down, which nir_to_dxil cannot emit."""
 

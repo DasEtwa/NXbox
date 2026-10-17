@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright 2026 NSPX
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Execute T22's C++ routing, account, social ABI and mock-HTTP policy on the host."""
 

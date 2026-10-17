@@ -1,4 +1,5 @@
 // SPDX-FileCopyrightText: Copyright 2015 Graham Sellers, Richard Wright Jr. and Nicholas Haemel
+// SPDX-FileCopyrightText: Copyright 2026 NSPX
 // SPDX-License-Identifier: MIT
 // Inclusive 64-bit prefix scan, following queries_prefix_scan_sum_nosubgroups.comp.
 // Each dispatch handles at most 2048 queries. The caller dispatches ordered chunks.

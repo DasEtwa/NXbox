@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright 2026 NSPX
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Compile the generated draw observer and exercise gated binding diagnostics."""
 

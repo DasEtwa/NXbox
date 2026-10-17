@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright 2026 NSPX
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Execute the device API ring and frontend drain with mock COM objects."""
 

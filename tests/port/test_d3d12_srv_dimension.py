@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright 2026 NSPX
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """SRVs take the dimension the shader declares, not the guest view type.
 A mismatch is undefined in D3D12: vkd3d tolerates it, the Xbox driver samples zeros."""
 

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 NSPX
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 import { expect, test } from "bun:test";
 import { createCipheriv, createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";

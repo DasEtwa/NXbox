@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright 2026 NSPX
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Guest draw state is reused only within an unchanged command-list generation."""
 
 import unittest

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright 2026 NSPX
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """SM3DW diagnostics separate strict DXIL and replace only HLSL cube samples."""
 
 import unittest

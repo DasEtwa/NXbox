@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 NSPX
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 import { createReadStream } from "node:fs";
 import { basename, join, posix } from "node:path";
 import { Readable } from "node:stream";

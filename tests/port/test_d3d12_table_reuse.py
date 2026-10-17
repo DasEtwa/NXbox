@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright 2026 NSPX
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Draw tables are immutable within a recording tick; resource states are per draw."""
 
 import unittest

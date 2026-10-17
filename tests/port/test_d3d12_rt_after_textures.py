@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright 2026 NSPX
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """A sampled texture that aliases the bound render target synchronizes from it in FillImageViews.
 If the target was marked modified only before that, both end with the same modification tick
 and the draw's output never reaches the texture (SM3DW bloom mips stayed black)."""

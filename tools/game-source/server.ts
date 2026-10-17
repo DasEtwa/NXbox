@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 NSPX
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // NXbox game source: serves a folder of the owner's own dumps in the Tinfoil shop format, so NXbox
 // (Settings → Sources) can list and download them over the LAN.
 //   GET /            -> {"files":[{"url","size"}],"directories":[],"success":"..."} (Tinfoil shop JSON)

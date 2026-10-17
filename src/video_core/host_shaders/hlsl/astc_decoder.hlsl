@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project
+// SPDX-FileCopyrightText: Copyright 2026 NSPX
 // SPDX-License-Identifier: GPL-2.0-or-later
 // HLSL port of astc_decoder.comp; preserves Eden's LDR/HDR endpoint and weight decoding.
 cbuffer NxboxRootConstants : register(b0, space1) {

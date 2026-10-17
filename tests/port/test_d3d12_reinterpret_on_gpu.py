@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright 2026 NSPX
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Reinterpreting between equal-size color formats waited on the GPU for every copy (~10 per
 frame in BotW) because it went through CPU staging. Without host conversion the bytes match, so
 the copy bounces through a GPU buffer, and the CPU path stays only for converted formats."""

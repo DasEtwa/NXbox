@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 NSPX
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 import { xtsTransform } from "./xts";
 import { createDecipheriv, createHash } from "node:crypto";
 import { createReadStream } from "node:fs";

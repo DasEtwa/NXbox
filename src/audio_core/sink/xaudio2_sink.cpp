@@ -1,4 +1,5 @@
 // SPDX-FileCopyrightText: Copyright 2026 NXbox contributors
+// SPDX-FileCopyrightText: Copyright 2026 NSPX
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <array>

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 NSPX
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 import { extname } from "node:path";
 import { PackError, type Language, strings } from "./i18n";
 import { encodeAvatarJpeg } from "./jpeg";

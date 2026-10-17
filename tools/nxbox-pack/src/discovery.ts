@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 NSPX
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 import { networkInterfaces } from "node:os";
 import { connect } from "node:net";
 import { readFile } from "node:fs/promises";

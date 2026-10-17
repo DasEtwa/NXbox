@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright 2026 NSPX
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Diagnostic toggles for SM3DW fullscreen passes that never land on Xbox."""
 
 import unittest

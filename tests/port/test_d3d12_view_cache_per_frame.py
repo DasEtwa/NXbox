@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright 2026 NSPX
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """BotW submits ~30 times per frame. Clearing the CPU view descriptor cache on every submit
 recreated ~11k descriptors per frame, so the cache is cleared once per frame instead."""
 

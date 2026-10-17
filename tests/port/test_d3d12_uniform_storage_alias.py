@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright 2026 NSPX
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """SM3DW binds a constant buffer and a storage buffer inside the same host buffer. D3D12 cannot
 hold one buffer in CONSTANT_BUFFER and UNORDERED_ACCESS at once, so those draws were skipped
 ("conflicting resource states") and the title-screen UI text vanished. Constants that alias a

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 NSPX
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Included inside Drive: both providers share the same reconciliation engine.
 private:

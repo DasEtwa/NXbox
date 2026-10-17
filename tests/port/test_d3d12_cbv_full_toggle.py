@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright 2026 NSPX
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """NXBOX_D3D12_CBV_FULL widens every CBV to 64 KiB, still clamped to the allocation."""
 
 import unittest

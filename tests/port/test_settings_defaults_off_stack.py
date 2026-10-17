@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright 2026 NSPX
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """SystemSettings is 0x336A0 bytes and the Xbox fiber stacks are 512 KiB. Building the defaults by
 value on first boot (no settings.dat yet) overflowed the set:sys service fiber and killed every
 fresh install before the first frame, so the defaults must be filled in place on the heap."""

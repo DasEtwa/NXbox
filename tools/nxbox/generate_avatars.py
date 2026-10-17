@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: Copyright 2026 NSPX
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Build package PNGs, PC pixel catalogue and contact sheet from original RGBA masters.
 
 Requires Pillow 12.3.0. AI production prompts are archived in avatars/prompts.json.

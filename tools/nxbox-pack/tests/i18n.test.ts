@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 NSPX
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 import { describe, expect, test } from "bun:test";
 import { readdir } from "node:fs/promises";
 import {

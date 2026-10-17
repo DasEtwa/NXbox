@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 NSPX
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 #include <algorithm>
 
 /* NXBOX_GPU_PROFILE=1: a GPU timestamp is written before every journaled command of the main

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright 2026 NSPX
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Audit every decoder row; source coverage is not semantic ISA conformance."""
 
 import argparse

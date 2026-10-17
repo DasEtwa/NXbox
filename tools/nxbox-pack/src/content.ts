@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 NSPX
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 import { basename, extname, join } from "node:path";
 import { mkdir } from "node:fs/promises";
 import { gameExtension, validateFile } from "./files";

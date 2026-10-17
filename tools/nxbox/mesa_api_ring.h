@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 NSPX
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /* SPDX-License-Identifier: MIT
  * One process-wide completion ring, shared by every Mesa worker and queue.
  * The hot path allocates nothing and never waits for another producer. Slots

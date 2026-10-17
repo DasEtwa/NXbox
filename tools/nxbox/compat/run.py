@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright 2026 NSPX
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Run with python3 -m tools.nxbox.compat.run --games games.json --output results."""
 
 import argparse

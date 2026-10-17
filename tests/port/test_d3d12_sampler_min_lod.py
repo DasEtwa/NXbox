@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright 2026 NSPX
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """D3D12 samplers never get MinLOD above MaxLOD; with no mip filter both match Vulkan."""
 
 import unittest

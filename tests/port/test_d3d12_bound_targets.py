@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright 2026 NSPX
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Draws reuse fixed RTV/DSV slots and rewrite them only when the attachments change.
 Recreating them every draw cost ~5 descriptor writes per draw (18k per BotW frame)."""
 

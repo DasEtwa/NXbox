@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 NSPX
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /* SPDX-License-Identifier: MIT */
 /* Included in d3d12_resource.cpp after Mesa's copy_texture_region helper. */
 #include "nxbox_view_cast.h"

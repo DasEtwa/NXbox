@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 NSPX
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Bounded random-access metadata reads: game content is never extracted to disk.
 import { createDecipheriv } from "node:crypto";
 import { ncaHeader, readKeys, sectionReader, type Keys } from "./firmware";

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 NSPX
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "eden_uwp/accounts_policy.h"
 #include "core/hle/service/acc/nxbox_profile.h"

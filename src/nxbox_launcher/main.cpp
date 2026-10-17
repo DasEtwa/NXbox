@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 NSPX
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 // Per-game launcher tile: opens nxbox://play?title=<ID> and exits. The ID comes from title.txt in

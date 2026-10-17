@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright 2026 NSPX
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Async PSOs get one bounded wait before a draw is skipped.
 Skipped draws are lost for good when the game renders them once: SM3DW bakes
 its level ambient light at load and the level stayed black on Xbox (async on)."""

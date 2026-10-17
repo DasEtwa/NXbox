@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright 2026 NSPX
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """RasterizerD3D12::TickFrame was never called, so the texture cache never ran garbage
 collection and the buffer, fence and descriptor caches never aged a frame. The compositor
 must tick it once per composed frame, as RendererVulkan::Composite does."""

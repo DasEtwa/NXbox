@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright 2026 NSPX
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """NXBOX_D3D12_SHADOW_ONE makes HLSL depth-compare samples and gathers return 1."""
 
 import unittest

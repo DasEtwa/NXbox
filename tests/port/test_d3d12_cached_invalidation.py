@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright 2026 NSPX
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Cached guest writes must reach D3D12 caches regardless of the CPU skip hack."""
 
 import re

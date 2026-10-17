@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright 2026 NSPX
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Read binary RGB PPM and write PNG/contact sheets without dependencies."""
 
 import math

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 NSPX
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 import { avatarCharacters, avatarColors } from "./character-avatar";
 import { join } from "node:path";
 import { PackError } from "./i18n";

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 NSPX
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 import { xtsTransform } from "./xts";
 import { readdir } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";

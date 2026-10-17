@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright 2026 NSPX
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """BC transfer footprints use whole blocks, the layout D3D12 documents for block
 formats, instead of a 2x2/1x1 extent for the small mips."""
 

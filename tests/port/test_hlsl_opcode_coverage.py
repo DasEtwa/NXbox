@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright 2026 NSPX
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Audit opcode dispatch and validate real IR emission with optional DXC.
 
 Dispatch coverage is distinct from implementation coverage. ``--report`` prints

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright 2026 NSPX
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Overlapping buffer copy writes must be ordered on the current D3D12 command list."""
 
 import re

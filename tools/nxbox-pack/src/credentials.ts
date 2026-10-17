@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 NSPX
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { mkdir, readFile, writeFile } from "node:fs/promises";

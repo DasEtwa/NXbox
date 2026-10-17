@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright 2026 NSPX
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Compile and execute portable production trace/lifecycle policies in /tmp."""
 
 from pathlib import Path

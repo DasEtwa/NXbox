@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright 2026 NSPX
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """BotW compute shaders with hundreds of `precise` values stalled the Xbox driver for minutes;
 without the qualifier they compiled in under a second. Compute drops it, other stages keep it."""
 

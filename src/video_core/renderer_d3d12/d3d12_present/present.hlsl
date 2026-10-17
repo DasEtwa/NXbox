@@ -1,4 +1,5 @@
 // SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project
+// SPDX-FileCopyrightText: Copyright 2026 NSPX
 // SPDX-License-Identifier: GPL-2.0-or-later
 // HLSL ports of Eden's presentation kernels. FidelityFX functions are prepended
 // from the vendored MIT headers by CMake, preserving AMD's implementation.

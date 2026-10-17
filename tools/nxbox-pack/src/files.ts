@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 NSPX
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 import { basename, extname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PackError } from "./i18n";

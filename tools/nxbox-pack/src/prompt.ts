@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 NSPX
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 import { createInterface } from "node:readline/promises";
 import { PackError } from "./i18n";
 export class Prompt {

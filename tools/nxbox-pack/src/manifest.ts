@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 NSPX
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 import template from "../../../dist/nxbox/AppxManifest.xml" with { type: "text" };
 import { XMLValidator } from "fast-xml-parser";
 import { validateName, validateTitleId } from "./files";

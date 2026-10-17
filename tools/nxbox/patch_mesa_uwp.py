@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: Copyright 2026 NSPX
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Apply the NXbox worker-context fixes to the pinned Mesa UWP source."""
 
 from pathlib import Path

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 NSPX
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 import { basename, extname, join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { mkdir, writeFile, lstat } from "node:fs/promises";

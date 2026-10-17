@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright 2026 NSPX
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Pipeline statistics on every draw filled the 256-slot query bank ~14 times per frame in BotW,
 and each full bank made the CPU wait for the GPU. Only the guest's ZPass counter is ever enabled,
 so statistics are recorded only after the guest reads a pipeline counter, and draws that record

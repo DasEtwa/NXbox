@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright 2026 NSPX
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Parts of the UWP build have no RTTI: dynamic_cast/typeid there throw
 std::__non_rtti_object ("Access violation - no RTTI data!"). Twice it silently
 broke the D3D12 renderer, so keep these directories free of them."""

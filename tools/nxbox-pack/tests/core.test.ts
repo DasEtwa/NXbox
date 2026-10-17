@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 NSPX
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 import { describe, expect, test } from "bun:test";
 import { XMLParser } from "fast-xml-parser";
 import { detectLanguage, strings } from "../src/i18n";

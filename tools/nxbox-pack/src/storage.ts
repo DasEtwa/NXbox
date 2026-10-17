@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 NSPX
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 import { open, readdir, lstat, mkdir } from "node:fs/promises";
 import { createReadStream, createWriteStream } from "node:fs";
 import { join, dirname } from "node:path";

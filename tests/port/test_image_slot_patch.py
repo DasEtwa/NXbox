@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright 2026 NSPX
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """The d3d12 image slot patch indexes the emulation formats by slot (i + start_slot)."""
 import importlib.util
 import tempfile

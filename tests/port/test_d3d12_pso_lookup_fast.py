@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright 2026 NSPX
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """D3D12 repeated draws reuse finished PSOs without querying device capabilities again."""
 
 import unittest

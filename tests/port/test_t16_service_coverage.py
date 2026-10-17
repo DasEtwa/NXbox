@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright 2026 NSPX
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Inventory every registered HLE command; generate the auditable source coverage report.
 
 Run directly with --generate to refresh docs/service-coverage.md. No network required.

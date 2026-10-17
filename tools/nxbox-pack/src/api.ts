@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 NSPX
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Machine interface for the native GUI (tools/nxbox-pack-gui): one JSON request on stdin,
 // JSON-lines events on stdout. Same core as the interactive CLI, no prompts.
 import { cp, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";

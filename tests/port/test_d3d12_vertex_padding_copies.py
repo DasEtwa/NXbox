@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright 2026 NSPX
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Padded vertex streams copy the data and the zero tail into disjoint ranges.
 
 D3D12 does not order two copies into the same range without a barrier; on Xbox the
