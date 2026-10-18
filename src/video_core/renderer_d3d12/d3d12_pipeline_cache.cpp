@@ -41,7 +41,7 @@ namespace D3D12 {
 namespace {
 
 // No hashing, allocation, locking or file IO unless explicitly enabled.
-void DumpGraphicsHlsl(u64 guest_hash, Shader::Stage stage, const std::string& source) {
+void DumpGraphicsHlsl(u64 guest_hash, Shader::Stage stage, std::string_view source) {
     static const bool enabled = BisectEnabled("NXBOX_D3D12_DUMP_HLSL");
     if (!enabled)
         return;
