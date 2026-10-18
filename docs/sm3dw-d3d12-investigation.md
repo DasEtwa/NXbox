@@ -138,3 +138,10 @@ Build/package run IDs: none; the lead must build/package the uncommitted change.
    packed depth formats; retain raw data for direct depth analysis. If the map
    is already corrupt, inspect depth write/clear/format and bias; if it is clean,
    inspect comparison sampling, coordinates and border at the consuming pass.
+
+## PSO compile policy knobs
+
+- `NXBOX_D3D12_SKIP_GLOBAL_FALLBACK_COMPUTE`: defaults to ON for `NXBOX_UWP`, OFF elsewhere; `0` disables it. Rejects compute programs with global-memory fallback before DXC or worker admission to avoid Xbox driver hangs; graphics stages are unaffected. With this protection enabled, compute translation runs before submission and its IR is retained for the worker. Disk prewarm checks the equivalent helper declaration in persisted HLSL, since older metadata does not store `uses_global_memory`.
+- `NXBOX_D3D12_PSO_WORKER_PRIORITY`: `lowest`, `below`, or `normal`, default `below`; invalid values use `below`. The pool applies the base priority and promotes queued keys and boosts running keys to above normal while the GPU thread waits, restoring base priority when the job finishes or its last waiter leaves.
+- `NXBOX_D3D12_COMPILE_HEADROOM_MB`: default `448` MiB on `NXBOX_UWP`, disabled elsewhere; `0` disables it. Defers new graphics, compute, and prewarm async compiles below this available app-memory threshold; keys remain Missing for later frame retries. UWP memory readings are cached for 100 ms and deferral diagnostics are limited to one per five seconds.
+- `NXBOX_D3D12_PSO_TRACE`: default OFF. Enables graphics/compute `PSO_WAIT` diagnostics with kind, elapsed milliseconds, status, and thread, plus compute phase marks with elapsed milliseconds, to distinguish waiting from compiler work.
