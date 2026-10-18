@@ -60,6 +60,12 @@ void Write(const StreamSocket& socket, std::string_view text) {
     writer.StoreAsync().get();
     writer.DetachStream();
 }
+bool Publish(const fs::path& source, const fs::path& destination) {
+    return Common::FS::Exists(destination)
+               ? ReplaceFileFromAppW(destination.c_str(), source.c_str(), nullptr, 0, nullptr,
+                                     nullptr) != 0
+               : MoveFileFromAppW(source.c_str(), destination.c_str()) != 0;
+}
 // All threads keep their owning Session alive. Closing the sockets cancels blocked WinRT I/O.
 struct Session : std::enable_shared_from_this<Session> {
     StreamSocket control{nullptr};
@@ -252,7 +258,7 @@ struct Session : std::enable_shared_from_this<Session> {
                 if (!output.Flush() || !output.Commit() || stopped || !transferring)
                     throw std::runtime_error("upload cancelled");
                 output.Close();
-                if (!MoveFileExFromAppW(partial.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING))
+                if (!Publish(partial, target))
                     throw std::runtime_error("upload rename failed");
                 partial.clear();
                 Changed(relative);
@@ -455,9 +461,7 @@ struct Session : std::enable_shared_from_this<Session> {
                     if (!source) {
                         Reply("503 Send RNFR first.\r\n");
                     } else {
-                        if (relative->empty() ||
-                            !MoveFileExFromAppW(Resolve(*source).c_str(), target.c_str(),
-                                                MOVEFILE_REPLACE_EXISTING))
+                        if (relative->empty() || !Publish(Resolve(*source), target))
                             throw std::runtime_error("rename failed");
                         Changed(*source);
                         Changed(*relative);
