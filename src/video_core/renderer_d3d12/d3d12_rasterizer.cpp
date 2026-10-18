@@ -1324,21 +1324,28 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         context.Profile().Count(FrameCount::BufferUploadBytes, elements * storage_bytes);
         context.Profile().Count(FrameCount::VertexUploadBytes, elements * storage_bytes);
         context.Profile().Count(FrameCount::VertexRepackBytes, elements * storage_bytes);
-        auto packed = context.CreateBuffer(elements * storage_bytes, D3D12_HEAP_TYPE_UPLOAD);
-        std::fill(packed->mapped.begin(), packed->mapped.end(), u8{0});
+        // A ring slice rather than a placed resource (and aliasing barrier) per draw: creation
+        // cost Odyssey ~1.9 ms a frame for ~25 repacked streams. Tracing keeps a whole buffer.
+        const auto packed_bytes = static_cast<size_t>(elements * storage_bytes);
+        const StagingBufferRef packed =
+            trace_vertex_bytes ? [&] {
+                auto buffer = context.CreateBuffer(packed_bytes, D3D12_HEAP_TYPE_UPLOAD);
+                return StagingBufferRef{buffer, 0, buffer->mapped.first(packed_bytes)};
+            }()
+                               : vertex_repack.Request(packed_bytes);
+        std::fill(packed.mapped_span.begin(), packed.mapped_span.end(), u8{0});
         const u64 read_bytes = std::min(available, required);
         std::vector<u8> source(static_cast<size_t>(read_bytes));
         const auto guest_address = regs.vertex_streams[attribute.slot].Address() + attribute.offset;
         if (const auto cpu = gpu_memory->GpuToCpuAddress(guest_address))
             buffer_cache.DownloadMemory(*cpu, read_bytes);
         gpu_memory->ReadBlock(guest_address, source.data(), source.size());
-        Pso::RepackVertexFormat(packed->mapped.first(static_cast<size_t>(elements * storage_bytes)),
-                                source, slot.stride, vertex_size,
+        Pso::RepackVertexFormat(packed.mapped_span, source, slot.stride, vertex_size,
                                 static_cast<u32>(input.type.Value()), attribute.swap_rb != 0);
-        context.Retain(packed);
+        context.Retain(packed.buffer);
         if (trace_vertex_bytes)
-            trace_vertex_resources[i] = packed;
-        vertex_views[i] = {packed->handle->GetGPUVirtualAddress(),
+            trace_vertex_resources[i] = packed.buffer;
+        vertex_views[i] = {packed.buffer->handle->GetGPUVirtualAddress() + packed.offset,
                            static_cast<UINT>(elements * storage_bytes),
                            slot.stride ? storage_bytes : 0};
     }

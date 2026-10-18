@@ -205,6 +205,8 @@ private:
     bool injected_draw_skip{};
     bool presentation_logged{};
     ResourcePtr zero_vertex_buffer;
+    // Repacked vertex streams are ring slices, not a placed resource per draw.
+    StagingRing vertex_repack{context, D3D12_HEAP_TYPE_UPLOAD};
     struct PaddedVertexBuffer {
         ResourcePtr source;
         ResourcePtr padded;
