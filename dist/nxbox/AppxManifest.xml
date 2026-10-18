@@ -30,11 +30,29 @@
             <uap:DisplayName>NXbox</uap:DisplayName>
           </uap:Protocol>
         </uap:Extension>
-        <!-- Removable storage filters files by the associations declared here. -->
+        <!-- Removable storage filters files by the associations declared here: a type missing
+             from this list is invisible on a USB drive. -->
         <uap:Extension Category="windows.fileTypeAssociation">
           <uap:FileTypeAssociation Name="nxboxfirmware">
             <uap:SupportedFileTypes>
               <uap:FileType>.nca</uap:FileType>
+            </uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="nxboxgames">
+            <uap:SupportedFileTypes>
+              <uap:FileType>.nsp</uap:FileType>
+              <uap:FileType>.nsz</uap:FileType>
+              <uap:FileType>.xci</uap:FileType>
+              <uap:FileType>.xcz</uap:FileType>
+            </uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="nxboxkeys">
+            <uap:SupportedFileTypes>
+              <uap:FileType>.keys</uap:FileType>
             </uap:SupportedFileTypes>
           </uap:FileTypeAssociation>
         </uap:Extension>

@@ -77,7 +77,10 @@ class FirmwareTests(unittest.TestCase):
             manifest.find(".//uap:Capability[@Name='removableStorage']", namespace)
         )
         types = manifest.findall(".//uap:SupportedFileTypes/uap:FileType", namespace)
-        self.assertIn(".nca", [entry.text for entry in types])
+        # Every type the USB import and the USB library look for must be declared, or the
+        # drive hides it from the app.
+        for extension in (".nca", ".nsp", ".nsz", ".xci", ".xcz", ".keys"):
+            self.assertIn(extension, [entry.text for entry in types])
 
     def test_folders_archive_and_version(self):
         with tempfile.TemporaryDirectory(prefix="nxbox-firmware-") as directory:
