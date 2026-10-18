@@ -17,10 +17,21 @@ class PsoWait(unittest.TestCase):
     def test_both_skip_paths_wait_once_first(self):
         source = CACHE.read_text()
         for counter in ("DrawsSkippedPendingPso", "DispatchesSkippedPendingPso"):
-            skip = source.index(f"Count(FrameCount::{counter})")
+            skip = source.rindex(f"Count(FrameCount::{counter})")
             before = source[skip - 2200 : skip]
             self.assertIn("pso_waited.insert(", before)
             self.assertIn("async->WaitFor(", before)
+
+    def test_unadmitted_requests_keep_their_wait(self):
+        # E2 (Wonder): 28 of 50 waits came back Missing because the pool was full; the
+        # draw spent its only wait without waiting and was skipped for good afterwards.
+        source = CACHE.read_text()
+        for counter in ("DrawsSkippedPendingPso", "DispatchesSkippedPendingPso"):
+            skip = source.rindex(f"Count(FrameCount::{counter})")
+            before = source[skip - 2600 : skip]
+            wait = before.index("async->WaitFor(")
+            self.assertIn("if (settled.status == AsyncCache::Status::Missing)", before[wait:])
+            self.assertIn("pso_waited.erase(", before[wait:])
 
     def test_workers_wake_waiters(self):
         pool = POOL.read_text()

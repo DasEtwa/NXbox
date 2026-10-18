@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -16,6 +17,10 @@
 #include <thread>
 #include <unordered_map>
 #include <vector>
+#ifdef _WIN32
+#include <windows.h>
+#endif
+#include "video_core/renderer_d3d12/d3d12_compile_policy.h"
 
 namespace D3D12 {
 // Match the upstream asynchronous-shader heuristic: small draws can build persistent
@@ -45,10 +50,22 @@ public:
     };
     using Job = std::function<std::shared_ptr<Result>()>;
     using Clock = std::chrono::steady_clock;
+    using NativeHandle = std::thread::native_handle_type;
+    using PriorityHook = std::function<void(NativeHandle, int)>;
+    static void SetPriority(NativeHandle handle, int priority) {
+#ifdef _WIN32
+        SetThreadPriority(handle, priority);
+#else
+        (void)handle;
+        (void)priority;
+#endif
+    }
     explicit AsyncPsoWorkerPool(size_t thread_count = 2, size_t capacity_ = 4,
                                 Clock::duration stall_limit = std::chrono::seconds{5},
-                                size_t max_threads = 4)
+                                size_t max_threads = 4, PriorityHook priority_hook = SetPriority)
         : state{std::make_shared<State>()} {
+        state->priority_hook = std::move(priority_hook);
+        state->base_priority = PsoWorkerPriority();
         state->capacity = capacity_;
         state->stall_limit = stall_limit;
         base_threads = std::clamp(thread_count, size_t{1}, size_t{3});
@@ -86,6 +103,11 @@ public:
         state->condition.notify_one();
         return true;
     }
+    /// Publish a policy rejection without occupying a worker or queue slot.
+    bool Reject(const Key& key, std::string error) {
+        std::scoped_lock lock{state->mutex};
+        return state->entries.emplace(key, Entry{Status::Failed, {}, std::move(error)}).second;
+    }
     /// Drops a prewarm that failed or was cancelled so the runtime can build the key itself.
     bool ForgetFailedPrewarm(const Key& key) {
         std::scoped_lock lock{state->mutex};
@@ -103,14 +125,36 @@ public:
             const auto it = state->entries.find(key);
             return it == state->entries.end() || it->second.status != Status::Pending;
         };
-        state->finished.wait_for(lock, timeout, settled);
+        if (!settled()) {
+            const auto queued = std::find_if(state->queue.begin(), state->queue.end(),
+                                             [&](const auto& item) { return item.first == key; });
+            if (queued != state->queue.end())
+                std::rotate(state->queue.begin(), queued, std::next(queued));
+            ++state->waiters[key];
+            UpdatePriority(*state, key);
+            state->finished.wait_for(lock, timeout, settled);
+            if (--state->waiters.at(key) == 0) {
+                state->waiters.erase(key);
+                UpdatePriority(*state, key);
+            }
+        }
         const auto it = state->entries.find(key);
         return it == state->entries.end() ? Entry{Status::Missing, {}, {}} : it->second;
+    }
+    size_t WaiterCount(const Key& key) {
+        std::scoped_lock lock{state->mutex};
+        const auto it = state->waiters.find(key);
+        return it == state->waiters.end() ? 0 : it->second;
     }
     /// Jobs that have run past the stall limit and still hold a worker.
     size_t Stalled() {
         std::scoped_lock lock{state->mutex};
         return CountStalled();
+    }
+    /// Whether no job is queued or running, not counting stalled ones.
+    bool Idle() {
+        std::scoped_lock lock{state->mutex};
+        return state->pending == CountStalled();
     }
     /// Whether `key` has been running for at least `limit`.
     bool IsStalled(const Key& key, Clock::duration limit) {
@@ -128,16 +172,23 @@ public:
         size_t detached = 0;
         {
             std::scoped_lock lock{state->mutex};
+            if (state->stopping)
+                return 0;
             state->stopping = true;
             for (const auto& item : state->queue) {
                 state->entries.at(item.first) = {Status::Failed, {}, "Compilation cancelled"};
                 --state->pending;
             }
             state->queue.clear();
-            for (const auto& since : state->busy_since)
-                busy.push_back(since.has_value());
+            for (size_t i = 0; i < state->busy_since.size(); ++i) {
+                busy.push_back(state->busy_since[i].has_value());
+                // detach closes the native Windows handle; never use it after Stop.
+                if (busy.back())
+                    state->priority_hook(state->handles[i], state->base_priority);
+            }
         }
         state->condition.notify_all();
+        state->finished.notify_all();
         for (size_t i = 0; i < workers.size(); ++i) {
             if (!workers[i].joinable())
                 continue;
@@ -153,6 +204,10 @@ public:
 
 private:
     struct State {
+        PriorityHook priority_hook;
+        int base_priority{};
+        std::vector<NativeHandle> handles;
+        std::unordered_map<Key, size_t, Hash> waiters;
         size_t capacity{}, pending{};
         Clock::duration stall_limit{};
         bool stopping{};
@@ -165,6 +220,15 @@ private:
         std::vector<std::optional<Key>> running;
     };
 
+    // Caller holds the mutex, including during native priority changes.
+    static void UpdatePriority(State& state, const Key& key) {
+        if (state.stopping)
+            return;
+        for (size_t i = 0; i < state.running.size(); ++i)
+            if (state.running[i] && *state.running[i] == key)
+                state.priority_hook(state.handles[i],
+                                    state.waiters.contains(key) ? 1 : state.base_priority);
+    }
     // Caller holds the mutex.
     size_t CountStalled() const {
         const auto now = Clock::now();
@@ -185,6 +249,7 @@ private:
         const size_t index = workers.size();
         // The new thread blocks on the mutex the caller holds until busy_since has its slot.
         workers.emplace_back([shared = state, index] { Run(*shared, index); });
+        state->handles.push_back(workers.back().native_handle());
         state->busy_since.emplace_back();
         state->running.emplace_back();
     }
@@ -200,6 +265,7 @@ private:
                 state.queue.pop_front();
                 state.busy_since[index] = Clock::now();
                 state.running[index] = item.first;
+                UpdatePriority(state, item.first);
             }
             Entry result;
             try {
@@ -221,6 +287,8 @@ private:
                 result.prewarmed = state.entries.at(item.first).prewarmed;
                 state.entries.at(item.first) = std::move(result);
                 --state.pending;
+                if (!state.stopping)
+                    state.priority_hook(state.handles[index], state.base_priority);
                 state.busy_since[index].reset();
                 state.running[index].reset();
             }

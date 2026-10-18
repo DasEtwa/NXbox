@@ -17,6 +17,11 @@
 #include <tuple>
 #include <vector>
 #include <fmt/format.h>
+#ifdef NXBOX_UWP
+#include <winrt/Windows.System.h>
+#endif
+
+#include "video_core/renderer_d3d12/d3d12_compile_policy.h"
 
 #include "common/fs/path_util.h"
 #include "common/logging.h"
@@ -90,6 +95,40 @@ std::chrono::milliseconds PsoWaitBudget() {
         return std::chrono::milliseconds{value ? std::strtol(value, nullptr, 10) : 5000};
     }();
     return budget;
+}
+
+// Shared by foreground requests and the disk warmup coordinator. `pool_idle` admits the compile
+// anyway: memory held elsewhere can keep the headroom below the threshold for good, and deferring
+// every key would then skip its draws forever. One compile at a time still makes progress.
+bool CompileHeadroomAvailable(bool pool_idle) {
+#ifdef NXBOX_UWP
+    static std::mutex mutex;
+    static CompileHeadroomGuard guard;
+    std::scoped_lock lock{mutex};
+    const auto now = CompileHeadroomGuard::Clock::now();
+    const bool allowed = guard.Allows(CompileHeadroomBytes(), now, [] {
+        using winrt::Windows::System::MemoryManager;
+        return std::pair{MemoryManager::AppMemoryUsageLimit(), MemoryManager::AppMemoryUsage()};
+    });
+    if (allowed || pool_idle)
+        return true;
+    if (guard.ShouldLog(now))
+        Diagnostic(
+            fmt::format("D3D12 compile deferred: headroom={}", guard.Headroom() / (1024 * 1024)));
+    return false;
+#else
+    return true;
+#endif
+}
+
+void ReportGlobalFallbackSkip(u64 request) {
+    // Disk warmup and foreground requests can encounter the same key.
+    static std::mutex mutex;
+    static std::set<u64> reported;
+    std::scoped_lock lock{mutex};
+    if (reported.insert(request).second)
+        Diagnostic(
+            fmt::format("D3D12 compute request={:016x} skipped: global memory fallback", request));
 }
 
 using Maxwell = Tegra::Engines::Maxwell3D::Regs;
@@ -774,6 +813,17 @@ struct TranslationState {
     }
 };
 
+// IR references the object pools, which must survive until HLSL emission finishes.
+struct ComputeTranslation {
+    TranslationState translation;
+    Shader::IR::Program program;
+    ComputeTranslation(ID3D12Device* device, Shader::Environment& env) : translation{device} {
+        Shader::Maxwell::Flow::CFG cfg{env, translation.flow, env.StartAddress()};
+        program = Shader::Maxwell::TranslateProgram(translation.inst, translation.block, env, cfg,
+                                                    translation.host);
+    }
+};
+
 Shader::RuntimeInfo GraphicsRuntime(const Maxwell& regs, const Shader::IR::Program& program,
                                     const Shader::IR::Program* previous, u32 topology) {
     Shader::RuntimeInfo runtime;
@@ -1343,6 +1393,11 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(
                 context.Profile().Count(FrameCount::NegativeCacheHits);
                 return nullptr;
             }
+            if (entry.status == AsyncCache::Status::Missing &&
+                !CompileHeadroomAvailable(async->Idle())) {
+                context.Profile().Count(FrameCount::DrawsSkippedPendingPso);
+                return nullptr;
+            }
             if (entry.status == AsyncCache::Status::Missing && async->CanSubmit()) {
                 GraphicsEnvironments live;
                 GetGraphicsEnvironments(live, guest_hashes);
@@ -1362,8 +1417,6 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(
                      guest_topology = static_cast<u32>(maxwell3d->draw_manager.draw_state.topology),
                      regs = maxwell3d->regs, formats, hashes = guest_hashes, snapshots, request] {
                         SetThreadDescription(GetCurrentThread(), L"D3D12 PSO compiler");
-                        // A compile the driver never finishes must only use idle CPU.
-                        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
                         auto result = std::make_shared<AsyncResult>();
                         result->graphics = BuildAsyncGraphics(device.Get(), disk_cache, state,
                                                               d3d_topology, guest_topology, regs,
@@ -1390,13 +1443,18 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(
                 const auto wait_start = trace_wait ? std::chrono::steady_clock::now()
                                                    : std::chrono::steady_clock::time_point{};
                 const auto settled = async->WaitFor(request, PsoWaitBudget());
+                // A request the full pool did not admit was never waited for; keep its one
+                // wait for a frame where it is queued.
+                if (settled.status == AsyncCache::Status::Missing)
+                    pso_waited.erase(request_hash);
                 if (trace_wait) {
                     const auto elapsed = std::chrono::duration<double, std::milli>(
                                              std::chrono::steady_clock::now() - wait_start)
                                              .count();
                     Diagnostic(fmt::format(
-                        "PSO_WAIT request={:016x} wall_ms={:.3f} status={} thread={}", request_hash,
-                        elapsed, static_cast<int>(settled.status), GetCurrentThreadId()));
+                        "PSO_WAIT request={:016x} kind=graphics wall_ms={:.3f} status={} thread={}",
+                        request_hash, elapsed, static_cast<int>(settled.status),
+                        GetCurrentThreadId()));
                 }
                 if (settled.status == AsyncCache::Status::Ready) {
                     StoreGuestGraphics(request, settled.result->graphics.get());
@@ -1612,6 +1670,11 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() try {
                 context.Profile().Count(FrameCount::NegativeCacheHits);
                 return nullptr;
             }
+            if (entry.status == AsyncCache::Status::Missing &&
+                !CompileHeadroomAvailable(async->Idle())) {
+                context.Profile().Count(FrameCount::DispatchesSkippedPendingPso);
+                return nullptr;
+            }
             if (entry.status == AsyncCache::Status::Missing && async->CanSubmit()) {
                 VideoCommon::ComputeEnvironment live{*kepler_compute, *gpu_memory,
                                                      kepler_compute->regs.code_loc.Address(),
@@ -1619,30 +1682,52 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() try {
                 live.SetCachedSize(shader->size_bytes);
                 std::shared_ptr<Shader::Environment> snapshot{live.Snapshot()};
                 Microsoft::WRL::ComPtr<ID3D12Device> device{context.Device()};
-                async->Submit(async_key, [device, disk_cache = disk.get(), snapshot,
+                std::shared_ptr<ComputeTranslation> prepared;
+                if (SkipGlobalFallbackComputeEnabled()) {
+                    try {
+                        prepared = std::make_shared<ComputeTranslation>(device.Get(), *snapshot);
+                    } catch (...) {
+                        // Translation now runs here, not in the worker; without a Failed entry
+                        // the key stays Missing and every dispatch would translate it again.
+                        async->Reject(async_key, "Compute translation failed");
+                        throw;
+                    }
+                    if (SkipGlobalFallbackCompute(true, true,
+                                                  prepared->program.info.uses_global_memory)) {
+                        async->Reject(async_key, "Global memory fallback");
+                        ReportGlobalFallbackSkip(request);
+                        InvalidateLastGraphicsPipeline();
+                        guest_compute.emplace(request, nullptr);
+                        return nullptr;
+                    }
+                }
+                async->Submit(async_key, [device, disk_cache = disk.get(), snapshot, prepared,
                                           shader_hash = shader->unique_hash, request] {
                     SetThreadDescription(GetCurrentThread(), L"D3D12 PSO compiler");
-                    // A compile the driver never finishes must only use idle CPU.
-                    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
                     static const bool trace = BisectEnabled("NXBOX_D3D12_PSO_TRACE");
+                    const auto trace_start = trace ? std::chrono::steady_clock::now()
+                                                   : std::chrono::steady_clock::time_point{};
                     const auto mark = [&](std::string_view phase) {
                         if (trace)
-                            Diagnostic(fmt::format("PSO_TRACE compute={:016x} {}", request, phase));
+                            Diagnostic(fmt::format(
+                                "PSO_TRACE compute={:016x} {} wall_ms={:.3f}", request, phase,
+                                std::chrono::duration<double, std::milli>(
+                                    std::chrono::steady_clock::now() - trace_start)
+                                    .count()));
                     };
                     mark("start");
-                    TranslationState translation{device.Get()};
-                    Shader::Maxwell::Flow::CFG cfg{*snapshot, translation.flow,
-                                                   snapshot->StartAddress()};
-                    mark("cfg");
-                    auto program = Shader::Maxwell::TranslateProgram(
-                        translation.inst, translation.block, *snapshot, cfg, translation.host);
+                    auto translated =
+                        prepared ? prepared
+                                 : std::make_shared<ComputeTranslation>(device.Get(), *snapshot);
+                    auto& translation = translated->translation;
+                    auto& program = translated->program;
                     mark("translated");
                     const auto source =
                         Shader::Backend::HLSL::EmitHLSL(translation.profile, program);
                     DumpGraphicsHlsl(shader_hash, Shader::Stage::Compute, source);
                     mark(fmt::format("dxc bytes={}", source.size()));
                     if (trace && source.size() > 100'000) {
-                        // Oversized compute shaders are the ones the Xbox driver never finishes.
+                        // Preserve large shader sources for compiler-cost investigations.
                         std::ofstream{Common::FS::GetEdenPath(Common::FS::EdenPath::LogDir) /
                                           fmt::format("compute_{:016x}.hlsl", request),
                                       std::ios::binary}
@@ -1687,7 +1772,22 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() try {
                 context.Profile().Count(FrameCount::GuestPipelineMisses);
             }
             if (pso_waited.insert(request).second) {
+                static const bool trace_wait = BisectEnabled("NXBOX_D3D12_PSO_TRACE");
+                const auto wait_start = trace_wait ? std::chrono::steady_clock::now()
+                                                   : std::chrono::steady_clock::time_point{};
                 const auto settled = async->WaitFor(async_key, PsoWaitBudget());
+                // A request the full pool did not admit was never waited for; keep its one
+                // wait for a frame where it is queued.
+                if (settled.status == AsyncCache::Status::Missing)
+                    pso_waited.erase(request);
+                if (trace_wait) {
+                    const auto elapsed = std::chrono::duration<double, std::milli>(
+                                             std::chrono::steady_clock::now() - wait_start)
+                                             .count();
+                    Diagnostic(fmt::format(
+                        "PSO_WAIT request={:016x} kind=compute wall_ms={:.3f} status={} thread={}",
+                        request, elapsed, static_cast<int>(settled.status), GetCurrentThreadId()));
+                }
                 if (settled.status == AsyncCache::Status::Ready) {
                     guest_compute.emplace(request, settled.result->compute.get());
                     context.Profile().Count(FrameCount::PsoCompiles);
@@ -1718,6 +1818,13 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() try {
         Shader::Maxwell::Flow::CFG cfg{env, translation.flow, env.StartAddress()};
         auto program = Shader::Maxwell::TranslateProgram(translation.inst, translation.block, env,
                                                          cfg, translation.host);
+        if (SkipGlobalFallbackCompute(SkipGlobalFallbackComputeEnabled(), true,
+                                      program.info.uses_global_memory)) {
+            ReportGlobalFallbackSkip(request);
+            InvalidateLastGraphicsPipeline();
+            guest_compute.emplace(request, nullptr);
+            return nullptr;
+        }
         const auto source = Shader::Backend::HLSL::EmitHLSL(translation.profile, program);
         const auto counts = CountStageTables(program.info);
         const FrameProfile::Scope profile_build{context.Profile(), FramePhase::PipelineLookup};
@@ -1847,6 +1954,21 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
                             return true;
                         }
                     }
+                    if (record.kind == DiskRecordKind::Compute &&
+                        SkipGlobalFallbackComputeEnabled()) {
+                        const auto decoded = ReadRecipe(record);
+                        // The emitter writes this helper iff info.uses_global_memory is true.
+                        const bool global = std::any_of(
+                            decoded.stages.begin(), decoded.stages.end(), [](const auto& stage) {
+                                return stage.hlsl.find("nx_global_load32(") != std::string::npos;
+                            });
+                        if (SkipGlobalFallbackCompute(true, true, global)) {
+                            async->Reject(request, "Global memory fallback");
+                            ReportGlobalFallbackSkip(hash);
+                            ++stats->skipped;
+                            return true;
+                        }
+                    }
                     // Admission and foreground submission use the same atomic key insertion.
                     // A full pool makes this coordinator retry, never the loading/GPU thread.
                     for (;;) {
@@ -1861,12 +1983,16 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
                             ++stats->skipped;
                             return true;
                         }
+                        // A deferred warmup key never starves a draw: the foreground compiles it.
+                        if (!CompileHeadroomAvailable(false)) {
+                            ++stats->skipped;
+                            return true;
+                        }
                         Microsoft::WRL::ComPtr<ID3D12Device> device{context.Device()};
                         if (async->Submit(
                                 request,
                                 [device, disk_cache = disk.get(), record, stop] {
                                     SetThreadDescription(GetCurrentThread(), L"D3D12 PSO compiler");
-                                    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
                                     if (stop.stop_requested())
                                         return std::shared_ptr<AsyncResult>{};
                                     auto result = std::make_shared<AsyncResult>();
@@ -1889,6 +2015,18 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
                 }
                 const auto decoded = ReadRecipe(record);
                 const auto& stages = decoded.stages;
+                if (SkipGlobalFallbackCompute(
+                        SkipGlobalFallbackComputeEnabled(), record.kind == DiskRecordKind::Compute,
+                        std::any_of(stages.begin(), stages.end(), [](const auto& stage) {
+                            return stage.hlsl.find("nx_global_load32(") != std::string::npos;
+                        }))) {
+                    GraphicsPipelineKey request{};
+                    if (record.request_key.size() == sizeof(request)) {
+                        std::memcpy(&request, record.request_key.data(), sizeof(request));
+                        ReportGlobalFallbackSkip(request.stage_hashes[0]);
+                    }
+                    return true;
+                }
                 if (record.kind == DiskRecordKind::Graphics)
                     GetGraphics(decoded.state, decoded.topology, stages);
                 else if (stages.size() == 1 && stages[0].stage == Shader::Stage::Compute)
