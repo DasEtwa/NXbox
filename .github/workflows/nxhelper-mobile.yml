@@ -1,0 +1,119 @@
+name: Build NxHelper mobile
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - tools/nxhelper-mobile/**
+      - .github/workflows/nxhelper-mobile.yml
+permissions:
+  contents: read
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: tools/nxhelper-mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+          components: clippy
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: android-actions/setup-android@v3
+      - name: Install toolchains
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+          sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0" "ndk;27.2.12479018"
+          echo "NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
+      - run: npm ci
+      - name: Verify Rust core
+        run: |
+          cargo test --locked --manifest-path src-tauri/Cargo.toml
+          cargo clippy --locked --manifest-path src-tauri/Cargo.toml -- -D warnings
+      - name: Generate Android project
+        run: |
+          npm run tauri -- android init --ci
+          npm run prepare:mobile
+      - name: Build release APK
+        run: npm run tauri -- android build --apk --target aarch64 --ci
+      - name: Sign APK
+        env:
+          KEYSTORE_B64: ${{ secrets.NXHELPER_ANDROID_KEYSTORE_B64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.NXHELPER_ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.NXHELPER_ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.NXHELPER_ANDROID_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk=$(find src-tauri/gen/android/app/build/outputs/apk -name '*release-unsigned.apk' -print -quit)
+          test -n "$apk"
+          keystore="$RUNNER_TEMP/nxhelper.jks"
+          trap 'rm -f "$keystore"' EXIT
+          if [[ -n "$KEYSTORE_B64" && -n "$KEYSTORE_PASSWORD" && -n "$KEY_ALIAS" && -n "$KEY_PASSWORD" ]]; then
+            printf '%s' "$KEYSTORE_B64" | base64 --decode > "$keystore"
+          else
+            echo 'Android signing secrets missing: producing a debug-signed release APK.'
+            KEYSTORE_PASSWORD=android
+            KEY_PASSWORD=android
+            KEY_ALIAS=androiddebugkey
+            export KEYSTORE_PASSWORD KEY_PASSWORD
+            keytool -genkeypair -keystore "$keystore" -storepass:env KEYSTORE_PASSWORD -keypass:env KEY_PASSWORD -alias "$KEY_ALIAS" -keyalg RSA -keysize 2048 -validity 10000 -dname 'CN=Android Debug,O=Android,C=US'
+          fi
+          tools="$ANDROID_HOME/build-tools/36.0.0"
+          "$tools/zipalign" -f -p 4 "$apk" "$RUNNER_TEMP/aligned.apk"
+          "$tools/apksigner" sign --ks "$keystore" --ks-key-alias "$KEY_ALIAS" --ks-pass env:KEYSTORE_PASSWORD --key-pass env:KEY_PASSWORD --out NxHelper-android.apk "$RUNNER_TEMP/aligned.apk"
+          "$tools/apksigner" verify NxHelper-android.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NxHelper-android.apk
+          path: tools/nxhelper-mobile/NxHelper-android.apk
+          if-no-files-found: error
+  ios:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: tools/nxhelper-mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+      - name: Install build dependencies
+        run: brew install xcodegen libimobiledevice
+      - run: npm ci
+      - name: Generate iOS project
+        run: |
+          npm run tauri -- ios init --ci
+          npm run prepare:mobile
+          cd src-tauri/gen/apple
+          xcodegen generate
+      - name: Build unsigned device archive
+        run: npm run tauri -- ios build --ci --no-sign --archive-only --target aarch64
+      - name: Package unsigned IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          app=$(find src-tauri/gen/apple -path '*.xcarchive/Products/Applications/*.app' -type d -print -quit)
+          test -n "$app"
+          mkdir -p "$RUNNER_TEMP/nxhelper-ipa/Payload"
+          ditto "$app" "$RUNNER_TEMP/nxhelper-ipa/Payload/NxHelper.app"
+          cd "$RUNNER_TEMP/nxhelper-ipa"
+          zip -qry "$GITHUB_WORKSPACE/tools/nxhelper-mobile/NxHelper-ios-unsigned.ipa" Payload
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NxHelper-ios-unsigned.ipa
+          path: tools/nxhelper-mobile/NxHelper-ios-unsigned.ipa
+          if-no-files-found: error
