@@ -1661,6 +1661,8 @@ private:
     }
 
     std::vector<Hint> CurrentHints() const {
+        if (move_active_)
+            return {};
         if (update_open_) {
             const auto state = updater_.State();
             if (state == UpdateState::Failed || state == UpdateState::MissingPortal) {
@@ -1935,9 +1937,9 @@ private:
             y += kSheetRowHeight;
         }
         DrawChoicePill(renderer_, RectF(left, y + 16.0f, left + 310.0f, y + 16.0f + kPillHeight),
-                       Tr(Text::DeleteGame), false, true);
+                       Tr(Text::DeleteGame), false, !move_active_);
         DrawChoicePill(renderer_, RectF(left + 340.0f, y + 16.0f, right, y + 16.0f + kPillHeight),
-                       Tr(Text::MoveToHd), false, false);
+                       Tr(Text::MoveToHd), false, move_active_);
         if (move_active_) {
             const auto total = move_progress_.total.load();
             const auto done = move_progress_.done.load();
