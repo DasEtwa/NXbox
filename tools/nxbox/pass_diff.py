@@ -139,7 +139,8 @@ def write_preview(path, width, height, a, b):
 
 def read_manifest(directory):
     with (directory / "manifest.jsonl").open(encoding="utf-8") as source:
-        return [json.loads(line) for line in source if line.strip()]
+        entries = [json.loads(line) for line in source if line.strip()]
+        return [entry for entry in entries if "event" not in entry]
 
 
 def run(dir_a, dir_b, out, threshold=40, report=print):
