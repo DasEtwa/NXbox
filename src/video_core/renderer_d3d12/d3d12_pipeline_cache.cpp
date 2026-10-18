@@ -28,25 +28,31 @@
 #include "video_core/engines/kepler_compute.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/memory_manager.h"
+#include "video_core/renderer_d3d12/d3d12_hlsl_dump.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_cache.h"
 #include "video_core/renderer_d3d12/d3d12_pso_diagnostics.h"
 #include "video_core/renderer_d3d12/d3d12_texture_cache.h"
 #include "video_core/renderer_d3d12/d3d12_transform_feedback.h"
+#include "video_core/submission_trace.h"
 #include "video_core/surface.h"
 #include "video_core/transform_feedback.h"
 
 namespace D3D12 {
 namespace {
 
-// NXBOX_D3D12_DUMP_HLSL=1 writes every translated graphics stage to the log directory.
+// No hashing, allocation, locking or file IO unless explicitly enabled.
 void DumpGraphicsHlsl(u64 guest_hash, Shader::Stage stage, const std::string& source) {
     static const bool enabled = BisectEnabled("NXBOX_D3D12_DUMP_HLSL");
     if (!enabled)
         return;
-    std::ofstream{Common::FS::GetEdenPath(Common::FS::EdenPath::LogDir) /
-                      fmt::format("gfx_{:016x}_{}.hlsl", guest_hash, static_cast<int>(stage)),
-                  std::ios::binary}
-        << source;
+    static HlslDump dump;
+    try {
+        dump.Write(Common::FS::GetEdenPath(Common::FS::EdenPath::LogDir), guest_hash,
+                   static_cast<int>(stage), source);
+    } catch (const std::exception& error) {
+        Diagnostic(
+            fmt::format("D3D12 HLSL dump guest={:016x} failed={}", guest_hash, error.what()));
+    }
 }
 
 // Diagnostic for array-texture sampling in pixel shaders.
@@ -626,6 +632,7 @@ GraphicsPipeline& PipelineCache::GetGraphics(const Pso::GraphicsPsoState& state,
     key.state = state;
     DescriptorCounts total;
     for (const auto& stage : stages) {
+        DumpGraphicsHlsl(stage.hash, stage.stage, stage.hlsl);
         key.stage_hashes[static_cast<size_t>(stage.stage)] =
             Pso::HashBytes(stage.hlsl.data(), stage.hlsl.size(), stage.hash);
         total += stage.counts;
@@ -701,6 +708,7 @@ ComputePipeline& PipelineCache::GetCompute(const StageInput& stage,
                                            const GraphicsPipelineKey* request,
                                            std::span<const u8> runtime_data) {
     std::scoped_lock lock{pipeline_mutex};
+    DumpGraphicsHlsl(stage.hash, stage.stage, stage.hlsl);
     const auto recipe = Recipe(nullptr, 0, std::span{&stage, size_t{1}});
     const u64 key = Pso::HashBytes(recipe.data(), recipe.size(), stage.hash);
     if (const auto it = compute.find(key); it != compute.end()) {
@@ -1088,6 +1096,7 @@ void BuildPrewarmedPipeline(ID3D12Device* device, DiskPipelineCache* disk,
     thread_local DxcCache compiler;
     std::vector<StageProgram> compiled;
     for (const auto& stage : stages) {
+        DumpGraphicsHlsl(stage.hash, stage.stage, stage.hlsl);
         total += stage.counts;
         compiled.push_back(
             {stage.stage, compiler.Compile(stage.hlsl, stage.stage, record.key, disk), stage.hash});
@@ -1528,6 +1537,8 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() try {
                                             launch.local_pos_alloc, launch.local_crs_alloc};
     const u64 request =
         Pso::HashBytes(specialization.data(), sizeof(specialization), shader->unique_hash);
+    VideoCommon::SubmissionTrace::Log("compute_shader guest_hash={:016x} request={:016x}",
+                                      shader->unique_hash, request);
     // A counter only: skip the per-draw hash lookup unless profiling.
     if (context.Profile().Enabled() && prewarmed_compute.contains(request))
         context.Profile().Count(FrameCount::PrewarmedPsoHits);
@@ -1599,6 +1610,7 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() try {
                     mark("translated");
                     const auto source =
                         Shader::Backend::HLSL::EmitHLSL(translation.profile, program);
+                    DumpGraphicsHlsl(shader_hash, Shader::Stage::Compute, source);
                     mark(fmt::format("dxc bytes={}", source.size()));
                     if (trace && source.size() > 100'000) {
                         // Oversized compute shaders are the ones the Xbox driver never finishes.

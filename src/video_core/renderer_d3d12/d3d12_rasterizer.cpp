@@ -33,6 +33,7 @@
 #include "video_core/renderer_d3d12/d3d12_pipeline_cache.h"
 #include "video_core/renderer_d3d12/d3d12_rasterizer.h"
 #include "video_core/renderer_d3d12/d3d12_render_area.h"
+#include "video_core/submission_trace.h"
 #include "video_core/textures/texture.h"
 
 namespace D3D12 {
@@ -63,6 +64,7 @@ RasterizerD3D12::RasterizerD3D12(Tegra::GPU& gpu, Tegra::MaxwellDeviceMemoryMana
       transform_feedback{context}, query_runtime{context, memory, buffer_cache, transform_feedback},
       query_cache{gpu, *this, memory, query_runtime},
       fence_manager{*this, gpu, texture_cache, buffer_cache, query_cache, context}, m_gpu{gpu} {
+    VideoCommon::SubmissionTrace::Reset();
     default_pipeline_cache = std::make_unique<PipelineCache>(context, memory);
     pipeline_cache = default_pipeline_cache.get();
     context.Profile().guest_visibility = [this] {
@@ -325,6 +327,7 @@ bool IsStorageBuffer(const BindingState& bindings, const ResourcePtr& resource) 
 } // namespace
 
 void RasterizerD3D12::SkipDraw(const char* reason) {
+    VideoCommon::SubmissionTrace::Log("host_skip reason={}", reason);
     // Descriptor slots and recorded copies belong to CurrentTick even if no draw
     // reaches OMSetRenderTargets. Submit that producer so they can retire.
     // Transitions are immediate; this backend never opens a native render pass.
@@ -486,6 +489,11 @@ ResourcePtr RasterizerD3D12::CopyFeedback(const ResourcePtr& source,
 // happens BEFORE any per-draw state is recorded.
 template <typename Func>
 void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
+    bool trace_submitted = false;
+    VideoCommon::SubmissionTrace::Log("host_draw_begin indexed={}", is_indexed);
+    SCOPE_EXIT {
+        VideoCommon::SubmissionTrace::Log("host_draw_end submitted={}", trace_submitted);
+    };
     const FrameProfile::Scope profile_setup{context.Profile(), FramePhase::DrawSetup};
     // Re-emplacing ends the previous RAII scope before starting the next one. Keep
     // these boundaries outside descriptor/stage/attribute loops; nested runtime
@@ -601,8 +609,10 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         query_runtime.PrepareDraw();
     }
     IGraphicsPipeline* const pipeline = pipeline_cache->CurrentGraphicsPipeline(formats);
-    if (!pipeline)
+    if (!pipeline) {
+        VideoCommon::SubmissionTrace::Log("host_draw_drop reason=pending_or_failed_pso");
         return;
+    }
     ID3D12PipelineState* const pso = pipeline->PipelineState();
     ID3D12RootSignature* const root_signature = pipeline->RootSignature();
     if (!pso || !root_signature)
@@ -1675,6 +1685,8 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     for (u32 i = smp_i; i < sampler_table.count; ++i)
         descriptors.WriteNullSampler(sampler_table, i);
 
+    const auto predicate_trace = query_runtime.PreparePredicateTrace();
+
     // Reserve after feedback/uniform copies. A submission invalidates both remembered tables.
     const u64 table_tick = context.CurrentTick();
     const bool reuse_views = descriptors.CanReuseDrawTable(view_plan);
@@ -2051,8 +2063,10 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
             }
         }
         context.MarkWork("guest draws");
+        u64 trace_draw = 0;
         if (draw_trace_enabled) {
             if (texture_cache.CaptureFrame() == draw_trace_frame && draw_trace_lines < 3000) {
+                trace_draw = ++draw_trace_lines;
                 std::string trace_rtvs;
                 for (u32 trace_slot = 0; trace_slot < num_rts; ++trace_slot) {
                     trace_rtvs += fmt::format("{}{}", trace_slot ? "," : "",
@@ -2074,7 +2088,7 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
                     "nx_render_area=[{},{},{},{}] nx_y_direction={} nx_resolution_down_factor={} "
                     "vb0_addr_lo={:08x} vb0_size={} vb0_stride={} ib_size={} ib_format={} "
                     "ps_hash={:016x} vs_hash={:016x}",
-                    draw_trace_frame, ++draw_trace_lines, texture_cache.CapturePassSequence(),
+                    draw_trace_frame, trace_draw, texture_cache.CapturePassSequence(),
                     color_views[0] ? color_views[0]->gpu_addr : GPUVAddr{0},
                     static_cast<u32>(draw_state.topology), submitted.num_vertices,
                     submitted.num_instances, submitted.is_indexed, is_indexed,
@@ -2214,7 +2228,13 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
                 }
             }
         }
+        query_runtime.TracePredicate(texture_cache.CaptureFrame(),
+                                     texture_cache.CapturePassSequence(), trace_draw,
+                                     predicate_trace);
+        VideoCommon::SubmissionTrace::Log("host_draw_submit draw={} pass={}", trace_draw,
+                                          texture_cache.CapturePassSequence());
         draw(commands);
+        trace_submitted = true;
     }
     query_runtime.EndDraw();
     query_runtime.PauseHostConditionalRendering();
@@ -2593,6 +2613,9 @@ void RasterizerD3D12::DrawIndirect() try {
     }
     const u64 count = Pso::IndirectCount(params.buffer_size, stride, command_size,
                                          params.max_draw_counts, guest_count);
+    VideoCommon::SubmissionTrace::Log(
+        "host_indirect args_gpu={:x} count_gpu={:x} guest_count={} expanded_count={}",
+        params.indirect_start_address, params.count_start_address, guest_count, count);
     if (!count) {
         m_gpu.TickWork();
         return;
@@ -2987,6 +3010,11 @@ void RasterizerD3D12::Clear(u32 layer_count) try {
     m_gpu.TickWork();
 }
 void RasterizerD3D12::DispatchCompute() try {
+    bool trace_submitted = false;
+    VideoCommon::SubmissionTrace::Log("host_compute_begin");
+    SCOPE_EXIT {
+        VideoCommon::SubmissionTrace::Log("host_compute_end submitted={}", trace_submitted);
+    };
     const Common::GpuProfile::PhaseScope gpu_profile_scope{
         Common::GpuProfile::Phase::ComputeDispatchSetup};
     if (BisectEnabled("NXBOX_D3D12_NO_COMPUTE")) {
@@ -2996,8 +3024,10 @@ void RasterizerD3D12::DispatchCompute() try {
     gpu_memory->FlushCaching();
     query_runtime.PauseHostConditionalRendering();
     auto* pipeline = default_pipeline_cache->CurrentComputePipeline();
-    if (!pipeline)
+    if (!pipeline) {
+        VideoCommon::SubmissionTrace::Log("host_compute_drop reason=pending_or_failed_pso");
         return;
+    }
     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
     const auto& info = pipeline->info;
     const auto& qmd = kepler_compute->launch_description;
@@ -3177,7 +3207,11 @@ void RasterizerD3D12::DispatchCompute() try {
     dispatch.resources = resources;
     profile_descriptors.reset();
     context.MarkWork("guest compute");
+    VideoCommon::SubmissionTrace::Log("host_compute_submit program={:x} grid={},{},{}",
+                                      qmd.program_start, qmd.grid_dim_x.Value(),
+                                      qmd.grid_dim_y.Value(), qmd.grid_dim_z.Value());
     compute_dispatch.Direct(dispatch, {qmd.grid_dim_x, qmd.grid_dim_y, qmd.grid_dim_z});
+    trace_submitted = true;
     bindings.stages[0].Clear();
     m_gpu.TickWork();
 } catch (const std::exception& error) {
@@ -3221,8 +3255,11 @@ void RasterizerD3D12::FlushRegion(DAddr addr, u64 size, VideoCommon::CacheType w
     }
     // A report can be newer than overlapping cached buffer/image contents.
     // Publish queries last so downloads cannot overwrite the final guest value.
-    if (True(which & VideoCommon::CacheType::QueryCache))
+    if (True(which & VideoCommon::CacheType::QueryCache)) {
+        VideoCommon::SubmissionTrace::Log("query_flush_begin cpu={:x} size={}", addr, size);
         query_cache.FlushRegion(addr, size);
+        VideoCommon::SubmissionTrace::Log("query_flush_end cpu={:x} size={}", addr, size);
+    }
 }
 bool RasterizerD3D12::MustFlushRegion(DAddr addr, u64 size, VideoCommon::CacheType which) {
     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
@@ -3395,6 +3432,7 @@ void RasterizerD3D12::TickFrame() {
         buffer_cache.TickFrame();
     if (!BisectEnabled("NXBOX_D3D12_TICK_NO_TEXTURE"))
         texture_cache.TickFrame();
+    VideoCommon::SubmissionTrace::EndFrame(texture_cache.CaptureFrame());
     if (feedback_frame < 8 || feedback_frame % 120 == 0) {
         u64 pool_bytes{};
         for (const auto& entry : feedback_pool)
@@ -3539,6 +3577,10 @@ RasterizerD3D12::DisplayTexture RasterizerD3D12::FramebufferTexture(
     const auto [view, scaled] =
         texture_cache.TryFindFramebufferImageView(config, config.address + config.offset);
     const auto log_source = [&](const ResourcePtr& resource, DXGI_FORMAT format, bool cached) {
+        const auto mapping = texture_cache.RecordPassDumpPresentation(
+            config.address + config.offset, cached ? view : nullptr);
+        if (!mapping.empty())
+            Diagnostic("D3D12_PASS_PRESENT " + mapping);
         if (presentation_logged)
             return;
         presentation_logged = true;

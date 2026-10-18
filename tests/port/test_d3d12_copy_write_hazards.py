@@ -99,6 +99,7 @@ class CopyWriteHazards(unittest.TestCase):
                 "resource, destination, size",
                 "impl->predicate, 0, 8",
                 "impl->predicate, 0, 8",
+                "result.buffer, result.offset, 8",
             ],
             "d3d12_transform_feedback.cpp": [
                 "counters, 0, 32",

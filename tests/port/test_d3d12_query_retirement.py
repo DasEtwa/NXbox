@@ -27,6 +27,13 @@ DRIVER = r"""
 using u32 = std::uint32_t;
 using u64 = std::uint64_t;
 using VAddr = u64;
+namespace fmt { template<class... Args> const char* format(const char*, Args&&...) { return ""; } }
+void Diagnostic(const char*) {}
+namespace VideoCommon::SubmissionTrace {
+inline std::atomic<u64> frame{1};
+bool Active() { return false; }
+template<class... Args> void Log(const char*, Args&&...) {}
+}
 struct StagingBufferRef {
     std::shared_ptr<u64> buffer;
     std::span<unsigned char> mapped_span;
