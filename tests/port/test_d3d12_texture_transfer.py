@@ -113,14 +113,24 @@ def test_preflight_precedes_cache_modification_and_preserves_fallback():
         "converted_astc",
         "fits(source",
         "fits(target",
+        "DrawCompatible",
     ]:
         assert contract in preflight
+    # Depth blits through color Fermi surfaces are drawn when both images are depth.
+    assert "dst.HostFormat().planes != src.HostFormat().planes" in preflight
+    assert "format.depth && format.conversion == FormatConversion::DepthStencil" in preflight
+    assert preflight.index("if (depth)\n        return true;") < preflight.index("DrawCompatible")
+    runtime_blit = native.split("void TextureCacheRuntime::BlitImage(Framebuffer*", 1)[1]
+    assert "BlitHelpers().BlitDepthStencil(d, s, dst_region, src_region)" in runtime_blit
     rasterizer = (NATIVE / "d3d12_rasterizer.cpp").read_text()
     blit = rasterizer.split("bool RasterizerD3D12::AccelerateSurfaceCopy(", 1)[1].split(
         "void RasterizerD3D12::AccelerateInlineToMemory", 1
     )[0]
     assert "texture_cache.BlitImage(dst, src, gpu_copy)" in blit
-    assert "src.format == dst.format" in blit
+    # Scaled and format-changing color blits are drawn; depth, ROP and converted formats
+    # still take the software path.
+    assert "plain(format) && plain(src_format)" in blit
+    assert "Operation::SrcCopy" in blit
     for counter in [
         "FermiBlitsAccelerated",
         "FermiBlitsSoftware",

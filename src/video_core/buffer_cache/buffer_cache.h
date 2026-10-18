@@ -1080,6 +1080,9 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
         channel_state->uniform_buffer_binding_sizes[stage][binding_index] = size;
     }
     buffer.MarkUsage(offset, size);
+    if constexpr (requires { runtime.SetUniformReadLimit(u32{}); }) {
+        runtime.SetUniformReadLimit((*channel_state->uniform_buffer_sizes)[stage][index]);
+    }
     if constexpr (NEEDS_BIND_UNIFORM_INDEX) {
         runtime.BindUniformBuffer(stage, binding_index, buffer, offset, size);
     } else {

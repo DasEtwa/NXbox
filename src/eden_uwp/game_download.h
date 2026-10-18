@@ -24,4 +24,11 @@ bool DownloadFile(const std::string& url, std::filesystem::path& destination,
                   const std::function<void(std::uint64_t have, std::uint64_t total)>& progress = {},
                   const std::atomic<bool>* cancel = nullptr);
 
+/// Gives a finished download its real name: renames "<name>.partial" to `complete`, replacing a
+/// file already called that. A removable drive refuses the plain rename, so the app broker's Win32
+/// call and then StorageFile are tried too. On failure `error` lists what every step reported.
+/// Must run on a thread that may block (an MTA worker), never on the UI thread.
+bool PublishDownload(const std::filesystem::path& partial, const std::filesystem::path& complete,
+                     std::string& error);
+
 } // namespace EdenXbox

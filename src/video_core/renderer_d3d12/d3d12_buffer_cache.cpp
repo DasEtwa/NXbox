@@ -419,6 +419,7 @@ std::span<u8> BufferCacheRuntime::BindMappedUniformBuffer(size_t stage, u32, u32
     return staging.mapped_span.first(size);
 }
 void BufferCacheRuntime::BindUniformBuffer(const Buffer& buffer, u32 offset, u32 size) {
+    const u32 read_limit = std::exchange(uniform_read_limit, ~0U);
     auto resource = buffer.Handle();
     const auto width = resource ? resource->handle->GetDesc().Width : 0;
     if (!resource || !size) {
@@ -431,14 +432,19 @@ void BufferCacheRuntime::BindUniformBuffer(const Buffer& buffer, u32 offset, u32
         bindings.stages[bindings.current_stage].uniform.push_back({nullptr, 0, 0});
         return;
     }
-    // A copied CBV owns its padding; rounding a direct view must never expose unrelated bytes.
+    // A copied CBV owns its padding; rounding a direct view must never expose unrelated bytes
+    // the shader can read. When the shader's own read size bounds the binding, the rounded
+    // view's tail is unobservable and the direct view needs no zero-padded copy (Kirby made
+    // ~600 such copies a frame).
     const auto padded = UniformViewSize(size);
-    if ((offset & 255) || size != padded || padded > width - offset) {
+    const bool unread_tail = read_limit <= size;
+    if ((offset & 255) || (size != padded && !unread_tail) || padded > width - offset) {
         bindings.stages[bindings.current_stage].uniform.push_back(
             CopyUniform({std::move(resource), offset, size}));
         return;
     }
-    bindings.stages[bindings.current_stage].uniform.push_back({std::move(resource), offset, size});
+    bindings.stages[bindings.current_stage].uniform.push_back(
+        {std::move(resource), offset, padded});
 }
 BoundBuffer BufferCacheRuntime::CopyUniform(const BoundBuffer& uniform) {
     const auto& resource = uniform.resource;

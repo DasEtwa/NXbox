@@ -1287,7 +1287,8 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(
     }
     request.stage_hashes[0] =
         Pso::HashBytes(&specialization, sizeof(specialization), request.stage_hashes[0]);
-    if (prewarmed_graphics.contains(request))
+    // A counter only: skip the per-draw hash lookup unless profiling.
+    if (context.Profile().Enabled() && prewarmed_graphics.contains(request))
         context.Profile().Count(FrameCount::PrewarmedPsoHits);
     if (last_graphics_pipeline && request == last_graphics_request)
         return last_graphics_pipeline;
@@ -1527,7 +1528,8 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() try {
                                             launch.local_pos_alloc, launch.local_crs_alloc};
     const u64 request =
         Pso::HashBytes(specialization.data(), sizeof(specialization), shader->unique_hash);
-    if (prewarmed_compute.contains(request))
+    // A counter only: skip the per-draw hash lookup unless profiling.
+    if (context.Profile().Enabled() && prewarmed_compute.contains(request))
         context.Profile().Count(FrameCount::PrewarmedPsoHits);
     if (const auto found = guest_compute.find(request); found != guest_compute.end()) {
         if (!found->second)

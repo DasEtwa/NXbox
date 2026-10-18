@@ -1,6 +1,6 @@
 # Translating NXbox
 
-NXbox's console UI and NXbox Pack ship in English and Brazilian Portuguese.
+NXbox's console UI and NxHelper ship in English and Brazilian Portuguese.
 Each language has its own file; you can contribute either surface or both.
 Track translations in [issue #10](https://github.com/NspxMiguel/NXbox/issues/10).
 
@@ -40,7 +40,7 @@ Track translations in [issue #10](https://github.com/NspxMiguel/NXbox/issues/10)
    To check just translations while editing, run
    `python3 -m unittest test_i18n` from that directory.
 
-## NXbox Pack
+## NxHelper
 
 1. Copy `tools/nxbox-pack/src/i18n/en.ts` to a new file in that directory,
    for example `es.ts`. Translate the values, keeping keys, placeholders,
@@ -87,10 +87,10 @@ subtag. It moves to the next preference only if there is no match. For example,
 Unknown languages fall back to English. Registry order chooses the regional
 variant when there is no exact or primary tag match.
 
-The console uses the Windows language preference list. NXbox Pack uses
+The console uses the Windows language preference list. NxHelper uses
 `LC_ALL`, `LC_MESSAGES`, then `LANG` (the first nonempty value), or the Intl
 locale when those variables are absent. Locale spellings such as `pt_BR.UTF-8`
-are normalized. Tests can also pass a preference list to the Pack resolver.
+are normalized. Tests can also pass a preference list to the NxHelper resolver.
 
 For testing, set `NXBOX_LANG=es` on the console (process environment or
 `LocalState/nxbox_env.txt`), or `NXBOX_PACK_LANG=es` on the computer. Both

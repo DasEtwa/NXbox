@@ -539,7 +539,9 @@ private:
         ComPtr<ID3D12CommandAllocator> handle;
         u64 tick{};
     };
-    std::array<AllocatorSlot, 8> allocators;
+    // Games that fence often submit ~9 lists a frame (Kirby); eight slots made the recorder
+    // wait ~15 ms for an allocator every other frame while the GPU sat mostly idle.
+    std::array<AllocatorSlot, 16> allocators;
     // Profile-only timestamps bracketing each command list, one pair per allocator slot.
     ComPtr<ID3D12QueryHeap> gpu_time_heap;
     ResourcePtr gpu_time_readback;

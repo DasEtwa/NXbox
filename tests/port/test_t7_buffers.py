@@ -221,6 +221,8 @@ struct BufferCacheRuntime {
     void BindVertexBuffer(u32, ResourcePtr, u32, u32, u32);
     std::span<u8> BindMappedUniformBuffer(size_t, u32, u32);
     void BindUniformBuffer(const Buffer&, u32, u32);
+    u32 uniform_read_limit = ~0U;
+    void SetUniformReadLimit(u32 limit) { uniform_read_limit = limit; }
     BoundBuffer CopyUniform(const BoundBuffer&);
     void BindStorageBuffer(const Buffer&, u32, u32, bool);
 };
@@ -267,6 +269,19 @@ int main() {
     assert(runtime.context.Profile().upload_bytes==256+512+512);
     runtime.BindUniformBuffer(buffer,131071,2);
     assert(!runtime.bindings.stages[0].uniform.back().resource && invalid==2);
+    // A shader that reads no further than the binding sees nothing of the rounded tail.
+    const auto uploaded = runtime.context.Profile().upload_bytes;
+    runtime.SetUniformReadLimit(96);
+    runtime.BindUniformBuffer(buffer,512,96);
+    const auto& rounded=runtime.bindings.stages[0].uniform.back();
+    assert(rounded.resource==memory && rounded.offset==512 && rounded.size==256);
+    assert(runtime.context.Profile().upload_bytes==uploaded);
+    // The limit is consumed: an unbounded next binding still gets its zero-padded copy.
+    runtime.BindUniformBuffer(buffer,512,96);
+    assert(runtime.bindings.stages[0].uniform.back().resource!=memory);
+    runtime.SetUniformReadLimit(128);
+    runtime.BindUniformBuffer(buffer,512,96);
+    assert(runtime.bindings.stages[0].uniform.back().resource!=memory);
     runtime.BindStorageBuffer(buffer,16,65536,true);
     const auto& storage=runtime.bindings.stages[0].storage.back();
     assert(storage.size==65536 && storage.offset==16 && storage.written);

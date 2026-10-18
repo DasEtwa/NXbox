@@ -89,6 +89,8 @@ public:
                        const Tegra::Engines::Fermi2D::Surface& dst_surface,
                        const Tegra::Engines::Fermi2D::Surface& src_surface,
                        const Tegra::Engines::Fermi2D::Config& copy) const;
+    // Why the last CanBlitImages call refused, for the software-blit diagnostic.
+    mutable const char* blit_reject = nullptr;
     void InsertUploadMemoryBarrier() {}
     void TransitionImageLayout(Image&);
     bool HasBrokenTextureViewFormats() const {

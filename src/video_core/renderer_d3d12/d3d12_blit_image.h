@@ -62,6 +62,9 @@ public:
     void CopyImageMSAA(const BlitSurface& dst, const BlitSurface& src,
                        std::span<const VideoCommon::ImageCopy> copies);
     static bool CopyCompatible(const BlitSurface& dst, const BlitSurface& src);
+    // Whether BlitColor can draw src into dst: color, uncompressed, same value class, and
+    // integer surfaces only with point sampling.
+    static bool DrawCompatible(const BlitSurface& dst, const BlitSurface& src, bool linear);
 
 private:
     struct Impl;

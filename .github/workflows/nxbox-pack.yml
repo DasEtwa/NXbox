@@ -1,7 +1,7 @@
-name: Build NXbox Pack
+name: Build NxHelper
 on:
   push:
-    branches: [main, codex/packer, team/t27-pack-gui]
+    branches: [main, feat/nxhelper]
     paths:
       - tools/nxbox-pack/**
       - tools/nxbox-pack-gui/**
@@ -14,6 +14,8 @@ on:
       - dist/nxbox/AppxManifest.xml
       - .github/workflows/nxbox-pack.yml
   workflow_dispatch:
+  # The release attaches the bundles built here.
+  workflow_call:
 permissions:
   contents: read
 jobs:
@@ -24,22 +26,22 @@ jobs:
         include:
           - os: windows-2025
             script: build:windows
-            binary: nxbox-pack-windows-x64.exe
-            core: nxbox-pack.exe
-            gui: nxbox-pack-gui.exe
-            bundle: NXbox-Pack-windows-x64
+            binary: nxhelper-windows-x64.exe
+            core: nxhelper-core.exe
+            gui: NxHelper.exe
+            bundle: NxHelper-windows-x64
           - os: macos-15
             script: build:macos
-            binary: nxbox-pack-macos-arm64
-            core: nxbox-pack
-            gui: nxbox-pack-gui
-            bundle: NXbox-Pack-macos-arm64
+            binary: nxhelper-macos-arm64
+            core: nxhelper-core
+            gui: NxHelper
+            bundle: NxHelper-macos-arm64
           - os: ubuntu-24.04
             script: build:linux
-            binary: nxbox-pack-linux-x64
-            core: nxbox-pack
-            gui: nxbox-pack-gui
-            bundle: NXbox-Pack-linux-x64
+            binary: nxhelper-linux-x64
+            core: nxhelper-core
+            gui: NxHelper
+            bundle: NxHelper-linux-x64
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     defaults:
@@ -57,8 +59,8 @@ jobs:
       - name: Smoke test compiled binary in both languages
         shell: bash
         run: |
-          NXBOX_PACK_LANG=en ./dist/${{ matrix.binary }} --help
-          NXBOX_PACK_LANG=pt ./dist/${{ matrix.binary }} --help
+          NXHELPER_LANG=en ./dist/${{ matrix.binary }} --help
+          NXHELPER_LANG=pt ./dist/${{ matrix.binary }} --help
       # The GUI talks to the core over stdin; Wine's fstat on a pipe breaks Bun, so prove it on a real host.
       - name: Smoke test the GUI API over a stdin pipe
         shell: bash
@@ -68,9 +70,9 @@ jobs:
           test "$out" = '{"error":"args"}'
       - name: Record binary checksum
         env:
-          NXBOX_PACK_BINARY: ${{ matrix.binary }}
+          NXHELPER_BINARY: ${{ matrix.binary }}
         run: |
-          bun -e "const name=process.env.NXBOX_PACK_BINARY; const path='dist/'+name; await Bun.write(path+'.sha256',new Bun.CryptoHasher('sha256').update(await Bun.file(path).arrayBuffer()).digest('hex')+'  '+name+'\n')"
+          bun -e "const name=process.env.NXHELPER_BINARY; const path='dist/'+name; await Bun.write(path+'.sha256',new Bun.CryptoHasher('sha256').update(await Bun.file(path).arrayBuffer()).digest('hex')+'  '+name+'\n')"
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.binary }}

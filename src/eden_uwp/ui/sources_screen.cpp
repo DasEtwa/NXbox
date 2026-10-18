@@ -29,6 +29,7 @@
 #include <mutex>
 #include <optional>
 #include <set>
+#include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -45,6 +46,8 @@
 #include <winrt/Windows.Web.Http.Headers.h>
 #include <winrt/Windows.Web.Http.h>
 
+#include "common/fs/file.h"
+#include "common/fs/fs.h"
 #include "common/fs/path_util.h"
 #include "common/scope_exit.h"
 #include "common/settings.h"
@@ -728,11 +731,13 @@ bool DownloadShopPackage(const Entry& entry, fs::path& destination,
     using namespace winrt::Windows::Storage::Streams;
     for (int attempt = 0; attempt < 3 && !cancel.load(); ++attempt) {
         try {
-            std::error_code ec;
-            fs::create_directories(destination.parent_path(), ec);
-            auto have = fs::exists(destination, ec) ? fs::file_size(destination, ec) : 0;
-            if (ec)
+            // Common::FS reaches a removable drive through the broker; std::filesystem does not.
+            if (!Common::FS::CreateDirs(destination.parent_path())) {
+                Diagnostic("SOURCES_DOWNLOAD cannot create " +
+                           Utf8(destination.parent_path().wstring()));
                 return false;
+            }
+            auto have = Common::FS::IsFile(destination) ? Common::FS::GetSize(destination) : 0;
             HttpClient client;
             HttpRequestMessage request{HttpMethod::Get(), Uri{winrt::to_hstring(url)}};
             for (const auto& [name, value] : headers) {
@@ -774,17 +779,21 @@ bool DownloadShopPackage(const Entry& entry, fs::path& destination,
                 return false;
             const auto total = have + length.Value();
             const auto free = FreeSpace(destination.parent_path());
-            if (!free)
+            if (!free) {
+                Diagnostic("SOURCES_DOWNLOAD cannot read the free space of " +
+                           Utf8(destination.parent_path().wstring()));
                 return false;
+            }
             if (*free < total - have) {
                 bool relocated = false;
                 for (const auto& folder : ExternalGameFolders()) {
                     const auto candidate = folder / destination.filename();
                     if (candidate == destination)
                         continue;
-                    const auto size = fs::exists(candidate, ec) ? fs::file_size(candidate, ec) : 0;
+                    const auto size =
+                        Common::FS::IsFile(candidate) ? Common::FS::GetSize(candidate) : 0;
                     const auto available = FreeSpace(folder);
-                    if (!ec && size <= total && available && *available >= total - size) {
+                    if (size <= total && available && *available >= total - size) {
                         destination = candidate;
                         relocated = true;
                         break;
@@ -792,16 +801,20 @@ bool DownloadShopPackage(const Entry& entry, fs::path& destination,
                 }
                 if (relocated)
                     continue; // reopen with the selected drive's Range, not the previous offset
+                Diagnostic(fmt::format("SOURCES_DOWNLOAD no room: need {} MiB, free {} MiB",
+                                       (total - have) >> 20, *free >> 20));
                 return false;
             }
             const auto stream =
                 AwaitBounded(response->Content().ReadAsInputStreamAsync(), kRequestTimeout);
             if (!stream)
                 continue;
-            std::ofstream out(destination,
-                              std::ios::binary | (have ? std::ios::app : std::ios::trunc));
-            if (!out)
+            Common::FS::IOFile out(destination, have ? Common::FS::FileAccessMode::Append
+                                                     : Common::FS::FileAccessMode::Write);
+            if (!out.IsOpen()) {
+                Diagnostic("SOURCES_DOWNLOAD cannot open " + Utf8(destination.wstring()));
                 return false;
+            }
             Buffer buffer{1u << 20};
             progress(have, total);
             while (have < total && !cancel.load()) {
@@ -810,14 +823,15 @@ bool DownloadShopPackage(const Entry& entry, fs::path& destination,
                     kRequestTimeout);
                 if (!read || read->Length() == 0 || read->Length() > total - have)
                     break;
-                out.write(reinterpret_cast<const char*>(read->data()), read->Length());
-                if (!out)
+                if (out.WriteSpan(std::span<const std::uint8_t>{read->data(), read->Length()}) !=
+                    read->Length()) {
+                    Diagnostic("SOURCES_DOWNLOAD write failed on " + Utf8(destination.wstring()));
                     return false;
+                }
                 have += read->Length();
                 progress(have, total);
             }
-            out.flush();
-            if (out && have == total && !cancel.load())
+            if (out.Commit() && have == total && !cancel.load())
                 return true;
         } catch (const winrt::hresult_error&) {
             Diagnostic("SOURCES_DOWNLOAD retry"); // never log headers or credentials
@@ -978,13 +992,16 @@ public:
                     task.result.internal = {};
                 if (const auto free = FreeSpace(path))
                     task.result.internal.available = *free;
-                const auto folders = ExternalGameFolders();
-                if (!folders.empty()) {
-                    task.result.external = fs::space(folders.front(), ec);
+                // Show the removable drive a download would actually use: the roomiest one.
+                // std::filesystem::space fails on removable drives, so the capacity may be unknown.
+                for (const auto& folder : ExternalGameFolders()) {
+                    const auto free = FreeSpace(folder);
+                    if (!free || *free <= task.result.external.available)
+                        continue;
+                    task.result.external = fs::space(folder, ec);
                     if (ec)
                         task.result.external = {};
-                    if (const auto free = FreeSpace(folders.front()))
-                        task.result.external.available = *free;
+                    task.result.external.available = *free;
                 }
             });
         }
@@ -1366,6 +1383,7 @@ private:
         download_thread_ = std::thread([this, package = entry, name = Utf8(entry.name),
                                         expected_size = entry.size, destination]() mutable {
             Outcome outcome = Outcome::Failed;
+            std::string failure = "worker stopped early";
             try {
                 winrt::init_apartment(winrt::apartment_type::multi_threaded);
                 struct Apartment {
@@ -1406,11 +1424,20 @@ private:
                 // write a given .partial file.
                 const PartialClaim claim{target};
                 bool ok = claim.owned && DownloadShopPackage(package, target, progress, cancel_);
-                if (ok) {
+                if (!claim.owned) {
+                    failure = "another download owns " + Utf8(target.filename().wstring());
+                } else if (!ok) {
+                    failure = "the transfer did not finish (see the DOWNLOAD_ lines)";
+                } else {
+                    // `target` may now be on a removable drive; a plain rename is refused there.
                     fs::path complete = target;
                     complete.replace_extension(); // removes only the trailing .partial
-                    fs::rename(target, complete, ec);
-                    ok = !ec;
+                    std::string reason;
+                    ok = PublishDownload(target, complete, reason);
+                    if (ok)
+                        Diagnostic("SOURCES_DOWNLOAD saved " + Utf8(complete.wstring()));
+                    else
+                        failure = "cannot rename " + Utf8(target.wstring()) + " (" + reason + ")";
                 }
                 outcome = ok ? Outcome::Done : (cancel_.load() ? Outcome::Cancelled : Outcome::Failed);
             } catch (const winrt::hresult_error& error) {
@@ -1421,7 +1448,7 @@ private:
             Diagnostic("SOURCES_DOWNLOAD " + name +
                        (outcome == Outcome::Done        ? " ok"
                         : outcome == Outcome::Cancelled ? " cancelled"
-                                                        : " failed"));
+                                                        : " failed: " + failure));
             outcome_.store(outcome);
         });
     }
@@ -1791,6 +1818,8 @@ private:
         }
         if (shop_ && section_ == 5 && mode_ != Mode::Queue)
             DrawQueue();
+        if (shop_ && section_ != 5)
+            DrawShopDownloadStatus();
         DrawToast(now);
         if (shop_)
             DrawProfile();
@@ -2192,6 +2221,30 @@ private:
                              Theme::kText, HAlign::Left, VAlign::Middle);
     }
 
+    // The Shop's browse and detail pages show no queue, so the active transfer gets a line in the
+    // header. It reads the worker's atomics on every frame; the rate is re-measured every
+    // kRateWindow (500 ms) and the byte count after every chunk, so it never waits for the end.
+    void DrawShopDownloadStatus() {
+        if (queue_.Empty())
+            return;
+        const std::uint64_t total = bytes_total_.load();
+        const double fraction =
+            total > 0 ? static_cast<double>(bytes_done_.load()) / static_cast<double>(total) : 0.0;
+        wchar_t speed[32];
+        swprintf_s(speed, std::size(speed), L"%.1f", rate_.load() / (1024.0 * 1024.0));
+        std::wstring rate = speed;
+        if (CurrentLanguage() == Language::Portuguese)
+            std::replace(rate.begin(), rate.end(), L'.', L',');
+        std::wstring status =
+            std::wstring(Tr(Text::SrcDownloading)) + L" · " +
+            std::to_wstring(static_cast<int>(std::clamp(fraction, 0.0, 1.0) * 100.0)) + L"% · " +
+            rate + L" " + Tr(Text::SrcRate);
+        if (queue_.Items().size() > 1)
+            status += L" · +" + std::to_wstring(queue_.Items().size() - 1);
+        renderer_.DrawString(status, Font::MetaMono, RectF(1090.0f, 50.0f, 1730.0f, 98.0f),
+                             Theme::kTextSecondary, HAlign::Right, VAlign::Middle);
+    }
+
     // The active transfer uses the existing progress bar, percentage, rate and byte counters.
     void DrawProgress() {
         const std::uint64_t done = bytes_done_.load();
@@ -2279,7 +2332,7 @@ private:
         DrawProgressBar(renderer_, RectF(x, 202.0f, x + 280.0f, 210.0f),
                         space.capacity ? static_cast<double>(space.available) / space.capacity
                                        : 0.0);
-        renderer_.DrawString(space.capacity ? FormatBytes(space.available) : L"—", Font::RowSub,
+        renderer_.DrawString(space.available ? FormatBytes(space.available) : L"—", Font::RowSub,
                              RectF(x, 218.0f, x + 280.0f, 252.0f), Theme::kTextSecondary);
     }
     void DrawSidebar() {

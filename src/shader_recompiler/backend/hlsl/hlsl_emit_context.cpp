@@ -301,9 +301,16 @@ EmitContext::EmitContext(IR::Program& program, Bindings& bindings, const Profile
             header += "uint layer : SV_RenderTargetArrayIndex;\n";
         if (info.stores[IR::Attribute::ViewportIndex])
             header += "uint viewport : SV_ViewportArrayIndex;\n";
-        for (size_t i = 0; i < 2; ++i)
-            if (info.used_clip_distances & (0xfu << (i * 4)))
-                header += fmt::format("float4 clip{} : SV_ClipDistance{};\n", i, i);
+        // Same rule as the next stage's input: a group exists when any of its elements is
+        // stored. used_clip_distances is a count, and only set for indexed attribute stores.
+        for (u32 group = 0; group < 2; ++group) {
+            bool used = false;
+            for (u32 element = 0; element < 4; ++element)
+                used |= info.stores[static_cast<IR::Attribute>(
+                    static_cast<u32>(IR::Attribute::ClipDistance0) + group * 4 + element)];
+            if (used)
+                header += fmt::format("float4 clip{} : SV_ClipDistance{};\n", group, group);
+        }
         if (runtime_info.xfb_count)
             header += "float4 nx_xfb_position : NX_XFB_POSITION;\n";
     } else {

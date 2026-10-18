@@ -71,6 +71,38 @@ bool EmitCubeOne(EmitContext& ctx, IR::Inst& inst, const IR::TextureInstInfo& in
         ctx.AddF32x4("{} = float4(1, 1, 1, 1);", inst);
     return true;
 }
+// HLSL cannot filter integer textures. Guests sample them with nearest filtering, so load the
+// texel under the coordinate, clamped to the edge (repeat/mirror wrap is not emulated).
+void NearestIntegerLoad(EmitContext& ctx, IR::Inst& inst, const IR::TextureInstInfo& info,
+                        std::string_view tex, std::string_view coords, std::string_view lod,
+                        const IR::Value& offset) {
+    const auto type = info.type.Value();
+    const bool array = type == TextureType::ColorArray1D || type == TextureType::ColorArray2D;
+    const u32 spatial = type == TextureType::Color1D || type == TextureType::ColorArray1D ? 1
+                        : type == TextureType::Color3D                                    ? 3
+                                                                                          : 2;
+    if (type != TextureType::Color1D && type != TextureType::ColorArray1D &&
+        type != TextureType::Color2D && type != TextureType::ColorArray2D &&
+        type != TextureType::Color3D)
+        throw NotImplementedException("HLSL integer texture filtering must use fetch");
+    const auto result = ctx.var_alloc.Define(inst, HlslVarType::F32x4);
+    const std::string_view swizzle = std::string_view{"xyz"}.substr(0, spatial);
+    const u32 dims = spatial + (array ? 1 : 0);
+    std::string outs;
+    for (u32 i = 0; i < dims; ++i)
+        outs += fmt::format("nx_d.{}, ", "xyzw"[i]);
+    const auto vec = [&](u32 n) { return n == 1 ? std::string("int") : fmt::format("int{}", n); };
+    auto texel = fmt::format("clamp({}(floor(({}).{} * float{}(nx_d.{}))), 0, {}(nx_d.{}) - 1)",
+                             vec(spatial), coords, swizzle, spatial == 1 ? "" : std::to_string(spatial),
+                             swizzle, vec(spatial), swizzle);
+    if (array)
+        texel += fmt::format(", clamp(int(round(({}).{})), 0, int(nx_d.{}) - 1)", coords,
+                             "xyz"[spatial], "xyzw"[spatial]);
+    ctx.Add("{} = float4(0, 0, 0, 0); {{ uint4 nx_d = uint4(1, 1, 1, 1); uint nx_levels = 0; "
+            "uint nx_mip = uint(max({}, 0.0f)); {}.GetDimensions(nx_mip, {}nx_levels); "
+            "{} = asfloat({}.Load({}({}, int(nx_mip)){})); }}",
+            result, lod, tex, outs, result, tex, vec(dims + 1), texel, OffsetArgument(offset));
+}
 void Sample(EmitContext& ctx, IR::Inst& inst, const IR::Value& index, std::string_view coords,
             std::string_view lod, const IR::Value& offset, bool explicit_lod,
             std::string_view dref = {}) {
@@ -83,8 +115,13 @@ void Sample(EmitContext& ctx, IR::Inst& inst, const IR::Value& index, std::strin
     const auto sampler = ctx.Sampler(index, info.descriptor_index);
     if (info.type == TextureType::Buffer)
         throw NotImplementedException("HLSL buffer sampling must use fetch");
-    if (ctx.info.texture_descriptors.at(info.descriptor_index).is_integer)
-        throw NotImplementedException("HLSL integer texture filtering must use fetch");
+    if (ctx.info.texture_descriptors.at(info.descriptor_index).is_integer) {
+        if (!dref.empty())
+            throw NotImplementedException("HLSL integer texture filtering must use fetch");
+        NearestIntegerLoad(ctx, inst, info, tex, coords,
+                           explicit_lod && !lod.empty() ? lod : "0.0f", offset);
+        return;
+    }
     std::string method;
     std::string arguments = fmt::format("{}, {}", sampler, coords);
     if (!dref.empty()) {

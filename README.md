@@ -91,8 +91,8 @@ Eden is the emulator; NXbox is everything it takes to use it on an Xbox, built f
   the community database (see [credits](#credits-and-lineage)).
 - **Characters:** Moru, a built-in character creator, and the system's own Mii creator.
 - **Shader caches shared over the LAN**, so a second console does not compile them again.
-- **[NXbox Pack](tools/nxbox-pack/README.md)** turns a game you own into its own Xbox app that boots
-  straight into the game.
+- **[NxHelper](tools/nxbox-pack/README.md)** checks and prepares the USB drive (keys, firmware, games)
+  and sends games to the console over the Device Portal. It runs on Windows, macOS and Linux.
 - **Updates itself** from the releases page.
 
 ## Where it stands
@@ -165,6 +165,14 @@ Estimates are the maintainer's guess, not a promise; they move as bugs are found
 | The Legend of Zelda: Breath of the Wild (1.0, 1.6 + DLC) | **In-game** | Loads a save and runs in the Shrine of Resurrection at about 12 FPS with Link drawn correctly; some terrain is still broken. Bound by the OpenGL translation on the GPU thread, so it moves to the native renderer next | 1–3 months |
 | Persona 5 Royal | **In-game** | Reaches the first playable area with audio; stutters on loads and has open bugs | 3–6 weeks |
 | Mario Kart 8 Deluxe | **In-game** | With firmware dumped from the user's own console installed, it gets past the character picker and starts a Grand Prix race at up to 60 FPS on the OpenGL path; track geometry is still broken and fps drops during the race | 4–8 weeks |
+| Metroid Dread | **In-game** | NXbox 1.0.3: playable as Samus at 59–60 FPS; real-time cutscenes run at about 30 FPS | — |
+| The Legend of Zelda: Link's Awakening | **In-game** | NXbox 1.0.3: draws the screen (it was black before) and reaches gameplay at about 33 FPS | — |
+| Mario Tennis Aces | **In-game** | NXbox 1.0.3: reaches a match with the player under control at about 25 FPS, with a ~0.5 s hitch every ~8 s | — |
+| Kirby and the Forgotten Land | **In-game** | NXbox 1.0.3: reaches gameplay; 60 FPS at first, about 16 FPS in the heavier areas | — |
+| Hollow Knight: Silksong | **In-game** | Opens on the first try, runs the profile screen and intro at about 60 FPS and reaches gameplay at about 44 FPS | — |
+| Super Mario Odyssey | **In-game** | Opening cutscene at about 58 FPS; past the camera tutorial, Cap Kingdom gameplay runs at about 22 FPS | — |
+| Pokémon Legends: Arceus | **In-game** | The opening draws correctly at 30 FPS; the name keyboard works (Plus confirms) and the game reaches the Hisui beach at about 27 FPS | — |
+| Pokémon Scarlet | **Boots** | NXbox 1.0.3: runs at 30 FPS but the screen stays gray | — |
 | Bayonetta | Not tested | Planned after Breath of the Wild | — |
 
 ## How it works
@@ -187,11 +195,13 @@ flowchart LR
   [aerisarn/mesa-uwp](https://github.com/aerisarn/mesa-uwp) in CI.
 - `src/video_core/renderer_d3d12/` and `src/shader_recompiler/backend/hlsl/`: the new native
   Direct3D 12 renderer and its HLSL shader backend.
-- `tools/nxbox-pack/`: **\*New\*** a command-line tool for Windows, macOS and Linux that turns a game you
-  own into its own Xbox app (no emulator menu) and installs it through the Device Portal.
+- `tools/nxbox-pack/`: **\*New\*** NxHelper (the folder keeps its old name), a tool for Windows, macOS and
+  Linux that checks and prepares the USB drive and sends games through the Device Portal.
 - `tools/shader-share/`: a small server that keeps the largest valid shader cache per title.
 
 ## Trying it
+
+**New to the Device Portal?** Follow the step-by-step [user guide](docs/guide.md) (Português e English).
 
 You need an Xbox Series X|S in **Developer Mode** and your own dumps:
 
@@ -202,18 +212,20 @@ You need an Xbox Series X|S in **Developer Mode** and your own dumps:
 1. Download the `.appx` from the [latest release](https://github.com/NspxMiguel/NXbox/releases/latest)
    and install it through the Device Portal. It must run as a **Game**: as an App it only gets 1 GB of memory
    and games crash with `bad allocation`; as a Game it gets 5 GB. Either turn on
-   `DefaultUWPContentTypeToGame` in the Device Portal's settings *before* installing (NXbox Pack
-   does this for you), or afterwards in Dev Home select NXbox → **View details** and set
-   **App type** to **Game**.
+   `DefaultUWPContentTypeToGame` in the Device Portal's settings *before* installing, or afterwards
+   in Dev Home select NXbox → **View details** and set **App type** to **Game**.
 2. Put `prod.keys` and `title.keys` in the app's `LocalState\eden\keys`.
 3. Put your games (`.nsp`, `.nsz` or `.xci`) in `LocalState\games` (subfolders are fine), or on a USB drive in
    `NXbox\games` (the console's internal developer storage is small, a few GB). `.nsz` files are
    converted on the console the first time the library sees them.
 4. Launch NXbox from the dashboard and pick the game in the library.
 
-**\*New\*** [NXbox Pack](tools/nxbox-pack/README.md) does steps 1–4 for one game at a time: drag the
-game, your keys and any updates/DLC into its window, and it installs that game as its own app that
-boots straight into the game. To go back to the OpenGL path, add the line `renderer_backend=0` to
+**\*New\*** [NxHelper](tools/nxbox-pack/README.md) checks and prepares the USB drive (keys, firmware,
+games) and sends games over the Device Portal. It does not install NXbox itself, so step 1 above (or the
+[user guide](docs/guide.md)) still comes first. Downloads for Windows, macOS and Linux are on the
+[latest release](https://github.com/NspxMiguel/NXbox/releases/latest).
+
+To go back to the OpenGL path, add the line `renderer_backend=0` to
 `LocalState\eden_settings.txt` with the Device Portal's file explorer, then restart NXbox.
 
 Two other ways to get games in are built but not yet tested on the console: **Add games** imports

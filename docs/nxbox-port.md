@@ -972,3 +972,95 @@ override; pass BotW's previous PSO-creation failure point and inspect the effect
 draw; verify SM3DW menus, stencil effects and MSAA transitions visually. Capture frame gaps,
 memory and device-removal diagnostics, and confirm any removal exits the session instead of
 freezing. Check P5R for regressions and measure the cost of default serialization.
+
+## Truncated NSPs and unreadable tickets (18/10/2026)
+
+- Animal Crossing failed with `GAME_LOAD_FAILED status=11` (`ErrorBadNPDMHeader`) and a log full
+  of `ticket file with invalid size 0` for a ticket of another game (the Tears of the Kingdom
+  update). The ticket was not Animal Crossing's: every `.nsp` in the game folders is opened as
+  external content before the game starts. The only way that read returns 0 bytes is a ticket
+  past the end of the file (`RealVfsFile::Read` returns 0 there), and every library scan since the
+  first night already listed that TotK update as `The NCA file has a bad header` (its meta NCA
+  sits just before the ticket), so the copy on the drive is shorter than its own header says.
+  The empty ticket and the bad meta NCA are one fault; `NSP::ReadNCAs` then asked the NCA without
+  a header for its title ID (the `nca_reader.cpp:210` assert). The console files could not be
+  read from the Mac, so this is inferred from the log, not measured.
+- The source dumps (`.nsp`, with valid 704-byte tickets, every NCA matching its SHA-256 id) and
+  the NSZ converter (non-NCZ entries are copied byte for byte, see `src/tests/core/file_sys/nsz.cpp`)
+  were not at fault.
+- `NSP` now measures its entries against the real file size (`core/file_sys/pfs0_extent.h`). A
+  file with a `.nca` or `.tik` entry past its end fails with `ErrorIncorrectPFSFileSize` and one
+  `Common.Filesystem` error naming the file, the declared and actual sizes and the entries cut
+  off (`NSP <name> is truncated: ...`); cut-off `.cert`/`.xml` entries only warn. A ticket that is
+  present but unusable now says which NSP it belongs to and how many bytes it has
+  (`NSP <name>: ticket <t> is unusable ...`). NCAs without a readable header no longer reach the
+  title ID assert and are logged by name instead.
+- Not proven: why Animal Crossing's own base has no readable ExeFS on the drive (its ExeFS is the
+  last 34 MB of the 6.7 GB program NCA, and the update's ExeFS then fails as a bad NPDM). The
+  copies the Mac serves decrypt to a valid `main.npdm`, so a damaged copy on the drive is the
+  leading explanation; a file that has the right size but holes (a preallocated torrent) would
+  pass the size check above.
+- Test: `tests/port/pfs0_extent.cpp` (`pfs0-extent-truncation`).
+
+## Series S native device loss (2026-10-18 community logs)
+
+The supplied logs establish device loss, but do **not** identify its initiating shader,
+resource hazard or GPU command. Do not treat the slower GPU's TDR exposure as a proven
+root cause, increase the watchdog, or split guest dispatches without preserving group IDs
+and cross-group memory semantics.
+
+Evidence, using line numbers in the supplied `eden_uwp_diag.txt`:
+
+- Bayonetta 3 (`01004A4010FEA000`), launches at 1110 and 1875: both use
+  `resolution_setup=3` (1x), with submission tracing disabled (1136, 1901).
+  Before the first loss, presentation drops from 150 to 71 frames per five seconds,
+  with a 630 ms worst gap and 3,444,690,944 bytes used against a 5,368,709,120-byte
+  app limit (1735). Device removal is `0x887a0006` (1737); the next GPU stall
+  aggregate records a single 5679 ms CPU-side GPU wait (1752). The second attempt
+  similarly ends with `0x887a0006` (2192) and a 5613 ms wait (2207).
+- MK8 Deluxe (`0100152000022000`), launch at 2460: mixed lists contain guest draws,
+  query GPU reduction and copies (4801). GPU waits reach 4744 and 5286 ms (4807,
+  4810), with corresponding frame gaps of 4754 and 5302 ms. Memory remains around
+  3.6 GB against the same 5 GiB limit. The reset `0x887a0007` appears at 4841,
+  immediately after opening the Home overlay (4839–4840). That temporal association
+  needs a separate reproduction; it does not prove the overlay caused the reset.
+- DRED reports no breadcrumb nodes and page-fault address zero (1738–1739,
+  2193–2194, 4842–4843). Normal submission logs sample every 120 lists, so their
+  final printed list is not necessarily the failed one. The multi-second waits
+  include driver/reset latency; they are not measurements of a single dispatch.
+- `nxbox_crash.txt` confirms the losses at 1701, 2083 and 4752. Its preceding
+  memory heartbeats remain below the **measured UWP 5 GiB** limit; the console's
+  physical RAM or a retail game's allocation is not this app's memory allowance.
+  These logs do not demonstrate an out-of-memory failure.
+
+A separate, demonstrated containment bug made device loss permanent at the session level:
+`Context::ReportFailure` sets `NXBOX_D3D12_COMMAND_FAILURE=1` only on device removal,
+but `RunGame` ignored that terminal flag whenever the native renderer was active.
+After loss the log kept reporting zero presented frames and repeated removed-device
+operations. The session now consumes terminal command failure for both renderers,
+collects the existing reports and unwinds through `Pause` / `ShutdownMainProcess`.
+Only the Mesa-specific device-loss marker remains gated by native-renderer activity,
+so a stale Mesa marker does not terminate a healthy native session. Context construction
+clears the native terminal flag for a subsequent launch. This is session containment,
+not in-place device recovery or a fix for the initiating hang.
+
+Console verification gate (lead supplies a new CI build/package; none was run locally):
+
+1. On Series S, run each title at its existing settings, reproduce the same scene, and
+   keep MK8 running for at least 15 minutes. Test MK8 first without the Home overlay,
+   then repeat with it. Preserve `eden_uwp_diag.txt` and `nxbox_crash.txt` after each run.
+2. If loss occurs, require `GAME_STOPPED`, then `GAME_FAIL ... stopping the game`,
+   and a responsive library instead of sustained zero-frame heartbeats. Launch another
+   title to verify device/swapchain teardown and flag reset. Check Series X for regression.
+   Teardown and library device recreation still require hardware validation.
+3. To isolate the offending list, add `NXBOX_D3D12_SUBMIT_TRACE=1` to the app's
+   `LocalState/nxbox_env.txt`, fully restart NXbox, and repeat the scene. This logs
+   **every** submission and waits for completion; preserve the last
+   `D3D12 ExecuteCommandLists sequence=... tick=... contents=...` before removal.
+   It changes scheduling and can hide a timing bug; record that outcome too.
+   Remove the line and fully restart after the diagnostic run.
+4. Separately compare 0.5x resolution to 1x, changing no other setting. If tracing still
+   hangs, repeat one-at-a-time with `NXBOX_D3D12_NO_COMPUTE=1`,
+   `NXBOX_D3D12_NO_QUERIES=1`, or `NXBOX_D3D12_NO_DRAWS=1` in that same file.
+   Restart between runs, remove the previous toggle, and record missing rendering or
+   guest progress as well as device loss. Skipping work is diagnostic, not a playable fix.

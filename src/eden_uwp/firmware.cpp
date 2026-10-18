@@ -26,6 +26,48 @@ namespace EdenXbox {
 namespace {
 std::mutex status_mutex;
 FirmwareStatus status;
+
+// The library's USB import copies the keys only after this runs, so the first launch with a fresh
+// drive would try its firmware without keys and fail. Take missing keys from the drive first, from
+// the same places the import looks (NXbox\, then switch\, then the drive root).
+void CopyMissingKeys(const std::filesystem::path& local_state,
+                     const std::vector<winrt::Windows::Storage::StorageFolder>& drives) {
+    using namespace winrt::Windows::Storage;
+    for (const wchar_t* name : {L"prod.keys", L"title.keys"}) {
+        if (Common::FS::Exists(local_state / "eden" / "keys" / name)) {
+            continue;
+        }
+        bool copied = false;
+        for (const auto& drive : drives) {
+            for (const wchar_t* prefix : {L"NXbox\\", L"switch\\", L""}) {
+                if (copied) {
+                    break;
+                }
+                try {
+                    const auto item =
+                        AwaitBounded(drive.TryGetItemAsync(std::wstring(prefix) + name),
+                                     std::chrono::seconds(3));
+                    const auto file = item && *item ? item->try_as<StorageFile>() : nullptr;
+                    if (!file) {
+                        continue;
+                    }
+                    const auto keys =
+                        AwaitBounded(ApplicationData::Current().LocalFolder().CreateFolderAsync(
+                                         L"eden\\keys", CreationCollisionOption::OpenIfExists),
+                                     std::chrono::seconds(5));
+                    copied = keys && AwaitBounded(file.CopyAsync(*keys, name,
+                                                                 NameCollisionOption::FailIfExists),
+                                                  std::chrono::seconds(10));
+                    Diagnostic("FIRMWARE keys_from_usb " + winrt::to_string(name) +
+                               (copied ? " copied" : " copy_failed"));
+                } catch (const winrt::hresult_error& error) {
+                    Diagnostic("FIRMWARE keys_from_usb_failed " +
+                               winrt::to_string(error.message()));
+                }
+            }
+        }
+    }
+}
 } // namespace
 
 FirmwareStatus GetFirmwareStatus() {
@@ -36,6 +78,18 @@ FirmwareStatus GetFirmwareStatus() {
 void PrepareFirmware(const std::filesystem::path& local_state) {
     FirmwareStatus next;
     try {
+        std::vector<winrt::Windows::Storage::StorageFolder> drives;
+        try {
+            const auto found = AwaitBounded(
+                winrt::Windows::Storage::KnownFolders::RemovableDevices().GetFoldersAsync(),
+                std::chrono::seconds(5));
+            if (found) {
+                drives.assign(begin(*found), end(*found));
+            }
+        } catch (const winrt::hresult_error& error) {
+            Diagnostic("FIRMWARE usb_scan_failed " + winrt::to_string(error.message()));
+        }
+        CopyMissingKeys(local_state, drives);
         // Filesystem-only setup avoids reserving guest memory just to inspect/install firmware.
         Core::Crypto::KeyManager::Instance().ReloadKeys();
         Core::System system;
@@ -46,15 +100,13 @@ void PrepareFirmware(const std::filesystem::path& local_state) {
         next.version = FirmwareManager::InstalledVersion(system);
         std::vector<std::filesystem::path> roots;
         try {
-            const auto drives = AwaitBounded(
-                winrt::Windows::Storage::KnownFolders::RemovableDevices().GetFoldersAsync(),
-                std::chrono::seconds(5));
-            if (drives) {
-                for (const auto& drive : *drives) {
-                    const auto item = AwaitBounded(drive.TryGetItemAsync(L"NXbox\\firmware"),
-                                                   std::chrono::seconds(5));
+            for (const auto& drive : drives) {
+                for (const wchar_t* name : {L"NXbox\\firmware", L"firmware"}) {
+                    const auto item =
+                        AwaitBounded(drive.TryGetItemAsync(name), std::chrono::seconds(5));
                     if (item && *item && item->try_as<winrt::Windows::Storage::StorageFolder>()) {
                         roots.emplace_back(std::wstring(drive.Path()));
+                        break;
                     }
                 }
             }
@@ -67,22 +119,44 @@ void PrepareFirmware(const std::filesystem::path& local_state) {
                     continue;
                 }
                 std::vector<std::filesystem::path> files;
-                const bool scanned = Common::FS::Uwp::ForEachEntry(
-                    folder, [&](const auto& file, const WIN32_FIND_DATAW& data) {
-                        if (file.extension() != L".nca") {
+                std::vector<std::filesystem::path> subfolders;
+                const auto scan = [&](const std::filesystem::path& directory, bool top) {
+                    return Common::FS::Uwp::ForEachEntry(
+                        directory, [&](const auto& file, const WIN32_FIND_DATAW& data) {
+                            const auto attributes = data.dwFileAttributes;
+                            if (file.extension() != L".nca") {
+                                if (top && (attributes & FILE_ATTRIBUTE_DIRECTORY) &&
+                                    !(attributes & FILE_ATTRIBUTE_REPARSE_POINT)) {
+                                    subfolders.push_back(file);
+                                }
+                                return true;
+                            }
+                            if (attributes &
+                                (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) {
+                                return false;
+                            }
+                            files.push_back(file);
                             return true;
-                        }
-                        if (data.dwFileAttributes &
-                            (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) {
-                            return false;
-                        }
-                        files.push_back(file);
-                        return true;
-                    });
+                        });
+                };
+                bool scanned = scan(folder, true);
+                // TegraExplorer and most guides leave the NCAs one folder deeper
+                // ("firmware/Firmware 21.2.0/*.nca"): take the first subfolder that has them.
+                std::sort(subfolders.begin(), subfolders.end());
+                for (const auto& subfolder : subfolders) {
+                    if (!scanned || !files.empty()) {
+                        break;
+                    }
+                    scanned = scan(subfolder, false);
+                }
                 if (!scanned) {
                     next.install_failed = true;
                     Diagnostic("FIRMWARE scan_failed");
                     break;
+                }
+                if (files.empty()) {
+                    Diagnostic("FIRMWARE no_nca " + Common::FS::PathToUTF8String(folder));
+                    continue;
                 }
                 std::sort(files.begin(), files.end());
                 Diagnostic("FIRMWARE install_begin count=" + std::to_string(files.size()));

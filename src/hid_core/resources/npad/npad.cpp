@@ -151,12 +151,20 @@ void NPad::ControllerUpdate(Kernel::KernelCore& kernel, Core::HID::ControllerTri
         return;
     }
 
+    // Controller callbacks are registered in the constructor, but the HID service attaches the
+    // applet resource later: a motion or connection report in between (an Xbox pad polled at
+    // boot) dereferenced the null resource.
+    // ponytail: unsynchronized read of a pointer set once at service start; lock if that changes.
+    auto* const applet_resource = applet_resource_holder.applet_resource.get();
+    if (applet_resource == nullptr) {
+        return;
+    }
     for (std::size_t aruid_index = 0; aruid_index < AruidIndexMax; aruid_index++) {
         if (controller_idx >= controller_data[aruid_index].size()) {
             return;
         }
 
-        auto* data = applet_resource_holder.applet_resource->GetAruidDataByIndex(aruid_index);
+        auto* data = applet_resource->GetAruidDataByIndex(aruid_index);
 
         if (data == nullptr || !data->flag.is_assigned) {
             continue;

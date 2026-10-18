@@ -21,10 +21,13 @@ int main(int argc, char** argv) {
     assert(argc == 2);
     const fs::path root(argv[1]);
     const auto folders = FirmwareFolders(root / "local", {root / "usb1", root / "usb2"});
-    assert(folders.size() == 3);
+    assert(folders.size() == 6);
     assert(folders[0] == root / "local" / "firmware");
-    assert(folders[1] == root / "usb1" / "NXbox" / "firmware");
-    assert(folders[2] == root / "usb2" / "NXbox" / "firmware");
+    assert(folders[1] == root / "local" / "eden" / "firmware");
+    assert(folders[2] == root / "usb1" / "NXbox" / "firmware");
+    assert(folders[3] == root / "usb1" / "firmware");
+    assert(folders[4] == root / "usb2" / "NXbox" / "firmware");
+    assert(folders[5] == root / "usb2" / "firmware");
     assert(DisplayVersion(std::string("21.2.0\0junk", 11)) == "21.2.0");
     assert(DisplayVersion(std::string("1.0.0\0", 6)) == "1.0.0");
     for (const auto text : {"", "21.2.0", ".2.0", "21..0", "21.2.", "21.2", "1.2.3.4", "bad", "21.2.0\n"}) {
@@ -81,6 +84,24 @@ class FirmwareTests(unittest.TestCase):
         # drive hides it from the app.
         for extension in (".nca", ".nsp", ".nsz", ".xci", ".xcz", ".keys"):
             self.assertIn(extension, [entry.text for entry in types])
+
+    def test_uwp_scan_accepts_one_nested_folder(self):
+        source = (ROOT / "src/eden_uwp/firmware.cpp").read_text()
+        # A dump one folder deeper is installed; an empty folder does not block the next source.
+        self.assertIn("scan(subfolder, false)", source)
+        self.assertLess(source.index('"FIRMWARE no_nca "'), source.index("InstallFirmware("))
+        self.assertIn('{L"NXbox\\\\firmware", L"firmware"}', source)
+
+    def test_uwp_first_launch_takes_keys_from_the_drive_before_installing(self):
+        source = (ROOT / "src/eden_uwp/firmware.cpp").read_text()
+        prepare = source.split("void PrepareFirmware(", 1)[1]
+        # The library imports keys after this runs; without them the first install would fail.
+        self.assertLess(prepare.index("CopyMissingKeys(local_state, drives)"),
+                        prepare.index("ReloadKeys()"))
+        self.assertIn('{L"prod.keys", L"title.keys"}', source)
+        # Keys kept inside NXbox\ (one folder per console on a shared drive) are found first.
+        self.assertIn('{L"NXbox\\\\", L"switch\\\\", L""}', source)
+        self.assertIn("NameCollisionOption::FailIfExists", source)
 
     def test_folders_archive_and_version(self):
         with tempfile.TemporaryDirectory(prefix="nxbox-firmware-") as directory:

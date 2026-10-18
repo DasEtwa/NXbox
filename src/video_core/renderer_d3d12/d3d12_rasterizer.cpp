@@ -1324,21 +1324,28 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         context.Profile().Count(FrameCount::BufferUploadBytes, elements * storage_bytes);
         context.Profile().Count(FrameCount::VertexUploadBytes, elements * storage_bytes);
         context.Profile().Count(FrameCount::VertexRepackBytes, elements * storage_bytes);
-        auto packed = context.CreateBuffer(elements * storage_bytes, D3D12_HEAP_TYPE_UPLOAD);
-        std::fill(packed->mapped.begin(), packed->mapped.end(), u8{0});
+        // A ring slice rather than a placed resource (and aliasing barrier) per draw: creation
+        // cost Odyssey ~1.9 ms a frame for ~25 repacked streams. Tracing keeps a whole buffer.
+        const auto packed_bytes = static_cast<size_t>(elements * storage_bytes);
+        const StagingBufferRef packed =
+            trace_vertex_bytes ? [&] {
+                auto buffer = context.CreateBuffer(packed_bytes, D3D12_HEAP_TYPE_UPLOAD);
+                return StagingBufferRef{buffer, 0, buffer->mapped.first(packed_bytes)};
+            }()
+                               : vertex_repack.Request(packed_bytes);
+        std::fill(packed.mapped_span.begin(), packed.mapped_span.end(), u8{0});
         const u64 read_bytes = std::min(available, required);
         std::vector<u8> source(static_cast<size_t>(read_bytes));
         const auto guest_address = regs.vertex_streams[attribute.slot].Address() + attribute.offset;
         if (const auto cpu = gpu_memory->GpuToCpuAddress(guest_address))
             buffer_cache.DownloadMemory(*cpu, read_bytes);
         gpu_memory->ReadBlock(guest_address, source.data(), source.size());
-        Pso::RepackVertexFormat(packed->mapped.first(static_cast<size_t>(elements * storage_bytes)),
-                                source, slot.stride, vertex_size,
+        Pso::RepackVertexFormat(packed.mapped_span, source, slot.stride, vertex_size,
                                 static_cast<u32>(input.type.Value()), attribute.swap_rb != 0);
-        context.Retain(packed);
+        context.Retain(packed.buffer);
         if (trace_vertex_bytes)
-            trace_vertex_resources[i] = packed;
-        vertex_views[i] = {packed->handle->GetGPUVirtualAddress(),
+            trace_vertex_resources[i] = packed.buffer;
+        vertex_views[i] = {packed.buffer->handle->GetGPUVirtualAddress() + packed.offset,
                            static_cast<UINT>(elements * storage_bytes),
                            slot.stride ? storage_bytes : 0};
     }
@@ -3421,27 +3428,57 @@ bool RasterizerD3D12::AccelerateSurfaceCopy(const Tegra::Engines::Fermi2D::Surfa
         static_cast<u32>(std::max<s64>(0, s64{copy_config.dst_y1} - copy_config.dst_y0)) *
         VideoCore::Surface::BytesPerBlock(
             VideoCore::Surface::PixelFormatFromRenderTargetFormat(dst.format));
+    const auto src_format =
+        MaxwellFormat(VideoCore::Surface::PixelFormatFromRenderTargetFormat(src.format));
+    const auto plain = [](const auto& f) {
+        return f.Supported() && !f.depth && !f.converted_astc &&
+               f.conversion == FormatConversion::None && f.block_width == 1 &&
+               f.block_height == 1;
+    };
     bool accelerated = false;
-    // Exact native color copies preserve bits, including integer and sRGB formats.
-    // Scaling, conversion, depth and unsupported operations retain the software path.
+    const char* reason = nullptr;
+    // Color SrcCopy blits run on the GPU: exact same-format copies as copies, scaled or
+    // format-changing ones as draws (CanBlitImages checks the cached images).
+    // Depth, ROP/blend operations and converted formats retain the software path.
     if (!BisectEnabled("NXBOX_D3D12_NO_FERMI_COPY") && src.layer == 0 && dst.layer == 0 &&
-        src.depth == 1 && dst.depth == 1 &&
-        src.format == dst.format && format.Supported() && !format.depth && !format.converted_astc &&
-        format.conversion == FormatConversion::None && format.block_width == 1 &&
-        format.block_height == 1 &&
-        copy_config.operation == Tegra::Engines::Fermi2D::Operation::SrcCopy &&
-        IsExactBlit(copy_config.src_x0, copy_config.src_y0, copy_config.src_x1, copy_config.src_y1,
-                    copy_config.dst_x0, copy_config.dst_y0, copy_config.dst_x1,
-                    copy_config.dst_y1)) {
+        src.depth == 1 && dst.depth == 1 && plain(format) && plain(src_format) &&
+        copy_config.operation == Tegra::Engines::Fermi2D::Operation::SrcCopy) {
         std::scoped_lock lock{texture_cache.mutex};
         auto gpu_copy = copy_config;
         // Preserve the shared cache's CPU-only heuristic for tiny copies; creating
         // and uploading two textures can cost more than the software copy itself.
         gpu_copy.must_accelerate = copy_config.must_accelerate || bytes >= (256ULL << 10);
+        texture_runtime.blit_reject = nullptr;
         accelerated = texture_cache.BlitImage(dst, src, gpu_copy);
+        reason = texture_runtime.blit_reject ? texture_runtime.blit_reject
+                                             : "no cached image for the surfaces";
+    } else {
+        reason = src.layer != 0 || dst.layer != 0 || src.depth != 1 || dst.depth != 1
+                     ? "layered or 3D surface"
+                 : !plain(format) || !plain(src_format) ? "surface format is depth or converted"
+                 : copy_config.operation != Tegra::Engines::Fermi2D::Operation::SrcCopy
+                     ? "operation is not SrcCopy"
+                     : "disabled by NXBOX_D3D12_NO_FERMI_COPY";
     }
     if (!accelerated) {
         texture_runtime.RecordSoftwareBlit(dst.Address());
+        // The first 32 large software blits, then one in 512: enough to name the cause.
+        static std::atomic<u32> logged{0};
+        const u32 index = logged.fetch_add(1, std::memory_order_relaxed);
+        if (bytes >= (256ULL << 10) && (index < 32 || index % 512 == 0)) {
+            Diagnostic(fmt::format(
+                "D3D12_FERMI_SOFTWARE reason=\"{}\" src_format={} dst_format={} src={}x{} "
+                "dst={}x{} src_linear={} dst_linear={} src_region={},{}-{},{} "
+                "dst_region={},{}-{},{} filter={} operation={} src_addr={:#x} dst_addr={:#x}",
+                reason, static_cast<u32>(src.format), static_cast<u32>(dst.format), src.width,
+                src.height, dst.width, dst.height,
+                src.linear == Tegra::Engines::Fermi2D::MemoryLayout::Pitch,
+                dst.linear == Tegra::Engines::Fermi2D::MemoryLayout::Pitch, copy_config.src_x0,
+                copy_config.src_y0, copy_config.src_x1, copy_config.src_y1, copy_config.dst_x0,
+                copy_config.dst_y0, copy_config.dst_x1, copy_config.dst_y1,
+                static_cast<u32>(copy_config.filter), static_cast<u32>(copy_config.operation),
+                src.Address(), dst.Address()));
+        }
     }
     context.Profile().Count(accelerated ? FrameCount::FermiBlitsAccelerated
                                         : FrameCount::FermiBlitsSoftware);
