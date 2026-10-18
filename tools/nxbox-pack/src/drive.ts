@@ -3,7 +3,7 @@
 import { copyFile, lstat, mkdir, mkdtemp, readdir, rm, statfs } from "node:fs/promises";
 import { constants } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, extname, join, relative, resolve } from "node:path";
+import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
 import { readKeys, prepareFirmware, verifyFirmware } from "./firmware";
 import { fileReader, folderFiles, safePath, zipEntries, type LocalFile } from "./storage";
 import { gameExtension, parseTitleId, validateFile } from "./files";
@@ -37,6 +37,8 @@ function message(language: Language, key: Message, values: Record<string, string
     strings[language][key],
   );
 }
+// Paths shown to the user always use "/", the way the guide writes them, on every system.
+const shown = (root: string, path: string) => relative(root, path).split(sep).join("/");
 async function entries(path: string) {
   try {
     return await readdir(path, { withFileTypes: true });
@@ -176,7 +178,7 @@ export async function checkDrive(
     "prodKeys",
     keys?.get("header_key")?.length === 32 ? "ok" : "fail",
     "driveProd",
-    wrongKeys ? message(language, "driveFound", { path: relative(root, wrongKeys) }) : undefined,
+    wrongKeys ? message(language, "driveFound", { path: shown(root, wrongKeys) }) : undefined,
     keys?.get("header_key")?.length === 32 ? undefined : "driveKeysFix",
   );
   const title = await keyPath(root, "title.keys");
@@ -191,12 +193,12 @@ export async function checkDrive(
     "titleKeys",
     validTitle ? "ok" : "warn",
     "driveTitle",
-    wrongTitle ? message(language, "driveFound", { path: relative(root, wrongTitle) }) : undefined,
+    wrongTitle ? message(language, "driveFound", { path: shown(root, wrongTitle) }) : undefined,
     validTitle ? undefined : title ? "driveTitleInvalid" : "driveTitleMissing",
   );
   const firmware = await firmwareSource(root);
   if (firmware.fixable)
-    add("firmware", "fail", "driveFirmware", relative(root, firmware.source!), "driveUnpack");
+    add("firmware", "fail", "driveFirmware", shown(root, firmware.source!), "driveUnpack");
   else if (!firmware.files.length)
     add("firmware", "fail", "driveFirmware", undefined, "driveFirmwareMissing");
   else {
@@ -249,7 +251,7 @@ export async function checkDrive(
       items.push({
         id: problems[0].id,
         status: problems[0].status,
-        title: relative(root, path),
+        title: shown(root, path),
         fix: problems.map((p) => message(language, p.fix)).join("\n"),
       });
   }
