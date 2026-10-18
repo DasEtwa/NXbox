@@ -41,6 +41,8 @@ constexpr wchar_t AccountResource[] = L"NXbox.Nextendo.Account";
 constexpr wchar_t KeyResource[] = L"NXbox.Nextendo.SigningKey";
 constexpr wchar_t EnabledKey[] = L"nextendo_enabled";
 std::mutex account_mutex;
+std::recursive_mutex session_mutex;
+bool account_verified = false;
 nx::Identity account;
 std::string profile_id;
 std::shared_ptr<nx::IdTokenSigner> signer;
@@ -55,7 +57,8 @@ nx::TokenProvider Provider() {
                              std::chrono::system_clock::now().time_since_epoch())
                              .count();
         try {
-            return key->Sign(nx::IdTokenClaims(identity, version, now, nx::RandomHex(16)));
+            const auto claims = nx::IdTokenClaims(identity, version, now, nx::RandomHex(16));
+            return claims.empty() ? std::string{} : key->Sign(claims);
         } catch (...) {
             return std::string{};
         }
@@ -96,25 +99,38 @@ std::optional<json::JsonObject> ReadJson(const http::HttpResponseMessage& respon
     return object;
 }
 
+std::int64_t ReadSeconds(const json::JsonObject& object, const wchar_t* key) {
+    const double number = object.GetNamedNumber(key, 0);
+    if (!(number >= 0 && number <= 9007199254740991.0) ||
+        number != static_cast<std::int64_t>(number))
+        return 0;
+    return static_cast<std::int64_t>(number);
+}
+
 nx::Identity ParseIdentity(const json::JsonObject& object) {
     nx::Identity value;
-    const auto data = object.GetNamedObject(L"account");
+    const auto data = object.GetNamedObject(L"account", object);
     // PID is an integer, not a floating-point account ID. Reject imprecise JSON numbers.
-    const auto pid = data.GetNamedNumber(L"pid", 0);
-    if (pid <= 0 || pid > 9007199254740991.0 || pid != static_cast<std::uint64_t>(pid))
-        return {};
-    value.pid = static_cast<std::uint64_t>(pid);
+    value.pid = static_cast<std::uint64_t>(ReadSeconds(data, L"pid"));
     value.username = winrt::to_string(data.GetNamedString(L"username", L""));
     value.friend_code = winrt::to_string(data.GetNamedString(L"friend_code", L""));
     value.nex_token = winrt::to_string(object.GetNamedString(L"nex_token", L""));
+    value.access_token = winrt::to_string(object.GetNamedString(L"access_token", L""));
+    value.refresh_token = winrt::to_string(object.GetNamedString(L"refresh_token", L""));
+    value.access_expires_at = ReadSeconds(object, L"access_expires_at");
+    value.nex_expires_at = ReadSeconds(object, L"nex_expires_at");
     value.profile_id = winrt::to_string(object.GetNamedString(L"profile_id", L""));
     return value;
 }
 
 void RemoveAccount(const nx::Identity* rejected = nullptr) {
+    std::scoped_lock session_lock(session_mutex);
     std::scoped_lock lock(account_mutex);
     if (rejected && !nx::SameSession(account, *rejected))
         return;
+    account = {};
+    account_verified = false;
+    nx::SetIdentity({});
     credentials::PasswordVault vault;
     try {
         vault.Remove(vault.Retrieve(AccountResource, L"session"));
@@ -122,13 +138,36 @@ void RemoveAccount(const nx::Identity* rejected = nullptr) {
         if (error.code() != HRESULT_FROM_WIN32(ERROR_NOT_FOUND))
             throw;
     }
-    account = {};
-    nx::SetIdentity({});
+}
+
+// Serialize refresh, rotated vault writes, sign-out, and replacement logins.
+bool EnsureFreshSession(bool force = false) {
+    std::scoped_lock session_lock(session_mutex);
+    auto identity = LinkedAccount();
+    if (identity.profile_id.empty())
+        return false;
+    if (!nx::ValidToken(identity.refresh_token)) {
+        RemoveAccount();
+        return false;
+    }
+    const auto now = nx::EpochSeconds();
+    if (!force && account_verified && !nx::SessionNeedsRefresh(identity, now))
+        return true;
+    identity.nex_token.clear();
+    identity.nex_expires_at = 0;
+    account_verified = false;
+    nx::SetIdentity(identity, Provider());
+    const auto result = nx::RefreshSession(
+        identity, nx::GetConfig().client_id, Exchange, SaveAccount, [] { RemoveAccount(); }, now);
+    account_verified = result == nx::AuthResult::Ready;
+    return account_verified;
 }
 
 void PublishPresence(const nx::Presence& presence) {
+    if (!nx::IsEnabled() || !EnsureFreshSession())
+        return;
     const auto identity = LinkedAccount();
-    if (!nx::IsEnabled() || presence.profile_id != identity.profile_id)
+    if (presence.profile_id != identity.profile_id)
         return;
     const auto config = nx::GetConfig();
     auto request = nx::SocialRequest("/api/presence", identity, config.client_id);
@@ -169,6 +208,8 @@ void PollSocial(std::stop_token stop) {
             presence = nx::runtime.presence;
             nx::runtime.presence.pending = false;
         }
+        if (presence.profile_id.empty())
+            presence.profile_id = LinkedAccount().profile_id;
         if (presence.pending)
             PublishPresence(presence);
         const auto now = std::chrono::steady_clock::now();
@@ -177,7 +218,7 @@ void PollSocial(std::stop_token stop) {
                 RefreshFriends();
                 if (!presence.pending && !presence.profile_id.empty())
                     PublishPresence(presence);
-                if (nx::IsEnabled()) {
+                if (nx::IsEnabled() && EnsureFreshSession()) {
                     const auto identity = LinkedAccount();
                     auto request =
                         nx::SocialRequest("/api/nex-session", identity, nx::GetConfig().client_id);
@@ -203,9 +244,10 @@ std::string CurrentProfileId() {
 }
 
 void Initialize(const std::filesystem::path& local_state) {
-    std::scoped_lock lock(account_mutex);
+    std::scoped_lock session_lock(session_mutex);
     Service::Account::ProfileManager profiles;
     {
+        std::scoped_lock lock(account_mutex);
         profile_id =
             profiles.GetUser(static_cast<std::size_t>(Settings::values.current_user.GetValue()))
                 .value_or(Common::UUID::MakeDefault())
@@ -246,18 +288,27 @@ void Initialize(const std::filesystem::path& local_state) {
         auto credential = credentials::PasswordVault().Retrieve(AccountResource, L"session");
         credential.RetrievePassword();
         restored = ParseIdentity(json::JsonObject::Parse(credential.Password()));
-        if (restored.profile_id.empty() || restored.nex_token.empty())
+        if (restored.profile_id.empty() || !nx::ValidToken(restored.refresh_token))
             restored = {};
     } catch (...) {
     }
-    account = restored;
-    nx::SetIdentity(std::move(restored), Provider());
+    {
+        std::scoped_lock lock(account_mutex);
+        account = restored;
+    }
+    account_verified = false;
+    nx::SetIdentity({});
+    // The social worker refreshes on its first pass, so the library never waits on the network.
+    if (restored.profile_id.empty())
+        RemoveAccount();
     if (!social_worker.joinable())
         social_worker = std::jthread(PollSocial);
 }
 
 bool SetEnabled(bool enabled) {
     try {
+        if (enabled && LinkedAccount().pid != 0 && !EnsureFreshSession(true))
+            return false;
         winrt::Windows::Storage::ApplicationData::Current().LocalSettings().Values().Insert(
             EnabledKey, winrt::box_value(enabled));
         auto config = nx::GetConfig();
@@ -270,9 +321,11 @@ bool SetEnabled(bool enabled) {
 }
 
 bool SaveAccount(const nx::Identity& identity) {
-    if (identity.pid == 0 || identity.nex_token.empty() || identity.profile_id.empty())
+    if (identity.profile_id.empty() || !nx::ValidOAuth(identity, nx::EpochSeconds()) ||
+        (!identity.nex_token.empty() && !nx::ValidToken(identity.nex_token)))
         return false;
     try {
+        std::scoped_lock session_lock(session_mutex);
         std::scoped_lock lock(account_mutex);
         json::JsonObject data, root;
         data.SetNamedValue(L"pid",
@@ -286,9 +339,20 @@ bool SaveAccount(const nx::Identity& identity) {
                                              winrt::to_hstring(identity.nex_token)));
         root.SetNamedValue(L"profile_id", json::JsonValue::CreateStringValue(
                                               winrt::to_hstring(identity.profile_id)));
+        root.SetNamedValue(L"access_token", json::JsonValue::CreateStringValue(
+                                                winrt::to_hstring(identity.access_token)));
+        root.SetNamedValue(L"refresh_token", json::JsonValue::CreateStringValue(
+                                                 winrt::to_hstring(identity.refresh_token)));
+        root.SetNamedValue(
+            L"access_expires_at",
+            json::JsonValue::CreateNumberValue(static_cast<double>(identity.access_expires_at)));
+        root.SetNamedValue(L"nex_expires_at", json::JsonValue::CreateNumberValue(
+                                                  static_cast<double>(identity.nex_expires_at)));
         credentials::PasswordVault vault;
         vault.Add(credentials::PasswordCredential(AccountResource, L"session", root.Stringify()));
         account = identity;
+        account_verified = identity.pid != 0 && nx::ValidToken(identity.nex_token) &&
+                           identity.nex_expires_at > nx::EpochSeconds();
         nx::SetIdentity(identity, Provider());
         return true;
     } catch (...) {
@@ -306,8 +370,12 @@ nx::Identity LinkedAccount() {
 }
 
 nx::HttpResponse Exchange(const nx::HttpRequest& request) {
-    if (request.url != std::string(nx::ApiOrigin) + "/api/oauth/token" ||
-        request.method != "POST" || request.content_type != "application/x-www-form-urlencoded")
+    const bool oauth = request.url == std::string(nx::ApiOrigin) + "/api/oauth/token" &&
+                       request.method == "POST" &&
+                       request.content_type == "application/x-www-form-urlencoded";
+    const bool nex =
+        request.url == std::string(nx::ApiOrigin) + "/api/nex-token" && request.method == "GET";
+    if (!oauth && !nex)
         return {};
     try {
         const auto response = Send(request);
@@ -317,8 +385,23 @@ nx::HttpResponse Exchange(const nx::HttpRequest& request) {
         result.status = static_cast<unsigned>(response->StatusCode());
         if (result.status == 200) {
             const auto object = ReadJson(*response);
-            if (object)
+            if (object) {
                 result.identity = ParseIdentity(*object);
+                // Documented lifetimes: one hour for OAuth, 24 hours for the NEX token.
+                auto lifetime = ReadSeconds(*object, L"expires_in");
+                if (lifetime == 0)
+                    lifetime = oauth ? 60 * 60 : 24 * 60 * 60;
+                if (lifetime > 30 * 24 * 60 * 60)
+                    return {result.status, {}};
+                const auto expiry = nx::EpochSeconds() + lifetime;
+                if (oauth) {
+                    result.identity.access_expires_at = expiry;
+                    // The legacy combined response did not specify a separate NEX lifetime.
+                    result.identity.nex_expires_at = nx::EpochSeconds() + 24 * 60 * 60;
+                } else {
+                    result.identity.nex_expires_at = expiry;
+                }
+            }
         }
         return result;
     } catch (...) {
@@ -327,7 +410,7 @@ nx::HttpResponse Exchange(const nx::HttpRequest& request) {
 }
 
 bool RefreshFriends() {
-    if (!nx::IsEnabled())
+    if (!nx::IsEnabled() || !EnsureFreshSession())
         return false;
     const auto identity = LinkedAccount();
     const auto config = nx::GetConfig();

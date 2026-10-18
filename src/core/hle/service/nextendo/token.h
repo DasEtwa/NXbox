@@ -31,7 +31,8 @@ inline std::string JsonString(std::string_view value) {
 // redirects them before resolution; this function performs no network operation.
 inline std::string IdTokenClaims(const Identity& identity, std::string_view version,
                                  std::int64_t now, std::string_view nonce) {
-    if (identity.pid == 0 || identity.nex_token.empty() || nonce.empty() || now < 0)
+    if (identity.pid == 0 || !ValidToken(identity.nex_token) || nonce.empty() || now < 0 ||
+        identity.nex_expires_at <= now)
         return {};
     constexpr std::string_view issuer =
         "https://e0d67c509fb203858ebcb2fe3f88c2aa.baas.nintendo.com";

@@ -57,10 +57,14 @@ inline void Configure(Config config) {
 }
 inline void SetIdentity(Identity identity, TokenProvider provider = {}) {
     std::scoped_lock lock(runtime.mutex);
+    const bool changed_account =
+        runtime.identity.pid != identity.pid || runtime.identity.profile_id != identity.profile_id;
     runtime.identity = std::move(identity);
     runtime.token_provider = std::move(provider);
-    runtime.friends.clear();
-    runtime.presence = {};
+    if (changed_account) {
+        runtime.friends.clear();
+        runtime.presence = {};
+    }
 }
 inline Identity GetIdentity(std::string_view profile_id) {
     std::scoped_lock lock(runtime.mutex);
@@ -74,7 +78,8 @@ inline std::string GetIdToken(std::string_view profile_id, std::uint64_t program
     std::scoped_lock lock(runtime.mutex);
     if (!runtime.config.enabled || !runtime.config.RoutesReady() ||
         profile_id != runtime.identity.profile_id || !runtime.token_provider ||
-        runtime.identity.pid == 0 || runtime.identity.nex_token.empty())
+        runtime.identity.pid == 0 || !ValidToken(runtime.identity.nex_token) ||
+        runtime.identity.nex_expires_at <= EpochSeconds())
         return {};
     return runtime.token_provider(runtime.identity, program_id, version);
 }

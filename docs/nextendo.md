@@ -8,7 +8,12 @@ proof that matchmaking, TLS, UDP NAT traversal, or a race lobby works.
 
 ## Sources and attribution
 
-Studied on 2026-10-12:
+OAuth contract aligned on 2026-10-18 with the
+[official developer documentation](https://wiki.nextendo.network/developers).
+The OAuth access token authenticates account APIs; the separate NEX token
+authenticates games through the BAAS `nnex` claim.
+
+Original interoperability sources studied on 2026-10-12:
 
 - [Ryujinx-Nextendo](https://github.com/NextendoNetwork/Ryujinx-Nextendo/tree/f6095ad5ce543fc00987609af28c3823ca65e31a),
   commit `f6095ad5ce543fc00987609af28c3823ca65e31a`.
@@ -43,14 +48,15 @@ sources; it does not relicense their code.
 | `tests/port/test_t22_nextendo.py` | Executable C++ policy and mocked HTTP tests, LLVM coverage |
 | `docs/nextendo.md` | Attribution, configuration, measurements and console test plan |
 
-There are 22 changed files. Renderer, common settings, core build registration,
+The original T22 integration changed 22 files. Renderer, common settings, core build registration,
 application manifests, and other worktrees are untouched. Existing-file formatting
 is isolated in commit `0404d53100`.
 
 ## Operator setup
 
 Register an NXbox public PKCE application at the Nextendo developer portal, with
-redirect URI `http://127.0.0.1:17822/callback` and identity/friends/presence scopes.
+redirect URI `http://127.0.0.1:17822/callback` and the space-separated scopes
+`identity friends presence game.matchmaking`.
 Do not reuse Ryujinx's application identity or release attestation secrets.
 
 Provide **public configuration only** in Xbox LocalState `nextendo.json`:
@@ -97,17 +103,43 @@ The published client uses authorization-code PKCE, not a device-code endpoint.
 NXbox does not invent a device grant, password API, QR endpoint, or anonymous guest
 identity. Codes are single use, state is checked, duplicate parameters are rejected,
 and authorization expires after five minutes. The HTTP exchange uses a fixed
-HTTPS origin, normal certificate validation, and no automatic redirects. Only
-identity/friends/presence scopes are requested.
+HTTPS origin, normal certificate validation, and no automatic redirects. The requested scope is
+`identity friends presence game.matchmaking`; `app=nxbox` and the random state
+remain in the authorization URL.
 
-The account server returns `nex_token` plus `account.pid`, `username`, and
-`friend_code`. The complete session is stored only in PasswordVault resource
-`NXbox.Nextendo.Account`, username `session`, and bound to the active local
-profile's raw UUID. PID and token are exposed to account IPC only for that profile,
-with online mode and valid routes. Other profiles cannot borrow that identity.
-Credentials, codes, callbacks, JWTs, and HTTP bodies are never logged. HTTP failures
-and vault errors become fixed localized messages, not server-provided error text.
-There is no plaintext token file or Nintendo credential reader.
+The authorization-code exchange POSTs a form to `/api/oauth/token`, requiring
+both `access_token` and `refresh_token` and a positive `expires_in`. NXbox then
+GETs `/api/nex-token` with `Authorization: Bearer <access_token>`. That response
+supplies `pid`, `nex_token`, `username`, `friend_code`, and its own `expires_in`.
+Only HTTP 404 from this GET permits the legacy combined token response
+(`nex_token` plus `account` identity) as a fallback. Other failures fail sign-in.
+The legacy NEX token uses the documented 24-hour lifetime.
+
+The complete session lives only in PasswordVault resource
+`NXbox.Nextendo.Account`, username `session`: refresh token, access token and
+absolute expiry, NEX token and absolute expiry, PID, username, friend code, and
+the active local profile's raw UUID. Access tokens normally last one hour,
+refresh tokens 30 days, and NEX tokens 24 hours. Response lifetimes determine
+the stored expiries. Tokens are bounded to 16 KiB each and reject CR/LF before
+storage or use. Old vault sessions without an OAuth refresh token require sign-in.
+
+At launch and when going online, NXbox POSTs `grant_type=refresh_token`,
+`refresh_token`, and `client_id` to `/api/oauth/token`. It saves the rotated
+refresh token immediately, before requesting a fresh NEX token. The previous
+refresh token becomes invalid a minute after rotation. A failed NEX request
+retains the rotated credential for retry and leaves game authentication unavailable.
+Refresh HTTP 400/401 clears the vault session and runtime identity and requires
+sign-in again. Other failures retain credentials for retry. Going-online and
+manual social failures use the existing fixed localized failure message;
+background failures never display server text.
+
+Every social request checks session freshness first. Access tokens within five
+minutes of expiry trigger rotation and a fresh NEX fetch; expired NEX tokens also
+trigger renewal. Expired NEX tokens cannot be placed in a new BAAS id_token.
+PID and game tokens are exposed to account IPC only for the bound profile, with
+online mode and valid routes. Other profiles cannot borrow that identity.
+Credentials, codes, callbacks, JWTs, and HTTP bodies are never logged. There is
+no plaintext token file or Nintendo credential reader.
 
 ## Routing and service hooks
 
@@ -144,14 +176,19 @@ not direct HTTP requests. Buffer size is checked before returning a token. An
 unlinked profile fails instead of receiving an all-zero token. This hook does not
 implement official dauth, BAAS, NPLN, eShop, or Nintendo account authentication.
 
+Friends, presence, online-status, and NEX-session requests use
+`Authorization: Bearer <access_token>`, never the game token.
 Friends are read from `/api/friends`, limited to 300 entries and refreshed every
 45 seconds. List IDs, 0x200-byte friend records, count, presence status, same-title
 state, and the 0xc0-byte AppField are exposed through friend IPC. Favorite/history
 filters return no matches because their metadata is not fetched. Presence updates
-are deduplicated and queued from IPC and sent off the service/UI threads to `/api/presence`. A session heartbeat is sent to `/api/nex-session`. A 401
+are deduplicated and queued from IPC and sent off the service/UI threads to `/api/presence`. Presence is reposted on the 45-second social cycle, including idle presence
+before the first game update, to stay within the required 90-second interval.
+A session heartbeat is sent to `/api/nex-session`. A 401
 on social calls removes only the session that sent the rejected request. A late
-response cannot invalidate a replacement login; vault and in-memory updates are
-serialized. Disabling online clears the visible
+response cannot invalidate a replacement login; vault and in-memory updates, refresh rotation, and sign-out are
+serialized. Rotated credentials also distinguish a session from an older in-flight request.
+Token renewal preserves friend/presence caches for the same account/profile. Disabling online clears the visible
 friend/presence cache and prevents subsequent scheduled requests; an HTTP request
 already in flight may finish.
 
@@ -164,12 +201,12 @@ configuration rejection, PKCE RFC 7636, mock HTTP, CSRF, single-use exchange,
 expiry/cancel, transport/server/storage failures, profile isolation, social
 allowlisting, and friend wire layout.
 
-Measured after implementation (LLVM instrumentation of the six portable C++ headers):
+Historical measurement of the original implementation (LLVM instrumentation of the six portable C++ headers; not remeasured for the OAuth changes):
 454/466 lines (**97.42%**), 326/374 branches (**87.17%**), and
 35/36 functions (**97.22%**). Routing alone is 110/110 lines and 112/118 branches;
 auth is 154/155 lines and 120/140 branches.
 
-Final acceptance on 2026-10-12:
+Original integration acceptance on 2026-10-12:
 
 - Full port suite: **338 tests**, four existing platform skips, **exit code 0**.
 - T22 coverage suite: **12 tests**, **exit code 0**. Before: zero T22 tests and
@@ -181,6 +218,15 @@ Final acceptance on 2026-10-12:
 - No Xbox online lobby or live Nextendo authentication test was performed.
   Production activation still needs a registered public client ID, approved
   routing addresses, and the console checks below.
+
+OAuth flow validation on 2026-10-18: `python3 tests/port/test_t22_nextendo.py`
+passes **15 tests**. Mocked requests verify the matchmaking scope, separate NEX
+GET and Bearer token, 404-only legacy fallback, token validation, five-minute
+refresh threshold, immediate rotated-token persistence, failed NEX retry state,
+refresh 400/401 session clearing, and expired game-token rejection. Source checks
+cover WinRT restore, vault fields, and refresh wiring; they do not execute
+PasswordVault or Windows HTTP. No UWP build or live account test was run for this
+change.
 
 Run from the repository:
 

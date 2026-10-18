@@ -28,8 +28,15 @@ SOURCE = r"""
 #include <string>
 using namespace Service::Nextendo;
 const Config enabled{true, "192.0.2.1", "198.51.100.2", "test-client"};
-const Identity identity{42, "Mock account", "MOCK-FC", "mock-nex-token",
-                        "profile-a"};
+const Identity identity{42,
+                        "Mock account",
+                        "MOCK-FC",
+                        "mock-nex-token",
+                        "profile-a",
+                        "mock-access-token",
+                        "mock-refresh-token",
+                        EpochSeconds() + 3600,
+                        EpochSeconds() + 86400};
 const auto now = Authorization::Clock::time_point{};
 Authorization Flow() {
   return {"test-client", std::string(43, 'v'), std::string(43, 'c'),
@@ -119,8 +126,24 @@ int main(int argc, char **argv) {
         "https://nextendo.network/api/oauth/authorize?"));
     assert(flow.AuthorizeUrl().find("code_challenge_method=S256") !=
            std::string::npos);
+    assert(flow.AuthorizeUrl().find("scope=identity+friends+presence+game."
+                                    "matchmaking&app=nxbox&state=") !=
+           std::string::npos);
     auto http = [&](const HttpRequest &request) {
       ++calls;
+      if (calls == 2) {
+        assert(request.url == "https://nextendo.network/api/nex-token");
+        assert(request.method == "GET" && request.body.empty());
+        assert(request.headers.at("Authorization") ==
+               "Bearer mock-access-token");
+        auto game = identity;
+        game.pid = 84;
+        game.username = "NEX account";
+        game.friend_code = "NEX-FC";
+        game.nex_token = "fresh-nex-token";
+        return HttpResponse{200, game};
+      }
+      assert(calls == 1);
       assert(request.url == "https://nextendo.network/api/oauth/token");
       assert(request.method == "POST");
       assert(request.headers.empty());
@@ -131,20 +154,30 @@ int main(int argc, char **argv) {
       assert(request.body.find(
                  "redirect_uri=http%3A%2F%2F127.0.0.1%3A17822%2Fcallback") !=
              std::string::npos);
-      return HttpResponse{200, identity};
+      auto oauth = identity;
+      oauth.pid = 0;
+      oauth.nex_token.clear();
+      oauth.nex_expires_at = 0;
+      return HttpResponse{200, oauth};
     };
     auto store = [&](const Identity &value) {
       stored = true;
-      assert(value.pid == 42);
+      assert(value.pid == 84 && value.username == "NEX account");
+      assert(value.friend_code == "NEX-FC" &&
+             value.nex_token == "fresh-nex-token");
+      assert(value.access_token == identity.access_token);
+      assert(value.refresh_token == identity.refresh_token);
+      assert(value.access_expires_at == identity.access_expires_at);
+      assert(value.nex_expires_at == identity.nex_expires_at);
       assert(value.profile_id == "profile-b");
       return true;
     };
     assert(flow.Complete(Callback(), now, "profile-b", http, store) ==
            AuthResult::Ready);
-    assert(calls == 1 && stored);
+    assert(calls == 2 && stored);
     assert(flow.Complete(Callback(), now, "profile-b", http, store) ==
            AuthResult::Ready);
-    assert(calls == 1);
+    assert(calls == 2);
   }
   if (mode == "auth-rejection") {
     int calls = 0;
@@ -259,6 +292,149 @@ int main(int argc, char **argv) {
                [](const Identity &) { return false; }) ==
            AuthResult::StorageFailed);
   }
+  if (mode == "nex-policy") {
+    for (unsigned status : {0u, 301u, 400u, 401u, 403u, 404u, 500u}) {
+      auto flow = Flow();
+      int calls = 0;
+      bool saved = false;
+      auto result = flow.Complete(
+          Callback(), now, "profile-a",
+          [&](const HttpRequest &) {
+            return HttpResponse{++calls == 1 ? 200u : status, identity};
+          },
+          [&](const Identity &value) {
+            saved = true;
+            assert(value.nex_token == identity.nex_token);
+            return true;
+          });
+      assert(calls == 2);
+      assert(saved == (status == 404));
+      assert(result ==
+             (status == 404 ? AuthResult::Ready : AuthResult::Rejected));
+    }
+    for (int field = 0; field < 3; ++field) {
+      for (const auto &token : {std::string{}, std::string("bad\r\ntoken"),
+                                std::string(16385, 'x')}) {
+        auto bad = identity;
+        if (field == 0)
+          bad.access_token = token;
+        if (field == 1)
+          bad.refresh_token = token;
+        if (field == 2)
+          bad.nex_token = token;
+        auto flow = Flow();
+        assert(flow.Complete(
+                   Callback(), now, "profile-a",
+                   [&](const HttpRequest &) { return HttpResponse{200, bad}; },
+                   [](const Identity &) {
+                     assert(false);
+                     return true;
+                   }) == AuthResult::Rejected);
+      }
+    }
+    auto bad = identity;
+    bad.nex_expires_at = EpochSeconds();
+    assert(!FetchNexToken(
+        bad, [&](const HttpRequest &) { return HttpResponse{200, bad}; },
+        EpochSeconds()));
+    bad = identity;
+    bad.access_token = std::string(16385, 'x');
+    assert(NexTokenRequest(bad).url.empty());
+    assert(SocialRequest("/api/friends", bad, "client").url.empty());
+  }
+  if (mode == "refresh") {
+    assert(!SessionNeedsRefresh(identity));
+    auto expiring = identity;
+    expiring.access_expires_at = 1301;
+    expiring.nex_expires_at = 90000;
+    assert(!SessionNeedsRefresh(expiring, 1000));
+    expiring.access_expires_at = 1300;
+    assert(SessionNeedsRefresh(expiring, 1000));
+    expiring.access_expires_at = 999;
+    assert(SessionNeedsRefresh(expiring, 1000));
+    expiring = identity;
+    expiring.nex_expires_at = EpochSeconds();
+    assert(SessionNeedsRefresh(expiring));
+    int requests = 0, saves = 0;
+    Identity stored = identity;
+    auto result = RefreshSession(
+        identity, "test-client",
+        [&](const HttpRequest &request) {
+          ++requests;
+          if (requests == 1) {
+            assert(request.url == "https://nextendo.network/api/oauth/token");
+            assert(request.method == "POST" && request.headers.empty());
+            assert(request.body == "grant_type=refresh_token&refresh_token="
+                                   "mock-refresh-token&client_id=test-client");
+            auto rotated = identity;
+            rotated.access_token = "new-access";
+            rotated.refresh_token = "rotated-refresh";
+            return HttpResponse{200, rotated};
+          }
+          assert(requests == 2 && saves == 1);
+          assert(stored.refresh_token == "rotated-refresh" &&
+                 stored.nex_token.empty());
+          assert(request.url == "https://nextendo.network/api/nex-token");
+          assert(request.headers.at("Authorization") == "Bearer new-access");
+          auto game = identity;
+          game.nex_token = "new-game-token";
+          return HttpResponse{200, game};
+        },
+        [&](const Identity &value) {
+          ++saves;
+          stored = value;
+          return true;
+        },
+        [] { assert(false); });
+    assert(result == AuthResult::Ready && requests == 2 && saves == 2);
+    assert(stored.refresh_token == "rotated-refresh" &&
+           stored.nex_token == "new-game-token");
+    assert(stored.profile_id == identity.profile_id);
+    for (unsigned status : {0u, 301u, 400u, 401u, 403u, 500u}) {
+      bool cleared = false;
+      result = RefreshSession(
+          identity, "test-client",
+          [&](const HttpRequest &) { return HttpResponse{status, {}}; },
+          [](const Identity &) {
+            assert(false);
+            return true;
+          },
+          [&] {
+            cleared = true;
+            stored = {};
+            SetIdentity({});
+          });
+      assert(result == AuthResult::Rejected);
+      assert(cleared == (status == 400 || status == 401));
+      if (cleared)
+        assert(stored.refresh_token.empty() && runtime.identity.pid == 0);
+    }
+    requests = saves = 0;
+    result = RefreshSession(
+        identity, "client",
+        [&](const HttpRequest &) {
+          auto rotated = identity;
+          rotated.refresh_token = "keep-rotated-even-if-nex-fails";
+          return HttpResponse{++requests == 1 ? 200u : 500u, rotated};
+        },
+        [&](const Identity &value) {
+          ++saves;
+          stored = value;
+          return true;
+        },
+        [] { assert(false); });
+    assert(result == AuthResult::Rejected && saves == 1);
+    assert(stored.refresh_token == "keep-rotated-even-if-nex-fails");
+    requests = 0;
+    result = RefreshSession(
+        identity, "client",
+        [&](const HttpRequest &) {
+          ++requests;
+          return HttpResponse{200, identity};
+        },
+        [](const Identity &) { return false; }, [] { assert(false); });
+    assert(result == AuthResult::StorageFailed && requests == 1);
+  }
   if (mode == "runtime") {
     Configure({});
     SetIdentity(identity, [](const Identity &, std::uint64_t,
@@ -291,6 +467,12 @@ int main(int argc, char **argv) {
     replacement.nex_token = "mock-new-session";
     assert(!SameSession(replacement, identity));
     replacement = identity;
+    replacement.access_token = "rotated-access";
+    assert(!SameSession(replacement, identity));
+    replacement = identity;
+    replacement.refresh_token = "rotated-refresh";
+    assert(!SameSession(replacement, identity));
+    replacement = identity;
     replacement.profile_id = "profile-b";
     assert(!SameSession(replacement, identity));
     replacement = identity;
@@ -302,7 +484,7 @@ int main(int argc, char **argv) {
                       "/api/nex-session"}) {
       auto request = SocialRequest(path, identity, "client");
       assert(request.url.starts_with("https://nextendo.network/api/"));
-      assert(request.headers.at("Authorization") == "Bearer mock-nex-token");
+      assert(request.headers.at("Authorization") == "Bearer mock-access-token");
       assert(request.headers.at("X-Nextendo-Client-Id") == "client");
     }
     assert(SocialRequest("/api/friends", identity, "").headers.size() == 1);
@@ -313,7 +495,7 @@ int main(int argc, char **argv) {
     assert(
         SocialRequest("/api/friends", identity, "bad\r\nclient").url.empty());
     auto bad = identity;
-    bad.nex_token = "bad\r\ntoken";
+    bad.access_token = "bad\r\ntoken";
     assert(SocialRequest("/api/friends", bad, "client").url.empty());
     Configure(enabled);
     SetIdentity(identity);
@@ -370,6 +552,9 @@ int main(int argc, char **argv) {
       rejected = true;
     }
     assert(rejected);
+    auto expired = identity;
+    expired.nex_expires_at = 10;
+    assert(IdTokenClaims(expired, "", 10, "nonce").empty());
     assert(IdTokenClaims({}, "", 10, "nonce").empty());
     assert(IdTokenClaims(identity, "", -1, "nonce").empty());
     assert(IdTokenClaims(identity, "", 10, "").empty());
@@ -498,6 +683,12 @@ class NextendoTests(unittest.TestCase):
     def test_mock_http_errors_malformed_account_and_vault_failure(self):
         self.run_case("auth-failures")
 
+    def test_nex_endpoint_fallback_only_on_404_and_token_validation(self):
+        self.run_case("nex-policy")
+
+    def test_refresh_rotates_persists_before_nex_and_clears_rejected_session(self):
+        self.run_case("refresh")
+
     def test_account_profile_isolation_and_mode_switch(self):
         self.run_case("runtime")
 
@@ -593,6 +784,30 @@ class NextendoTests(unittest.TestCase):
             capture_output=True,
         )
         self.assertNotEqual(result.returncode, 0)
+
+    def test_winrt_session_restore_vault_fields_and_social_refresh_wiring(self):
+        frontend = (ROOT / "src/eden_uwp/nextendo_online.cpp").read_text()
+        for field in (
+            "access_token",
+            "refresh_token",
+            "access_expires_at",
+            "nex_token",
+            "nex_expires_at",
+            "profile_id",
+        ):
+            self.assertRegex(frontend, rf'root\.SetNamedValue\(\s*L"{field}"')
+            self.assertIn(f'L"{field}"', frontend[frontend.index("nx::Identity ParseIdentity") :])
+        startup = frontend[frontend.index("void Initialize") : frontend.index("bool SetEnabled")]
+        # Startup must not block the library on the network; the worker refreshes first.
+        self.assertNotIn("EnsureFreshSession", startup)
+        self.assertIn("std::jthread(PollSocial)", startup)
+        self.assertIn("EnsureFreshSession(true)", frontend[frontend.index("bool SetEnabled") :])
+        self.assertIn("nx::SessionNeedsRefresh(identity, now)", frontend)
+        self.assertRegex(frontend, r"nx::RefreshSession\(\s*identity")
+        self.assertRegex(frontend, r"SaveAccount,\s*\[\]\s*\{\s*RemoveAccount\(\);")
+        self.assertIn("!EnsureFreshSession()", frontend[frontend.index("void PublishPresence") :])
+        self.assertIn("!EnsureFreshSession()", frontend[frontend.index("bool RefreshFriends") :])
+        self.assertIn("nx::IsEnabled() && EnsureFreshSession()", frontend)
 
     def test_live_hooks_and_vault_do_not_depend_on_console_identity(self):
         dns = (ROOT / "src/core/hle/service/sockets/sfdnsres.cpp").read_text()

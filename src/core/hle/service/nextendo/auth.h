@@ -69,11 +69,17 @@ struct Identity {
     std::string friend_code;
     std::string nex_token;
     std::string profile_id;
+    std::string access_token;
+    std::string refresh_token;
+    std::int64_t access_expires_at = 0;
+    std::int64_t nex_expires_at = 0;
 };
 
 inline bool SameSession(const Identity& current, const Identity& expected) {
     return current.pid != 0 && !current.nex_token.empty() && current.pid == expected.pid &&
-           current.profile_id == expected.profile_id && current.nex_token == expected.nex_token;
+           current.profile_id == expected.profile_id && current.nex_token == expected.nex_token &&
+           current.access_token == expected.access_token &&
+           current.refresh_token == expected.refresh_token;
 }
 
 struct HttpRequest {
@@ -101,7 +107,92 @@ enum class AuthResult {
     StorageFailed
 };
 
-// No passwords, client secrets, device credentials, refresh guesses, or invented endpoints.
+inline std::int64_t EpochSeconds() {
+    return std::chrono::duration_cast<std::chrono::seconds>(
+               std::chrono::system_clock::now().time_since_epoch())
+        .count();
+}
+
+inline bool ValidToken(std::string_view token) {
+    return !token.empty() && token.size() <= 16384 &&
+           token.find_first_of("\r\n") == std::string_view::npos;
+}
+
+inline bool ValidOAuth(const Identity& identity, std::int64_t now) {
+    return ValidToken(identity.access_token) && ValidToken(identity.refresh_token) &&
+           identity.access_expires_at > now;
+}
+
+inline bool SessionNeedsRefresh(const Identity& identity, std::int64_t now = EpochSeconds()) {
+    return !ValidOAuth(identity, now) || identity.access_expires_at - now <= 300 ||
+           !ValidToken(identity.nex_token) || identity.nex_expires_at <= now;
+}
+
+inline HttpRequest NexTokenRequest(const Identity& identity) {
+    if (!ValidToken(identity.access_token))
+        return {};
+    return {"GET",
+            std::string(ApiOrigin) + "/api/nex-token",
+            {},
+            {},
+            {{"Authorization", "Bearer " + identity.access_token}}};
+}
+
+inline bool FetchNexToken(Identity& identity, const Transport& http, std::int64_t now,
+                          const Identity* legacy = nullptr) {
+    if (!ValidToken(identity.access_token))
+        return false;
+    const auto response = http(NexTokenRequest(identity));
+    // Only an absent endpoint permits the old combined token response.
+    const auto& game = response.status == 404 && legacy ? *legacy : response.identity;
+    if ((response.status != 200 && !(response.status == 404 && legacy)) || game.pid == 0 ||
+        !ValidToken(game.nex_token) || game.nex_expires_at <= now)
+        return false;
+    identity.pid = game.pid;
+    identity.nex_token = game.nex_token;
+    identity.nex_expires_at = game.nex_expires_at;
+    identity.username = game.username;
+    identity.friend_code = game.friend_code;
+    return true;
+}
+
+// Persist the rotated refresh credential before attempting any subsequent request.
+inline AuthResult RefreshSession(Identity identity, std::string_view client_id,
+                                 const Transport& http, const SaveIdentity& save,
+                                 const std::function<void()>& clear,
+                                 std::int64_t now = EpochSeconds()) {
+    if (!ValidToken(identity.refresh_token) || client_id.empty())
+        return AuthResult::Rejected;
+    try {
+        const auto response =
+            http({"POST",
+                  std::string(ApiOrigin) + "/api/oauth/token",
+                  "application/x-www-form-urlencoded",
+                  "grant_type=refresh_token&refresh_token=" + UrlEncode(identity.refresh_token) +
+                      "&client_id=" + UrlEncode(client_id),
+                  {}});
+        if (response.status == 400 || response.status == 401) {
+            clear();
+            return AuthResult::Rejected;
+        }
+        if (response.status != 200 || !ValidOAuth(response.identity, now))
+            return AuthResult::Rejected;
+        identity.access_token = response.identity.access_token;
+        identity.refresh_token = response.identity.refresh_token;
+        identity.access_expires_at = response.identity.access_expires_at;
+        identity.nex_token.clear();
+        identity.nex_expires_at = 0;
+        if (!save(identity))
+            return AuthResult::StorageFailed;
+        if (!FetchNexToken(identity, http, now))
+            return AuthResult::Rejected;
+        return save(identity) ? AuthResult::Ready : AuthResult::StorageFailed;
+    } catch (...) {
+        return AuthResult::Rejected;
+    }
+}
+
+// No passwords, client secrets, device credentials, or invented endpoints.
 // HTTP is injected so the native adapter and the mock execute the same request policy.
 class Authorization {
 public:
@@ -120,8 +211,9 @@ public:
         return std::string(ApiOrigin) +
                "/api/oauth/authorize?response_type=code&client_id=" + UrlEncode(client_id_) +
                "&redirect_uri=" + UrlEncode(CallbackUri) +
-               "&scope=identity+friends+presence&app=nxbox&state=" + UrlEncode(state_) +
-               "&code_challenge=" + UrlEncode(challenge_) + "&code_challenge_method=S256";
+               "&scope=identity+friends+presence+game.matchmaking&app=nxbox&state=" +
+               UrlEncode(state_) + "&code_challenge=" + UrlEncode(challenge_) +
+               "&code_challenge_method=S256";
     }
 
     void Cancel() {
@@ -183,11 +275,12 @@ public:
         result_ = AuthResult::Rejected;
         try {
             auto response = http(request);
-            if (response.status != 200 || response.identity.pid == 0 ||
-                response.identity.nex_token.empty() || response.identity.nex_token.size() > 16384 ||
-                response.identity.nex_token.find_first_of("\r\n") != std::string::npos) {
+            const auto now_seconds = EpochSeconds();
+            if (response.status != 200 || !ValidOAuth(response.identity, now_seconds))
                 return result_;
-            }
+            const auto legacy = response.identity;
+            if (!FetchNexToken(response.identity, http, now_seconds, &legacy))
+                return result_;
             response.identity.profile_id = profile_id;
             return result_ =
                        save(response.identity) ? AuthResult::Ready : AuthResult::StorageFailed;
@@ -204,8 +297,7 @@ private:
 
 inline HttpRequest SocialRequest(std::string_view path, const Identity& identity,
                                  std::string_view client_id) {
-    if (identity.pid == 0 || identity.nex_token.empty() ||
-        identity.nex_token.find_first_of("\r\n") != std::string::npos ||
+    if (identity.pid == 0 || !ValidToken(identity.access_token) ||
         client_id.find_first_of("\r\n") != std::string_view::npos ||
         (path != "/api/friends" && path != "/api/online-status" && path != "/api/presence" &&
          path != "/api/nex-session")) {
@@ -215,7 +307,7 @@ inline HttpRequest SocialRequest(std::string_view path, const Identity& identity
                         std::string(ApiOrigin) + std::string(path),
                         "application/json",
                         {},
-                        {{"Authorization", "Bearer " + identity.nex_token}}};
+                        {{"Authorization", "Bearer " + identity.access_token}}};
     if (!client_id.empty())
         request.headers["X-Nextendo-Client-Id"] = client_id;
     return request;
