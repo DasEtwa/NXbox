@@ -826,12 +826,17 @@ LibraryTransfer::Result MoveLibraryGame(const GameEntry& game, const fs::path& l
                 const auto storage = AwaitBounded(
                     winrt::Windows::Storage::StorageFile::GetFileFromPathAsync(partial.native()),
                     std::chrono::seconds(5));
-                if (!storage ||
-                    !AwaitBounded(storage->RenameAsync(
-                                      file.target.filename().native(),
-                                      winrt::Windows::Storage::NameCollisionOption::FailIfExists),
-                                  std::chrono::seconds(30)))
+                if (!storage)
                     return false;
+                auto renaming = storage->RenameAsync(
+                    file.target.filename().native(),
+                    winrt::Windows::Storage::NameCollisionOption::FailIfExists);
+                if (renaming.wait_for(std::chrono::seconds(30)) !=
+                    winrt::Windows::Foundation::AsyncStatus::Completed) {
+                    renaming.Cancel();
+                    return false;
+                }
+                renaming.get();
             } catch (...) {
                 return false;
             }
