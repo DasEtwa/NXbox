@@ -388,7 +388,9 @@ export async function main(): Promise<void> {
     console.log(`${name} (${identity})\n${text.done}`);
   } catch (error) {
     const code = error instanceof PackError ? error.code : "failed";
-    console.error(`${text.failed}: ${text[code]}`);
+    console.error(
+      `${text.failed}: ${error instanceof PackError ? error.localized(language) : text[code]}`,
+    );
     process.exitCode = 1;
   } finally {
     prompt?.close();

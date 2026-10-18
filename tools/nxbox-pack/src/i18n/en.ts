@@ -34,10 +34,14 @@ export default {
   driveConflict:
     "A different file has the same name. Rename it or choose another destination; nothing was copied.",
   driveSpace: "Not enough free space. Free space or use another drive.",
+  consoleFull:
+    "The Xbox internal storage is full. Delete games you no longer use in NXbox or use a USB drive as external storage.",
+  consoleFullSpace:
+    "The Xbox internal storage is full: {size} more is needed. Delete games you no longer use in NXbox or use a USB drive as external storage.",
   nxboxMissing:
     "NXbox is not installed. Install NXbox from https://github.com/NspxMiguel/NXbox/releases/latest first.",
   xboxSpaceWarning:
-    "Console free space is unavailable. The internal SSD fills fast; a USB drive is recommended.",
+    "Console free space is unavailable. Open NXbox once so it can report its free space.",
   driveUsage:
     "nxhelper --check-drive <path> [--fix]\nnxhelper --to-drive <path> <files…> --keys <prod.keys> [--title-keys <title.keys>] [--firmware <path>]\nnxhelper --to-xbox [--host <host>] <files…> --keys <prod.keys> [--title-keys <title.keys>] [--firmware <path>]",
   wayChoice:

@@ -472,7 +472,7 @@ export async function prepareDrive(
   }
 }
 export type NxboxPortal = Pick<DevicePortal, "packages" | "makeFolder" | "pushFile"> & {
-  freeSpace?: () => Promise<number | undefined>;
+  freeSpace?: (pkg: string) => Promise<number | undefined>;
 };
 export async function sendToNxbox(
   portal: NxboxPortal,
@@ -502,12 +502,12 @@ export async function sendToNxbox(
       { directory: "LocalState/eden/keys", files: plan.keys },
       { directory: "LocalState/firmware", files: plan.firmware?.files ?? [] },
     ];
-    const free = await portal.freeSpace?.();
-    if (
-      free !== undefined &&
-      free < groups.flatMap((g) => g.files).reduce((n, f) => n + Bun.file(f.path).size, 0)
-    )
-      throw new PackError("driveSpace");
+    const free = await portal.freeSpace?.(pkg);
+    const required =
+      groups.flatMap((g) => g.files).reduce((n, f) => n + Bun.file(f.path).size, 0) +
+      512 * 1024 ** 2;
+    if (free !== undefined && free < required)
+      throw new PackError("consoleFull", { missingBytes: required - free });
     const warnings =
       free === undefined ? [message(inputs.language ?? "en", "xboxSpaceWarning")] : [];
     // Surface the warning before the first upload, as well as in the final result.
