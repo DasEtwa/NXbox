@@ -182,6 +182,12 @@ protected:
     void StopFenceThread() {
         if constexpr (can_async_check) {
             fence_thread.request_stop();
+            {
+                // The release thread checks stop_requested() under this lock before it sleeps;
+                // without it, the stop could land between that check and the wait and the join
+                // would block forever.
+                std::scoped_lock lock{guard};
+            }
             cv.notify_all();
             if (fence_thread.joinable())
                 fence_thread.join();
