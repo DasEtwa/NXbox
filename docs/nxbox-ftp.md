@@ -69,3 +69,7 @@ large-file transfers and visual rendering require Windows/Xbox verification.
 
 If no drive is connected when FTP starts, `/hd` is unavailable; reconnect the
 drive and restart FTP. Virtual roots cannot be renamed or deleted.
+
+Organize se quiser: games\Base (jogo), games\Updates (atualizações), games\DLC (DLCs). Tudo solto em games\ também funciona.
+
+Optionally organize: games\Base (game), games\Updates (updates), games\DLC (DLC). Everything loose in games\ works too.

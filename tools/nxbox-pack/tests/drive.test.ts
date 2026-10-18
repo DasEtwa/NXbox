@@ -142,7 +142,7 @@ test("firmware errors map to actionable fixes", async () => {
     );
   }
 });
-test("prepareDrive creates exact layout, lowercase extension and ready report", async () => {
+test("prepareDrive creates exact layout, original extension and ready report", async () => {
   const progress: string[] = [];
   const report = await prepareDrive(root, await inputs(), (f) => progress.push(f), deps);
   expect(report.ready).toBe(true);
@@ -154,9 +154,9 @@ test("prepareDrive creates exact layout, lowercase extension and ready report", 
     "prod.keys",
     "title.keys",
   ]);
-  expect(await readdir(join(root, "NXbox/games"))).toEqual(["Game.nsp"]);
+  expect(await readdir(join(root, "NXbox/games"))).toEqual(["Game.NSP"]);
   expect(await readdir(join(root, "NXbox/firmware"))).toEqual([firmwareName]);
-  expect(progress).toContain("NXbox/games/Game.nsp");
+  expect(progress).toContain("Game.NSP → NXbox/games");
 });
 test("xcz refused before copying and collisions preflight all files", async () => {
   const input = await inputs();
@@ -166,7 +166,7 @@ test("xcz refused before copying and collisions preflight all files", async () =
   });
   expect(await readdir(root)).toEqual([]);
   input.games.pop();
-  await put(root, "NXbox/games/Game.nsp", "different");
+  await put(root, "NXbox/games/Game.NSP", "different");
   await expect(prepareDrive(root, input, undefined, deps)).rejects.toMatchObject({
     code: "driveConflict",
   });
@@ -197,7 +197,7 @@ test("portal chooses newest library package, uploads games, keys, firmware in or
   const result = await sendToNxbox(portal, await inputs(), undefined, deps);
   expect(new Set(selected)).toEqual(new Set(["NSPX.NXbox_10.0.0.0_x64"]));
   expect(pushed).toEqual([
-    "LocalState/games/Game.nsp",
+    "LocalState/games/Game.NSP",
     "LocalState/eden/keys/prod.keys",
     "LocalState/eden/keys/title.keys",
     `LocalState/firmware/${firmwareName}`,
@@ -238,7 +238,7 @@ test("keys go into NXbox/ ahead of stale switch keys; a destination directory fa
   expect(await readFile(join(root, "NXbox/prod.keys"), "utf8")).toBe(keyText);
   await rm(join(root, "switch"), { recursive: true });
   await rm(join(root, "NXbox"), { recursive: true });
-  await mkdir(join(root, "NXbox/games/Game.nsp"), { recursive: true });
+  await mkdir(join(root, "NXbox/games/Game.NSP"), { recursive: true });
   await expect(prepareDrive(root, input, undefined, deps)).rejects.toMatchObject({
     code: "driveConflict",
   });

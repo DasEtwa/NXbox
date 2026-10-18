@@ -3,7 +3,7 @@
 
 import { basename, extname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { PackError } from "./i18n";
+import { PackError, strings, type Language } from "./i18n";
 
 export function draggedPath(input: string): string {
   let value = input.trim();
@@ -63,4 +63,58 @@ export function validateName(name: string): string {
   if (!value || value.length > 64 || /[\x00-\x1f\x7f]/.test(value))
     throw new PackError("nameInvalid");
   return value;
+}
+
+export type GameFolder = "Base" | "Updates" | "DLC" | "";
+export function titleFolder(titleId: string | undefined): GameFolder {
+  if (!titleId || !/^0100[0-9a-f]{12}$/i.test(titleId)) return "";
+  const suffix = Number(BigInt(`0x${titleId}`) & 0xfffn);
+  if (suffix === 0) return "Base";
+  if (suffix === 0x800) return "Updates";
+  if (suffix > 0 && suffix < 0x800) return "DLC";
+  return "";
+}
+export async function gameDestination(path: string, keysPath?: string): Promise<string> {
+  let folder: GameFolder = "";
+  if (keysPath) {
+    const { packageEntries } = await import("./metadata");
+    const { fileReader } = await import("./storage");
+    const { readKeys, ncaHeader } = await import("./firmware");
+    let reader: Awaited<ReturnType<typeof fileReader>> | undefined;
+    try {
+      const key = (await readKeys(keysPath)).get("header_key");
+      if (key?.length === 32) {
+        reader = await fileReader([path]);
+        const entries = await packageEntries(reader, path);
+        const kinds = new Set<GameFolder>();
+        for (const entry of entries.filter((e) => /\.nca$/i.test(e.name))) {
+          try {
+            const header = ncaHeader(await entry.reader.read(0, 0xc00), key);
+            if (header[0x205] !== 1) continue; // Meta NCAs identify updates and DLC too.
+            kinds.add(titleFolder(header.readBigUInt64LE(0x210).toString(16).padStart(16, "0")));
+          } catch {
+            /* Keep inspecting the remaining metadata NCAs. */
+          }
+        }
+        // Bundles containing a base game belong with base games.
+        folder = kinds.has("Base") ? "Base" : kinds.size === 1 ? [...kinds][0]! : "";
+      }
+    } catch {
+      /* Unreadable metadata retains the filename fallback. */
+    } finally {
+      await reader?.close();
+    }
+  }
+  if (!folder) {
+    const ids = [...basename(path).matchAll(/\[(0100[0-9a-f]{12})\]/gi)];
+    if (ids.length === 1) folder = titleFolder(ids[0]![1]);
+  }
+  return [folder, basename(path)].filter(Boolean).join("/");
+}
+
+export function destinationProgress(path: string, language: Language = "en") {
+  const parts = path.replaceAll("\\", "/").split("/");
+  return strings[language].gameDestination
+    .replace("{file}", parts.pop()!)
+    .replace("{folder}", parts.join("/"));
 }

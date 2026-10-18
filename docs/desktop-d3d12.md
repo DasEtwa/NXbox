@@ -131,3 +131,7 @@ Source-level port tests cover desktop/UWP source selection, CLI routing, SDL HWN
 desktop DXC/profiler wiring. A successful Windows CI compilation and a real Wine/Proton game run are
 separate checks. This work does not add missing renderer features: existing
 screenshot/applet-capture placeholders and unsupported guest-work fallbacks remain.
+
+Organize se quiser: games\Base (jogo), games\Updates (atualizações), games\DLC (DLCs). Tudo solto em games\ também funciona.
+
+Optionally organize: games\Base (game), games\Updates (updates), games\DLC (DLC). Everything loose in games\ works too.

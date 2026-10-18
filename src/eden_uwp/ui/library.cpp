@@ -764,9 +764,12 @@ LibraryTransfer::Result MoveLibraryGame(const GameEntry& game, const fs::path& l
     for (const auto& candidate : LibraryDeleteCandidates(game, local_state)) {
         if (!SafeDeletePath(candidate.path, internal))
             continue;
-        if (!names.insert(LibraryFiles::Fold(candidate.path.filename().wstring())).second)
+        const auto relative = candidate.path.lexically_relative(internal.front());
+        if (!names.insert(LibraryFiles::Fold(relative.wstring())).second)
             return Result::Conflict;
-        files.push_back({candidate.path, destination / candidate.path.filename(), candidate.size});
+        files.push_back({candidate.path,
+                         LibraryTransfer::Target(candidate.path, internal.front(), destination),
+                         candidate.size});
         modified.emplace(candidate.path, ModifiedSeconds(candidate.path));
         if (candidate.size > (std::numeric_limits<std::uint64_t>::max)() - progress.total.load())
             return Result::Failed;
@@ -781,6 +784,8 @@ LibraryTransfer::Result MoveLibraryGame(const GameEntry& game, const fs::path& l
                ModifiedSeconds(file.source) == modified.at(file.source);
     };
     io.copy = [&](const auto& file) {
+        if (!Common::FS::CreateDirs(file.target.parent_path()))
+            return false;
         auto partial = file.target;
         partial += L".move.partial";
         struct Handles {
@@ -1032,6 +1037,15 @@ std::vector<GameEntry> LibraryScan::Scan() {
     const auto started = std::chrono::steady_clock::now();
     const fs::path games_dir = local_state_ / "games";
     const fs::path library_dir = local_state_ / "library";
+
+    auto game_roots = ExternalGameFolders(false);
+    game_roots.push_back(games_dir);
+    for (const auto& root : game_roots) {
+        for (const auto* name : {"Base", "Updates", "DLC"}) {
+            if (!Common::FS::CreateDirs(root / name))
+                Diagnostic("UI library folders: cannot create " + Utf8((root / name).wstring()));
+        }
+    }
 
     // Big games arrive from NXbox Pack as parts; join them before looking for games.
     SplitUpload::JoinSplitUploads(games_dir, [](const std::string& line) { Diagnostic(line); });

@@ -5,12 +5,20 @@
 // JSON-lines events on stdout. Same core as the interactive CLI, no prompts.
 import { cp, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, extname, join } from "node:path";
+import { join } from "node:path";
 import { gameMetadata } from "./metadata";
 import compat from "./compat.json";
 import { PackError, strings, type Language } from "./i18n";
 import { checkDrive, fixDrive, prepareDrive, sendToNxbox } from "./drive";
-import { filenameName, parseTitleId, validateFile, validateName, validateTitleId } from "./files";
+import {
+  destinationProgress,
+  gameDestination,
+  filenameName,
+  parseTitleId,
+  validateFile,
+  validateName,
+  validateTitleId,
+} from "./files";
 import { prepareFirmware } from "./firmware";
 import { prepareMods, prepareSaves, prepareTitleKeys, type Transfer } from "./optional";
 import { downloadRuntime, latestRuntime, stageRuntime } from "./runtime";
@@ -160,12 +168,18 @@ export async function runJob(job: Job, emit: Emit): Promise<void> {
       await mkdir(join(local, "games"), { recursive: true });
       await mkdir(join(local, "eden", "keys"), { recursive: true });
       await cp(job.keys, join(local, "eden", "keys", "prod.keys"));
-      for (const [i, game] of content.entries()) {
-        const file = full ? basename(game) : `base${extname(game)}`;
-        await cp(game, join(local, "games", i === 0 || full ? file : `addon-${i}${extname(game)}`));
-      }
+      const destinations = await copyGames(
+        content,
+        local,
+        job.keys,
+        (file, sent, total) => emit({ step: "upload", file, sent, total }),
+        job.language,
+      );
       if (!full) {
-        await writeFile(join(local, "game.txt"), `games\\base${extname(content[0]!)}\n`);
+        await writeFile(
+          join(local, "game.txt"),
+          `games\\${destinations[0]!.replaceAll("/", "\\")}\n`,
+        );
         await writeFile(join(local, "skip_library.txt"), "1\n");
       }
       for (const t of transfers) {
@@ -196,6 +210,7 @@ export async function runJob(job: Job, emit: Emit): Promise<void> {
       temporary,
       transfers,
       directBoot: !full,
+      language: job.language,
       onProgress: (file, sent, total) => emit({ step: "upload", file, sent, total }),
     });
     emit({ done: true, identity, name });
@@ -235,4 +250,27 @@ export async function serveApi(): Promise<void> {
     });
     process.exitCode = 1;
   }
+}
+
+export async function copyGames(
+  content: string[],
+  local: string,
+  keys: string,
+  progress: (file: string, sent: number, total: number) => void = () => {},
+  language: Language = "en",
+) {
+  const destinations: string[] = [];
+  for (const game of content) {
+    const destination = await gameDestination(game, keys);
+    destinations.push(destination);
+    const target = join(local, "games", destination);
+    await mkdir(join(target, ".."), { recursive: true });
+    await cp(game, target);
+    progress(
+      destinationProgress(`games/${destination}`, language),
+      Bun.file(game).size,
+      Bun.file(game).size,
+    );
+  }
+  return destinations;
 }

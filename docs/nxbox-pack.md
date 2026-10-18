@@ -52,14 +52,15 @@ requirements.
    status, and locate the installed package by exact identity. Folder names include a UUID to avoid
    overwriting an existing registration's running runtime.
 9. Create `LocalState/games` and `LocalState/eden/keys` through the file API; upload `prod.keys`,
-   `base.nsp`/`base.xci` and `addon-N.nsp`/`addon-N.xci`. Stream multipart requests with known
+   game files under `Base/`, `Updates/` or `DLC/` according to content metadata or title ID,
+   retaining their original names (unknown files stay in `games/`). Stream multipart requests with known
    Content-Length and backpressure. Verify each file's reported remote byte size. Upload failures
    abort before creating direct-boot markers; game files are not hashed back from the console.
 10. Transfer optional firmware into a flat `LocalState/firmware/`, saves into Eden's NAND user save
     tree, mods into `LocalState/eden/load/<titleid>/<modname>/`, and `title.keys` into
     `LocalState/eden/keys/`. Create every destination folder with the Portal folder API before
     uploading; verify remote byte sizes just like game content.
-11. Write `LocalState/game.txt` containing `games\\base.nsp` (or `.xci`) and
+11. Write `LocalState/game.txt` containing the relative `games\\Base\\<original name>.nsp` path (or `.xci`, with unknown content at the root) and
     `LocalState/skip_library.txt` containing `1`. These markers are sent last. On subsequent tile
     activation, `RunGameView` bypasses `Ui::RunLibrary`; `ResolveGamePath` resolves the fixed path
     within that app's LocalState. `LocalState/eden/keys` matches `EDEN_DIR` / `KEYS_DIR` in
@@ -222,3 +223,7 @@ unregistered runtime directory; failed content transfer can leave an installed b
 These are reported failures, not successful game installs. Re-registering the same title currently
 uses the same identity/version; preservation of LocalState and loose-folder lifecycle needs a
 console test before offering an update workflow. There is no resume or uninstall/rollback command.
+
+Organize se quiser: games\Base (jogo), games\Updates (atualizações), games\DLC (DLCs). Tudo solto em games\ também funciona.
+
+Optionally organize: games\Base (game), games\Updates (updates), games\DLC (DLC). Everything loose in games\ works too.

@@ -183,3 +183,7 @@ the compiled core alongside `NxbHelper(.exe)` as `nxbhelper-core(.exe)`. The JSO
 `NXBHELPER_GITHUB_TOKEN`. Saved credentials keep the existing service identity.
 
 `NXHELPER_LANG` and `NXHELPER_GITHUB_TOKEN` remain compatibility aliases. New scripts should use `NXBHELPER_LANG` and `NXBHELPER_GITHUB_TOKEN`.
+
+Organize se quiser: games\Base (jogo), games\Updates (atualizações), games\DLC (DLCs). Tudo solto em games\ também funciona.
+
+Optionally organize: games\Base (game), games\Updates (updates), games\DLC (DLC). Everything loose in games\ works too.
