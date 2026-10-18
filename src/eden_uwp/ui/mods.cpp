@@ -1113,9 +1113,9 @@ struct ModStore::Impl : std::enable_shared_from_this<ModStore::Impl> {
                 const std::size_t slash = path.rfind('/');
                 const std::string file =
                     Lower(slash == std::string::npos ? path : path.substr(slash + 1));
-                const auto installed = ObjectAt(item, L"installed");
-                const auto hash_file = Lower(StringAt(installed, L"hash_file"));
-                const auto uninstall = ObjectAt(installed, L"uninstall");
+                const auto installation_record = ObjectAt(item, L"installed");
+                const auto hash_file = Lower(StringAt(installation_record, L"hash_file"));
+                const auto uninstall = ObjectAt(installation_record, L"uninstall");
                 bool title_matches =
                     file.starts_with(wanted) || hash_file.starts_with(wanted + "/");
                 for (const auto& entry : uninstall)

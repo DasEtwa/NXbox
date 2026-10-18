@@ -35,6 +35,7 @@
 #include "eden_uwp/ui/strings.h"
 #include "frontend_common/library_files.h"
 
+#include "common/fs/file.h"
 #include "common/fs/fs.h"
 #include "common/fs/fs_util.h"
 #include "core/file_sys/card_image.h"
@@ -464,7 +465,10 @@ void RememberConversion(const fs::path& record_path, const fs::path& source,
         const auto text = winrt::to_string(record.Stringify());
         if (Common::FS::WriteStringToFile(temporary, Common::FS::FileType::TextFile, text) !=
                 text.size() ||
-            !MoveFileExFromAppW(temporary.c_str(), record_path.c_str(), MOVEFILE_REPLACE_EXISTING))
+            !(Common::FS::Exists(record_path)
+                  ? ReplaceFileFromAppW(record_path.c_str(), temporary.c_str(), nullptr, 0, nullptr,
+                                        nullptr)
+                  : MoveFileFromAppW(temporary.c_str(), record_path.c_str())))
             Diagnostic("NSZ_CONVERT completion_record_failed");
     } catch (...) {
         Diagnostic("NSZ_CONVERT completion_record_failed");
