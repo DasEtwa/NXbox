@@ -139,6 +139,11 @@ NCA::NCA(VirtualFile file_, const NCA* base_nca, bool allow_missing_base)
 
         if (header_reader.GetFsType() == NcaFsHeader::FsType::PartitionFs) {
             auto npfs = std::make_shared<PartitionFilesystem>(filesystems[i]);
+            if (npfs->GetStatus() != Loader::ResultStatus::Success) {
+                // The usual cause is data that decrypts to garbage: a damaged or incomplete file.
+                LOG_WARNING(Loader, "NCA {}: section {} is not a readable partition ({})",
+                            file->GetName(), i, Loader::GetResultStatusString(npfs->GetStatus()));
+            }
             if (npfs->GetStatus() == Loader::ResultStatus::Success) {
                 dirs.push_back(npfs);
                 if (IsDirectoryExeFS(npfs)) {
