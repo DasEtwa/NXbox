@@ -709,6 +709,14 @@ impl App {
                         "This assistant prepares and installs NXbox on your Xbox Series X|S. Each step explains what is needed; nothing is sent anywhere except your own Xbox.",
                     ),
                 );
+                ui.label(
+                    egui::RichText::new(t(
+                        "Em desenvolvimento: pode não funcionar e ainda não foi testado por completo.",
+                        "In development: it may not work and has not been fully tested yet.",
+                    ))
+                    .color(design::compat_ink(design::WARN, ui.visuals().dark_mode)),
+                );
+                ui.add_space(14.0);
                 ui.label(t(
                     "Como deseja enviar seus jogos?",
                     "How would you like to send your games?",

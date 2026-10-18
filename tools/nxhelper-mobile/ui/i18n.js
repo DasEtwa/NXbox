@@ -1,5 +1,6 @@
 export const translations = {
   en: {
+    preview: "In development: it may not work and has not been fully tested yet.",
     find: "Find your Xbox",
     network:
       "Connect to the same Wi-Fi as your Xbox. Turn on Dev Mode and Device Portal on the console.",
@@ -65,6 +66,7 @@ export const translations = {
       "Secure credential storage is unavailable on this device.",
   },
   pt: {
+    preview: "Em desenvolvimento: pode não funcionar e ainda não foi testado por completo.",
     find: "Encontre seu Xbox",
     network:
       "Conecte-se ao mesmo Wi-Fi do Xbox. Ative o Modo de Desenvolvedor e o Device Portal no console.",
