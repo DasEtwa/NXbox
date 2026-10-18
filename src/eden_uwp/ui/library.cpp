@@ -583,11 +583,11 @@ std::vector<LibraryDeleteFile> LibraryDeleteCandidates(const GameEntry& game,
     const auto base = game.title_id.empty() ? LibraryFiles::FilenameTitle(game.path)
                                             : LibraryFiles::ParseTitle(game.title_id);
     std::set<std::wstring> seen_paths;
-    for (auto it = candidates.begin(); it != candidates.end();) {
-        if (seen_paths.insert(LibraryFiles::Fold(it->wstring())).second)
-            ++it;
+    for (auto candidate = candidates.begin(); candidate != candidates.end();) {
+        if (seen_paths.insert(LibraryFiles::Fold(candidate->wstring())).second)
+            ++candidate;
         else
-            it = candidates.erase(it);
+            candidate = candidates.erase(candidate);
     }
     FileSys::RealVfsFilesystem vfs;
     for (const auto& path : candidates) {
