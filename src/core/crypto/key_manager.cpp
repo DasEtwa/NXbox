@@ -623,15 +623,29 @@ void KeyManager::LoadFromFile(const std::filesystem::path& file_path, bool is_ti
                 s128_keys[{S128KeyType::Titlekey, rights_id[1], rights_id[0]}] = key;
             } else {
                 out[0] = Common::ToLower(out[0]);
-                if (const auto iter128 = Find128ByName(out[0]); iter128 != s128_file_id.end()) {
+                // Lockpick exports combined BIS crypto+tweak keys as bis_key_00..03.
+                if (out[0].size() == 10 && out[0].starts_with("bis_key_0") && out[0][9] >= '0' &&
+                    out[0][9] <= '3' && out[1].size() == 64 &&
+                    out[1].find_first_not_of("0123456789abcdefABCDEF") == std::string::npos) {
+                    const auto partition = static_cast<u64>(out[0][9] - '0');
+                    const auto key = Common::HexStringToArray<32>(out[1]);
+                    Key128 crypto{}, tweak{};
+                    std::copy_n(key.begin(), 16, crypto.begin());
+                    std::copy_n(key.begin() + 16, 16, tweak.begin());
+                    s128_keys[{S128KeyType::BIS, partition, u64(BISKeyType::Crypto)}] = crypto;
+                    s128_keys[{S128KeyType::BIS, partition, u64(BISKeyType::Tweak)}] = tweak;
+                } else if (const auto iter128 = Find128ByName(out[0]);
+                           iter128 != s128_file_id.end()) {
                     const auto& index = iter128->second;
                     const Key128 key = Common::HexStringToArray<16>(out[1]);
                     s128_keys[{index.type, index.field1, index.field2}] = key;
-                } else if (const auto iter256 = Find256ByName(out[0]); iter256 != s256_file_id.end()) {
+                } else if (const auto iter256 = Find256ByName(out[0]);
+                           iter256 != s256_file_id.end()) {
                     const auto& index = iter256->second;
                     const Key256 key = Common::HexStringToArray<32>(out[1]);
                     s256_keys[{index.type, index.field1, index.field2}] = key;
-                } else if (out[0].compare(0, 8, "keyblob_") == 0 && out[0].compare(0, 9, "keyblob_k") != 0) {
+                } else if (out[0].compare(0, 8, "keyblob_") == 0 &&
+                           out[0].compare(0, 9, "keyblob_k") != 0) {
                     if (!ValidCryptoRevisionString(out[0], 8, 2)) {
                         continue;
                     }

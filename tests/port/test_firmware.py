@@ -82,22 +82,41 @@ class FirmwareTests(unittest.TestCase):
         types = manifest.findall(".//uap:SupportedFileTypes/uap:FileType", namespace)
         # Every type the USB import and the USB library look for must be declared, or the
         # drive hides it from the app.
-        for extension in (".nca", ".nsp", ".nsz", ".xci", ".xcz", ".keys"):
+        for extension in (
+            ".nca",
+            ".nsp",
+            ".nsz",
+            ".xci",
+            ".xcz",
+            ".keys",
+            ".zip",
+            ".bin",
+            ".00",
+            ".99",
+            ".7z",
+            ".rar",
+        ):
             self.assertIn(extension, [entry.text for entry in types])
 
-    def test_uwp_scan_accepts_one_nested_folder(self):
+    def test_uwp_uses_portable_sources_and_continues_after_failure(self):
         source = (ROOT / "src/eden_uwp/firmware.cpp").read_text()
-        # A dump one folder deeper is installed; an empty folder does not block the next source.
-        self.assertIn("scan(subfolder, false)", source)
+        self.assertIn("Sources::Discover(", source)
+        self.assertIn("Sources::Extract(attempt_io, source, temporary, decrypt)", source)
+        failure = source.split("if (result != FirmwareManager::InstallResult::Success)", 1)[1]
+        failure = failure.split('Diagnostic("FIRMWARE install version=', 1)[0]
+        self.assertIn("continue;", failure)
+        self.assertNotIn("break;", failure)
+        self.assertIn('local_state / "firmware_source.txt"', source)
+        self.assertIn("source.path.parent_path()", source)
         self.assertLess(source.index('"FIRMWARE no_nca "'), source.index("InstallFirmware("))
-        self.assertIn('{L"NXbox\\\\firmware", L"firmware"}', source)
 
     def test_uwp_first_launch_takes_keys_from_the_drive_before_installing(self):
         source = (ROOT / "src/eden_uwp/firmware.cpp").read_text()
         prepare = source.split("void PrepareFirmware(", 1)[1]
         # The library imports keys after this runs; without them the first install would fail.
-        self.assertLess(prepare.index("CopyMissingKeys(local_state, drives)"),
-                        prepare.index("ReloadKeys()"))
+        self.assertLess(
+            prepare.index("CopyMissingKeys(local_state, drives)"), prepare.index("ReloadKeys()")
+        )
         self.assertIn('{L"prod.keys", L"title.keys"}', source)
         self.assertIn('{L"switch\\\\", L""}', source)
         self.assertIn("NameCollisionOption::FailIfExists", source)

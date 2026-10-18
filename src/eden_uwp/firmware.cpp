@@ -6,12 +6,15 @@
 #include <algorithm>
 #include <chrono>
 #include <mutex>
+#include <stdexcept>
 #include <vector>
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Storage.h>
+#include "common/fs/file.h"
 #include "common/fs/fs.h"
 #include "core/core.h"
+#include "core/crypto/aes_util.h"
 #include "core/crypto/key_manager.h"
 #include "core/file_sys/registered_cache.h"
 #include "core/file_sys/vfs/vfs_real.h"
@@ -21,11 +24,77 @@
 #include "eden_uwp/diagnostic.h"
 #include "frontend_common/firmware_files.h"
 #include "frontend_common/firmware_install.h"
+#include "frontend_common/firmware_sources.h"
 
 namespace EdenXbox {
 namespace {
 std::mutex status_mutex;
 FirmwareStatus status;
+
+namespace Sources = FirmwareManager::Sources;
+
+Sources::IO FirmwareIO() {
+    Sources::IO io;
+    io.list = [](const std::filesystem::path& path) {
+        std::vector<Sources::Entry> entries;
+        if (!Common::FS::Exists(path))
+            return entries;
+        WIN32_FILE_ATTRIBUTE_DATA attributes{};
+        if (!GetFileAttributesExFromAppW(path.c_str(), GetFileExInfoStandard, &attributes) ||
+            (attributes.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT))
+            throw std::runtime_error("Firmware directory is inaccessible or a reparse point");
+        if (!Common::FS::Uwp::ForEachEntry(path, [&](const auto& child,
+                                                     const WIN32_FIND_DATAW& data) {
+                entries.push_back({child, bool(data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY),
+                                   bool(data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT),
+                                   (std::uint64_t(data.nFileSizeHigh) << 32) | data.nFileSizeLow,
+                                   (std::uint64_t(data.ftLastWriteTime.dwHighDateTime) << 32) |
+                                       data.ftLastWriteTime.dwLowDateTime});
+                return true;
+            })) {
+            throw std::runtime_error("Firmware directory enumeration failed");
+        }
+        return entries;
+    };
+    io.open = [](const std::filesystem::path& path) {
+        auto file = std::make_shared<Common::FS::IOFile>(path, Common::FS::FileAccessMode::Read);
+        if (!file->IsOpen())
+            throw std::runtime_error("Firmware source open failed");
+        return Sources::Reader{file->GetSize(), [file](std::uint64_t offset, Sources::Bytes bytes) {
+                                   if (!file->Seek(static_cast<s64>(offset)) ||
+                                       file->ReadSpan(bytes) != bytes.size())
+                                       throw std::runtime_error("Firmware source read failed");
+                               }};
+    };
+    struct FileWriter final : Sources::Writer {
+        Common::FS::IOFile file;
+        explicit FileWriter(const std::filesystem::path& path)
+            : file(path, Common::FS::FileAccessMode::Write) {
+            if (!file.IsOpen())
+                throw std::runtime_error("Firmware temporary open failed");
+        }
+        void Write(Sources::View bytes) override {
+            if (file.WriteSpan(bytes) != bytes.size())
+                throw std::runtime_error("Firmware temporary write failed (drive full?)");
+        }
+        void Finish() override {
+            if (!file.Flush())
+                throw std::runtime_error("Firmware temporary flush failed");
+            file.Close();
+        }
+    };
+    io.create = [](const auto& path) { return std::make_unique<FileWriter>(path); };
+    io.mkdir = [](const auto& path) {
+        if (Common::FS::Exists(path) || !Common::FS::CreateDir(path))
+            throw std::runtime_error("Firmware temporary directory creation failed");
+    };
+    io.remove_tree = [](const auto& path) {
+        if (!Common::FS::RemoveDirRecursively(path))
+            Diagnostic("FIRMWARE temporary_cleanup_failed");
+    };
+    io.log = [](const auto& text) { Diagnostic(text); };
+    return io;
+}
 
 // The library's USB import copies the keys only after this runs, so the first launch with a fresh
 // drive would try its firmware without keys and fail. Take missing keys from the drive first, from
@@ -99,66 +168,60 @@ void PrepareFirmware(const std::filesystem::path& local_state) {
         controller.CreateFactories(*system.GetFilesystem());
         next.version = FirmwareManager::InstalledVersion(system);
         std::vector<std::filesystem::path> roots;
-        try {
-            for (const auto& drive : drives) {
-                for (const wchar_t* name : {L"NXbox\\firmware", L"firmware"}) {
-                    const auto item =
-                        AwaitBounded(drive.TryGetItemAsync(name), std::chrono::seconds(5));
-                    if (item && *item && item->try_as<winrt::Windows::Storage::StorageFolder>()) {
-                        roots.emplace_back(std::wstring(drive.Path()));
-                        break;
-                    }
+        for (const auto& drive : drives)
+            roots.emplace_back(std::wstring(drive.Path()));
+        const auto io = FirmwareIO();
+        const auto sources =
+            Sources::Discover(io, FirmwareManager::FirmwareFolders(local_state, roots), roots);
+        const auto record_path = local_state / "firmware_source.txt";
+        auto records = Common::FS::ReadStringFromFile(record_path, Common::FS::FileType::TextFile);
+        for (const auto& source : sources) {
+            // Each attempt owns a fresh directory beside its source, including for USB NANDs.
+            const auto temporary = source.path.parent_path() /
+                                   (".firmware_extract-" + std::to_string(GetCurrentProcessId()) +
+                                    "-" + std::to_string(GetTickCount64()));
+            bool temporary_created = false;
+            auto attempt_io = io;
+            attempt_io.mkdir = [&](const auto& path) {
+                io.mkdir(path);
+                temporary_created = true;
+            };
+            struct Cleanup {
+                const Sources::IO& io;
+                std::filesystem::path path;
+                const bool& created;
+                ~Cleanup() {
+                    if (created && Common::FS::Exists(path))
+                        io.remove_tree(path);
                 }
-            }
-        } catch (const winrt::hresult_error& error) {
-            Diagnostic("FIRMWARE usb_scan_failed " + winrt::to_string(error.message()));
-        }
-        for (const auto& folder : FirmwareManager::FirmwareFolders(local_state, roots)) {
+            } cleanup{io, temporary, temporary_created};
+            bool source_installed = false;
             try {
-                if (!Common::FS::Exists(folder)) {
+                const auto fingerprint = "BEGIN\n" + Sources::Fingerprint(source) + "END\n";
+                if (!next.version.empty() && source.archive_folder.empty() &&
+                    !source.parts.empty() && records.find(fingerprint) != std::string::npos) {
+                    Diagnostic("FIRMWARE source_already_installed");
                     continue;
                 }
-                std::vector<std::filesystem::path> files;
-                std::vector<std::filesystem::path> subfolders;
-                const auto scan = [&](const std::filesystem::path& directory, bool top) {
-                    return Common::FS::Uwp::ForEachEntry(
-                        directory, [&](const auto& file, const WIN32_FIND_DATAW& data) {
-                            const auto attributes = data.dwFileAttributes;
-                            if (file.extension() != L".nca") {
-                                if (top && (attributes & FILE_ATTRIBUTE_DIRECTORY) &&
-                                    !(attributes & FILE_ATTRIBUTE_REPARSE_POINT)) {
-                                    subfolders.push_back(file);
-                                }
-                                return true;
-                            }
-                            if (attributes &
-                                (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) {
-                                return false;
-                            }
-                            files.push_back(file);
-                            return true;
-                        });
-                };
-                bool scanned = scan(folder, true);
-                // TegraExplorer and most guides leave the NCAs one folder deeper
-                // ("firmware/Firmware 21.2.0/*.nca"): take the first subfolder that has them.
-                std::sort(subfolders.begin(), subfolders.end());
-                for (const auto& subfolder : subfolders) {
-                    if (!scanned || !files.empty()) {
-                        break;
-                    }
-                    scanned = scan(subfolder, false);
+                Sources::Decrypt decrypt;
+                const auto key = Core::Crypto::KeyManager::Instance().GetBISKey(2);
+                if (std::any_of(key.begin(), key.end(), [](auto byte) { return byte != 0; })) {
+                    auto cipher = std::make_shared<Core::Crypto::AESCipher<Core::Crypto::Key256>>(
+                        key, Core::Crypto::Mode::XTS);
+                    decrypt = [cipher](std::uint64_t sector, Sources::View input,
+                                       Sources::Bytes output) {
+                        cipher->XTSTranscode(input.data(), input.size(), output.data(),
+                                             static_cast<size_t>(sector), 0x4000,
+                                             Core::Crypto::Op::Decrypt);
+                    };
+                } else if (source.kind == Sources::Kind::Nand) {
+                    throw std::runtime_error("NAND requires bis_key_02 in prod.keys");
                 }
-                if (!scanned) {
-                    next.install_failed = true;
-                    Diagnostic("FIRMWARE scan_failed");
-                    break;
-                }
+                const auto files = Sources::Extract(attempt_io, source, temporary, decrypt);
                 if (files.empty()) {
-                    Diagnostic("FIRMWARE no_nca " + Common::FS::PathToUTF8String(folder));
+                    Diagnostic("FIRMWARE no_nca " + Common::FS::PathToUTF8String(source.path));
                     continue;
                 }
-                std::sort(files.begin(), files.end());
                 Diagnostic("FIRMWARE install_begin count=" + std::to_string(files.size()));
                 const auto result = FirmwareManager::InstallFirmware(
                     system, files, [](size_t, size_t) { return false; });
@@ -166,37 +229,53 @@ void PrepareFirmware(const std::filesystem::path& local_state) {
                 if (result != FirmwareManager::InstallResult::Success) {
                     next.install_failed = true;
                     Diagnostic("FIRMWARE install_failed result=" +
-                               std::to_string(static_cast<int>(result)) +
-                               " count=" + std::to_string(files.size()));
-                    break; // Keep the source for retry; do not let another source hide the failure.
+                               std::to_string(static_cast<int>(result)));
+                    continue;
                 }
+                source_installed = true;
+                next.install_failed = false;
                 Diagnostic("FIRMWARE install version=" + next.version +
                            " count=" + std::to_string(files.size()));
-                const auto destination = FirmwareManager::InstalledFolder(
-                    folder, [](const auto& path) { return Common::FS::Exists(path); });
-                // StorageFolder's broker can rename a USB folder when ordinary Win32 cannot.
-                const auto source_folder = AwaitBounded(
-                    winrt::Windows::Storage::StorageFolder::GetFolderFromPathAsync(folder.native()),
-                    std::chrono::seconds(5));
-                if (!source_folder) {
-                    next.install_failed = true;
-                    Diagnostic("FIRMWARE archive_failed source retained for retry");
-                } else {
-                    source_folder
-                        ->RenameAsync(destination.filename().native(),
-                                      winrt::Windows::Storage::NameCollisionOption::FailIfExists)
-                        .get();
+                // Remove temporary chunks before renaming the enclosing source folder.
+                io.remove_tree(temporary);
+                if (!source.archive_folder.empty()) {
+                    const auto destination = FirmwareManager::InstalledFolder(
+                        source.archive_folder,
+                        [](const auto& path) { return Common::FS::Exists(path); });
+                    const auto folder =
+                        AwaitBounded(winrt::Windows::Storage::StorageFolder::GetFolderFromPathAsync(
+                                         source.archive_folder.native()),
+                                     std::chrono::seconds(5));
+                    if (!folder) {
+                        next.install_failed = true;
+                        Diagnostic("FIRMWARE archive_failed source retained for retry");
+                    } else {
+                        folder
+                            ->RenameAsync(
+                                destination.filename().native(),
+                                winrt::Windows::Storage::NameCollisionOption::FailIfExists)
+                            .get();
+                    }
+                } else if (!source.parts.empty()) {
+                    records += fingerprint;
+                    if (Common::FS::WriteStringToFile(record_path, Common::FS::FileType::TextFile,
+                                                      records) != records.size()) {
+                        next.install_failed = true;
+                        Diagnostic("FIRMWARE source_record_failed source retained for retry");
+                    }
                 }
-                // LocalState has priority if both local and USB dumps are present.
-                break;
+                break; // First successful source wins; LocalState is first.
             } catch (const winrt::hresult_error& error) {
                 next.install_failed = true;
-                Diagnostic("FIRMWARE archive_failed " + winrt::to_string(error.message()));
-                break;
+                Diagnostic("FIRMWARE install_or_archive_failed " +
+                           winrt::to_string(error.message()));
+                if (source_installed)
+                    break;
             } catch (const std::exception& error) {
                 next.install_failed = true;
                 Diagnostic(std::string("FIRMWARE install_or_archive_failed ") + error.what());
-                break;
+                if (source_installed)
+                    break;
             }
         }
         next.home_available = controller.GetSystemNANDContents()->GetEntryRaw(
