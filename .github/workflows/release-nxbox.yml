@@ -75,4 +75,8 @@ jobs:
           IFS=. read -r major minor build fix <<< "${GITHUB_REF_NAME#v}"
           title="NXbox $major.$minor.$build Alpha"
           if [ -n "$fix" ] && [ "$fix" != 0 ]; then title="$title · fix $fix"; fi
-          gh release create "$GITHUB_REF_NAME" out/*.appx out/*.zip out/build-info.json -R NspxMiguel/NXbox --title "$title" --verify-tag --latest --generate-notes
+          # NxbHelper is still a preview; gh prepends these notes to the generated changelog.
+          notice='### NxbHelper (preview)
+
+          The NxbHelper zip files are a companion app that prepares a USB drive or sends your own games to NXbox through Device Portal. It is still in development: it may not work and has not been fully tested. You do not need it to use NXbox.'
+          gh release create "$GITHUB_REF_NAME" out/*.appx out/*.zip out/build-info.json -R NspxMiguel/NXbox --title "$title" --verify-tag --latest --notes "$notice" --generate-notes
