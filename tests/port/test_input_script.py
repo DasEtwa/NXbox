@@ -42,6 +42,16 @@ class InputScriptTests(unittest.TestCase):
             )
             subprocess.run([str(binary)], check=True, timeout=10)
 
+    def test_remote_right_stick_keys_reach_the_guest(self):
+        # Device Portal sends both sticks as gamepad virtual keys (0xD3-0xDA); the right stick
+        # used to be dropped, so camera prompts could never be answered from a script.
+        pad = (ROOT / "src/eden_uwp/gamepad.h").read_text()
+        for key, bit in [("0xD7", "KeyRightStickUp"), ("0xD8", "KeyRightStickDown"),
+                         ("0xD9", "KeyRightStickRight"), ("0xDA", "KeyRightStickLeft")]:
+            self.assertIn(f"case {key}:\n            return {bit};", pad)
+        self.assertIn("key_axis(KeyRightStickRight, KeyRightStickLeft, reading.RightThumbstickX)", pad)
+        self.assertIn("key_axis(KeyRightStickUp, KeyRightStickDown, reading.RightThumbstickY)", pad)
+
 
 if __name__ == "__main__":
     unittest.main()
