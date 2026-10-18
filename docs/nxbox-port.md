@@ -1092,7 +1092,3 @@ Console verification gate (lead supplies a new CI build/package; none was run lo
    `NXBOX_D3D12_NO_QUERIES=1`, or `NXBOX_D3D12_NO_DRAWS=1` in that same file.
    Restart between runs, remove the previous toggle, and record missing rendering or
    guest progress as well as device loss. Skipping work is diagnostic, not a playable fix.
-
-Organize se quiser: games\Base (jogo), games\Updates (atualizações), games\DLC (DLCs). Tudo solto em games\ também funciona.
-
-Optionally organize: games\Base (game), games\Updates (updates), games\DLC (DLC). Everything loose in games\ works too.

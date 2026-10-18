@@ -515,7 +515,3 @@ Fixture JSON/HTML/binary payloads live in `tests/port/fixtures/tinfoil_*`. Pure 
 authentication, metadata/grouping/sorting, installed-version and queue tests run on the host. The
 application requires MSVC CI and a console run to validate WinRT networking, Direct2D rendering and
 controller/script behavior; it cannot be built on this Mac.
-
-Organize se quiser: games\Base (jogo), games\Updates (atualizações), games\DLC (DLCs). Tudo solto em games\ também funciona.
-
-Optionally organize: games\Base (game), games\Updates (updates), games\DLC (DLC). Everything loose in games\ works too.

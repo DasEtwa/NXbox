@@ -223,7 +223,3 @@ unregistered runtime directory; failed content transfer can leave an installed b
 These are reported failures, not successful game installs. Re-registering the same title currently
 uses the same identity/version; preservation of LocalState and loose-folder lifecycle needs a
 console test before offering an update workflow. There is no resume or uninstall/rollback command.
-
-Organize se quiser: games\Base (jogo), games\Updates (atualizações), games\DLC (DLCs). Tudo solto em games\ também funciona.
-
-Optionally organize: games\Base (game), games\Updates (updates), games\DLC (DLC). Everything loose in games\ works too.

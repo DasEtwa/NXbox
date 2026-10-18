@@ -26,6 +26,7 @@ import { prepareContent } from "./content";
 import { discoverXbox } from "./discovery";
 import { DevicePortal, portalUrl } from "./portal";
 import { loadCredentials, saveCredentials } from "./credentials";
+import { safePath } from "./storage";
 import { deployGame } from "./deploy";
 
 // ponytail: the library app reuses the per-game runtime with a fixed id; give it its own
@@ -261,7 +262,7 @@ export async function copyGames(
 ) {
   const destinations: string[] = [];
   for (const game of content) {
-    const destination = await gameDestination(game, keys);
+    const destination = safePath(await gameDestination(game, keys));
     destinations.push(destination);
     const target = join(local, "games", destination);
     await mkdir(join(target, ".."), { recursive: true });

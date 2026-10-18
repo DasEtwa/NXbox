@@ -20,8 +20,6 @@ jogos são lidos diretamente, em trechos, inclusive quando têm mais de 10 GiB.
 No celular, selecione o ZIP de firmware ou vários arquivos `.nca` soltos; o seletor
 de pastas está disponível somente no desktop. Não há preparação de USB nem extração de NAND/emuMMC.
 
-Organize se quiser: games\Base (jogo), games\Updates (atualizações), games\DLC (DLCs). Tudo solto em games\ também funciona.
-
 ## English
 
 Download and unzip the artifacts from **Build NxbHelper mobile** in GitHub Actions.
@@ -85,5 +83,3 @@ Host Rust tests cover private IPv4 policy, split planning for 2.5 GiB, numerical
 package versions and destination mapping. Device Portal interoperability, mobile
 picker grants, native credential stores and large-file transfers require real
 Android/iOS and Xbox validation. CI is the mobile build of record.
-
-Optionally organize: games\Base (game), games\Updates (updates), games\DLC (DLC). Everything loose in games\ works too.

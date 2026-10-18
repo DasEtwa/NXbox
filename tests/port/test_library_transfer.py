@@ -45,3 +45,18 @@ class LibraryTransfer(unittest.TestCase):
         )
         usb = (ROOT / "src/eden_uwp/usb_library.cpp").read_text()
         self.assertIn("current.GetFoldersAsync()", usb)
+
+    def test_delete_enumerates_removable_subfolders_with_guards(self):
+        library = (ROOT / "src/eden_uwp/ui/library.cpp").read_text()
+        candidates = library.split("LibraryDeleteCandidates(", 1)[1].split(
+            "bool DeleteLibraryFiles(", 1
+        )[0]
+        self.assertIn("index < folders.size()", candidates)
+        self.assertIn("storage->GetFoldersAsync()", candidates)
+        self.assertIn("LibraryFiles::Allowed(path, roots)", candidates)
+        self.assertIn("FILE_ATTRIBUTE_REPARSE_POINT", candidates)
+        self.assertIn("folders.push_back(path)", candidates)
+        self.assertLess(
+            candidates.index("if (!SafeDeletePath(path, roots))"),
+            candidates.index("if (sibling || related)"),
+        )

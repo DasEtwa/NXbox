@@ -223,7 +223,3 @@ To move an internally installed game, open **Details** in the library and press 
 Device Portal → **File explorer** → **LocalAppData** → the folder that starts with `NSPX.NXbox` → **LocalState**. Download `nxbox_crash.txt` and `eden_uwp_diag.txt` and post both in the **#bugs** channel on [Discord](https://discord.gg/2SxEDzVyJM), with the game, the console (X or S) and what happened.
 
 Did it run? Tell us in the **#compatibility** channel on Discord, with the fps: one post per game. The Series S runs it, but the author doesn't have one to test on, so your reports matter a lot.
-
-Organize se quiser: games\Base (jogo), games\Updates (atualizações), games\DLC (DLCs). Tudo solto em games\ também funciona.
-
-Optionally organize: games\Base (game), games\Updates (updates), games\DLC (DLC). Everything loose in games\ works too.

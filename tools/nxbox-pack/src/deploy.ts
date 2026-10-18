@@ -40,7 +40,7 @@ export async function deployGame(options: {
   await portal.pushFile(pkg.PackageFullName, keys, "LocalState/eden/keys", "prod.keys");
   const destinations: string[] = [];
   for (const path of content) {
-    const destination = await gameDestination(path, keys);
+    const destination = safePath(await gameDestination(path, keys));
     destinations.push(destination);
     const directory = posix.dirname(`LocalState/games/${destination}`);
     if (directory !== "LocalState/games")

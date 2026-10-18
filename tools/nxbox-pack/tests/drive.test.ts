@@ -142,7 +142,7 @@ test("firmware errors map to actionable fixes", async () => {
     );
   }
 });
-test("prepareDrive creates exact layout, original extension and ready report", async () => {
+test("prepareDrive creates exact layout, lowercase extension and ready report", async () => {
   const progress: string[] = [];
   const report = await prepareDrive(root, await inputs(), (f) => progress.push(f), deps);
   expect(report.ready).toBe(true);
@@ -154,9 +154,9 @@ test("prepareDrive creates exact layout, original extension and ready report", a
     "prod.keys",
     "title.keys",
   ]);
-  expect(await readdir(join(root, "NXbox/games"))).toEqual(["Game.NSP"]);
+  expect(await readdir(join(root, "NXbox/games"))).toEqual(["Game.nsp"]);
   expect(await readdir(join(root, "NXbox/firmware"))).toEqual([firmwareName]);
-  expect(progress).toContain("Game.NSP → NXbox/games");
+  expect(progress).toContain("Game.nsp → NXbox/games");
 });
 test("xcz refused before copying and collisions preflight all files", async () => {
   const input = await inputs();
@@ -197,7 +197,7 @@ test("portal chooses newest library package, uploads games, keys, firmware in or
   const result = await sendToNxbox(portal, await inputs(), undefined, deps);
   expect(new Set(selected)).toEqual(new Set(["NSPX.NXbox_10.0.0.0_x64"]));
   expect(pushed).toEqual([
-    "LocalState/games/Game.NSP",
+    "LocalState/games/Game.nsp",
     "LocalState/eden/keys/prod.keys",
     "LocalState/eden/keys/title.keys",
     `LocalState/firmware/${firmwareName}`,

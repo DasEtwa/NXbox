@@ -68,10 +68,10 @@ export function validateName(name: string): string {
 export type GameFolder = "Base" | "Updates" | "DLC" | "";
 export function titleFolder(titleId: string | undefined): GameFolder {
   if (!titleId || !/^0100[0-9a-f]{12}$/i.test(titleId)) return "";
-  const suffix = Number(BigInt(`0x${titleId}`) & 0xfffn);
+  const suffix = Number(BigInt(`0x${titleId}`) & 0x1fffn);
   if (suffix === 0) return "Base";
   if (suffix === 0x800) return "Updates";
-  if (suffix > 0 && suffix < 0x800) return "DLC";
+  if (suffix > 0x1000) return "DLC";
   return "";
 }
 export async function gameDestination(path: string, keysPath?: string): Promise<string> {
@@ -109,7 +109,7 @@ export async function gameDestination(path: string, keysPath?: string): Promise<
     const ids = [...basename(path).matchAll(/\[(0100[0-9a-f]{12})\]/gi)];
     if (ids.length === 1) folder = titleFolder(ids[0]![1]);
   }
-  return [folder, basename(path)].filter(Boolean).join("/");
+  return [folder, basename(path, extname(path)) + gameExtension(path)].filter(Boolean).join("/");
 }
 
 export function destinationProgress(path: string, language: Language = "en") {

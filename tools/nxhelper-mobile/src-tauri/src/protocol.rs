@@ -66,10 +66,10 @@ fn game_directory(name: &str) -> &'static str {
     if ids.next().is_some() {
         return "LocalState/games";
     }
-    match id & 0xfff {
+    match id & 0x1fff {
         0 => "LocalState/games/Base",
         0x800 => "LocalState/games/Updates",
-        1..=0x7ff => "LocalState/games/DLC",
+        0x1001..=0x1fff => "LocalState/games/DLC",
         _ => "LocalState/games",
     }
 }
@@ -131,6 +131,10 @@ mod tests {
             ("Game [0100123456780000].nsp", "LocalState/games/Base"),
             ("Patch [0100123456780800].nsz", "LocalState/games/Updates"),
             ("Extra [0100123456781001].xci", "LocalState/games/DLC"),
+            ("Extra [0100123456781800].nsp", "LocalState/games/DLC"),
+            ("Extra [0100123456781fff].nsp", "LocalState/games/DLC"),
+            ("Bad [0100123456780001].nsp", "LocalState/games"),
+            ("Bad [0100123456781000].nsp", "LocalState/games"),
             ("Unknown.xcz", "LocalState/games"),
             ("Bad [010012345678ZZZZ].nsp", "LocalState/games"),
             (

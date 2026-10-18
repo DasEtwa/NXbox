@@ -201,6 +201,9 @@ flowchart LR
 
 ## Trying it
 
+Games can use `games/Base`, `games/Updates` and `games/DLC` subfolders. Files directly in
+`games/` remain supported.
+
 **New to the Device Portal?** Follow the step-by-step [user guide](docs/guide.md) (Português e English).
 
 You need an Xbox Series X|S in **Developer Mode** and your own dumps:
@@ -302,7 +305,3 @@ The privacy policy is in [PRIVACY.md](PRIVACY.md).
 
 GNU GPL version 3 or later; see [LICENSE.txt](LICENSE.txt). Existing source notices and third-party
 licenses are kept.
-
-Organize se quiser: games\Base (jogo), games\Updates (atualizações), games\DLC (DLCs). Tudo solto em games\ também funciona.
-
-Optionally organize: games\Base (game), games\Updates (updates), games\DLC (DLC). Everything loose in games\ works too.

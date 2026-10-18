@@ -268,7 +268,3 @@ Concrete MSVC/console review locations (line numbers in this patch):
 | `src/eden_uwp/ui/launch_screen.cpp:142` | Renderer recreated on the worker after being released on the UI thread; apartment lifetime and release on every failure path. |
 | `src/nxbox_launcher/main.cpp:61` | Standalone launcher now links D3D11/D2D/DXGI/WIC Windows libraries; check CoreWindow activation and PNG decoding with the UWP SDK. |
 | `src/nxbox_launcher/main.cpp:168` | Async operation status polling and immediate CoreApplication exit after acceptance, cancellation timeout, unavailable protocol. |
-
-Organize se quiser: games\Base (jogo), games\Updates (atualizações), games\DLC (DLCs). Tudo solto em games\ também funciona.
-
-Optionally organize: games\Base (game), games\Updates (updates), games\DLC (DLC). Everything loose in games\ works too.

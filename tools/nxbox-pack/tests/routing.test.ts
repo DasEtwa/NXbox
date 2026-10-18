@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { copyGames } from "../src/api";
 import { deployGame } from "../src/deploy";
 import { prepareDrive, sendToNxbox } from "../src/drive";
-import { gameDestination } from "../src/files";
+import { destinationProgress, gameDestination, titleFolder } from "../src/files";
 import { DevicePortal } from "../src/portal";
 
 const cases = [
@@ -95,3 +95,60 @@ for (const [name, folder] of cases) {
     }
   });
 }
+
+test("destination progress preserves each target folder", () => {
+  for (const folder of ["Base", "Updates", "DLC"]) {
+    expect(destinationProgress(`games/${folder}/Game.nsp`)).toBe(`Game.nsp → games/${folder}`);
+  }
+});
+
+test("title classification includes the DLC offset bit", () => {
+  for (const [suffix, folder] of [
+    ["0000", "Base"],
+    ["0800", "Updates"],
+    ["1001", "DLC"],
+    ["1800", "DLC"],
+    ["1fff", "DLC"],
+    ["0001", ""],
+    ["1000", ""],
+  ] as const) {
+    expect(titleFolder(`010012345678${suffix}`)).toBe(folder);
+  }
+});
+
+test("destinations lowercase only the extension", async () => {
+  expect(await gameDestination("Game [0100123456780000].NSP")).toBe(
+    "Base/Game [0100123456780000].nsp",
+  );
+});
+
+test("direct boot deployment and local export reject unsafe destinations", async () => {
+  class Portal extends DevicePortal {
+    override async installAsGames() {
+      return false;
+    }
+    override async uploadRuntime() {}
+    override async register() {
+      return { Name: "NXbox", PackageFullName: "NSPX.NXbox_1" };
+    }
+    override async makeFolder() {}
+    override async pushFile(_pkg: string, _path: string, directory: string) {
+      expect(directory).not.toStartWith("LocalState/games");
+    }
+  }
+  const portal = new Portal("https://xbox.test", { user: "", password: "" });
+  for (const name of ["CON.nsp", "Bad:Name.nsp", "Bad\\Name.nsp"]) {
+    await expect(
+      deployGame({
+        portal,
+        content: [name],
+        keys: "",
+        temporary: "",
+        titleId: "0100123456780000",
+        runtimeDirectory: "",
+        runtimeFiles: [],
+      }),
+    ).rejects.toMatchObject({ code: "inputInvalid" });
+    await expect(copyGames([name], "", "")).rejects.toMatchObject({ code: "inputInvalid" });
+  }
+});

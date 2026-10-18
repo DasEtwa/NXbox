@@ -663,7 +663,8 @@ std::vector<LibraryDeleteFile> LibraryDeleteCandidates(const GameEntry& game,
     }
     auto folders = roots;
     folders.push_back(game.path.parent_path());
-    for (const auto& folder : folders) {
+    for (std::size_t index = 0; index < folders.size(); ++index) {
+        const auto folder = folders[index];
         try {
             const auto storage = AwaitBounded(
                 winrt::Windows::Storage::StorageFolder::GetFolderFromPathAsync(folder.native()),
@@ -674,6 +675,18 @@ std::vector<LibraryDeleteFile> LibraryDeleteCandidates(const GameEntry& game,
             if (files)
                 for (const auto& file : *files)
                     candidates.emplace(std::wstring(file.Path()));
+            const auto children = AwaitBounded(storage->GetFoldersAsync(), std::chrono::seconds(5));
+            if (children) {
+                for (const auto& child : *children) {
+                    const fs::path path{std::wstring(child.Path())};
+                    WIN32_FILE_ATTRIBUTE_DATA data{};
+                    if (LibraryFiles::Allowed(path, roots) &&
+                        GetFileAttributesExFromAppW(path.c_str(), GetFileExInfoStandard, &data) &&
+                        !(data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) &&
+                        std::find(folders.begin(), folders.end(), path) == folders.end())
+                        folders.push_back(path);
+                }
+            }
         } catch (const winrt::hresult_error& failure) {
             Diagnostic("LIBRARY_DELETE list failed reason=" + winrt::to_string(failure.message()));
         }

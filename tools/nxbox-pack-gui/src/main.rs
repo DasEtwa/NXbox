@@ -387,7 +387,7 @@ impl App {
                     }
                 };
                 self.status = match v["file"].as_str() {
-                    Some(f) => format!("{step}: {}", file_name(Path::new(f))),
+                    Some(f) => format!("{step}: {f}"),
                     None => step.into(),
                 };
                 self.progress = match (v["sent"].as_f64(), v["total"].as_f64()) {
@@ -1254,6 +1254,22 @@ impl eframe::App for App {
 mod screenshots {
     use super::*;
     use egui_kittest::Harness;
+
+    #[test]
+    fn progress_preserves_destination_folder() {
+        for folder in ["Base", "Updates", "DLC"] {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let file = format!("Game.nsp → games/{folder}");
+            tx.send(serde_json::json!({"step": "upload", "file": file}))
+                .unwrap();
+            let mut app = App {
+                run_rx: Some(rx),
+                ..App::default()
+            };
+            app.poll(&egui::Context::default());
+            assert!(app.status.ends_with(&file));
+        }
+    }
 
     // Synthetic UI state only: no backend, credentials, keys, game files or network access.
     #[test]
