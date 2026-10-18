@@ -7,6 +7,7 @@
 #pragma once
 
 #include <algorithm>
+#include <chrono>
 #include <condition_variable>
 #include <cstring>
 #include <deque>
@@ -111,7 +112,7 @@ public:
             func();
         }
         fences.push(std::move(new_fence));
-        if (should_flush) {
+        if (should_flush && ShouldFlushFence()) {
             rasterizer.FlushCommands();
         }
         if constexpr (can_async_check) {
@@ -141,6 +142,7 @@ public:
                 wait_finished->store(true, std::memory_order_release);
                 cv.notify_all();
             });
+            FlushPendingFences();
             std::unique_lock lk(guard);
             cv.wait(lk,
                     [&] { return thread_error || wait_finished->load(std::memory_order_acquire); });
@@ -183,6 +185,15 @@ protected:
     virtual bool IsFenceSignaled(TFence& fence) const = 0;
     /// Waits until a fence has been signalled by the host GPU.
     virtual void WaitFence(TFence& fence) = 0;
+
+    // Backends may share a submission across fences, but a forced drain must submit it.
+    virtual bool ShouldFlushFence() const {
+        return true;
+    }
+    virtual void FlushPendingFences() {}
+    virtual bool IsFenceSubmitted([[maybe_unused]] const TFence& fence) const {
+        return true;
+    }
 
     VideoCore::RasterizerInterface& rasterizer;
     Tegra::GPU& gpu;
@@ -234,6 +245,12 @@ private:
                     cv.wait(lock, [&] { return stop_token.stop_requested() || !fences.empty(); });
                     if (stop_token.stop_requested()) [[unlikely]] {
                         return;
+                    }
+                    if (!IsFenceSubmitted(fences.front())) {
+                        // A deferred tick must not start the backend's GPU timeout yet.
+                        // Poll only until submission; stop/error paths can still join this thread.
+                        cv.wait_for(lock, std::chrono::milliseconds(1));
+                        continue;
                     }
                     current_fence = std::move(fences.front());
                     current_operations = std::move(pending_operations.front());

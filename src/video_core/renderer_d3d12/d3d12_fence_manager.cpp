@@ -10,8 +10,13 @@
 namespace D3D12 {
 void InnerFence::Queue() {
     if (!is_stubbed) {
-        tick = context.Submit(FrameCount::ForcedSubmitGuestFence);
+        tick = !BisectEnabled("NXBOX_D3D12_FENCE_BATCHING")
+                   ? context.Submit(FrameCount::ForcedSubmitGuestFence)
+                   : context.PendingFenceTick();
     }
+}
+bool InnerFence::IsSubmitted() const {
+    return is_stubbed || context.LastSubmittedTick() >= tick;
 }
 bool InnerFence::IsSignaled() const {
     return is_stubbed || context.IsFree(tick);
@@ -79,6 +84,15 @@ void FenceManager::LogSyncpoints() const {
         Diagnostic("D3D12_SYNCPOINTS pending=" + std::to_string(pending_syncpoints.load()) +
                    " signaled=" + std::to_string(signaled));
     }
+}
+bool FenceManager::ShouldFlushFence() const {
+    return !BisectEnabled("NXBOX_D3D12_FENCE_BATCHING");
+}
+void FenceManager::FlushPendingFences() {
+    context.Submit(FrameCount::ForcedSubmitGuestFence);
+}
+bool FenceManager::IsFenceSubmitted(const Fence& fence) const {
+    return fence->IsSubmitted();
 }
 Fence FenceManager::CreateFence(bool is_stubbed) {
     return std::make_shared<InnerFence>(context, is_stubbed);

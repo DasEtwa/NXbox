@@ -494,6 +494,29 @@ process environment variables and logged by the presentation pass):
 `LocalState\nxbox_env.txt` (KEY=VALUE lines) sets environment variables before Mesa loads, e.g.
 `D3D12_DEBUG=debuglayer` or `NXBOX_D3D12_MAX_SM=7`, without a rebuild.
 
+## Native D3D12 guest fence batching (18/10/2026)
+
+With batching on, guest fences capture the pending command-list tick, sharing a host submission until
+command-list end, presentation, resource pressure, or a guest wait. Host syncpoints, cache readbacks,
+and guest callbacks still retire in order after GPU completion. The fencing thread waits for the
+recording thread to submit a tick before starting the GPU timeout; it never submits command lists.
+DMA memory-sync waits and forced fence drains explicitly submit before blocking, including a final
+fence when no subsequent guest commands arrive.
+
+Batching is off until it is measured on the console. Set `NXBOX_D3D12_FENCE_BATCHING=1` in
+`LocalState\nxbox_env.txt` and restart the app to turn it on; remove it or set it to `0` for the
+per-fence submissions. The startup
+`D3D12 bisect` line records the setting. Keep `NXBOX_D3D12_SUBMIT_TRACE` disabled during performance
+comparisons because it forces a CPU wait after every host submission.
+
+For Kirby and the Forgotten Land, compare the same warmed gameplay scene in both modes. Record
+`ExecuteCommandLists_per_frame`, `forced_submits_guest_fence_per_frame`,
+`forced_submits_guest_flush_per_frame`, `sync_wait_cpu_ms / frames`, and FPS from `D3D12_FRAME_PROFILE`.
+The target is one or two host submissions per frame, with reduced sync-wait time and no missing
+readbacks, graphics regressions, loading hangs, or shutdown hangs. Mandatory DMA waits and separate
+guest command-list ends can limit batching; the console result, including cold loading, is still
+required to establish the actual performance gain.
+
 ## Persona 5 Royal is playable on Xbox Series X (28/09/2026)
 
 Measured on the console with remote input:

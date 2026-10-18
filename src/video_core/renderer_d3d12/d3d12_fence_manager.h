@@ -13,6 +13,7 @@ public:
     InnerFence(Context& context, bool is_stubbed) : FenceBase{is_stubbed}, context{context} {}
     void Queue();
     bool IsSignaled() const;
+    bool IsSubmitted() const;
     void Wait();
 
 private:
@@ -25,7 +26,7 @@ struct FenceManagerParams {
     using BufferCacheType = BufferCache;
     using TextureCacheType = TextureCache;
     using QueryCacheType = QueryCache;
-    // The completion path only waits on already submitted fence values.
+    // The completion thread waits for captured ticks; only the recording thread submits.
     static constexpr bool HAS_ASYNC_CHECK = true;
     static constexpr bool REQUIRE_GPU_COMPLETION = true;
 };
@@ -50,6 +51,9 @@ protected:
     void QueueFence(Fence& fence) override;
     bool IsFenceSignaled(Fence& fence) const override;
     void WaitFence(Fence& fence) override;
+    bool ShouldFlushFence() const override;
+    void FlushPendingFences() override;
+    bool IsFenceSubmitted(const Fence& fence) const override;
 
 private:
     Context& context;
