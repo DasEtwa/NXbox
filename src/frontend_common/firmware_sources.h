@@ -43,18 +43,23 @@ struct Source {
     Kind kind;
     fs::path path;
     std::vector<Entry> parts;
-    // Empty for drive roots, NANDs, and folders containing NANDs: never rename these.
+    // Legacy archive location metadata; the UWP scanner records fingerprints without renaming.
     fs::path archive_folder;
     bool recursive{true};
 };
 // Firmware folders recurse at most eight levels, root/NXbox discovery is shallow except emuMMC.
 std::vector<Source> Discover(const IO& io, const std::vector<fs::path>& firmware_folders,
                              const std::vector<fs::path>& drive_roots);
+bool OlderVersion(const std::string& source, const std::string& installed);
+std::string ScanRecords(const std::vector<Source>& sources);
+void SweepTemporary(const IO& io, const fs::path& local_state);
 std::string Fingerprint(const Source& source);
 Reader Joined(const IO& io, const std::vector<Entry>& parts);
 // Sector index is relative to SYSTEM, not to the GPP image. Caller supplies AES-128-XTS with
 // Nintendo's big-endian tweak and a 0x4000-byte sector (Eden AESCipher::XTSTranscode).
 using Decrypt = std::function<void(std::uint64_t, View, Bytes)>;
+// Optional candidates receives one independent NCA set per direct parent directory.
 std::vector<fs::path> Extract(const IO& io, const Source& source, const fs::path& temporary,
-                              const Decrypt& decrypt);
+                              const Decrypt& decrypt,
+                              std::vector<std::vector<fs::path>>* candidates = nullptr);
 } // namespace FirmwareManager::Sources

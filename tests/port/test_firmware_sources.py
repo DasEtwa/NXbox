@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Synthetic firmware inputs only. Python XEX reference uses the system AES-ECB primitive."""
 
+import random
+import zlib
 import shlex
 import struct
 import subprocess
@@ -20,6 +22,7 @@ DRIVER = r"""
 #include <fstream>
 #include <iostream>
 #include <stdexcept>
+#include <system_error>
 using namespace FirmwareManager::Sources;
 struct FileWriter : Writer {
     std::ofstream f;
@@ -56,7 +59,35 @@ int main(int argc, char** argv) {
     io.log = [](const std::string& s) { std::cout << s << '\n'; };
     const fs::path input(argv[2]), output(argv[3]);
     const std::string mode(argv[1]);
-    if (mode == "discover") {
+    if (mode == "policy") {
+        assert(OlderVersion("9.2.0", "21.0.0"));
+        assert(OlderVersion("21.0.9", "21.0.10"));
+        assert(!OlderVersion("21.0.10", "21.0.9"));
+        assert(!OlderVersion("21.0.0", "21.0.0"));
+        assert(!OlderVersion("1.0.0", ""));
+        std::vector<Source> scan{{Kind::Zip, "fw21.zip", {{"fw21.zip", false, false, 1, 2}}, {}},
+                                 {Kind::Nand, "rawnand.bin", {{"rawnand.bin", false, false, 3, 4}}, {}}};
+        const auto records = ScanRecords(scan);
+        for (const auto& source : scan) assert(records.find(Fingerprint(source)) != std::string::npos);
+        SweepTemporary(io, input);
+        return 0;
+    }
+    if (mode == "denied-nand" || mode == "denied-chunk") {
+        io.open = [](const fs::path&) -> Reader { throw std::system_error(std::make_error_code(std::errc::permission_denied)); };
+    }
+    if (mode == "folder-denied") {
+        const auto list = io.list;
+        io.list = [list](const fs::path& p) {
+            if (p.filename() == "denied") throw std::system_error(std::make_error_code(std::errc::permission_denied));
+            return list(p);
+        };
+    }
+    if (mode == "lazy") io.mkdir = [](const fs::path&) { throw std::runtime_error("mkdir denied"); };
+    if (mode == "discover" || mode == "discover-denied") {
+        if (mode == "discover-denied") {
+            const auto list = io.list;
+            io.list = [list](const fs::path& p) { if (p.filename() == "eMMC") throw std::system_error(std::make_error_code(std::errc::permission_denied)); return list(p); };
+        }
         const auto sources = Discover(io, {input / "local" / "firmware", input / "firmware"}, {input});
         for (const auto& s : sources) {
             if (!s.parts.empty()) {
@@ -77,11 +108,11 @@ int main(int argc, char** argv) {
         }
         return 0;
     }
-    Source source{mode == "folder" ? Kind::Folder : mode == "zip" ? Kind::Zip : Kind::Nand, input, {}, {}};
+    Source source{(mode == "folder" || mode == "folder-denied" || mode == "lazy" || mode == "denied-chunk") ? Kind::Folder : mode == "zip" ? Kind::Zip : Kind::Nand, input, {}, {}};
     if (mode == "parts") {
         source.parts = io.list(input);
         std::sort(source.parts.begin(), source.parts.end(), [](auto& a, auto& b) { return a.path < b.path; });
-    } else if (mode == "nand") {
+    } else if ((mode == "nand" || mode == "denied-nand")) {
         for (const auto& e : io.list(input.parent_path())) if (e.path == input) source.parts.push_back(e);
     }
     std::array<unsigned char, 32> key{};
@@ -99,9 +130,18 @@ int main(int argc, char** argv) {
     };
     bool failed = false;
     try {
-        auto files = Extract(io, source, output, decrypt);
+        std::vector<std::vector<fs::path>> sets;
+        auto files = Extract(io, source, output, decrypt, &sets);
+        for (const auto& set : sets) {
+            std::cout << "candidate:";
+            for (const auto& p : set) std::cout << p.filename().string() << ',';
+            std::cout << '\n';
+        }
+        if (std::string(argv[4]) == "reject" && sets.empty()) throw std::runtime_error("no valid candidate");
+        if (mode == "lazy") assert(!fs::exists(output));
         for (const auto& p : files) {
-            if (p.parent_path() != output) fs::copy_file(p, output / p.filename());
+            if (!fs::exists(output)) fs::create_directory(output);
+            if (p.parent_path() != output && !fs::exists(output / p.filename())) fs::copy_file(p, output / p.filename());
         }
     } catch (const std::exception& e) {
         failed = true; std::cout << "rejected: " << e.what() << '\n';
@@ -231,6 +271,7 @@ class FirmwareSourcesTests(unittest.TestCase):
             [
                 "clang++",
                 "-std=c++20",
+                "-fno-rtti",
                 "-Wall",
                 "-Wextra",
                 "-Werror",
@@ -270,7 +311,178 @@ class FirmwareSourcesTests(unittest.TestCase):
         return output, result.stdout
 
     def assert_files(self, output, expected):
-        self.assertEqual({p.name: p.read_bytes() for p in output.iterdir()}, expected)
+        self.assertEqual(
+            {p.name: p.read_bytes() for p in output.rglob("*") if p.is_file()}, expected
+        )
+
+    def test_lazy_loose_files_and_local_only_sweep(self):
+        source = self.root / "firmware"
+        source.mkdir()
+        (source / "a.nca").write_bytes(b"loose")
+        output, _ = self.run_driver("lazy", source)
+        self.assert_files(output, {"a.nca": b"loose"})
+        stale = self.root / ".firmware_extract-dead"
+        stale.mkdir()
+        (stale / "large.nca").write_bytes(b"stale")
+        usb_stale = source / ".firmware_extract-user"
+        usb_stale.mkdir()
+        self.run_driver("policy", self.root)
+        self.assertFalse(stale.exists())
+        self.assertTrue(usb_stale.exists())
+
+    def test_appledouble_and_unicode_discovery(self):
+        source = self.root / "firmware/日本語"
+        source.mkdir(parents=True)
+        (source / "a.nca").write_bytes(b"valid")
+        (source / "._a.nca").write_bytes(b"metadata")
+        (source / "__MACOSX").mkdir()
+        (source / "__MACOSX/b.nca").write_bytes(b"metadata")
+        output, _ = self.run_driver("folder", source)
+        self.assert_files(output, {"a.nca": b"valid"})
+        _, log = self.run_driver("discover", self.root)
+        self.assertIn("0:firmware:1:", log)
+        self.assertNotIn("entry_skipped", log)
+
+    def test_candidate_sets_do_not_merge_versions(self):
+        for mode in ("folder", "zip"):
+            source = self.root / ("versions" if mode == "folder" else "versions.zip")
+            names = {"v20/same.nca": b"old", "v21/same.nca": b"new"}
+            if mode == "folder":
+                for name, data in names.items():
+                    target = source / name
+                    target.parent.mkdir(parents=True)
+                    target.write_bytes(data)
+            else:
+                with zipfile.ZipFile(source, "w") as z:
+                    for name, data in names.items():
+                        z.writestr(name, data)
+            _, log = self.run_driver(mode, source)
+            self.assertEqual(log.count("candidate:same.nca,"), 2)
+            import shutil
+
+            shutil.rmtree(self.root / "out")
+
+    def test_bad_zip_candidate_does_not_hide_another_version(self):
+        archive = self.root / "versions.zip"
+        with zipfile.ZipFile(archive, "w") as z:
+            z.writestr("v20/same.nca", b"valid")
+            z.writestr("v21/same.nca", b"CORRUPT_ME")
+        archive.write_bytes(archive.read_bytes().replace(b"CORRUPT_ME", b"BAD_CRC___"))
+        output, log = self.run_driver("zip", archive)
+        self.assertIn("candidate_extraction_failed", log)
+        self.assertEqual(log.count("candidate:same.nca,"), 1)
+        self.assert_files(output, {"same.nca": b"valid"})
+
+    def test_unrelated_zip_entries_are_ignored(self):
+        archive = self.root / "other.zip"
+        with zipfile.ZipFile(archive, "w") as z:
+            z.writestr("../readme.txt", b"irrelevant")
+            z.writestr("long" * 1100 + ".txt", b"irrelevant")
+            z.writestr("C:/readme.txt", b"irrelevant")
+            z.writestr("__MACOSX/._a.nca", b"metadata")
+        output, log = self.run_driver("zip", archive)
+        self.assertIn("zip_no_nca ignored", log)
+        self.assertFalse(output.exists())
+
+    def test_deflate_exact_output_boundary(self):
+        archive = self.root / "exact.zip"
+        # End a non-final deflate block at exactly one input/output buffer boundary.
+        # inflate must be allowed to request the next input after draining that block.
+        payload = random.Random(0).randbytes(65536)[:-60] + b"a" * 60
+        compressor = zlib.compressobj(wbits=-15)
+        packed = compressor.compress(payload) + compressor.flush(zlib.Z_SYNC_FLUSH)
+        self.assertEqual(len(packed), 65536)
+        packed += compressor.compress(b"tail") + compressor.flush()
+        payload += b"tail"
+        name = b"a.nca"
+        crc = zlib.crc32(payload)
+        local = (
+            struct.pack(
+                "<IHHHHHIIIHH",
+                0x04034B50,
+                20,
+                0,
+                8,
+                0,
+                0,
+                crc,
+                len(packed),
+                len(payload),
+                len(name),
+                0,
+            )
+            + name
+            + packed
+        )
+        central = (
+            struct.pack(
+                "<IHHHHHHIIIHHHHHII",
+                0x02014B50,
+                20,
+                20,
+                0,
+                8,
+                0,
+                0,
+                crc,
+                len(packed),
+                len(payload),
+                len(name),
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            )
+            + name
+        )
+        archive.write_bytes(
+            local
+            + central
+            + struct.pack("<IHHHHIIH", 0x06054B50, 0, 0, 1, 1, len(central), len(local), 0)
+        )
+        output, _ = self.run_driver("zip", archive)
+        self.assert_files(output, {"a.nca": payload})
+
+    def test_extensionless_parts_not_visible_are_diagnosed(self):
+        emu = self.root / "NXbox/emuMMC/SD00/eMMC"
+        emu.mkdir(parents=True)
+        _, log = self.run_driver("discover", self.root)
+        self.assertIn("nand_no_visible_chunks", log)
+        chunk = self.root / "firmware/hash.nca"
+        chunk.mkdir(parents=True)
+        _, log = self.run_driver("folder", chunk.parent, reject=True)
+        self.assertIn("chunk_no_visible_parts", log)
+
+    def test_access_denied_reasons_and_scan_continuation(self):
+        raw = self.root / "rawnand.bin"
+        raw.write_bytes(self.image)
+        _, log = self.run_driver("denied-nand", raw, reject=True)
+        self.assertIn("nand_access_denied", log)
+        chunks = self.root / "firmware/hash.nca"
+        chunks.mkdir(parents=True)
+        (chunks / "00").write_bytes(b"chunk")
+        _, log = self.run_driver("denied-chunk", chunks.parent, reject=True)
+        self.assertIn("chunk_access_denied", log)
+        emu = self.root / "NXbox/emuMMC/SD00/eMMC"
+        emu.mkdir(parents=True)
+        (emu / "00").write_bytes(b"chunk")
+        local = self.root / "local/firmware"
+        local.mkdir(parents=True)
+        (local / "a.nca").write_bytes(b"local")
+        _, log = self.run_driver("discover-denied", self.root)
+        self.assertIn("nand_access_denied", log)
+        self.assertIn("0:local/firmware:", log)
+
+    def test_unreadable_subtree_keeps_source_retryable(self):
+        source = self.root / "firmware"
+        (source / "denied").mkdir(parents=True)
+        (source / "a.nca").write_bytes(b"valid")
+        output, log = self.run_driver("folder-denied", source)
+        self.assert_files(output, {"a.nca": b"valid"})
+        self.assertIn("candidate_extraction_failed", log)
+        self.assertEqual(log.count("candidate:a.nca,"), 1)
 
     def test_recursive_cnmt_and_chunks(self):
         source = self.root / "firmware"
@@ -333,9 +545,9 @@ class FirmwareSourcesTests(unittest.TestCase):
                     output, {"file.cnmt.nca": b"content" * 30000, "hash.nca": b"zeroone"}
                 )
                 self.assertTrue(archive.exists())
-                for p in output.iterdir():
-                    p.unlink()
-                output.rmdir()
+                import shutil
+
+                shutil.rmtree(output)
 
     def test_zip_traversal_and_crc_rejected(self):
         archive = self.root / "bad.zip"
@@ -367,9 +579,9 @@ class FirmwareSourcesTests(unittest.TestCase):
                 (source / f"{prefix}01").write_bytes(self.image[cut:])
                 output, _ = self.run_driver("parts", source)
                 self.assert_files(output, self.expected)
-                for p in output.iterdir():
-                    p.unlink()
-                output.rmdir()
+                import shutil
+
+                shutil.rmtree(output)
 
     def test_corrupt_gpt_and_encrypted_fat_rejected(self):
         path = self.root / "rawnand.bin"

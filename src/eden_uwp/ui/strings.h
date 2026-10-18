@@ -352,6 +352,7 @@ enum class Text {
     FirmwareInstalled,
     FirmwareMissing,
     FirmwareInstallFailed,
+    FirmwareConvertDump,
     HomeComboPrompt,
     HintStickMotion,
     OfficialSwitchInterface,

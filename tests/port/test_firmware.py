@@ -101,14 +101,42 @@ class FirmwareTests(unittest.TestCase):
     def test_uwp_uses_portable_sources_and_continues_after_failure(self):
         source = (ROOT / "src/eden_uwp/firmware.cpp").read_text()
         self.assertIn("Sources::Discover(", source)
-        self.assertIn("Sources::Extract(attempt_io, source, temporary, decrypt)", source)
-        failure = source.split("if (result != FirmwareManager::InstallResult::Success)", 1)[1]
-        failure = failure.split('Diagnostic("FIRMWARE install version=', 1)[0]
-        self.assertIn("continue;", failure)
-        self.assertNotIn("break;", failure)
-        self.assertIn('local_state / "firmware_source.txt"', source)
-        self.assertIn("source.path.parent_path()", source)
-        self.assertLess(source.index('"FIRMWARE no_nca "'), source.index("InstallFirmware("))
+        self.assertIn("Sources::Extract(io, source, temporary, decrypt, &candidates)", source)
+        self.assertLess(source.index("VerifyFirmware("), source.index("InstallFirmware("))
+        self.assertIn("Sources::OlderVersion(version, next.version)", source)
+        self.assertIn("Sources::OlderVersion(best_version, version)", source)
+        self.assertIn("records += Sources::ScanRecords(verified_sources)", source)
+        self.assertIn("if (!extraction_failed && !candidates.empty())", source)
+        self.assertNotIn("source.path.parent_path()", source)
+        self.assertNotIn("RenameAsync", source)
+        self.assertIn("Sources::SweepTemporary(io, local_state)", source)
+
+    def test_extensionless_access_uses_win32_and_localized_conversion_hint(self):
+        source = (ROOT / "src/eden_uwp/firmware.cpp").read_text()
+        self.assertIn("CreateFileFromAppW(path.c_str()", source)
+        self.assertIn("std::system_error(GetLastError()", source)
+        for reason in (
+            "nand_access_denied",
+            "chunk_access_denied",
+            "nand_no_visible_chunks",
+            "chunk_no_visible_parts",
+        ):
+            self.assertIn(reason, source)
+        for language in ("en", "pt_br"):
+            text = (ROOT / f"src/eden_uwp/ui/lang/{language}.inc").read_text()
+            self.assertIn("Text::FirmwareConvertDump", text)
+            self.assertIn("NxHelper", text)
+        ui = (ROOT / "src/eden_uwp/ui/library_screen.cpp").read_text()
+        self.assertIn("firmware_status_.conversion_required", ui)
+        self.assertIn("Tr(Text::FirmwareConvertDump)", ui)
+        helper = (ROOT / "src/common/fs/fs_uwp.h").read_text()
+        self.assertIn("*enumeration_error = error", helper)
+
+    def test_combined_bis_crlf_trim_precedes_length_check(self):
+        source = (ROOT / "src/core/crypto/key_manager.cpp").read_text()
+        trim = 'out[1].erase(out[1].find_last_not_of(" \\t\\r\\n") + 1);'
+        self.assertIn(trim, source)
+        self.assertLess(source.index(trim), source.index("out[1].size() == 64"))
 
     def test_uwp_first_launch_takes_keys_from_the_drive_before_installing(self):
         source = (ROOT / "src/eden_uwp/firmware.cpp").read_text()

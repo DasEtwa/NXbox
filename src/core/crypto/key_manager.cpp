@@ -611,6 +611,8 @@ void KeyManager::LoadFromFile(const std::filesystem::path& file_path, bool is_ti
             out[0].erase(std::remove(out[0].begin(), out[0].end(), ' '), out[0].end());
             out[1].erase(std::remove(out[1].begin(), out[1].end(), ' '), out[1].end());
 
+            out[1].erase(out[1].find_last_not_of(" \t\r\n") + 1);
+
             if (out[0].compare(0, 1, "#") == 0) {
                 continue;
             }

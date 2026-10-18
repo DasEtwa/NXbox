@@ -1338,7 +1338,9 @@ private:
                                          ? std::wstring(Tr(Text::FirmwareMissing))
                                          : std::wstring(Tr(Text::FirmwareInstalled)) + L" " +
                                                Widen(firmware_status_.version);
-        if (firmware_status_.install_failed) {
+        if (firmware_status_.conversion_required) {
+            firmware_text = Tr(Text::FirmwareConvertDump);
+        } else if (firmware_status_.install_failed) {
             firmware_text = firmware_status_.version.empty()
                                 ? std::wstring(Tr(Text::FirmwareInstallFailed))
                                 : firmware_text + L" · " + Tr(Text::FirmwareInstallFailed);

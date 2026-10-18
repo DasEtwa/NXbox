@@ -14,13 +14,17 @@ namespace Common::FS::Uwp {
 
 // Use the enumeration's metadata directly: directory_entry would query the path through Win32.
 template <typename Callback>
-bool ForEachEntry(const std::filesystem::path& directory, Callback&& callback) {
+bool ForEachEntry(const std::filesystem::path& directory, Callback&& callback,
+                  DWORD* enumeration_error = nullptr) {
     WIN32_FIND_DATAW data{};
     const auto pattern = directory / L"*";
     const HANDLE search = FindFirstFileExFromAppW(pattern.c_str(), FindExInfoBasic, &data,
                                                  FindExSearchNameMatch, nullptr, 0);
     if (search == INVALID_HANDLE_VALUE) {
-        return GetLastError() == ERROR_FILE_NOT_FOUND;
+        const auto error = GetLastError();
+        if (enumeration_error)
+            *enumeration_error = error;
+        return error == ERROR_FILE_NOT_FOUND;
     }
     struct SearchHandle {
         HANDLE value;
@@ -32,7 +36,10 @@ bool ForEachEntry(const std::filesystem::path& directory, Callback&& callback) {
             return false;
         }
     } while (FindNextFileW(search, &data));
-    return GetLastError() == ERROR_NO_MORE_FILES;
+    const auto error = GetLastError();
+    if (enumeration_error)
+        *enumeration_error = error;
+    return error == ERROR_NO_MORE_FILES;
 }
 
 } // namespace Common::FS::Uwp

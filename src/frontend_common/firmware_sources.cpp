@@ -9,6 +9,8 @@
 #include <map>
 #include <set>
 #include <stdexcept>
+#include <string_view>
+#include <system_error>
 #include <zlib.h>
 
 namespace FirmwareManager::Sources {
@@ -21,6 +23,21 @@ constexpr U64 Limit = 8ull << 30;
 void Require(bool ok) {
     if (!ok)
         Invalid();
+}
+std::string PathText(const fs::path& p) {
+    const auto text = p.generic_u8string();
+    return {text.begin(), text.end()};
+}
+fs::path Utf8Path(std::string_view text) {
+    return fs::path(std::u8string(text.begin(), text.end()));
+}
+bool Ignored(const fs::path& p) {
+    for (const auto& part : p) {
+        const auto name = PathText(part);
+        if (name.starts_with("._") || name == "__MACOSX")
+            return true;
+    }
+    return false;
 }
 std::string Lower(std::string s) {
     for (auto& c : s)
@@ -55,7 +72,7 @@ std::string Utf8(std::u16string_view text) {
     return out;
 }
 bool Nca(const fs::path& p) {
-    return Lower(p.extension().string()) == ".nca";
+    return !Ignored(p) && Lower(PathText(p.extension())) == ".nca";
 }
 bool Part(const std::string& s) {
     return s.size() == 2 && s[0] >= '0' && s[0] <= '9' && s[1] >= '0' && s[1] <= '9';
@@ -86,12 +103,12 @@ std::vector<Entry> Ordered(std::vector<Entry> parts, bool raw) {
     std::sort(parts.begin(), parts.end(),
               [](const auto& a, const auto& b) { return a.path < b.path; });
     Require(!parts.empty());
-    if (raw && Lower(parts[0].path.filename().string()) == "rawnand.bin") {
+    if (raw && Lower(PathText(parts[0].path.filename())) == "rawnand.bin") {
         Require(parts.size() == 1 && parts[0].size);
         return parts;
     }
     for (size_t i = 0; i < parts.size(); ++i) {
-        const auto name = parts[i].path.filename().string();
+        const auto name = PathText(parts[i].path.filename());
         const auto suffix = raw ? name.substr(name.size() - 2) : name;
         Require(Part(suffix) && std::stoul(suffix) == i && parts[i].size);
     }
@@ -101,17 +118,33 @@ void Log(const IO& io, const std::string& s) {
     if (io.log)
         io.log("FIRMWARE " + s);
 }
+// Called only from an active catch; exception matching works with the project's disabled RTTI.
+bool AccessDenied() {
+    try {
+        throw;
+    } catch (const std::system_error& error) {
+        return error.code() == std::errc::permission_denied ||
+               (error.code().category() == std::system_category() && error.code().value() == 5);
+    } catch (...) {
+        return false;
+    }
+}
 struct Output {
     const IO& io;
     fs::path temporary;
     std::set<std::string> names;
     std::vector<fs::path> files;
     U64 total{};
+    bool created{};
     std::unique_ptr<Writer> New(const std::string& name, U64 size) {
         Require(size && size <= Limit - total && names.insert(Lower(name)).second);
-        Require(fs::path(name).filename() == fs::path(name) && Nca(name));
+        Require(Utf8Path(name).filename() == Utf8Path(name) && Nca(Utf8Path(name)));
         total += size;
-        auto path = temporary / name;
+        if (!created) {
+            io.mkdir(temporary);
+            created = true;
+        }
+        auto path = temporary / Utf8Path(name);
         auto writer = io.create(path);
         files.push_back(path);
         return writer;
@@ -159,27 +192,33 @@ std::vector<ZipEntry> Zip(const Reader& r) {
     for (U64 i = 0; i < count; ++i) {
         Require(pos <= stop && stop - pos >= 46);
         auto h = Read(r, pos, 46);
-        Require(Le(h, 0, 4) == 0x02014b50 && !(Le(h, 8, 2) & 1) && !Le(h, 34, 2));
+        Require(Le(h, 0, 4) == 0x02014b50);
         const size_t n = Le(h, 28, 2), x = Le(h, 30, 2), comment = Le(h, 32, 2);
-        Require(n <= 4096 && name_bytes + n <= (16ull << 20));
-        name_bytes += n;
         Require(46 + n + x + comment <= stop - pos);
         auto b = Read(r, pos + 46, n + x);
         std::string name(b.begin(), b.begin() + n);
         std::replace(name.begin(), name.end(), '\\', '/');
-        Require(!name.empty() && name.front() != '/' && name.find(':') == std::string::npos &&
-                name.find('\0') == std::string::npos);
-        for (const auto& component : fs::path(name))
-            Require(component != "..");
-        Require(seen.insert(Lower(name)).second);
-        const auto unix_mode = Le(h, 38, 4) >> 16;
-        Require((unix_mode & 0170000) != 0120000);
         ZipEntry e{name,
                    Le(h, 24, 4),
                    Le(h, 20, 4),
                    Le(h, 42, 4),
                    static_cast<unsigned>(Le(h, 10, 2)),
                    static_cast<std::uint32_t>(Le(h, 16, 4))};
+        pos += 46 + n + x + comment;
+        const fs::path entry_path = Utf8Path(name);
+        if (Ignored(entry_path) || !(Nca(entry_path) || (Nca(entry_path.parent_path()) &&
+                                                         Part(PathText(entry_path.filename())))))
+            continue;
+        Require(n <= 4096 && name_bytes + n <= (16ull << 20));
+        name_bytes += n;
+        Require(!(Le(h, 8, 2) & 1) && !Le(h, 34, 2));
+        Require(!name.empty() && name.front() != '/' && name.find(':') == std::string::npos &&
+                name.find('\0') == std::string::npos);
+        for (const auto& component : entry_path)
+            Require(component != "..");
+        Require(seen.insert(Lower(name)).second);
+        const auto unix_mode = Le(h, 38, 4) >> 16;
+        Require((unix_mode & 0170000) != 0120000);
         bool needs64 = e.size == 0xffffffff || e.packed == 0xffffffff || e.offset == 0xffffffff;
         for (size_t p = n; p + 4 <= b.size();) {
             const auto tag = Le(b, p, 2), len = Le(b, p + 2, 2);
@@ -205,7 +244,6 @@ std::vector<ZipEntry> Zip(const Reader& r) {
         }
         Require(!needs64 && e.offset <= r.size && e.packed <= r.size - e.offset);
         result.push_back(std::move(e));
-        pos += 46 + n + x + comment;
     }
     return result;
 }
@@ -252,6 +290,8 @@ void Unzip(const Reader& r, const ZipEntry& e, Writer& w) {
             z.avail_out = static_cast<uInt>(out.size());
             const auto before = z.avail_in;
             status = inflate(&z, Z_NO_FLUSH);
+            if (status == Z_BUF_ERROR && !z.avail_in)
+                break;
             Require(status == Z_OK || status == Z_STREAM_END);
             const auto produced = out.size() - z.avail_out;
             emit(View(out).first(produced));
@@ -264,35 +304,68 @@ void Unzip(const Reader& r, const ZipEntry& e, Writer& w) {
     }
     Require((e.method == 0 || status == Z_STREAM_END) && written == e.size && crc == e.crc);
 }
-void ExtractZip(const Reader& r, Output& output) {
+void ExtractZip(const Reader& r, Output& output, std::vector<std::vector<fs::path>>* sets) {
     auto entries = Zip(r);
     std::map<std::string, std::vector<ZipEntry>> groups;
     for (const auto& e : entries) {
-        const fs::path p(e.name);
+        const fs::path p = Utf8Path(e.name);
         if (e.name.back() == '/')
             continue;
         Require(std::distance(p.begin(), p.end()) <= 11);
         if (Nca(p))
             groups[e.name].push_back(e);
-        else if (Nca(p.parent_path()) && Part(p.filename().string()))
-            groups[p.parent_path().generic_string()].push_back(e);
+        else if (Nca(p.parent_path()) && Part(PathText(p.filename())))
+            groups[PathText(p.parent_path())].push_back(e);
     }
+    std::map<fs::path, std::unique_ptr<Output>> candidates;
+    std::set<fs::path> invalid;
     for (auto& [name, parts] : groups) {
-        std::sort(parts.begin(), parts.end(),
-                  [](const auto& a, const auto& b) { return a.name < b.name; });
-        U64 size = 0;
-        for (size_t i = 0; i < parts.size(); ++i) {
-            if (parts[i].name != name)
-                Require(Part(fs::path(parts[i].name).filename().string()) &&
-                        std::stoul(fs::path(parts[i].name).filename().string()) == i);
-            Require(parts[i].size <= Limit - size);
-            size += parts[i].size;
+        const auto directory = Utf8Path(name).parent_path();
+        if (invalid.contains(directory))
+            continue;
+        try {
+            std::sort(parts.begin(), parts.end(),
+                      [](const auto& a, const auto& b) { return a.name < b.name; });
+            U64 size = 0;
+            for (size_t i = 0; i < parts.size(); ++i) {
+                if (parts[i].name != name)
+                    Require(Part(PathText(Utf8Path(parts[i].name).filename())) &&
+                            std::stoul(PathText(Utf8Path(parts[i].name).filename())) == i);
+                Require(parts[i].size <= Limit - size);
+                size += parts[i].size;
+            }
+            auto& candidate = candidates[directory];
+            if (!candidate) {
+                if (!output.created) {
+                    output.io.mkdir(output.temporary);
+                    output.created = true;
+                }
+                candidate = std::make_unique<Output>(Output{
+                    output.io, output.temporary / std::to_string(candidates.size()), {}, {}, 0});
+            }
+            auto w = candidate->New(PathText(Utf8Path(name).filename()), size);
+            for (const auto& e : parts)
+                Unzip(r, e, *w);
+            w->Finish();
+        } catch (const std::exception& error) {
+            if (!sets)
+                throw;
+            invalid.insert(directory);
+            const auto found = candidates.find(directory);
+            if (found != candidates.end() && found->second && found->second->created)
+                output.io.remove_tree(found->second->temporary);
+            Log(output.io, std::string("candidate_extraction_failed ") + error.what());
         }
-        auto w = output.New(fs::path(name).filename().string(), size);
-        for (const auto& e : parts)
-            Unzip(r, e, *w);
-        w->Finish();
     }
+    for (const auto& [directory, candidate] : candidates) {
+        if (invalid.contains(directory))
+            continue;
+        output.files.insert(output.files.end(), candidate->files.begin(), candidate->files.end());
+        if (sets)
+            sets->push_back(candidate->files);
+    }
+    if (groups.empty())
+        Log(output.io, "zip_no_nca ignored");
 }
 
 struct FatEntry {
@@ -416,7 +489,9 @@ public:
         const auto walk = [&](auto&& self, unsigned c, unsigned depth) -> void {
             Require(depth <= 8 && visited.insert(c).second);
             for (const auto& e : Directory(c)) {
-                if (Nca(e.name)) {
+                if (Ignored(Utf8Path(e.name)))
+                    continue;
+                if (Nca(Utf8Path(e.name))) {
                     if (!e.directory) {
                         auto w = out.New(e.name, e.size);
                         File(e, *w);
@@ -524,10 +599,53 @@ Reader Joined(const IO& io, const std::vector<Entry>& parts) {
                 Require(b.empty());
             }};
 }
+bool OlderVersion(const std::string& source, const std::string& installed) {
+    const auto parse = [](const std::string& text) {
+        std::array<unsigned, 4> version{};
+        size_t component = 0;
+        for (const unsigned char ch : text) {
+            if (ch == '.') {
+                if (++component == version.size())
+                    break;
+            } else if (ch >= '0' && ch <= '9') {
+                Require(version[component] <= 100000);
+                version[component] = version[component] * 10 + ch - '0';
+            } else
+                break;
+        }
+        return version;
+    };
+    return !installed.empty() && parse(source) < parse(installed);
+}
+std::string ScanRecords(const std::vector<Source>& sources) {
+    std::string records;
+    for (const auto& source : sources)
+        if (!source.parts.empty())
+            records += "BEGIN\n" + Fingerprint(source) + "END\n";
+    return records;
+}
+void SweepTemporary(const IO& io, const fs::path& local_state) {
+    std::vector<Entry> entries;
+    try {
+        entries = io.list(local_state);
+    } catch (const std::exception& error) {
+        Log(io, std::string("temporary_cleanup_failed ") + error.what());
+        return;
+    }
+    for (const auto& entry : entries) {
+        try {
+            if (entry.directory && !entry.reparse &&
+                PathText(entry.path.filename()).starts_with(".firmware_extract-"))
+                io.remove_tree(entry.path);
+        } catch (const std::exception& error) {
+            Log(io, std::string("temporary_cleanup_failed ") + error.what());
+        }
+    }
+}
 std::string Fingerprint(const Source& source) {
     std::string result;
     for (const auto& e : source.parts)
-        result += e.path.generic_string() + "\t" + std::to_string(e.size) + "\t" +
+        result += PathText(e.path) + "\t" + std::to_string(e.size) + "\t" +
                   std::to_string(e.modified) + "\n";
     return result;
 }
@@ -545,6 +663,8 @@ std::vector<Source> Discover(const IO& io, const std::vector<fs::path>& folders,
         try {
             entries = io.list(path);
         } catch (const std::exception& e) {
+            if (AccessDenied() && Lower(PathText(path.filename())) == "emmc")
+                Log(io, "nand_access_denied");
             Log(io, std::string("scan_failed ") + e.what());
             return true; // An unreadable subtree may contain a NAND: never rename its parent.
         }
@@ -552,39 +672,54 @@ std::vector<Source> Discover(const IO& io, const std::vector<fs::path>& folders,
                   [](const auto& a, const auto& b) { return a.path < b.path; });
         bool protected_source = false;
         for (const auto& e : entries) {
-            if (e.reparse)
-                continue;
-            if (!e.directory && Nca(e.path))
-                metadata.push_back(e);
-            else if (e.directory && Nca(e.path)) {
-                metadata.push_back(e);
-                try {
-                    for (const auto& chunk : io.list(e.path))
-                        if (!chunk.reparse && !chunk.directory)
-                            metadata.push_back(chunk);
-                } catch (const std::exception& error) {
-                    Log(io, std::string("scan_failed ") + error.what());
+            try {
+                if (e.reparse || Ignored(e.path))
+                    continue;
+                if (!e.directory && Nca(e.path))
+                    metadata.push_back(e);
+                else if (e.directory && Nca(e.path)) {
+                    metadata.push_back(e);
+                    try {
+                        for (const auto& chunk : io.list(e.path))
+                            if (!chunk.reparse && !chunk.directory)
+                                metadata.push_back(chunk);
+                    } catch (const std::exception& error) {
+                        if (AccessDenied())
+                            Log(io, "chunk_access_denied");
+                        Log(io, std::string("scan_failed ") + error.what());
+                    }
                 }
+            } catch (const std::exception& error) {
+                Log(io, std::string("entry_skipped ") + error.what());
+                protected_source = true;
             }
         }
         std::vector<Entry> raw, emu;
         for (const auto& e : entries) {
-            if (e.reparse || e.directory)
-                continue;
-            const auto name = Lower(e.path.filename().string());
-            if (name == "rawnand.bin" ||
-                (name.size() == 14 && name.starts_with("rawnand.bin.") && Part(name.substr(12))))
-                raw.push_back(e);
-            if (Lower(path.filename().string()) == "emmc" && Part(name))
-                emu.push_back(e);
-            if (Lower(e.path.extension().string()) == ".zip")
-                result.push_back({Kind::Zip, e.path, {e}, {}});
-            if (Lower(e.path.extension().string()) == ".7z" ||
-                Lower(e.path.extension().string()) == ".rar" ||
-                Lower(e.path.extension().string()) == ".xci" || name == "raw_based")
-                Log(io, "unsupported " + e.path.generic_string() +
-                            "; NxHelper on a computer can convert it");
+            try {
+                if (e.reparse || e.directory || Ignored(e.path))
+                    continue;
+                const auto name = Lower(PathText(e.path.filename()));
+                if (name == "rawnand.bin" ||
+                    (name.size() == 14 && name.starts_with("rawnand.bin.") &&
+                     Part(name.substr(12))))
+                    raw.push_back(e);
+                if (Lower(PathText(path.filename())) == "emmc" && Part(name))
+                    emu.push_back(e);
+                if (Lower(PathText(e.path.extension())) == ".zip")
+                    result.push_back({Kind::Zip, e.path, {e}, {}});
+                if (Lower(PathText(e.path.extension())) == ".7z" ||
+                    Lower(PathText(e.path.extension())) == ".rar" ||
+                    Lower(PathText(e.path.extension())) == ".xci" || name == "raw_based")
+                    Log(io, "unsupported " + PathText(e.path) +
+                                "; NxHelper on a computer can convert it");
+            } catch (const std::exception& error) {
+                Log(io, std::string("entry_skipped ") + error.what());
+                protected_source = true;
+            }
         }
+        if (Lower(PathText(path.filename())) == "emmc" && emu.empty())
+            Log(io, "nand_no_visible_chunks");
         for (auto* parts : {&raw, &emu})
             if (!parts->empty()) {
                 protected_source = true;
@@ -592,20 +727,25 @@ std::vector<Source> Discover(const IO& io, const std::vector<fs::path>& folders,
                     auto ordered = Ordered(*parts, parts == &raw);
                     result.push_back({Kind::Nand, ordered.front().path, std::move(ordered), {}});
                 } catch (const std::exception&) {
-                    Log(io, "nand_scan invalid split sequence " + path.generic_string());
+                    Log(io, "nand_scan invalid split sequence " + PathText(path));
                 }
             }
         for (const auto& e : entries) {
-            if (!e.directory || e.reparse || Nca(e.path))
-                continue;
-            const auto name = Lower(e.path.filename().string());
-            if (name.starts_with("firmware_installed") || name.starts_with(".firmware_extract"))
-                continue;
-            if (name == "emummc" || name == "emmc" || (firmware && depth >= 8))
+            try {
+                if (!e.directory || e.reparse || Ignored(e.path) || Nca(e.path))
+                    continue;
+                const auto name = Lower(PathText(e.path.filename()));
+                if (name.starts_with("firmware_installed") || name.starts_with(".firmware_extract"))
+                    continue;
+                if (name == "emummc" || name == "emmc" || (firmware && depth >= 8))
+                    protected_source = true;
+                if ((firmware && depth < 8) || name == "emummc" ||
+                    (depth < 3 && (Lower(PathText(path.filename())) == "emummc" || name == "emmc")))
+                    protected_source = self(self, e.path, firmware, depth + 1) || protected_source;
+            } catch (const std::exception& error) {
+                Log(io, std::string("entry_skipped ") + error.what());
                 protected_source = true;
-            if ((firmware && depth < 8) || name == "emummc" ||
-                (depth < 3 && (Lower(path.filename().string()) == "emummc" || name == "emmc")))
-                protected_source = self(self, e.path, firmware, depth + 1) || protected_source;
+            }
         }
         return protected_source;
     };
@@ -641,40 +781,91 @@ std::vector<Source> Discover(const IO& io, const std::vector<fs::path>& folders,
     return result;
 }
 std::vector<fs::path> Extract(const IO& io, const Source& source, const fs::path& temporary,
-                              const Decrypt& decrypt) {
-    io.mkdir(temporary);
+                              const Decrypt& decrypt, std::vector<std::vector<fs::path>>* sets) {
     Output out{io, temporary, {}, {}, 0};
     if (source.kind == Kind::Zip) {
         Log(io, "zip_extract");
-        ExtractZip(io.open(source.path), out);
+        ExtractZip(io.open(source.path), out, sets);
     } else if (source.kind == Kind::Nand) {
         Log(io, "nand_scan");
-        ExtractNand(Joined(io, source.parts), out, decrypt);
+        try {
+            ExtractNand(Joined(io, source.parts), out, decrypt);
+        } catch (const std::exception&) {
+            if (AccessDenied())
+                Log(io, "nand_access_denied");
+            throw;
+        }
+        if (sets && !out.files.empty())
+            sets->push_back(out.files);
         Log(io, "nand_extract count=" + std::to_string(out.files.size()));
     } else {
+        size_t candidate_index = 0;
         const auto walk = [&](auto&& self, const fs::path& path, unsigned depth) -> void {
+            const auto candidate_path = temporary / std::to_string(++candidate_index);
+            auto candidate_io = io;
+            candidate_io.mkdir = [&](const auto& p) {
+                if (!out.created) {
+                    io.mkdir(temporary);
+                    out.created = true;
+                }
+                io.mkdir(p);
+            };
+            Output local{candidate_io, candidate_path, {}, {}, 0};
+            bool invalid = false;
             for (const auto& e : io.list(path)) {
-                if (e.reparse)
-                    continue;
-                if (Nca(e.path)) {
-                    if (e.directory) {
-                        std::vector<Entry> parts;
-                        for (const auto& p : io.list(e.path)) {
-                            Require(!p.directory && !p.reparse);
-                            parts.push_back(p);
+                bool nca_entry = false;
+                try {
+                    if (e.reparse || Ignored(e.path))
+                        continue;
+                    nca_entry = Nca(e.path);
+                    if (nca_entry) {
+                        if (e.directory) {
+                            std::vector<Entry> parts;
+                            for (const auto& p : io.list(e.path)) {
+                                if (Ignored(p.path))
+                                    continue;
+                                Require(!p.directory && !p.reparse);
+                                parts.push_back(p);
+                            }
+                            if (parts.empty())
+                                Log(io, "chunk_no_visible_parts");
+                            auto r = Joined(io, Ordered(std::move(parts), false));
+                            auto w = local.New(PathText(e.path.filename()), r.size);
+                            Copy(r, *w, 0, r.size);
+                            w->Finish();
+                            Log(io, "chunk_extract");
+                        } else {
+                            // Probe loose NCA access too, before the VFS verification stage.
+                            io.open(e.path);
+                            Require(local.names.insert(Lower(PathText(e.path.filename()))).second);
+                            local.files.push_back(e.path);
                         }
-                        auto r = Joined(io, Ordered(std::move(parts), false));
-                        auto w = out.New(e.path.filename().string(), r.size);
-                        Copy(r, *w, 0, r.size);
-                        w->Finish();
-                    } else {
-                        Require(out.names.insert(Lower(e.path.filename().string())).second);
-                        out.files.push_back(e.path);
-                    }
-                } else if (e.directory && source.recursive && depth < 8 &&
-                           !Lower(e.path.filename().string()).starts_with(".firmware_extract") &&
-                           !Lower(e.path.filename().string()).starts_with("firmware_installed"))
-                    self(self, e.path, depth + 1);
+                    } else if (e.directory && source.recursive && depth < 8 &&
+                               !Lower(PathText(e.path.filename()))
+                                    .starts_with(".firmware_extract") &&
+                               !Lower(PathText(e.path.filename()))
+                                    .starts_with("firmware_installed"))
+                        self(self, e.path, depth + 1);
+                } catch (const std::exception& error) {
+                    if (AccessDenied() && nca_entry)
+                        Log(io, "chunk_access_denied");
+                    Log(io, std::string("entry_skipped ") + error.what());
+                    if (nca_entry)
+                        invalid = true;
+                    else if (e.directory)
+                        Log(io, "candidate_extraction_failed");
+                }
+            }
+            if (invalid) {
+                Log(io, "candidate_extraction_failed");
+                if (!sets)
+                    throw std::runtime_error("Firmware candidate extraction failed");
+                return;
+            }
+            if (!local.files.empty()) {
+                if (sets)
+                    sets->push_back(local.files);
+                out.files.insert(out.files.end(), local.files.begin(), local.files.end());
             }
         };
         walk(walk, source.path, 0);
