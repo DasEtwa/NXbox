@@ -1129,17 +1129,12 @@ bool TextureCacheRuntime::CanBlitImages(const Image& dst, const Image& src,
                                         const Tegra::Engines::Fermi2D::Surface& dst_surface,
                                         const Tegra::Engines::Fermi2D::Surface& src_surface,
                                         const Tegra::Engines::Fermi2D::Config& copy) const {
-    if (!dst.Handle() || !src.Handle() || dst.info.format != src.info.format ||
-        dst.HostFormat().depth || src.HostFormat().depth ||
+    if (!dst.Handle() || !src.Handle() || dst.HostFormat().depth || src.HostFormat().depth ||
         dst.HostFormat().conversion != FormatConversion::None ||
         src.HostFormat().conversion != FormatConversion::None || dst.info.num_samples != 1 ||
         src.info.num_samples != 1 || dst.HostFormat().converted_astc ||
-        src.HostFormat().converted_astc || dst.HostFormat().block_width != 1 ||
-        src.HostFormat().block_width != 1 || dst.HostFormat().block_height != 1 ||
-        src.HostFormat().block_height != 1 ||
-        copy.operation != Tegra::Engines::Fermi2D::Operation::SrcCopy ||
-        !IsExactBlit(copy.src_x0, copy.src_y0, copy.src_x1, copy.src_y1, copy.dst_x0, copy.dst_y0,
-                     copy.dst_x1, copy.dst_y1))
+        src.HostFormat().converted_astc ||
+        copy.operation != Tegra::Engines::Fermi2D::Operation::SrcCopy)
         return false;
     // Use each actual cached mip, which need not match the surface's dimensions.
     const auto source_base = src.TryFindBase(src_surface.Address());
@@ -1157,8 +1152,16 @@ bool TextureCacheRuntime::CanBlitImages(const Image& dst, const Image& src,
                static_cast<u64>(x) <= std::max(u64{1}, desc.Width >> surface.level) &&
                static_cast<u32>(y) <= std::max(1u, desc.Height >> surface.level);
     };
-    return BlitImageHelper::CopyCompatible(target, source) &&
-           fits(source, copy.src_x1, copy.src_y1) && fits(target, copy.dst_x1, copy.dst_y1);
+    if (!fits(source, copy.src_x1, copy.src_y1) || !fits(target, copy.dst_x1, copy.dst_y1))
+        return false;
+    // Exact same-format copies keep bits; anything else (scaling, format change) is drawn.
+    if (dst.info.format == src.info.format &&
+        IsExactBlit(copy.src_x0, copy.src_y0, copy.src_x1, copy.src_y1, copy.dst_x0, copy.dst_y0,
+                    copy.dst_x1, copy.dst_y1) &&
+        BlitImageHelper::CopyCompatible(target, source))
+        return true;
+    return BlitImageHelper::DrawCompatible(
+        target, source, copy.filter == Tegra::Engines::Fermi2D::Filter::Bilinear);
 }
 void TextureCacheRuntime::BlitImage(Framebuffer*, ImageView& dst, ImageView& src,
                                     const VideoCommon::Region2D& dst_region,

@@ -646,6 +646,16 @@ void BlitImageHelper::ConvertImage(const BlitSurface& dst, const BlitSurface& sr
         throw std::invalid_argument("D3D12 conversion does not match surface formats");
     impl->Draw(RawSurface(dst), RawSurface(src), dst_region, src_region, false, conversion);
 }
+bool BlitImageHelper::DrawCompatible(const BlitSurface& dst, const BlitSurface& src,
+                                     bool linear) {
+    // Mirrors the checks Draw throws on for an Identity color blit.
+    return dst.resource && src.resource && dst.resource->handle && src.resource->handle &&
+           dst.format.Supported() && src.format.Supported() && !dst.format.depth &&
+           !src.format.depth && dst.format.block_width == 1 && src.format.block_width == 1 &&
+           dst.format.block_height == 1 && src.format.block_height == 1 &&
+           ValueClass(dst.format) == ValueClass(src.format) &&
+           !(ValueClass(dst.format) && linear);
+}
 bool BlitImageHelper::CopyCompatible(const BlitSurface& dst, const BlitSurface& src) {
     if (!dst.resource || !src.resource || !dst.resource->handle || !src.resource->handle ||
         !dst.format.Supported() || !src.format.Supported())

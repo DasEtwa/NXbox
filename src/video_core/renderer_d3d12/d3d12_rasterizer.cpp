@@ -3421,18 +3421,20 @@ bool RasterizerD3D12::AccelerateSurfaceCopy(const Tegra::Engines::Fermi2D::Surfa
         static_cast<u32>(std::max<s64>(0, s64{copy_config.dst_y1} - copy_config.dst_y0)) *
         VideoCore::Surface::BytesPerBlock(
             VideoCore::Surface::PixelFormatFromRenderTargetFormat(dst.format));
+    const auto src_format =
+        MaxwellFormat(VideoCore::Surface::PixelFormatFromRenderTargetFormat(src.format));
+    const auto plain = [](const auto& f) {
+        return f.Supported() && !f.depth && !f.converted_astc &&
+               f.conversion == FormatConversion::None && f.block_width == 1 &&
+               f.block_height == 1;
+    };
     bool accelerated = false;
-    // Exact native color copies preserve bits, including integer and sRGB formats.
-    // Scaling, conversion, depth and unsupported operations retain the software path.
+    // Color SrcCopy blits run on the GPU: exact same-format copies as copies, scaled or
+    // format-changing ones as draws (CanBlitImages checks the cached images).
+    // Depth, ROP/blend operations and converted formats retain the software path.
     if (!BisectEnabled("NXBOX_D3D12_NO_FERMI_COPY") && src.layer == 0 && dst.layer == 0 &&
-        src.depth == 1 && dst.depth == 1 &&
-        src.format == dst.format && format.Supported() && !format.depth && !format.converted_astc &&
-        format.conversion == FormatConversion::None && format.block_width == 1 &&
-        format.block_height == 1 &&
-        copy_config.operation == Tegra::Engines::Fermi2D::Operation::SrcCopy &&
-        IsExactBlit(copy_config.src_x0, copy_config.src_y0, copy_config.src_x1, copy_config.src_y1,
-                    copy_config.dst_x0, copy_config.dst_y0, copy_config.dst_x1,
-                    copy_config.dst_y1)) {
+        src.depth == 1 && dst.depth == 1 && plain(format) && plain(src_format) &&
+        copy_config.operation == Tegra::Engines::Fermi2D::Operation::SrcCopy) {
         std::scoped_lock lock{texture_cache.mutex};
         auto gpu_copy = copy_config;
         // Preserve the shared cache's CPU-only heuristic for tiny copies; creating

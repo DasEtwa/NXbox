@@ -113,6 +113,7 @@ def test_preflight_precedes_cache_modification_and_preserves_fallback():
         "converted_astc",
         "fits(source",
         "fits(target",
+        "DrawCompatible",
     ]:
         assert contract in preflight
     rasterizer = (NATIVE / "d3d12_rasterizer.cpp").read_text()
@@ -120,7 +121,10 @@ def test_preflight_precedes_cache_modification_and_preserves_fallback():
         "void RasterizerD3D12::AccelerateInlineToMemory", 1
     )[0]
     assert "texture_cache.BlitImage(dst, src, gpu_copy)" in blit
-    assert "src.format == dst.format" in blit
+    # Scaled and format-changing color blits are drawn; depth, ROP and converted formats
+    # still take the software path.
+    assert "plain(format) && plain(src_format)" in blit
+    assert "Operation::SrcCopy" in blit
     for counter in [
         "FermiBlitsAccelerated",
         "FermiBlitsSoftware",
