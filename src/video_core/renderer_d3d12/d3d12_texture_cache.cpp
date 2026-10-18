@@ -1135,8 +1135,12 @@ bool TextureCacheRuntime::CanBlitImages(const Image& dst, const Image& src,
     };
     if (!dst.Handle() || !src.Handle())
         return reject("missing image handle");
-    if (dst.HostFormat().depth || src.HostFormat().depth)
-        return reject("cached image is depth");
+    // Games blit depth buffers through color Fermi surfaces (Scarlet downsamples its depth
+    // this way); both cached images must then be depth with the same aspects.
+    const bool depth = dst.HostFormat().depth || src.HostFormat().depth;
+    if (depth && (!dst.HostFormat().depth || !src.HostFormat().depth ||
+                  dst.HostFormat().planes != src.HostFormat().planes))
+        return reject("depth blit between images with different aspects");
     if (dst.HostFormat().conversion != FormatConversion::None ||
         src.HostFormat().conversion != FormatConversion::None || dst.HostFormat().converted_astc ||
         src.HostFormat().converted_astc)
@@ -1165,6 +1169,9 @@ bool TextureCacheRuntime::CanBlitImages(const Image& dst, const Image& src,
         return reject("source region exceeds the cached image");
     if (!fits(target, copy.dst_x1, copy.dst_y1))
         return reject("destination region exceeds the cached image");
+    // BlitImage draws depth through BlitDepthStencil, which samples point and writes both planes.
+    if (depth)
+        return true;
     // Exact same-format copies keep bits; anything else (scaling, format change) is drawn.
     if (dst.info.format == src.info.format &&
         IsExactBlit(copy.src_x0, copy.src_y0, copy.src_x1, copy.src_y1, copy.dst_x0, copy.dst_y0,
