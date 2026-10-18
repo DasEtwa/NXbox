@@ -52,7 +52,8 @@ struct GPU { Host host; auto& Host1x() { return host; } };
 namespace VideoCore {
 struct RasterizerInterface {
     int submits{}, invalidations{};
-    void FlushCommands() { ++submits; }
+    std::function<void()> on_flush;
+    void FlushCommands() { ++submits; if (on_flush) on_flush(); }
     void InvalidateGPUCache() { ++invalidations; }
 };
 }
@@ -162,6 +163,81 @@ int main() {
 """
 
 
+ASYNC_DRIVER = DRIVER.split("template <bool native> struct Params", 1)[0] + r"""
+#include <chrono>
+#include <thread>
+struct AsyncParams {
+    using FenceType = std::shared_ptr<Fence>;
+    using BufferCacheType = Cache;
+    using TextureCacheType = Cache;
+    using QueryCacheType = Cache;
+    static constexpr bool HAS_ASYNC_CHECK = true;
+    static constexpr bool REQUIRE_GPU_COMPLETION = true;
+};
+// Fences become submitted only when the "recording thread" says so. The backstop is 5 s,
+// so only NotifySubmitted() can retire a fence in time.
+struct Manager : VideoCommon::FenceManager<AsyncParams> {
+    using Base = VideoCommon::FenceManager<AsyncParams>;
+    Manager(VideoCore::RasterizerInterface& r, Tegra::GPU& g, Cache& t, Cache& b, Cache& q)
+        : Base(r, g, t, b, q) { submit_backstop = std::chrono::seconds(5); }
+    std::atomic<bool> submitted{};
+    mutable std::atomic<int> checks{};
+    std::shared_ptr<Fence> CreateFence(bool stubbed) override {
+        return std::make_shared<Fence>(stubbed);
+    }
+    void QueueFence(std::shared_ptr<Fence>&) override {}
+    bool IsFenceSignaled(std::shared_ptr<Fence>& f) const override {
+        return f->IsStubbed() || f->ready;
+    }
+    void WaitFence(std::shared_ptr<Fence>& f) override {
+        assert(submitted); // The GPU timeout must never start for a deferred tick.
+        f->ready = true;
+    }
+    bool IsFenceSubmitted(const std::shared_ptr<Fence>&) const override {
+        ++checks;
+        return submitted;
+    }
+    void FlushPendingFences() override { submitted = true; NotifySubmitted(); }
+};
+bool WaitFor(const std::atomic<bool>& flag) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (!flag && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::yield();
+    return flag;
+}
+int main() {
+    VideoCore::RasterizerInterface rasterizer;
+    Tegra::GPU gpu;
+    Cache texture, buffer, query;
+    texture.ready = buffer.ready = query.ready = true;
+    Settings::high = false;
+    Manager manager(rasterizer, gpu, texture, buffer, query);
+    // The submission races the fencing thread's check and its sleep; none may be missed.
+    for (int i = 0; i < 300; ++i) {
+        std::atomic<bool> done{};
+        manager.submitted = false;
+        manager.SignalFence([&] { done = true; });
+        std::this_thread::sleep_for(std::chrono::microseconds(i % 8 * 40));
+        manager.submitted = true;
+        manager.NotifySubmitted();
+        assert(WaitFor(done));
+    }
+    // A forced drain submits through the hook and is released by the same wake-up.
+    manager.submitted = false;
+    manager.SignalReference();
+    const auto start = std::chrono::steady_clock::now();
+    manager.WaitPendingFences(true);
+    assert(std::chrono::steady_clock::now() - start < std::chrono::seconds(2));
+    assert(query.commits == query.pops && buffer.commits == buffer.pops);
+    // Stopping with an unsubmitted front fence still joins the fencing thread.
+    manager.submitted = false;
+    manager.SignalReference();
+    while (!manager.checks)
+        std::this_thread::yield();
+}
+"""
+
+
 class D3D12FenceManagerTests(unittest.TestCase):
     def test_cache_commit_callback_and_syncpoint_ordering(self):
         with tempfile.TemporaryDirectory(prefix="nxbox-d3d12-fences-") as temp:
@@ -219,23 +295,36 @@ struct Context {
     std::atomic<u64> submitted{}, completed{};
     std::atomic<int> waits{};
     mutable std::atomic<int> submission_checks{};
+    std::atomic<int> submit_calls{};
+    std::atomic<bool> submit_failed{};
+    bool submit_throws = false;
     bool fail = false;
     std::mutex guard;
     std::condition_variable cv;
     bool recording = true;
     void RecordWork() { recording = true; }
-    u64 LastSubmittedTick() const { ++submission_checks; return submitted; }
+    u64 LastSubmittedTick() const { return submitted; }
+    bool IsTickSubmitted(u64 tick) const {
+        ++submission_checks;
+        return submitted >= tick || submit_failed;
+    }
     u64 PendingFenceTick() const { return recording ? submitted + 1 : submitted.load(); }
     u64 Submit(FrameCount) {
+        ++submit_calls;
         if (!recording) return submitted;
         recording = false;
+        if (submit_throws) {
+            // Like device removal after the list closed: the tick is never signalled.
+            submit_failed = true;
+            throw std::runtime_error("simulated submit failure");
+        }
         return ++submitted;
     }
     bool IsFree(u64 tick) const { return completed >= tick; }
     void WaitSubmitted(u64 tick) {
-        assert(submitted >= tick);
+        assert(submitted >= tick || submit_failed);
         ++waits;
-        if (fail) throw std::runtime_error("simulated device failure");
+        if (fail || submit_failed) throw std::runtime_error("simulated device failure");
         std::unique_lock lock(guard);
         cv.wait(lock, [&] { return completed >= tick; });
     }
@@ -292,6 +381,8 @@ int main() {
     Settings::high = false;
     D3D12::Context context;
     D3D12::FenceManager manager(rasterizer, gpu, texture, buffer, query, context);
+    // SignalFence flushes under the fence lock when batching is off; the hook must not lock.
+    rasterizer.on_flush = [&] { manager.NotifyDeferredSubmit(); };
     if (D3D12::BisectEnabled("NXBOX_D3D12_FENCE_BATCHING")) {
         // Eight guest fences share the pending command-list tick. The producer never waits.
         std::atomic<int> callbacks{};
@@ -335,6 +426,12 @@ int main() {
         manager.SignalReference();
         manager.WaitPendingFences(true);
         assert(context.submitted == 2);
+        // The drain hook submits the pending tick, and wakes the fencing thread afterwards.
+        context.RecordWork();
+        const int hook_calls = context.submit_calls;
+        manager.FlushPendingFences();
+        assert(context.submit_calls == hook_calls + 1 && context.submitted == 3);
+        context.Complete();
         // Stopping with an unsubmitted tick cannot strand the completion thread.
         D3D12::Context broken;
         broken.fail = true;
@@ -343,6 +440,22 @@ int main() {
         try { failing.WaitPendingFences(true); }
         catch (const std::runtime_error&) { rejected = true; }
         assert(rejected);
+        // A Submit that throws after closing the list never signals the tick the fences
+        // captured. The drain that hit it fails, and so must every later drain: Submit is a
+        // no-op by then, so only the fencing thread can report the failure.
+        D3D12::Context stranded_context;
+        stranded_context.submit_throws = true;
+        D3D12::FenceManager stranded(rasterizer, gpu, texture, buffer, query, stranded_context);
+        stranded.SignalReference();
+        for (int drain = 0; drain < 3; ++drain) {
+            bool failed = false;
+            try { stranded.WaitPendingFences(true); }
+            catch (const std::runtime_error&) { failed = true; }
+            assert(failed);
+        }
+        assert(stranded_context.submitted == 0 && stranded_context.waits == 1);
+        // SignalFence never flushes while batching: the pending tick belongs to the recording.
+        assert(rasterizer.submits == 0);
         context.RecordWork();
         manager.SignalReference();
         return 0;
@@ -375,6 +488,11 @@ int main() {
     Common::GpuProfile::enabled = false;
     assert(query.commits == query.pops && buffer.commits == buffer.pops);
     assert(texture.commits == texture.pops && context.waits == 3);
+    // Without batching every fence submitted when queued: draining adds no submission.
+    context.RecordWork();
+    const int drain_calls = context.submit_calls;
+    manager.FlushPendingFences();
+    assert(context.submit_calls == drain_calls && rasterizer.submits > 0);
     D3D12::Context broken;
     broken.fail = true;
     D3D12::FenceManager failing(rasterizer, gpu, texture, buffer, query, broken);
@@ -410,41 +528,133 @@ int main() {
                     env = dict(os.environ, NXBOX_D3D12_FENCE_BATCHING=enabled)
                     subprocess.run([str(binary)], check=True, timeout=10, env=env)
 
-    def test_dma_sync_submits_before_waiting_for_callback(self):
+    def test_fencing_thread_wakes_when_a_deferred_tick_is_submitted(self):
+        with tempfile.TemporaryDirectory(prefix="nxbox-fence-wakeup-") as temp:
+            temp = Path(temp)
+            (temp / "stubs.h").write_text(STUBS)
+            for name in (
+                "common/common_types.h",
+                "common/settings.h",
+                "common/thread.h",
+                "video_core/delayed_destruction_ring.h",
+                "video_core/gpu.h",
+                "video_core/host1x/host1x.h",
+                "video_core/host1x/syncpoint_manager.h",
+                "video_core/rasterizer_interface.h",
+            ):
+                header = temp / name
+                header.parent.mkdir(parents=True, exist_ok=True)
+                header.write_text('#include "stubs.h"\n')
+            source = temp / "wakeup.cpp"
+            binary = temp / "wakeup"
+            source.write_text(ASYNC_DRIVER)
+            result = subprocess.run(
+                [
+                    "clang++",
+                    "-std=c++20",
+                    "-pthread",
+                    "-I",
+                    str(temp),
+                    "-I",
+                    str(ROOT / "src"),
+                    str(source),
+                    "-o",
+                    str(binary),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            subprocess.run([str(binary)], check=True, timeout=10)
+
+    def test_submissions_that_defer_fences_wake_the_fencing_thread(self):
+        render = ROOT / "src/video_core/renderer_d3d12"
+        context = (render / "d3d12_context.cpp").read_text()
+        submit = context[context.index("u64 Context::Submit(FrameCount") :]
+        submit = submit[: submit.index("void Context::Finish")]
+        # Flagged while unwinding from any throw in Submit, cleared once the tick is signalled.
+        self.assertIn("std::uncaught_exceptions()", submit)
+        self.assertIn("flag.store(true", submit)
+        self.assertIn("failure_flag{submit_failed}", submit)
+        self.assertLess(
+            submit.index("submitted = tick"), submit.index("submit_failed.store(false")
+        )
+        rasterizer = (render / "d3d12_rasterizer.cpp").read_text()
+        flush = rasterizer[rasterizer.index("void RasterizerD3D12::FlushCommands()") :]
+        self.assertIn("NotifyDeferredSubmit()", flush[: flush.index("TickFrame")])
+        renderer = (render / "renderer_d3d12.cpp").read_text()
+        present = renderer.index("context.Submit(FrameCount::ForcedSubmitPresent)")
+        self.assertIn("NotifyFencesSubmitted()", renderer[present : present + 200])
+
+    def test_dma_sync_flushes_deferred_fences_only_for_batching(self):
         source = (ROOT / "src/video_core/dma_pusher.cpp").read_text()
         start = source.index("    if (signal_sync && !synced) {")
         end = source.index("\n    if (header.size", start)
         wait_block = source[start:end]
+        # Every backend reaches this wait; FlushCommands would submit, flush and invalidate.
+        self.assertNotIn("FlushCommands", wait_block)
+        self.assertIn("FlushDeferredFences()", wait_block)
+        interface = (ROOT / "src/video_core/rasterizer_interface.h").read_text()
+        self.assertIn("virtual void FlushDeferredFences() {}", interface)
+        for backend in ("renderer_vulkan", "renderer_opengl", "renderer_null"):
+            for path in (ROOT / "src/video_core" / backend).rglob("*"):
+                if path.suffix in (".h", ".cpp"):
+                    self.assertNotIn("FlushDeferredFences", path.read_text(), path)
         driver = r"""
 #include <cassert>
+#include <chrono>
 #include <condition_variable>
 #include <functional>
 #include <mutex>
+#include <thread>
 #include "common/gpu_thread_profile.h"
 struct Rasterizer {
+    int commands{};
+    virtual ~Rasterizer() = default;
+    virtual void FlushCommands() { ++commands; }
+    virtual void FlushDeferredFences() {}
+};
+// Vulkan, OpenGL and D3D12 with batching off keep the interface default.
+struct Other : Rasterizer {};
+struct Batching : Rasterizer {
     std::function<void()> complete;
     int submits{};
-    void FlushCommands() { ++submits; complete(); }
+    void FlushDeferredFences() override { ++submits; complete(); }
 };
 struct Dma {
     Rasterizer* rasterizer;
     bool signal_sync = true, synced = false;
     std::mutex sync_mutex;
     std::condition_variable sync_cv;
+    void Complete() {
+        std::scoped_lock lock{sync_mutex};
+        synced = true;
+        sync_cv.notify_all();
+    }
     void Step() {
 __WAIT_BLOCK__
     }
 };
 int main() {
-    Rasterizer rasterizer;
-    Dma dma{&rasterizer};
-    rasterizer.complete = [&] {
-        std::scoped_lock lock{dma.sync_mutex};
-        dma.synced = true;
-        dma.sync_cv.notify_all();
-    };
-    dma.Step();
-    assert(rasterizer.submits == 1 && !dma.signal_sync && !dma.synced);
+    {
+        Other rasterizer;
+        Dma dma{&rasterizer};
+        // The memory-sync callback arrives from another thread, as on the completion thread.
+        std::jthread completion([&] {
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            dma.Complete();
+        });
+        dma.Step();
+        assert(rasterizer.commands == 0 && !dma.signal_sync && !dma.synced);
+    }
+    {
+        Batching rasterizer;
+        Dma dma{&rasterizer};
+        rasterizer.complete = [&] { dma.Complete(); };
+        dma.Step();
+        assert(rasterizer.submits == 1 && rasterizer.commands == 0);
+        assert(!dma.signal_sync && !dma.synced);
+    }
 }
 """.replace("__WAIT_BLOCK__", wait_block)
         with tempfile.TemporaryDirectory(prefix="nxbox-dma-fence-batch-") as temp:

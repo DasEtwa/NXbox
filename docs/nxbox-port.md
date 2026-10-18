@@ -500,8 +500,13 @@ With batching on, guest fences capture the pending command-list tick, sharing a 
 command-list end, presentation, resource pressure, or a guest wait. Host syncpoints, cache readbacks,
 and guest callbacks still retire in order after GPU completion. The fencing thread waits for the
 recording thread to submit a tick before starting the GPU timeout; it never submits command lists.
-DMA memory-sync waits and forced fence drains explicitly submit before blocking, including a final
-fence when no subsequent guest commands arrive.
+Command-list end, presentation and forced drains wake it right after they submit, so it does not
+wait for its 1 ms backstop timeout (which Windows can stretch to ~15.6 ms). If a submission throws
+(device removal), its stranded tick counts as submitted so the fencing thread reaches the wait,
+reports the failure and releases forced drains instead of polling forever.
+DMA memory-sync waits (through `RasterizerInterface::FlushDeferredFences`, a no-op on every other
+backend and with batching off) and forced fence drains explicitly submit before blocking, including
+a final fence when no subsequent guest commands arrive.
 
 Batching is off until it is measured on the console. Set `NXBOX_D3D12_FENCE_BATCHING=1` in
 `LocalState\nxbox_env.txt` and restart the app to turn it on; remove it or set it to `0` for the

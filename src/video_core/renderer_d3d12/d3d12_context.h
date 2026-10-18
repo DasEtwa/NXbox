@@ -486,6 +486,11 @@ public:
     u64 LastSubmittedTick() const {
         return submitted.load(std::memory_order_acquire);
     }
+    // True once the queue signals this tick. A failed Submit also counts, so waiters reach
+    // WaitSubmitted and report the failure instead of waiting for a submission that cannot come.
+    bool IsTickSubmitted(u64 tick) const {
+        return LastSubmittedTick() >= tick || submit_failed.load(std::memory_order_acquire);
+    }
     // Completion thread: never submit or touch command recording state.
     void WaitSubmitted(u64 tick, std::string_view site = "other");
     void Collect();
@@ -576,6 +581,8 @@ private:
     std::vector<D3D12_RESOURCE_BARRIER> transition_barriers;
 
     std::atomic<u64> submitted{};
+    // Set when Submit throws, cleared by the next completed submission.
+    std::atomic<bool> submit_failed{};
     bool recording{};
     u64 recording_generation{};
     RecordedDrawState recorded_state;

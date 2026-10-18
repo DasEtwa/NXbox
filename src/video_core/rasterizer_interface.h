@@ -140,6 +140,10 @@ public:
     /// Notify the rasterizer to send all written commands to the host GPU.
     virtual void FlushCommands() = 0;
 
+    /// Submit host work that a deferred fence is waiting for, before blocking on that fence.
+    /// Backends that submit when a fence is queued have nothing to do.
+    virtual void FlushDeferredFences() {}
+
     /// Notify rasterizer that a frame is about to finish
     virtual void TickFrame() = 0;
 

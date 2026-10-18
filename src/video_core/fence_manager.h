@@ -128,6 +128,18 @@ public:
         SignalFence(std::move(func));
     }
 
+    /// Wakes the fencing thread after a submission that can make a deferred fence submitted.
+    /// The lock orders the wake-up after the thread's IsFenceSubmitted check, so it cannot be
+    /// missed between that check and the sleep. Never call this while holding the fence lock.
+    void NotifySubmitted() {
+        if constexpr (can_async_check) {
+            {
+                std::scoped_lock lock{guard};
+            }
+            cv.notify_all();
+        }
+    }
+
     void WaitPendingFences([[maybe_unused]] bool force) {
         if constexpr (!can_async_check) {
             TryReleasePendingFences<true>();
@@ -194,6 +206,8 @@ protected:
     virtual bool IsFenceSubmitted([[maybe_unused]] const TFence& fence) const {
         return true;
     }
+    // Backstop for a submission that does not call NotifySubmitted().
+    std::chrono::milliseconds submit_backstop{1};
 
     VideoCore::RasterizerInterface& rasterizer;
     Tegra::GPU& gpu;
@@ -248,8 +262,11 @@ private:
                     }
                     if (!IsFenceSubmitted(fences.front())) {
                         // A deferred tick must not start the backend's GPU timeout yet.
-                        // Poll only until submission; stop/error paths can still join this thread.
-                        cv.wait_for(lock, std::chrono::milliseconds(1));
+                        // NotifySubmitted() ends this wait; the timeout only covers submissions
+                        // that do not notify. Stop still wakes it, so the thread can be joined.
+                        cv.wait_for(lock, submit_backstop, [&] {
+                            return stop_token.stop_requested() || IsFenceSubmitted(fences.front());
+                        });
                         continue;
                     }
                     current_fence = std::move(fences.front());

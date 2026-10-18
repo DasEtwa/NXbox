@@ -45,6 +45,10 @@ public:
     u64 PendingGuestCallbacks() const { return pending_guest_callbacks.load(); }
     void SignalReference();
     void LogSyncpoints() const;
+    // Recording thread, batching only: submit the pending tick before blocking on a fence.
+    void FlushPendingFences() override;
+    // Recording thread, batching only: wake the fencing thread after a submission made elsewhere.
+    void NotifyDeferredSubmit();
 
 protected:
     Fence CreateFence(bool is_stubbed) override;
@@ -52,7 +56,6 @@ protected:
     bool IsFenceSignaled(Fence& fence) const override;
     void WaitFence(Fence& fence) override;
     bool ShouldFlushFence() const override;
-    void FlushPendingFences() override;
     bool IsFenceSubmitted(const Fence& fence) const override;
 
 private:

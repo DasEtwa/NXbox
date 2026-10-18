@@ -6,6 +6,7 @@
 #include <array>
 #include <atomic>
 #include <cstring>
+#include <exception>
 #include <mutex>
 #include <set>
 #include <stdexcept>
@@ -1024,6 +1025,16 @@ void Context::MarkWork(std::string_view label) {
                         static_cast<UINT>((marker.size() + 1) * sizeof(wchar_t)));
 }
 u64 Context::Submit(FrameCount reason) {
+    // Device removal can throw after the command list was closed but before its tick was
+    // signalled. Fences that captured that tick would never count as submitted.
+    struct FailureFlag {
+        std::atomic<bool>& flag;
+        int exceptions{std::uncaught_exceptions()};
+        ~FailureFlag() {
+            if (std::uncaught_exceptions() > exceptions)
+                flag.store(true, std::memory_order_release);
+        }
+    } failure_flag{submit_failed};
     const FrameProfile::Scope profile_submit{profile, FramePhase::Submit};
     InvalidateRecordedState();
     // QueueFence and FlushCommands can both request the same submission.
@@ -1086,6 +1097,7 @@ u64 Context::Submit(FrameCount reason) {
     }
     Check(queue->Signal(fence.Get(), tick), "Signal", device.Get());
     submitted = tick;
+    submit_failed.store(false, std::memory_order_release);
     if (BisectEnabled("NXBOX_D3D12_SUBMIT_TRACE"))
         WaitSubmitted(tick, "submit trace");
     // Report progress even when the guest has stopped presenting.

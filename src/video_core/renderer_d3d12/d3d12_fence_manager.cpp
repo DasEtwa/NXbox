@@ -16,7 +16,7 @@ void InnerFence::Queue() {
     }
 }
 bool InnerFence::IsSubmitted() const {
-    return is_stubbed || context.LastSubmittedTick() >= tick;
+    return is_stubbed || context.IsTickSubmitted(tick);
 }
 bool InnerFence::IsSignaled() const {
     return is_stubbed || context.IsFree(tick);
@@ -89,10 +89,20 @@ bool FenceManager::ShouldFlushFence() const {
     return !BisectEnabled("NXBOX_D3D12_FENCE_BATCHING");
 }
 void FenceManager::FlushPendingFences() {
+    // Without batching every fence submitted when it was queued; keep that path untouched.
+    if (!BisectEnabled("NXBOX_D3D12_FENCE_BATCHING"))
+        return;
     context.Submit(FrameCount::ForcedSubmitGuestFence);
+    NotifySubmitted();
+}
+void FenceManager::NotifyDeferredSubmit() {
+    // Without batching this can run under the fence lock (SignalFence flushes there), and
+    // there is no deferred tick to wake the fencing thread for.
+    if (BisectEnabled("NXBOX_D3D12_FENCE_BATCHING"))
+        NotifySubmitted();
 }
 bool FenceManager::IsFenceSubmitted(const Fence& fence) const {
-    return fence->IsSubmitted();
+    return !BisectEnabled("NXBOX_D3D12_FENCE_BATCHING") || fence->IsSubmitted();
 }
 Fence FenceManager::CreateFence(bool is_stubbed) {
     return std::make_shared<InnerFence>(context, is_stubbed);
