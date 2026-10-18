@@ -2,10 +2,17 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 import { createReadStream } from "node:fs";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { basename, join, posix } from "node:path";
 import { Readable } from "node:stream";
 import { PackError } from "./i18n";
 
+/**
+ * The console answers 500 after the transfer of a single multi-GB file (measured at ~3.6 GB), so
+ * bigger files go up in slices that NXbox joins on its next start (src/frontend_common/split_upload.h).
+ */
+export const PART_SIZE = 1024 ** 3;
 export type Credentials = { user: string; password: string };
 export type InstalledPackage = {
   Name: string;
@@ -127,7 +134,7 @@ export class DevicePortal {
   }
   private async sendFiles(
     endpoint: string,
-    files: { path: string; name: string }[],
+    files: { path: string; name: string; start?: number; end?: number }[],
     onProgress?: (bytes: number, total: number) => void,
   ): Promise<void> {
     // Stream multipart bodies with backpressure; never buffer multi-GB dumps in FormData.
@@ -139,16 +146,23 @@ export class DevicePortal {
         `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${name}"\r\nContent-Type: application/octet-stream\r\n\r\n`,
       );
     const suffix = Buffer.from(`--${boundary}--\r\n`);
-    const total = files.reduce((sum, { path }) => sum + Bun.file(path).size, 0);
+    // An inclusive byte range streams a slice straight from the original file.
+    const sizeOf = ({ path, start = 0, end }: { path: string; start?: number; end?: number }) =>
+      end === undefined ? Bun.file(path).size - start : end - start + 1;
+    const total = files.reduce((sum, file) => sum + sizeOf(file), 0);
     const length = files.reduce(
-      (sum, { path, name }) => sum + head(name).length + Bun.file(path).size + 2,
+      (sum, file) => sum + head(file.name).length + sizeOf(file) + 2,
       suffix.length,
     );
     async function* body() {
       let sent = 0;
-      for (const { path, name } of files) {
+      for (const { path, name, start, end } of files) {
         yield head(name);
-        for await (const chunk of createReadStream(path, { highWaterMark: 1024 * 1024 })) {
+        for await (const chunk of createReadStream(path, {
+          highWaterMark: 1024 * 1024,
+          start,
+          end,
+        })) {
           sent += chunk.length;
           onProgress?.(sent, total);
           yield chunk;
@@ -221,25 +235,66 @@ export class DevicePortal {
       if (!data.Items?.some((item) => item.Name === name)) throw cause;
     }
   }
+  /** Uploads one file (or one slice of it) and checks the console reports the same size. */
+  private async pushOne(
+    pkg: string,
+    directory: string,
+    file: { path: string; name: string; start?: number; end?: number },
+    size: number,
+    onProgress?: (bytes: number, total: number) => void,
+  ): Promise<void> {
+    const query = this.query(pkg, directory);
+    query.set("extract", "false");
+    await this.sendFiles(`/api/filesystem/apps/file?${query}`, [file], onProgress);
+    const data = (await (
+      await this.request("GET", `/api/filesystem/apps/files?${query}`)
+    ).json()) as { Items?: { Name: string; FileSize?: number; SizeInBytes?: number }[] };
+    const item = data.Items?.find((item) => item.Name === file.name);
+    if (!item || Number(item.FileSize ?? item.SizeInBytes) !== size) throw new PackError("portal");
+  }
+  /**
+   * Files above partSize go up as `<name>.nxpart000`, `.nxpart001`, ... and a last
+   * `<name>.nxparts` manifest, so the manifest's presence means every part is on the console.
+   */
   async pushFile(
     pkg: string,
     path: string,
     directory: string,
     remoteName = basename(path),
     onProgress?: (bytes: number, total: number) => void,
+    partSize = PART_SIZE,
   ): Promise<void> {
-    const query = this.query(pkg, directory);
-    query.set("extract", "false");
-    await this.sendFiles(
-      `/api/filesystem/apps/file?${query}`,
-      [{ path, name: remoteName }],
-      onProgress,
-    );
-    const data = (await (
-      await this.request("GET", `/api/filesystem/apps/files?${query}`)
-    ).json()) as { Items?: { Name: string; FileSize?: number; SizeInBytes?: number }[] };
-    const item = data.Items?.find((item) => item.Name === remoteName);
-    if (!item || Number(item.FileSize ?? item.SizeInBytes) !== Bun.file(path).size)
-      throw new PackError("portal");
+    const size = Bun.file(path).size;
+    if (size <= partSize) {
+      await this.pushOne(pkg, directory, { path, name: remoteName }, size, onProgress);
+      return;
+    }
+    const parts = Math.ceil(size / partSize);
+    for (let index = 0; index < parts; index++) {
+      const start = index * partSize;
+      const end = Math.min(start + partSize, size) - 1;
+      await this.pushOne(
+        pkg,
+        directory,
+        { path, name: `${remoteName}.nxpart${String(index).padStart(3, "0")}`, start, end },
+        end - start + 1,
+        // Report progress of the whole file, not of the current slice.
+        (sent) => onProgress?.(start + sent, size),
+      );
+    }
+    const temporary = await mkdtemp(join(tmpdir(), "nxbox-pack-parts-"));
+    try {
+      const manifest = join(temporary, `${remoteName}.nxparts`);
+      const text = `parts=${parts}\nsize=${size}\n`;
+      await writeFile(manifest, text);
+      await this.pushOne(
+        pkg,
+        directory,
+        { path: manifest, name: `${remoteName}.nxparts` },
+        Buffer.byteLength(text),
+      );
+    } finally {
+      await rm(temporary, { recursive: true, force: true });
+    }
   }
 }

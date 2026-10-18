@@ -85,6 +85,13 @@ preserved. Allow space for both the compressed input and decompressed output; up
 same process. Without `nsz`, use an NSP/XCI dump. The CLI reports the missing requirement instead of
 uploading compressed files that cannot boot through `skip_library.txt`.
 
+## Big games
+
+The Device Portal file API fails on a single multi-GB upload (measured at ~3.6 GB), so any file
+above 1 GiB is sent in 1 GiB parts (`base.nsp.nxpart000`, `.nxpart001`, ... then a
+`base.nsp.nxparts` manifest, last). NXbox joins the parts into the original file on its next start;
+leave the console with enough free space for one more part while it does.
+
 ## Development
 
 Use Bun **1.3.14** (`d1632b29`; local full revision `d1632b291`):

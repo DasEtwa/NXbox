@@ -45,6 +45,7 @@
 #include "eden_uwp/diagnostic.h"
 #include "eden_uwp/ui/art.h"
 #include "eden_uwp/usb_library.h"
+#include "frontend_common/split_upload.h"
 
 namespace EdenXbox::Ui {
 namespace {
@@ -593,6 +594,9 @@ std::vector<GameEntry> LibraryScan::Scan() {
     const auto started = std::chrono::steady_clock::now();
     const fs::path games_dir = local_state_ / "games";
     const fs::path library_dir = local_state_ / "library";
+
+    // Big games arrive from NXbox Pack as parts; join them before looking for games.
+    SplitUpload::JoinSplitUploads(games_dir, [](const std::string& line) { Diagnostic(line); });
 
     std::vector<fs::path> packages;   // .nsp and .xci
     std::vector<fs::path> compressed; // .nsz

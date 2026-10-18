@@ -5,7 +5,7 @@ import { expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { DevicePortal, portalUrl } from "../src/portal";
+import { DevicePortal, PART_SIZE, portalUrl } from "../src/portal";
 
 test("portal URL validation keeps credentials out of URLs", () => {
   expect(portalUrl("192.168.1.5")).toBe("https://192.168.1.5:11443");
@@ -237,4 +237,126 @@ test("installAsGames turns on the Game content type only when it is off", async 
   ]);
   expect(await portal.installAsGames()).toBe(false);
   expect(puts.length).toBe(1);
+});
+
+/** A console that stores each uploaded file by name and lists them back, like the file API. */
+function fakeConsole(shortName?: string) {
+  const files = new Map<string, Buffer>();
+  const order: string[] = [];
+  const transport = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(String(input));
+    if (url.pathname.endsWith("machinename"))
+      return Response.json({}, { headers: { "Set-Cookie": "CSRF-Token=token; Path=/" } });
+    if (init?.method === "POST") {
+      const raw = Buffer.from(await new Response(init.body).arrayBuffer());
+      expect(Number(new Headers(init.headers).get("Content-Length"))).toBe(raw.length);
+      const text = raw.toString("latin1");
+      const boundary = text.slice(2, text.indexOf("\r\n"));
+      const name = /filename="([^"]+)"/.exec(text)![1]!;
+      files.set(
+        name,
+        raw.subarray(text.indexOf("\r\n\r\n") + 4, raw.length - `\r\n--${boundary}--\r\n`.length),
+      );
+      order.push(name);
+      return new Response("");
+    }
+    return Response.json({
+      Items: [...files].map(([Name, data]) => ({
+        Name,
+        FileSize: Name === shortName ? data.length - 1 : data.length,
+      })),
+    });
+  }) as unknown as typeof fetch;
+  return {
+    files,
+    order,
+    portal: new DevicePortal(
+      "https://xbox.test:11443",
+      { user: "u", password: "p" },
+      true,
+      transport,
+    ),
+  };
+}
+
+test("a file above the part size goes up as numbered parts, then the manifest", async () => {
+  expect(PART_SIZE).toBe(1073741824);
+  const temporary = await mkdtemp(join(tmpdir(), "nxbox-pack-split-test-"));
+  try {
+    const path = join(temporary, "big.nsp");
+    const data = Buffer.from(Array.from({ length: 10 }, (_, i) => i + 1));
+    await writeFile(path, data);
+    const { files, order, portal } = fakeConsole();
+    const progress: [number, number][] = [];
+    await portal.pushFile(
+      "pkg",
+      path,
+      "LocalState/games",
+      "base.nsp",
+      (sent, total) => {
+        progress.push([sent, total]);
+      },
+      4,
+    );
+    expect(order).toEqual([
+      "base.nsp.nxpart000",
+      "base.nsp.nxpart001",
+      "base.nsp.nxpart002",
+      "base.nsp.nxparts",
+    ]);
+    expect([...files.get("base.nsp.nxpart000")!]).toEqual([1, 2, 3, 4]);
+    expect([...files.get("base.nsp.nxpart001")!]).toEqual([5, 6, 7, 8]);
+    expect([...files.get("base.nsp.nxpart002")!]).toEqual([9, 10]);
+    expect(files.get("base.nsp.nxparts")!.toString()).toBe("parts=3\nsize=10\n");
+    expect(files.has("base.nsp")).toBe(false);
+    // Progress covers the whole file and never restarts per part.
+    expect(progress.every(([, total]) => total === 10)).toBe(true);
+    expect(progress.map(([sent]) => sent)).toEqual([4, 8, 10]);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("a file that is an exact multiple of the part size has no empty last part", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "nxbox-pack-split-test-"));
+  try {
+    const path = join(temporary, "even.nsp");
+    await writeFile(path, Buffer.alloc(8, 5));
+    const { files, order, portal } = fakeConsole();
+    await portal.pushFile("pkg", path, "LocalState/games", "even.nsp", undefined, 4);
+    expect(order).toEqual(["even.nsp.nxpart000", "even.nsp.nxpart001", "even.nsp.nxparts"]);
+    expect(files.get("even.nsp.nxparts")!.toString()).toBe("parts=2\nsize=8\n");
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("a file within the part size is one upload and no manifest", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "nxbox-pack-split-test-"));
+  try {
+    const path = join(temporary, "small.nsp");
+    await writeFile(path, Buffer.alloc(4, 9));
+    const { files, order, portal } = fakeConsole();
+    await portal.pushFile("pkg", path, "LocalState/games", "base.nsp", undefined, 4);
+    await portal.pushFile("pkg", path, "LocalState/games", "default.nsp");
+    expect(order).toEqual(["base.nsp", "default.nsp"]);
+    expect(files.get("base.nsp")!.length).toBe(4);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("a part that fails verification stops the upload before the manifest", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "nxbox-pack-split-test-"));
+  try {
+    const path = join(temporary, "big.nsp");
+    await writeFile(path, Buffer.alloc(10, 3));
+    const { order, portal } = fakeConsole("base.nsp.nxpart001");
+    await expect(
+      portal.pushFile("pkg", path, "LocalState/games", "base.nsp", undefined, 4),
+    ).rejects.toThrow("portal");
+    expect(order).toEqual(["base.nsp.nxpart000", "base.nsp.nxpart001"]);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
 });

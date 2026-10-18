@@ -82,6 +82,7 @@
 #include "eden_uwp/ui/mods.h"
 #include "eden_uwp/ui/savesync_ui.h"
 #include "eden_uwp/usb_library.h"
+#include "frontend_common/split_upload.h"
 #include "video_core/gpu.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/renderer_base.h"
@@ -273,6 +274,9 @@ std::string ResolveGamePath(const std::string& bundled, bool chosen_in_library) 
         }
         Diagnostic("GAME_DOWNLOAD_UNAVAILABLE using the local copy");
     }
+    // A big game from NXbox Pack is on the console as parts until its first launch.
+    SplitUpload::JoinSplitUploads(target.parent_path(),
+                                  [](const std::string& line) { Diagnostic(line); });
     if (!Common::FS::IsFile(target)) {
         Diagnostic("GAME_MISSING " + target.string());
         return bundled;
