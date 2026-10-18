@@ -271,6 +271,7 @@ void Initialize(const std::filesystem::path& local_state) {
                 .RawString();
     }
     nx::Config config;
+    config.client_id = std::string(nx::DefaultClientId);
     try {
         std::ifstream file(local_state / "nextendo.json");
         const std::string contents((std::istreambuf_iterator<char>(file)), {});
@@ -278,7 +279,9 @@ void Initialize(const std::filesystem::path& local_state) {
             const auto data = json::JsonObject::Parse(winrt::to_hstring(contents));
             config.server_address = winrt::to_string(data.GetNamedString(L"server_address", L""));
             config.nat_address = winrt::to_string(data.GetNamedString(L"nat_address", L""));
-            config.client_id = winrt::to_string(data.GetNamedString(L"client_id", L""));
+            if (const auto id = winrt::to_string(data.GetNamedString(L"client_id", L""));
+                !id.empty())
+                config.client_id = id;
         }
         const auto values =
             winrt::Windows::Storage::ApplicationData::Current().LocalSettings().Values();
@@ -286,6 +289,7 @@ void Initialize(const std::filesystem::path& local_state) {
             config.enabled = winrt::unbox_value<bool>(values.Lookup(EnabledKey));
     } catch (...) {
         config = {};
+        config.client_id = std::string(nx::DefaultClientId);
     }
     nx::Configure(std::move(config));
     // Provisioned Nextendo key only; no lookup of console keys, firmware, or PRODINFO.

@@ -16,6 +16,9 @@ namespace Service::Nextendo {
 
 inline constexpr std::string_view ApiOrigin = "https://nextendo.network";
 inline constexpr std::string_view CallbackUri = "http://127.0.0.1:17822/callback";
+// NXbox's public PKCE application on nextendo.network. It is not a secret; LocalState/nextendo.json
+// may still override it.
+inline constexpr std::string_view DefaultClientId = "nxc_LDo_hp0Ecrhp";
 
 inline std::string UrlEncode(std::string_view input) {
     constexpr char digits[] = "0123456789ABCDEF";
