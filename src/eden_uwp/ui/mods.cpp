@@ -174,11 +174,13 @@ bool HttpUrlLive(const std::string& url) {
         const auto response = client.SendRequestAsync(request).get();
         Diagnostic(fmt::format("MODS probe url={} status={} bytes=0", url,
                                static_cast<int>(response.StatusCode())));
-        return response.IsSuccessStatusCode();
+        // Only a confirmed missing file should hide a translation. HEAD is often blocked.
+        const auto status = static_cast<int>(response.StatusCode());
+        return status != 404 && status != 410;
     } catch (const winrt::hresult_error& error) {
         Diagnostic(fmt::format("MODS probe url={} status=error bytes=0 hresult={:08X}", url,
                                static_cast<std::uint32_t>(error.code().value)));
-        return false;
+        return true; // A transient probe failure is not proof that the download is gone.
     }
 }
 
@@ -771,8 +773,11 @@ bool ContainsAny(const std::string& lower, const std::vector<const char*>& words
 
 bool IsTranslationEntry(const ModEntry& entry) {
     static const std::vector<const char*> words = {
-        "translat", "tradu", "dub", "dublag", "subtitl", "legenda", "localiz", "locali",
-        "language", "idioma", "lingua", "traduc", "voice", "voz", "audio pt", "ptbr", "pt-br"};
+        "translat", "tradu",    "dub",     "dublag",  "subtitl",  "legenda", "localiz",
+        "locali",   "language", "idioma",  "lingua",  "traduc",   "voice",   "voz",
+        "audio pt", "ptbr",     "pt-br",   "pt br",   "portugu",  "brazil",  "brasil",
+        "english",  "spanish",  "español", "french",  "français", "german",  "deutsch",
+        "italian",  "japanese", "korean",  "chinese", "mandarin"};
     return entry.category == "Translation" ||
            ContainsAny(Lower(entry.name), words) || ContainsAny(Lower(entry.category), words);
 }
@@ -1106,9 +1111,22 @@ struct ModStore::Impl : std::enable_shared_from_this<ModStore::Impl> {
                     continue;
                 }
                 const std::string link = StringAt(item, L"link");
-                const std::size_t slash = link.rfind('/');
-                const std::string file = Lower(slash == std::string::npos ? link : link.substr(slash + 1));
-                if (file.rfind(wanted, 0) != 0 || Extension(file) != ".zip") {
+                const auto query = link.find_first_of("?#");
+                const auto path = link.substr(0, query);
+                const std::size_t slash = path.rfind('/');
+                const std::string file =
+                    Lower(slash == std::string::npos ? path : path.substr(slash + 1));
+                const auto installation_record = ObjectAt(item, L"installed");
+                const auto hash_file = Lower(StringAt(installation_record, L"hash_file"));
+                const auto uninstall = ObjectAt(installation_record, L"uninstall");
+                bool title_matches =
+                    file.starts_with(wanted) || hash_file.starts_with(wanted + "/");
+                for (const auto& entry : uninstall)
+                    if (entry.Value().ValueType() == JsonValueType::String) {
+                        const auto folder = Lower(winrt::to_string(entry.Value().GetString()));
+                        title_matches |= folder == wanted || folder.starts_with(wanted + "/");
+                    }
+                if (!title_matches || Extension(file) != ".zip") {
                     continue;
                 }
                 // https://github.com/<owner>/<repo>/releases/... -> the owner is the credit.
@@ -1287,12 +1305,13 @@ struct ModStore::Impl : std::enable_shared_from_this<ModStore::Impl> {
                     thumb = base + "/" + file;
                 }
             }
-            const auto entry = EntryLocked(
-                mod_id, StringAt(record, L"_sName"),
-                StringAt(ObjectAt(record, L"_aSubmitter"), L"_sName"),
-                StringAt(ObjectAt(record, L"_aRootCategory"), L"_sName"), thumb,
-                static_cast<std::int64_t>(NumberAt(record, L"_nLikeCount", 0.0)),
-                static_cast<std::int64_t>(NumberAt(record, L"_nDownloadCount", -1.0)));
+            const auto entry =
+                EntryLocked(mod_id, StringAt(record, L"_sName"),
+                            StringAt(ObjectAt(record, L"_aSubmitter"), L"_sName"),
+                            StringAt(ObjectAt(record, L"_aRootCategory"), L"_sName") + " " +
+                                StringAt(ObjectAt(record, L"_aCategory"), L"_sName"),
+                            thumb, static_cast<std::int64_t>(NumberAt(record, L"_nLikeCount", 0.0)),
+                            static_cast<std::int64_t>(NumberAt(record, L"_nDownloadCount", -1.0)));
             const bool listed = std::any_of(listing.begin(), listing.end(),
                                             [&](const auto& other) { return other->id == mod_id; });
             if (!listed) {

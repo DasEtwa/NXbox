@@ -613,7 +613,7 @@ class FirmwareSourcesTests(unittest.TestCase):
         self.assertIn("0:firmware:1:", sources)  # NAND-containing folder must never be renamed.
         self.assertIn("2:firmware/rawnand.bin:1:", sources)
         self.assertIn("2:NXbox/emuMMC/SD00/eMMC/00:2:", sources)
-        self.assertIn("NxHelper on a computer can convert it", log)
+        self.assertIn("NxbHelper on a computer can convert it", log)
         (emu / "01").rename(emu / "02")
         _, log = self.run_driver("discover", self.root)
         self.assertIn("invalid split sequence", log)

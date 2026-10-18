@@ -34,6 +34,14 @@ export function portalUrl(host: string): string {
     throw new PackError("portal");
   return url.origin;
 }
+class PortalError extends PackError {
+  constructor(
+    readonly status: number,
+    cause: Error,
+  ) {
+    super("portal", { cause });
+  }
+}
 export class DevicePortal {
   private csrf = "";
   constructor(
@@ -65,9 +73,10 @@ export class DevicePortal {
     const cookie = response.headers.get("set-cookie")?.match(/CSRF-Token=([^;,\s]+)/i)?.[1];
     if (cookie) this.csrf = cookie;
     if (!response.ok)
-      throw new PackError("portal", {
-        cause: new Error(`${method} ${path.split("?")[0]}: HTTP ${response.status}`),
-      });
+      throw new PortalError(
+        response.status,
+        new Error(`${method} ${path.split("?")[0]}: HTTP ${response.status}`),
+      );
     return response;
   }
   async request(method: string, path: string, init: RequestInit = {}): Promise<Response> {
@@ -106,15 +115,22 @@ export class DevicePortal {
     };
     return data.InstalledPackages ?? [];
   }
-  /** Older Xbox Device Portal versions do not expose drive capacity. */
-  async freeSpace(): Promise<number | undefined> {
+  /** NXbox reports LocalState capacity when it scans the library. */
+  async freeSpace(pkg: string): Promise<number | undefined> {
     try {
-      const data = (await (await this.request("GET", "/api/filesystem/drives")).json()) as {
-        Drives?: { Name?: string; FreeSpace?: number; FreeSpaceInBytes?: number }[];
-      };
-      const drive = data.Drives?.find((d) => /^C:(?:\\|$)/i.test(d.Name ?? ""));
-      const free = drive?.FreeSpaceInBytes ?? drive?.FreeSpace;
-      return typeof free === "number" && Number.isFinite(free) && free >= 0 ? free : undefined;
+      const data = JSON.parse(
+        new TextDecoder().decode(await this.readFile(pkg, "LocalState", "storage.json")),
+      ) as { free?: number; updated?: string };
+      const updated = typeof data.updated === "string" ? Date.parse(data.updated) : NaN;
+      const age = Date.now() - updated;
+      return typeof data.free === "number" &&
+        Number.isFinite(data.free) &&
+        data.free >= 0 &&
+        Number.isFinite(age) &&
+        age >= 0 &&
+        age <= 24 * 60 * 60_000
+        ? data.free
+        : undefined;
     } catch {
       return undefined;
     }
@@ -262,12 +278,21 @@ export class DevicePortal {
   ): Promise<void> {
     const query = this.query(pkg, directory);
     query.set("extract", "false");
-    await this.sendFiles(`/api/filesystem/apps/file?${query}`, [file], onProgress);
+    let uploadFailure: PortalError | undefined;
+    try {
+      await this.sendFiles(`/api/filesystem/apps/file?${query}`, [file], onProgress);
+    } catch (error) {
+      if (!(error instanceof PortalError) || error.status !== 500) throw error;
+      uploadFailure = error;
+    }
     const data = (await (
       await this.request("GET", `/api/filesystem/apps/files?${query}`)
     ).json()) as { Items?: { Name: string; FileSize?: number; SizeInBytes?: number }[] };
     const item = data.Items?.find((item) => item.Name === file.name);
-    if (!item || Number(item.FileSize ?? item.SizeInBytes) !== size) throw new PackError("portal");
+    if (!item || Number(item.FileSize ?? item.SizeInBytes) !== size)
+      throw uploadFailure
+        ? new PackError("consoleFull", { cause: uploadFailure })
+        : new PackError("portal");
   }
   /**
    * Files above partSize go up as `<name>.nxpart000`, `.nxpart001`, ... and a last

@@ -91,7 +91,7 @@ Eden is the emulator; NXbox is everything it takes to use it on an Xbox, built f
   the community database (see [credits](#credits-and-lineage)).
 - **Characters:** Moru, a built-in character creator, and the system's own Mii creator.
 - **Shader caches shared over the LAN**, so a second console does not compile them again.
-- **[NxHelper](tools/nxbox-pack/README.md)** checks and prepares the USB drive (keys, firmware, games)
+- **[NxbHelper](tools/nxbox-pack/README.md)** checks and prepares the USB drive (keys, firmware, games)
   and sends games to the console over the Device Portal. It runs on Windows, macOS and Linux.
 - **Updates itself** from the releases page.
 
@@ -195,7 +195,7 @@ flowchart LR
   [aerisarn/mesa-uwp](https://github.com/aerisarn/mesa-uwp) in CI.
 - `src/video_core/renderer_d3d12/` and `src/shader_recompiler/backend/hlsl/`: the new native
   Direct3D 12 renderer and its HLSL shader backend.
-- `tools/nxbox-pack/`: **\*New\*** NxHelper (the folder keeps its old name), a tool for Windows, macOS and
+- `tools/nxbox-pack/`: **\*New\*** NxbHelper (the folder keeps its old name), a tool for Windows, macOS and
   Linux that checks and prepares the USB drive and sends games through the Device Portal.
 - `tools/shader-share/`: a small server that keeps the largest valid shader cache per title.
 
@@ -220,7 +220,7 @@ You need an Xbox Series X|S in **Developer Mode** and your own dumps:
    converted on the console the first time the library sees them.
 4. Launch NXbox from the dashboard and pick the game in the library.
 
-**\*New\*** [NxHelper](tools/nxbox-pack/README.md) checks and prepares the USB drive (keys, firmware,
+**\*New\*** [NxbHelper](tools/nxbox-pack/README.md) checks and prepares the USB drive (keys, firmware,
 games) and sends games over the Device Portal. It does not install NXbox itself, so step 1 above (or the
 [user guide](docs/guide.md)) still comes first. Downloads for Windows, macOS and Linux are on the
 [latest release](https://github.com/NspxMiguel/NXbox/releases/latest).

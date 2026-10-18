@@ -58,8 +58,8 @@ async function inputs(): Promise<DriveInputs> {
   };
 }
 beforeEach(async () => {
-  root = await mkdtemp(join(tmpdir(), "nxhelper-drive-test-"));
-  source = await mkdtemp(join(tmpdir(), "nxhelper-input-test-"));
+  root = await mkdtemp(join(tmpdir(), "nxbhelper-drive-test-"));
+  source = await mkdtemp(join(tmpdir(), "nxbhelper-input-test-"));
   await put(source, `firmware/${firmwareName}`);
 });
 afterEach(async () => {
@@ -202,7 +202,7 @@ test("portal chooses newest library package, uploads games, keys, firmware in or
     "LocalState/eden/keys/title.keys",
     `LocalState/firmware/${firmwareName}`,
   ]);
-  expect(result.warnings[0]).toContain("SSD");
+  expect(result.warnings[0]).toContain("Open NXbox");
   portal.packages = async () => [];
   await expect(sendToNxbox(portal, await inputs(), undefined, deps)).rejects.toMatchObject({
     code: "nxboxMissing",
@@ -210,7 +210,7 @@ test("portal chooses newest library package, uploads games, keys, firmware in or
   portal.packages = async () => [{ Name: "NXbox", PackageFullName: "NSPX.NXbox_1.0.0.0_x64" }];
   portal.freeSpace = async () => 0;
   await expect(sendToNxbox(portal, await inputs(), undefined, deps)).rejects.toMatchObject({
-    code: "driveSpace",
+    code: "consoleFull",
   });
 });
 
@@ -255,4 +255,44 @@ test("one problem item per game combines fixes and keeps failure severity", asyn
   expect(matches[0]!.fix).toContain("lowercase");
   expect(matches[0]!.fix).toContain("Incomplete game");
   expect(matches[0]!.fix).toContain("title ID");
+});
+
+test("console preflight counts all files and the 512 MiB margin before any writes", async () => {
+  const input = await inputs();
+  const bytes = [
+    ...input.games,
+    input.keys,
+    input.titleKeys!,
+    join(source, "firmware", firmwareName),
+  ].reduce((sum, path) => sum + Bun.file(path).size, 0);
+  const required = bytes + 512 * 1024 ** 2;
+  let free = required - 1;
+  const writes: string[] = [];
+  const portal: NxboxPortal = {
+    async packages() {
+      return [{ Name: "NXbox", PackageFullName: "NSPX.NXbox_1.0.0.0_x64" }];
+    },
+    async freeSpace(pkg) {
+      expect(pkg).toBe("NSPX.NXbox_1.0.0.0_x64");
+      return free;
+    },
+    async makeFolder() {
+      writes.push("folder");
+    },
+    async pushFile() {
+      writes.push("file");
+    },
+  };
+  await expect(sendToNxbox(portal, input, undefined, deps)).rejects.toMatchObject({
+    code: "consoleFull",
+    missingBytes: 1,
+  });
+  expect(writes).toEqual([]);
+  const error = new PackError("consoleFull", { missingBytes: 1024 ** 3 });
+  expect(error.localized("pt")).toContain("faltam 1.0 GiB");
+  expect(error.localized("en")).toContain("1.0 GiB more");
+  expect(new PackError("consoleFull").localized("pt")).not.toContain("faltam");
+  free = required;
+  expect((await sendToNxbox(portal, input, undefined, deps)).warnings).toEqual([]);
+  expect(writes).toContain("file");
 });

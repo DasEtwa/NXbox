@@ -375,7 +375,7 @@ export async function fixDrive(
     const source = await firmwareSource(root),
       keys = await keyPath(root, "prod.keys");
     if (!source.source || !source.fixable || !keys) return checkDrive(root, language, deps);
-    const temporary = await mkdtemp(join(tmpdir(), "nxhelper-firmware-"));
+    const temporary = await mkdtemp(join(tmpdir(), "nxbhelper-firmware-"));
     try {
       const fw = await deps.prepare(source.source, keys, temporary);
       await copyPlan(
@@ -450,7 +450,7 @@ export async function prepareDrive(
 ): Promise<DriveReport> {
   root = resolve(root);
   if (!(await lstat(root)).isDirectory()) throw new PackError("inputInvalid");
-  const temporary = await mkdtemp(join(tmpdir(), "nxhelper-drive-"));
+  const temporary = await mkdtemp(join(tmpdir(), "nxbhelper-drive-"));
   try {
     const plan = await validatedInputs(inputs, temporary, deps);
     await copyPlan(
@@ -472,7 +472,7 @@ export async function prepareDrive(
   }
 }
 export type NxboxPortal = Pick<DevicePortal, "packages" | "makeFolder" | "pushFile"> & {
-  freeSpace?: () => Promise<number | undefined>;
+  freeSpace?: (pkg: string) => Promise<number | undefined>;
 };
 export async function sendToNxbox(
   portal: NxboxPortal,
@@ -480,7 +480,7 @@ export async function sendToNxbox(
   onProgress: Progress = () => {},
   deps = services,
 ) {
-  const temporary = await mkdtemp(join(tmpdir(), "nxhelper-xbox-"));
+  const temporary = await mkdtemp(join(tmpdir(), "nxbhelper-xbox-"));
   try {
     const plan = await validatedInputs(inputs, temporary, deps, true);
     const packages = (await portal.packages()).filter((p) =>
@@ -502,12 +502,12 @@ export async function sendToNxbox(
       { directory: "LocalState/eden/keys", files: plan.keys },
       { directory: "LocalState/firmware", files: plan.firmware?.files ?? [] },
     ];
-    const free = await portal.freeSpace?.();
-    if (
-      free !== undefined &&
-      free < groups.flatMap((g) => g.files).reduce((n, f) => n + Bun.file(f.path).size, 0)
-    )
-      throw new PackError("driveSpace");
+    const free = await portal.freeSpace?.(pkg);
+    const required =
+      groups.flatMap((g) => g.files).reduce((n, f) => n + Bun.file(f.path).size, 0) +
+      512 * 1024 ** 2;
+    if (free !== undefined && free < required)
+      throw new PackError("consoleFull", { missingBytes: required - free });
     const warnings =
       free === undefined ? [message(inputs.language ?? "en", "xboxSpaceWarning")] : [];
     // Surface the warning before the first upload, as well as in the final result.

@@ -360,3 +360,73 @@ test("a part that fails verification stops the upload before the manifest", asyn
     await rm(temporary, { recursive: true, force: true });
   }
 });
+
+test("free space reads the selected package report and ignores missing, stale or invalid reports", async () => {
+  const reports = [
+    { free: 1234, total: 5678, updated: new Date().toISOString() },
+    { free: 0, total: 5678, updated: new Date().toISOString() },
+    { free: 1234, updated: new Date(Date.now() - 25 * 60 * 60_000).toISOString() },
+    { free: 1234, updated: "invalid" },
+    { free: -1, updated: new Date().toISOString() },
+    { free: "1234", updated: new Date().toISOString() },
+    {},
+    null,
+    "invalid json",
+  ];
+  for (const [index, report] of reports.entries()) {
+    const portal = new DevicePortal("https://xbox.test", { user: "", password: "" }, true, (async (
+      input: string | URL | Request,
+    ) => {
+      const url = new URL(String(input));
+      expect(url.pathname).toBe("/api/filesystem/apps/file");
+      expect(url.searchParams.get("packagefullname")).toBe("chosen-package");
+      expect(url.searchParams.get("path")).toBe("\\LocalState");
+      expect(url.searchParams.get("filename")).toBe("storage.json");
+      if (report === null) return new Response("", { status: 404 });
+      return typeof report === "string" ? new Response(report) : Response.json(report);
+    }) as typeof fetch);
+    expect(await portal.freeSpace("chosen-package")).toBe(
+      index === 0 ? 1234 : index === 1 ? 0 : undefined,
+    );
+  }
+});
+
+test("HTTP 500 uploads report consoleFull unless the complete file is listed", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "nxbhelper-full-test-"));
+  try {
+    const path = join(temporary, "game.nsp");
+    await writeFile(path, "dump");
+    for (const status of [500, 403]) {
+      for (const size of [undefined, 2, 4]) {
+        const mutations: string[] = [];
+        const portal = new DevicePortal(
+          "https://xbox.test",
+          { user: "", password: "" },
+          true,
+          (async (input: string | URL | Request, init?: RequestInit) => {
+            const url = new URL(String(input));
+            if (url.pathname.endsWith("machinename"))
+              return Response.json({}, { headers: { "Set-Cookie": "CSRF-Token=token" } });
+            if (init?.method !== "GET") {
+              mutations.push(init!.method!);
+              await new Response(init?.body).arrayBuffer();
+              return new Response("", { status });
+            }
+            return Response.json({
+              Items: size === undefined ? [] : [{ Name: "game.nsp", FileSize: size }],
+            });
+          }) as typeof fetch,
+        );
+        const upload = portal.pushFile("pkg", path, "LocalState/games");
+        if (status === 500 && size === 4) await upload;
+        else
+          await expect(upload).rejects.toMatchObject({
+            code: status === 500 ? "consoleFull" : "portal",
+          });
+        expect(mutations).toEqual(["POST"]);
+      }
+    }
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});

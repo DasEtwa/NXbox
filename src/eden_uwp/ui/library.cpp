@@ -17,6 +17,7 @@
 #include <fstream>
 #include <functional>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <memory>
 #include <optional>
@@ -35,6 +36,7 @@
 #include "eden_uwp/ui/strings.h"
 #include "frontend_common/library_files.h"
 
+#include "common/fs/file.h"
 #include "common/fs/fs.h"
 #include "common/fs/fs_util.h"
 #include "core/file_sys/card_image.h"
@@ -58,6 +60,42 @@ namespace {
 namespace fs = std::filesystem;
 using winrt::Windows::Data::Json::JsonObject;
 using winrt::Windows::Data::Json::JsonValue;
+
+// A fresh report lets NxbHelper preflight uploads without a Device Portal drive API.
+void WriteStorageReport(const fs::path& local_state) {
+    const fs::path temporary = local_state / "storage.json.tmp";
+    try {
+        ULARGE_INTEGER free_bytes{}, total_bytes{};
+        if (!GetDiskFreeSpaceExW(local_state.c_str(), &free_bytes, &total_bytes, nullptr)) {
+            winrt::throw_last_error();
+        }
+        SYSTEMTIME utc{};
+        GetSystemTime(&utc);
+        const auto updated = fmt::format("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", utc.wYear,
+                                         utc.wMonth, utc.wDay, utc.wHour, utc.wMinute, utc.wSecond);
+        {
+            std::ofstream output(temporary, std::ios::trunc);
+            output << fmt::format(R"({{"free":{},"total":{},"updated":"{}"}})", free_bytes.QuadPart,
+                                  total_bytes.QuadPart, updated);
+            output.close();
+            if (!output) {
+                throw std::ios_base::failure("storage report write failed");
+            }
+        }
+        const fs::path destination = local_state / "storage.json";
+        const bool renamed = fs::exists(destination)
+                                 ? ReplaceFileFromAppW(destination.c_str(), temporary.c_str(),
+                                                       nullptr, 0, nullptr, nullptr) != 0
+                                 : MoveFileFromAppW(temporary.c_str(), destination.c_str()) != 0;
+        if (!renamed) {
+            winrt::throw_last_error();
+        }
+    } catch (...) {
+        std::error_code cleanup_error;
+        fs::remove(temporary, cleanup_error);
+        Diagnostic("UI library storage report write failed");
+    }
+}
 
 // What a cached LocalState\library\<TITLEID16>.json says about a game.
 struct CacheRecord {
@@ -414,6 +452,66 @@ std::optional<GameEntry> LoadGame(FileSys::RealVfsFilesystem& vfs, const fs::pat
     return game;
 }
 
+// A successful conversion may live on another drive while the original NSZ is read-only.
+// Persist the source/output association, rather than inferring completion from sibling names.
+fs::path ConversionRecordPath(const fs::path& local_state, const fs::path& source) {
+    std::uint64_t hash = 14695981039346656037ull;
+    for (const unsigned char byte : Utf8(LibraryFiles::Fold(source.wstring()))) {
+        hash ^= byte;
+        hash *= 1099511628211ull;
+    }
+    return local_state / "library" / fmt::format("nsz-{:016x}.json", hash);
+}
+
+std::optional<fs::path> ConvertedOutput(const fs::path& record_path, const fs::path& source) {
+    try {
+        std::ifstream input(record_path, std::ios::binary);
+        const std::string text((std::istreambuf_iterator<char>(input)), {});
+        JsonObject record;
+        if (!JsonObject::TryParse(winrt::to_hstring(text), record) ||
+            std::wstring(record.GetNamedString(L"source")) != source.native() ||
+            record.GetNamedNumber(L"source_size") !=
+                static_cast<double>(Common::FS::GetSize(source)) ||
+            record.GetNamedNumber(L"source_mtime") != static_cast<double>(ModifiedSeconds(source)))
+            return std::nullopt;
+        const fs::path output{std::wstring(record.GetNamedString(L"output"))};
+        const auto size = Common::FS::GetSize(output);
+        if (size != 0 && record.GetNamedNumber(L"output_size") == static_cast<double>(size))
+            return output;
+    } catch (...) {
+        // Missing, changed or disconnected outputs remain eligible for conversion.
+    }
+    return std::nullopt;
+}
+
+void RememberConversion(const fs::path& record_path, const fs::path& source,
+                        const fs::path& output) {
+    try {
+        JsonObject record;
+        record.SetNamedValue(L"source", JsonValue::CreateStringValue(source.native()));
+        record.SetNamedValue(L"source_size", JsonValue::CreateNumberValue(
+                                                 static_cast<double>(Common::FS::GetSize(source))));
+        record.SetNamedValue(L"source_mtime", JsonValue::CreateNumberValue(
+                                                  static_cast<double>(ModifiedSeconds(source))));
+        record.SetNamedValue(L"output", JsonValue::CreateStringValue(output.native()));
+        record.SetNamedValue(L"output_size", JsonValue::CreateNumberValue(
+                                                 static_cast<double>(Common::FS::GetSize(output))));
+        fs::create_directories(record_path.parent_path());
+        auto temporary = record_path;
+        temporary += L".tmp";
+        const auto text = winrt::to_string(record.Stringify());
+        if (Common::FS::WriteStringToFile(temporary, Common::FS::FileType::TextFile, text) !=
+                text.size() ||
+            !(Common::FS::Exists(record_path)
+                  ? ReplaceFileFromAppW(record_path.c_str(), temporary.c_str(), nullptr, 0, nullptr,
+                                        nullptr)
+                  : MoveFileFromAppW(temporary.c_str(), record_path.c_str())))
+            Diagnostic("NSZ_CONVERT completion_record_failed");
+    } catch (...) {
+        Diagnostic("NSZ_CONVERT completion_record_failed");
+    }
+}
+
 // Converts one .nsz into the .nsp at `nsp_path`. The converter writes to "<name>.nsp.partial",
 // which is renamed only when the conversion is complete, so a half-written .nsp never exists under
 // its real name. Returns why it failed, or an empty string when the .nsp is complete.
@@ -649,6 +747,117 @@ bool DeleteLibraryFiles(const std::vector<LibraryDeleteFile>& files, const fs::p
     return success;
 }
 
+LibraryTransfer::Result MoveLibraryGame(const GameEntry& game, const fs::path& local_state,
+                                        LibraryMoveProgress& progress) {
+    ScopedApartment apartment;
+    using Result = LibraryTransfer::Result;
+    const std::vector<fs::path> internal{local_state / "games"};
+    if (!SafeDeletePath(game.path, internal))
+        return Result::NotInternal;
+    const auto folders = ExternalGameFolders();
+    if (folders.empty())
+        return Result::NoDrive;
+    const auto destination = folders.front();
+    std::vector<LibraryTransfer::File> files;
+    std::map<fs::path, std::int64_t> modified;
+    std::set<std::wstring> names;
+    for (const auto& candidate : LibraryDeleteCandidates(game, local_state)) {
+        if (!SafeDeletePath(candidate.path, internal))
+            continue;
+        if (!names.insert(LibraryFiles::Fold(candidate.path.filename().wstring())).second)
+            return Result::Conflict;
+        files.push_back({candidate.path, destination / candidate.path.filename(), candidate.size});
+        modified.emplace(candidate.path, ModifiedSeconds(candidate.path));
+        if (candidate.size > (std::numeric_limits<std::uint64_t>::max)() - progress.total.load())
+            return Result::Failed;
+        progress.total.fetch_add(candidate.size);
+    }
+    LibraryTransfer::IO io;
+    io.exists = [](const auto& path) { return Common::FS::Exists(path); };
+    io.size = [](const auto& path) { return Common::FS::GetSize(path); };
+    io.unchanged = [&](const auto& file) {
+        return SafeDeletePath(file.source, internal) &&
+               Common::FS::GetSize(file.source) == file.size &&
+               ModifiedSeconds(file.source) == modified.at(file.source);
+    };
+    io.copy = [&](const auto& file) {
+        auto partial = file.target;
+        partial += L".move.partial";
+        struct Handles {
+            HANDLE input = INVALID_HANDLE_VALUE;
+            HANDLE output = INVALID_HANDLE_VALUE;
+            fs::path partial;
+            ~Handles() {
+                if (input != INVALID_HANDLE_VALUE)
+                    CloseHandle(input);
+                if (output != INVALID_HANDLE_VALUE)
+                    CloseHandle(output);
+                if (!partial.empty())
+                    DeleteFileFromAppW(partial.c_str());
+            }
+        } handles;
+        handles.input =
+            CreateFileFromAppW(file.source.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                               OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+        if (handles.input == INVALID_HANDLE_VALUE)
+            return false;
+        handles.output = CreateFileFromAppW(partial.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+                                            FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+        if (handles.output == INVALID_HANDLE_VALUE)
+            return false;
+        handles.partial = partial;
+        std::vector<char> buffer(1024 * 1024);
+        std::uint64_t copied = 0;
+        while (copied < file.size) {
+            const DWORD count =
+                static_cast<DWORD>(std::min<std::uint64_t>(buffer.size(), file.size - copied));
+            DWORD read = 0, written = 0;
+            if (!ReadFile(handles.input, buffer.data(), count, &read, nullptr) || read != count ||
+                !WriteFile(handles.output, buffer.data(), read, &written, nullptr) ||
+                written != read)
+                return false;
+            copied += written;
+            progress.done.fetch_add(written);
+        }
+        if (!FlushFileBuffers(handles.output))
+            return false;
+        CloseHandle(handles.output);
+        handles.output = INVALID_HANDLE_VALUE;
+        if (Common::FS::GetSize(partial) != file.size || Common::FS::Exists(file.target))
+            return false;
+        if (!MoveFileFromAppW(partial.c_str(), file.target.c_str())) {
+            try {
+                const auto storage = AwaitBounded(
+                    winrt::Windows::Storage::StorageFile::GetFileFromPathAsync(partial.native()),
+                    std::chrono::seconds(5));
+                if (!storage)
+                    return false;
+                auto renaming = storage->RenameAsync(
+                    file.target.filename().native(),
+                    winrt::Windows::Storage::NameCollisionOption::FailIfExists);
+                if (renaming.wait_for(std::chrono::seconds(30)) !=
+                    winrt::Windows::Foundation::AsyncStatus::Completed) {
+                    renaming.Cancel();
+                    return false;
+                }
+                renaming.get();
+            } catch (...) {
+                return false;
+            }
+        }
+        handles.partial.clear();
+        return true;
+    };
+    io.remove = [](const auto& path) {
+        std::string reason;
+        const bool removed = RemoveLibraryFile(path, reason);
+        Diagnostic("LIBRARY_MOVE source=" + Utf8(path.wstring()) +
+                   (removed ? " removed" : " retained reason=" + reason));
+        return removed;
+    };
+    return LibraryTransfer::Move(files, FreeSpace(destination), io);
+}
+
 LibraryScan::LibraryScan(std::filesystem::path local_state, bool convert_nsz)
     : local_state_(std::move(local_state)), convert_nsz_(convert_nsz) {
     worker_ = std::thread([this] { Run(); });
@@ -694,6 +903,11 @@ void LibraryScan::ConvertCompressed(const std::vector<fs::path>& compressed,
     std::optional<std::vector<fs::path>> external; // removable NXbox\games folders, looked up once
     FileSys::RealVfsFilesystem probe;
     for (const fs::path& nsz : compressed) {
+        if (const auto completed = ConvertedOutput(ConversionRecordPath(local_state_, nsz), nsz)) {
+            packages.push_back(*completed);
+            Diagnostic("NSZ_CONVERT already_converted path=" + Utf8(completed->wstring()));
+            continue;
+        }
         fs::path nsp = nsz;
         nsp.replace_extension(L".nsp");
         if (!external) {
@@ -711,6 +925,9 @@ void LibraryScan::ConvertCompressed(const std::vector<fs::path>& compressed,
         if (!existing.empty() && TruncatedPackage(probe, existing) != std::optional<bool>{true}) {
             Diagnostic("UI nsz convert " + Utf8(nsz.filename().wstring()) + " skip " +
                        Utf8(existing.wstring()) + " already exists");
+            packages.push_back(existing);
+            if (TruncatedPackage(probe, existing) == std::optional<bool>{false})
+                RememberConversion(ConversionRecordPath(local_state_, nsz), nsz, existing);
             continue;
         }
         if (!existing.empty())
@@ -798,6 +1015,7 @@ void LibraryScan::ConvertCompressed(const std::vector<fs::path>& compressed,
             }
             continue;
         }
+        RememberConversion(ConversionRecordPath(local_state_, nsz), nsz, nsp);
         Diagnostic("UI nsz convert " + file_name + " ok");
         // The .nsz goes only now that its .nsp is complete and in place.
         if (!Common::FS::RemoveFile(nsz)) {
@@ -909,6 +1127,7 @@ std::vector<GameEntry> LibraryScan::Scan() {
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() -
                                                               started)
             .count()));
+    WriteStorageReport(local_state_);
     return games;
 }
 

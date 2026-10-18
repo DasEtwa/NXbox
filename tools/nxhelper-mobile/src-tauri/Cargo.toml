@@ -1,0 +1,28 @@
+[package]
+name = "nxbhelper-mobile"
+version = "0.1.0"
+edition = "2021"
+authors = ["NSPX"]
+license = "GPL-3.0-or-later"
+
+[lib]
+name = "nxbhelper_mobile"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
+tauri-plugin-credentials = { path = "../plugins/credentials" }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream", "multipart"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["fs", "io-util", "net", "sync", "time", "macros"] }
+tokio-util = { version = "0.7", features = ["io", "rt"] }
+futures-util = "0.3"
+if-addrs = "0.13"
+zip = { version = "2", default-features = false, features = ["deflate"] }

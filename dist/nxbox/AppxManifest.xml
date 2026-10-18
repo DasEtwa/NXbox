@@ -150,6 +150,9 @@
               <uap:FileType>.nsz</uap:FileType>
               <uap:FileType>.xci</uap:FileType>
               <uap:FileType>.xcz</uap:FileType>
+              <!-- Atomic FTP uploads, downloads and game moves stage files beside the target. -->
+              <uap:FileType>.part</uap:FileType>
+              <uap:FileType>.partial</uap:FileType>
             </uap:SupportedFileTypes>
           </uap:FileTypeAssociation>
         </uap:Extension>

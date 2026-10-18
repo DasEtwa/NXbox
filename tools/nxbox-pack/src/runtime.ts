@@ -24,7 +24,10 @@ export function validateSource(source: RuntimeSource): RuntimeSource {
   return source;
 }
 async function github(path: string): Promise<any> {
-  const token = process.env.NXHELPER_GITHUB_TOKEN ?? process.env.NXBOX_PACK_GITHUB_TOKEN;
+  const token =
+    process.env.NXBHELPER_GITHUB_TOKEN ??
+    process.env.NXHELPER_GITHUB_TOKEN ??
+    process.env.NXBOX_PACK_GITHUB_TOKEN;
   const response = await fetch(`https://api.github.com/repos/${repository}/${path}`, {
     headers: {
       Accept: "application/vnd.github+json",
@@ -80,7 +83,10 @@ export async function latestRuntime(): Promise<RuntimeSource> {
 export async function downloadRuntime(source: RuntimeSource): Promise<Uint8Array> {
   validateSource(source);
   const url = new URL(source.url);
-  const token = process.env.NXHELPER_GITHUB_TOKEN ?? process.env.NXBOX_PACK_GITHUB_TOKEN;
+  const token =
+    process.env.NXBHELPER_GITHUB_TOKEN ??
+    process.env.NXHELPER_GITHUB_TOKEN ??
+    process.env.NXBOX_PACK_GITHUB_TOKEN;
   const response = await fetch(url, {
     headers:
       token && url.origin === "https://api.github.com"

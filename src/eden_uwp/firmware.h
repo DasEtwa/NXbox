@@ -4,10 +4,12 @@
 
 #include <filesystem>
 #include <string>
+#include <vector>
 
 namespace EdenXbox {
 struct FirmwareStatus {
     std::string version;
+    std::vector<std::filesystem::path> searched_folders;
     bool conversion_required = false;
     bool install_failed = false;
     bool home_available = false;

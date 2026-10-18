@@ -9,6 +9,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include "frontend_common/library_transfer.h"
 
 namespace EdenXbox::Ui {
 
@@ -37,6 +38,14 @@ std::vector<LibraryDeleteFile> LibraryDeleteCandidates(const GameEntry& game,
                                                        const std::filesystem::path& local_state);
 bool DeleteLibraryFiles(const std::vector<LibraryDeleteFile>& files,
                         const std::filesystem::path& local_state);
+
+struct LibraryMoveProgress {
+    std::atomic<std::uint64_t> done{0};
+    std::atomic<std::uint64_t> total{0};
+};
+LibraryTransfer::Result MoveLibraryGame(const GameEntry& game,
+                                        const std::filesystem::path& local_state,
+                                        LibraryMoveProgress& progress);
 
 // Scans LocalState\games (.nsp and .xci, not recursive) on a worker thread, so the screen keeps
 // drawing and pumping events meanwhile.

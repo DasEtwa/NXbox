@@ -1,18 +1,18 @@
-name: Build NxHelper
+name: Build NxbHelper
 on:
   push:
-    branches: [main, feat/nxhelper]
+    branches: [main, feat/nxhelper, chore/nxbhelper-brand]
     paths:
       - tools/nxbox-pack/**
       - tools/nxbox-pack-gui/**
       - dist/nxbox/AppxManifest.xml
-      - .github/workflows/nxbox-pack.yml
+      - .github/workflows/nxbhelper.yml
   pull_request:
     paths:
       - tools/nxbox-pack/**
       - tools/nxbox-pack-gui/**
       - dist/nxbox/AppxManifest.xml
-      - .github/workflows/nxbox-pack.yml
+      - .github/workflows/nxbhelper.yml
   workflow_dispatch:
   # The release attaches the bundles built here.
   workflow_call:
@@ -26,22 +26,22 @@ jobs:
         include:
           - os: windows-2025
             script: build:windows
-            binary: nxhelper-windows-x64.exe
-            core: nxhelper-core.exe
-            gui: NxHelper.exe
-            bundle: NxHelper-windows-x64
+            binary: nxbhelper-windows-x64.exe
+            core: nxbhelper-core.exe
+            gui: NxbHelper.exe
+            bundle: NxbHelper-windows-x64
           - os: macos-15
             script: build:macos
-            binary: nxhelper-macos-arm64
-            core: nxhelper-core
-            gui: NxHelper
-            bundle: NxHelper-macos-arm64
+            binary: nxbhelper-macos-arm64
+            core: nxbhelper-core
+            gui: NxbHelper
+            bundle: NxbHelper-macos-arm64
           - os: ubuntu-24.04
             script: build:linux
-            binary: nxhelper-linux-x64
-            core: nxhelper-core
-            gui: NxHelper
-            bundle: NxHelper-linux-x64
+            binary: nxbhelper-linux-x64
+            core: nxbhelper-core
+            gui: NxbHelper
+            bundle: NxbHelper-linux-x64
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     defaults:
@@ -59,8 +59,8 @@ jobs:
       - name: Smoke test compiled binary in both languages
         shell: bash
         run: |
-          NXHELPER_LANG=en ./dist/${{ matrix.binary }} --help
-          NXHELPER_LANG=pt ./dist/${{ matrix.binary }} --help
+          NXBHELPER_LANG=en ./dist/${{ matrix.binary }} --help
+          NXBHELPER_LANG=pt ./dist/${{ matrix.binary }} --help
       # The GUI talks to the core over stdin; Wine's fstat on a pipe breaks Bun, so prove it on a real host.
       - name: Smoke test the GUI API over a stdin pipe
         shell: bash

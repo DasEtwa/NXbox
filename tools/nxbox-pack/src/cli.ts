@@ -80,7 +80,7 @@ async function systemLanguage() {
     process.platform === "win32" &&
     !process.env.LANG &&
     !process.env.LC_ALL &&
-    !(process.env.NXHELPER_LANG ?? process.env.NXBOX_PACK_LANG)
+    !(process.env.NXBHELPER_LANG ?? process.env.NXHELPER_LANG ?? process.env.NXBOX_PACK_LANG)
   ) {
     try {
       const localeProcess = Bun.spawn(
@@ -254,7 +254,7 @@ export async function main(): Promise<void> {
       console.log(`${text.help}\n${text.driveUsage}\n${text.profileUsage}`);
       return;
     }
-    console.log(`NxHelper\n${text.legal}`);
+    console.log(`NxbHelper\n${text.legal}`);
     prompt = new Prompt();
     const way = await prompt.ask(text.wayChoice, "1");
     if (way === "1" || way === "2") {
@@ -388,7 +388,9 @@ export async function main(): Promise<void> {
     console.log(`${name} (${identity})\n${text.done}`);
   } catch (error) {
     const code = error instanceof PackError ? error.code : "failed";
-    console.error(`${text.failed}: ${text[code]}`);
+    console.error(
+      `${text.failed}: ${error instanceof PackError ? error.localized(language) : text[code]}`,
+    );
     process.exitCode = 1;
   } finally {
     prompt?.close();

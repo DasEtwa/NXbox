@@ -18,12 +18,12 @@ export default {
   driveTitleInvalid: "Copie um title.keys válido para NXbox/ ou a raiz do pendrive.",
   driveFirmwareOk: "Versão {version}, {count} arquivos",
   driveFirmwareMissing: "Copie todo o dump do firmware para NXbox/firmware/.",
-  driveUnpack: "NxHelper pode descompactar. Escolha Consertar.",
+  driveUnpack: "NxbHelper pode descompactar. Escolha Consertar.",
   driveOldKeys:
     "As chaves são anteriores ao firmware. Extraia as chaves novamente do Switch atualizado.",
   driveFirmwareCopy: "Copie todo o dump do firmware novamente.",
   driveChunksMove:
-    "Estas pastas de pedaços de NCA estão onde o NxHelper grava os arquivos prontos. Mova todo o dump do firmware para firmware/ na raiz do pendrive e escolha Consertar.",
+    "Estas pastas de pedaços de NCA estão onde o NxbHelper grava os arquivos prontos. Mova todo o dump do firmware para firmware/ na raiz do pendrive e escolha Consertar.",
   driveNandMany:
     "Não deu para escolher um backup da NAND: há mais de um, ou faltam partes (00, 01, …). Deixe só uma pasta emuMMC com todas as partes.",
   driveRename: "Renomeie a extensão para minúsculas para o Xbox listar o jogo.",
@@ -38,19 +38,23 @@ export default {
   driveConflict:
     "Um arquivo diferente tem o mesmo nome. Renomeie ou escolha outro destino; nada foi copiado.",
   driveSpace: "Espaço livre insuficiente. Libere espaço ou use outro pendrive.",
+  consoleFull:
+    "O armazenamento interno do Xbox está cheio. Apague jogos que não usa no NXbox ou use um pendrive como SSD externo.",
+  consoleFullSpace:
+    "O armazenamento interno do Xbox está cheio: faltam {size}. Apague jogos que não usa no NXbox ou use um pendrive como SSD externo.",
   nxboxMissing:
     "O NXbox não está instalado. Instale primeiro em https://github.com/NspxMiguel/NXbox/releases/latest.",
   xboxSpaceWarning:
-    "Espaço livre do console indisponível. O SSD interno enche rápido; recomendamos um pendrive.",
+    "Espaço livre do console indisponível. Abra o NXbox uma vez para ele informar o espaço livre.",
   driveUsage:
-    "nxhelper --check-drive <caminho> [--fix]\nnxhelper --to-drive <caminho> <arquivos…> --keys <prod.keys> [--title-keys <title.keys>] [--firmware <caminho>]\nnxhelper --to-xbox [--host <host>] <arquivos…> --keys <prod.keys> [--title-keys <title.keys>] [--firmware <caminho>]",
+    "nxbhelper --check-drive <caminho> [--fix]\nnxbhelper --to-drive <caminho> <arquivos…> --keys <prod.keys> [--title-keys <title.keys>] [--firmware <caminho>]\nnxbhelper --to-xbox [--host <host>] <arquivos…> --keys <prod.keys> [--title-keys <title.keys>] [--firmware <caminho>]",
   wayChoice:
     "1 — Pelo pendrive (recomendado)\n2 — Pelo Device Portal\n3 — Instalar um jogo como app próprio\nEscolha uma opção",
   drivePath: "Pasta do pendrive",
   gamePaths: "Caminho do jogo (repita para mais jogos; vazio para terminar)",
 
   profileUsage:
-    "Uso: nxhelper profile multi on|off, ou nxhelper profile avatar <nome> <imagem> | --character <id> --color <nome> [--insecure-portal]",
+    "Uso: nxbhelper profile multi on|off, ou nxbhelper profile avatar <nome> <imagem> | --character <id> --color <nome> [--insecure-portal]",
   profilePackage: "Nome completo do pacote (escolha o app cujas contas quer editar)",
   profileMissing:
     "Perfil não encontrado, nome duplicado ou dados inválidos. Abra o NXbox uma vez para criar os perfis.",
@@ -61,12 +65,12 @@ export default {
     "Escolha uma imagem PNG, JPEG, WebP, GIF ou BMP válida (até 20 MB). O navegador precisa concluir em dois minutos.",
   avatarBrowser: "Convertendo no seu navegador local. Se ele não abriu, abra esta URL neste PC:",
   avatarConverting: "Preparando seu avatar NXbox…",
-  avatarConverted: "Imagem preparada. Volte ao NxHelper; você pode fechar esta aba.",
+  avatarConverted: "Imagem preparada. Volte ao NxbHelper; você pode fechar esta aba.",
 
   guide:
     "Arraste o arquivo do jogo para esta janela e pressione Enter (suportados: .nsp .xci .nsz .xcz)",
   legal:
-    "Você deve possuir o jogo e extrair suas próprias chaves. NxHelper nunca baixa jogos ou chaves.",
+    "Você deve possuir o jogo e extrair suas próprias chaves. NxbHelper nunca baixa jogos ou chaves.",
   keys: "Arraste seu prod.keys para esta janela e pressione Enter",
   extra: "Arraste um update/DLC ou pressione Enter para continuar (um arquivo por vez)",
   host: "Endereço do Xbox (Dev Home > Acesso remoto)",
@@ -84,7 +88,7 @@ export default {
   install: "Registrando seu aplicativo independente do jogo…",
   upload: "Enviando para o LocalState privado deste aplicativo…",
   done: "Pronto. Abra o ícone deste jogo no Dev Home do Xbox; defina seu tipo como Game para usar toda a memória disponível.",
-  failed: "NxHelper falhou",
+  failed: "NxbHelper falhou",
   file: "Escolha um arquivo .nsp, .xci, .nsz ou .xcz existente e não vazio.",
   keyFile: "Escolha um arquivo existente e não vazio chamado prod.keys.",
   titleInvalid:
@@ -93,7 +97,7 @@ export default {
   compressed:
     "NSZ/XCZ precisa do descompressor opcional nsz no PATH (nsz -D). Instale-o ou forneça um dump NSP/XCI.",
   runtimeMissing:
-    "Runtime indisponível; downloads do CI podem exigir NXHELPER_GITHUB_TOKEN. Informe --runtime-url e --runtime-sha256 (ZIP do CI ou APPX de jogo).",
+    "Runtime indisponível; downloads do CI podem exigir NXBHELPER_GITHUB_TOKEN. Informe --runtime-url e --runtime-sha256 (ZIP do CI ou APPX de jogo).",
   runtimeInvalid: "Falha no download, checksum ou validação do runtime.",
   portal: "Falha na requisição ao Device Portal. Confira endereço, credenciais e Dev Mode.",
   deploy:
@@ -143,5 +147,5 @@ export default {
   rejectMismatch:
     "Rejeitado: este ID de título não pertence ao jogo (esperado o ID do update ou a faixa de DLC).",
   rejectDuplicate: "Rejeitado: este arquivo ou ID de título já foi adicionado.",
-  help: "NxHelper\nUso: nxhelper [--runtime-url URL_HTTPS --runtime-sha256 HEX] [--insecure-portal]\n--insecure-portal aceita o certificado TLS autoassinado do Xbox somente nesta conexão.\nRuntime padrão: última release de NspxMiguel/NXbox com digest SHA-256 do arquivo.\nJogos e chaves ficam fora do runtime preparado. NSZ/XCZ requer nsz no PATH.",
+  help: "NxbHelper\nUso: nxbhelper [--runtime-url URL_HTTPS --runtime-sha256 HEX] [--insecure-portal]\n--insecure-portal aceita o certificado TLS autoassinado do Xbox somente nesta conexão.\nRuntime padrão: última release de NspxMiguel/NXbox com digest SHA-256 do arquivo.\nJogos e chaves ficam fora do runtime preparado. NSZ/XCZ requer nsz no PATH.",
 } satisfies Translation;

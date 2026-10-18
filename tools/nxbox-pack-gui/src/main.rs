@@ -1,4 +1,4 @@
-// NxHelper GUI: a step-by-step assistant over nxhelper-core (`nxhelper-core --api`, JSON lines).
+// NxbHelper GUI: a step-by-step assistant over nxbhelper-core (`nxbhelper-core --api`, JSON lines).
 mod design;
 use base64::Engine;
 use eframe::egui;
@@ -19,7 +19,7 @@ fn main() -> eframe::Result {
         rgba: icon.into_raw(),
     };
     eframe::run_native(
-        "NxHelper",
+        "NxbHelper",
         eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
                 .with_inner_size([640.0, 800.0])
@@ -39,7 +39,8 @@ fn main() -> eframe::Result {
 fn pt() -> bool {
     static LANGUAGE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *LANGUAGE.get_or_init(|| {
-        let forced = std::env::var("NXHELPER_LANG")
+        let forced = std::env::var("NXBHELPER_LANG")
+            .or_else(|_| std::env::var("NXHELPER_LANG"))
             .or_else(|_| std::env::var("NXBOX_PACK_LANG"))
             .ok()
             .filter(|s| s == "pt" || s == "en");
@@ -62,9 +63,9 @@ fn core(request: Value) -> Receiver<Value> {
             Err(_) => {
                 let exe = std::env::current_exe().unwrap_or_default();
                 let name = if cfg!(windows) {
-                    "nxhelper-core.exe"
+                    "nxbhelper-core.exe"
                 } else {
-                    "nxhelper-core"
+                    "nxbhelper-core"
                 };
                 vec![exe.with_file_name(name).to_string_lossy().into_owned()]
             }
@@ -495,8 +496,8 @@ impl App {
                 fixable |= item["id"] == "firmware"
                     && item["fix"].as_str()
                         == Some(t(
-                            "NxHelper pode descompactar. Escolha Consertar.",
-                            "NxHelper can unpack it. Choose Fix it.",
+                            "NxbHelper pode descompactar. Escolha Consertar.",
+                            "NxbHelper can unpack it. Choose Fix it.",
                         ));
             }
         }
@@ -702,7 +703,7 @@ impl App {
             Page::Welcome => {
                 heading(
                     ui,
-                    t("Bem-vindo ao NxHelper", "Welcome to NxHelper"),
+                    t("Bem-vindo ao NxbHelper", "Welcome to NxbHelper"),
                     t(
                         "Este assistente prepara e instala o NXbox no seu Xbox Series X|S. Cada etapa explica o que é necessário; nada é enviado a lugar algum além do seu próprio Xbox.",
                         "This assistant prepares and installs NXbox on your Xbox Series X|S. Each step explains what is needed; nothing is sent anywhere except your own Xbox.",
@@ -1055,8 +1056,8 @@ impl App {
                     );
                     ui.indent("auto", |ui| {
                     ui.label(t(
-                        "O NxHelper se conecta ao Device Portal do Xbox pela rede local e instala tudo sozinho. O Xbox e este computador precisam estar na mesma rede.",
-                        "NxHelper connects to the Xbox Device Portal over the local network and installs everything by itself. The Xbox and this computer must be on the same network.",
+                        "O NxbHelper se conecta ao Device Portal do Xbox pela rede local e instala tudo sozinho. O Xbox e este computador precisam estar na mesma rede.",
+                        "NxbHelper connects to the Xbox Device Portal over the local network and installs everything by itself. The Xbox and this computer must be on the same network.",
                     ));
                 });
                     ui.radio_value(
@@ -1326,7 +1327,7 @@ mod screenshots {
                     app.report = Some(json!({ "root": "/example/USB", "ready": ready, "items": [
                         { "id": "prodKeys", "status": "ok", "title": t("Chaves do console", "Console keys"), "detail": "prod.keys" },
                         { "id": "titleKeys", "status": "warn", "title": t("Chaves de títulos", "Title keys"), "fix": t("Opcional; necessário apenas para alguns jogos.", "Optional; only needed for some games.") },
-                        { "id": "firmware", "status": if ready { "ok" } else { "fail" }, "title": "Firmware", "detail": if ready { "20.0.0 — 230 files" } else { "firmware.zip" }, "fix": if ready { "" } else { t("NxHelper pode descompactar. Escolha Consertar.", "NxHelper can unpack it. Choose Fix it.") } },
+                        { "id": "firmware", "status": if ready { "ok" } else { "fail" }, "title": "Firmware", "detail": if ready { "20.0.0 — 230 files" } else { "firmware.zip" }, "fix": if ready { "" } else { t("NxbHelper pode descompactar. Escolha Consertar.", "NxbHelper can unpack it. Choose Fix it.") } },
                         { "id": "games", "status": "ok", "title": t("2 jogos encontrados", "2 games found") }
                     ] }));
                 }

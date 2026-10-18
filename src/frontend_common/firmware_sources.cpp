@@ -712,7 +712,7 @@ std::vector<Source> Discover(const IO& io, const std::vector<fs::path>& folders,
                     Lower(PathText(e.path.extension())) == ".rar" ||
                     Lower(PathText(e.path.extension())) == ".xci" || name == "raw_based")
                     Log(io, "unsupported " + PathText(e.path) +
-                                "; NxHelper on a computer can convert it");
+                                "; NxbHelper on a computer can convert it");
             } catch (const std::exception& error) {
                 Log(io, std::string("entry_skipped ") + error.what());
                 protected_source = true;

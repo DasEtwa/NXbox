@@ -74,7 +74,7 @@ LocalState/eden/nand/system/save/8000000000000010/su/avators/<formatted-uuid>.jp
 `Common::UUID::FormattedString()`, with lowercase hexadecimal and RFC-style hyphens; it is different
 from the legacy save directory's U128 representation.
 
-## NxHelper
+## NxbHelper
 
 ```sh
 nxbox-pack profile multi on

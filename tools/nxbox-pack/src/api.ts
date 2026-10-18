@@ -231,7 +231,7 @@ export async function serveApi(): Promise<void> {
       error: error instanceof PackError ? error.code : String(error),
       ...(cause && { detail: cause }),
       ...(error instanceof PackError &&
-        error.code !== "args" && { message: strings[language][error.code] }),
+        error.code !== "args" && { message: error.localized(language) }),
     });
     process.exitCode = 1;
   }

@@ -220,13 +220,16 @@ public:
 
     bool ShaderSkipPressed() {
         using namespace winrt::Windows::Gaming::Input;
-        if ((key_state.load(std::memory_order_acquire) | ScriptedKeys()) &
-            (1u << Settings::NativeButton::B))
-            return true;
+        bool pressed =
+            ((key_state.load(std::memory_order_acquire) | ScriptedKeys()) &
+             ((1u << Settings::NativeButton::A) | (1u << Settings::NativeButton::B))) != 0;
         for (const auto& device : Gamepad::Gamepads())
-            if ((device.GetCurrentReading().Buttons & GamepadButtons::B) != GamepadButtons::None)
-                return true;
-        return false;
+            pressed |= (device.GetCurrentReading().Buttons &
+                        (GamepadButtons::A | GamepadButtons::B)) != GamepadButtons::None;
+        // Launch confirmation can still be held when preload starts. Require a fresh press.
+        if (!pressed)
+            shader_skip_armed = true;
+        return pressed && shader_skip_armed;
     }
 
     HomeComboAction HomeCombo() const {
@@ -244,6 +247,7 @@ public:
     }
 
 private:
+    bool shader_skip_armed = false;
     ButtonLayout button_layout = ButtonLayout::Name;
     StickMotion stick_motion;
     HomeComboState home_combo;
