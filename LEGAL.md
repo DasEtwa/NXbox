@@ -56,6 +56,10 @@ NXbox runs only in Xbox Developer Mode, which Microsoft provides under its own a
 not a Microsoft product and is not distributed through the Microsoft Store. Activating and using
 Developer Mode is between you and Microsoft.
 
+## Privacy
+
+What the app and NxHelper connect to, what they store and how to delete it: [PRIVACY.md](PRIVACY.md).
+
 ## Donations
 
 Donations are optional and buy nothing. There are no paid builds, no early access, no
