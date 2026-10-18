@@ -115,23 +115,29 @@ Only HTTP 404 from this GET permits the legacy combined token response
 (`nex_token` plus `account` identity) as a fallback. Other failures fail sign-in.
 The legacy NEX token uses the documented 24-hour lifetime.
 
-The complete session lives only in PasswordVault resource
-`NXbox.Nextendo.Account`, username `session`: refresh token, access token and
-absolute expiry, NEX token and absolute expiry, PID, username, friend code, and
-the active local profile's raw UUID. Access tokens normally last one hour,
-refresh tokens 30 days, and NEX tokens 24 hours. Response lifetimes determine
-the stored expiries. Tokens are bounded to 16 KiB each and reject CR/LF before
-storage or use. Old vault sessions without an OAuth refresh token require sign-in.
+PasswordVault resource `NXbox.Nextendo.Account`, username `session`, keeps the
+refresh token, PID, username, friend code, and the active local profile's raw
+UUID. The access token and NEX token live only in memory: Credential Locker caps
+a credential near 2.5 KB, and both are fetched again at start. Access tokens
+normally last one hour, refresh tokens 30 days, and NEX tokens 24 hours; a
+response without `expires_in` uses those lifetimes. Tokens are bounded to 16 KiB
+each and reject CR/LF before storage or use. Old vault sessions without an OAuth
+refresh token require sign-in.
 
-At launch and when going online, NXbox POSTs `grant_type=refresh_token`,
-`refresh_token`, and `client_id` to `/api/oauth/token`. It saves the rotated
-refresh token immediately, before requesting a fresh NEX token. The previous
-refresh token becomes invalid a minute after rotation. A failed NEX request
-retains the rotated credential for retry and leaves game authentication unavailable.
+The library never waits on the network. At launch the stored account shows as
+linked at once, and the social worker's first pass POSTs
+`grant_type=refresh_token`, `refresh_token`, and `client_id` to
+`/api/oauth/token`. The rotated tokens are kept in memory before the vault write,
+so a failed write cannot lose them. The previous refresh token becomes invalid a
+minute after rotation. The previous NEX token stays usable until its own expiry
+or a replacement arrives. When only the NEX token is stale and the access token
+has more than five minutes left, NXbox requests `/api/nex-token` again without
+rotating the refresh token. A failed attempt waits 60 seconds before the next.
 Refresh HTTP 400/401 clears the vault session and runtime identity and requires
-sign-in again. Other failures retain credentials for retry. Going-online and
-manual social failures use the existing fixed localized failure message;
-background failures never display server text.
+sign-in again. A 401 from a social API only forces a refresh. Other failures
+retain credentials for retry. Reopening the library over a running game keeps
+the live session. Going-online and manual social failures use the existing fixed
+localized failure message; background failures never display server text.
 
 Every social request checks session freshness first. Access tokens within five
 minutes of expiry trigger rotation and a fresh NEX fetch; expired NEX tokens also

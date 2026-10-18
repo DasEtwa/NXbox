@@ -180,8 +180,7 @@ inline AuthResult RefreshSession(Identity identity, std::string_view client_id,
         identity.access_token = response.identity.access_token;
         identity.refresh_token = response.identity.refresh_token;
         identity.access_expires_at = response.identity.access_expires_at;
-        identity.nex_token.clear();
-        identity.nex_expires_at = 0;
+        // The previous NEX token stays usable until its own expiry or a replacement arrives.
         if (!save(identity))
             return AuthResult::StorageFailed;
         if (!FetchNexToken(identity, http, now))

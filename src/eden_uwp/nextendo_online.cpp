@@ -43,6 +43,8 @@ constexpr wchar_t EnabledKey[] = L"nextendo_enabled";
 std::mutex account_mutex;
 std::recursive_mutex session_mutex;
 bool account_verified = false;
+// ponytail: fixed 60 s pause after a failed refresh; back off further if the server asks.
+std::chrono::steady_clock::time_point retry_after;
 nx::Identity account;
 std::string profile_id;
 std::shared_ptr<nx::IdTokenSigner> signer;
@@ -140,26 +142,42 @@ void RemoveAccount(const nx::Identity* rejected = nullptr) {
     }
 }
 
+// A rejected access token only forces a refresh; the refresh endpoint decides sign-out.
+void Reauthorize(const nx::Identity& rejected) {
+    std::scoped_lock session_lock(session_mutex);
+    std::scoped_lock lock(account_mutex);
+    if (!nx::SameSession(account, rejected))
+        return;
+    account.access_expires_at = 0;
+    account_verified = false;
+}
+
 // Serialize refresh, rotated vault writes, sign-out, and replacement logins.
 bool EnsureFreshSession(bool force = false) {
     std::scoped_lock session_lock(session_mutex);
     auto identity = LinkedAccount();
-    if (identity.profile_id.empty())
+    if (identity.profile_id.empty() || !nx::ValidToken(identity.refresh_token))
         return false;
-    if (!nx::ValidToken(identity.refresh_token)) {
-        RemoveAccount();
-        return false;
-    }
     const auto now = nx::EpochSeconds();
     if (!force && account_verified && !nx::SessionNeedsRefresh(identity, now))
         return true;
-    identity.nex_token.clear();
-    identity.nex_expires_at = 0;
+    const auto tick = std::chrono::steady_clock::now();
+    if (!force && tick < retry_after)
+        return false;
     account_verified = false;
-    nx::SetIdentity(identity, Provider());
-    const auto result = nx::RefreshSession(
-        identity, nx::GetConfig().client_id, Exchange, SaveAccount, [] { RemoveAccount(); }, now);
+    nx::AuthResult result;
+    if (nx::ValidOAuth(identity, now) && identity.access_expires_at - now > 300) {
+        // Only the NEX token is missing or stale; keep the refresh token unrotated.
+        result = !nx::FetchNexToken(identity, Exchange, now) ? nx::AuthResult::Rejected
+                 : SaveAccount(identity)                    ? nx::AuthResult::Ready
+                                                            : nx::AuthResult::StorageFailed;
+    } else {
+        result = nx::RefreshSession(identity, nx::GetConfig().client_id, Exchange, SaveAccount,
+                                    [] { RemoveAccount(); }, now);
+    }
     account_verified = result == nx::AuthResult::Ready;
+    if (!account_verified)
+        retry_after = tick + std::chrono::seconds(60);
     return account_verified;
 }
 
@@ -188,7 +206,7 @@ void PublishPresence(const nx::Presence& presence) {
     try {
         const auto response = Send(request);
         if (response && static_cast<unsigned>(response->StatusCode()) == 401)
-            RemoveAccount(&identity);
+            Reauthorize(identity);
     } catch (...) {
     }
 }
@@ -226,7 +244,7 @@ void PollSocial(std::stop_token stop) {
                         request.body = "{}";
                         const auto response = Send(request);
                         if (response && static_cast<unsigned>(response->StatusCode()) == 401)
-                            RemoveAccount(&identity);
+                            Reauthorize(identity);
                     }
                 }
             } catch (...) {
@@ -244,7 +262,6 @@ std::string CurrentProfileId() {
 }
 
 void Initialize(const std::filesystem::path& local_state) {
-    std::scoped_lock session_lock(session_mutex);
     Service::Account::ProfileManager profiles;
     {
         std::scoped_lock lock(account_mutex);
@@ -283,6 +300,9 @@ void Initialize(const std::filesystem::path& local_state) {
             signer.reset();
         }
     }
+    // The library reopens over a running game; keep the live session after the first restore.
+    if (social_worker.joinable())
+        return;
     nx::Identity restored;
     try {
         auto credential = credentials::PasswordVault().Retrieve(AccountResource, L"session");
@@ -297,18 +317,13 @@ void Initialize(const std::filesystem::path& local_state) {
         account = restored;
     }
     account_verified = false;
-    nx::SetIdentity({});
-    // The social worker refreshes on its first pass, so the library never waits on the network.
-    if (restored.profile_id.empty())
-        RemoveAccount();
-    if (!social_worker.joinable())
-        social_worker = std::jthread(PollSocial);
+    // Linked at once; the social worker fetches the tokens on its first pass, off the UI thread.
+    nx::SetIdentity(std::move(restored), Provider());
+    social_worker = std::jthread(PollSocial);
 }
 
 bool SetEnabled(bool enabled) {
     try {
-        if (enabled && LinkedAccount().pid != 0 && !EnsureFreshSession(true))
-            return false;
         winrt::Windows::Storage::ApplicationData::Current().LocalSettings().Values().Insert(
             EnabledKey, winrt::box_value(enabled));
         auto config = nx::GetConfig();
@@ -335,25 +350,19 @@ bool SaveAccount(const nx::Identity& identity) {
         data.SetNamedValue(L"friend_code", json::JsonValue::CreateStringValue(
                                                winrt::to_hstring(identity.friend_code)));
         root.SetNamedValue(L"account", data);
-        root.SetNamedValue(L"nex_token", json::JsonValue::CreateStringValue(
-                                             winrt::to_hstring(identity.nex_token)));
         root.SetNamedValue(L"profile_id", json::JsonValue::CreateStringValue(
                                               winrt::to_hstring(identity.profile_id)));
-        root.SetNamedValue(L"access_token", json::JsonValue::CreateStringValue(
-                                                winrt::to_hstring(identity.access_token)));
+        // Only the refresh token is persisted: the vault caps a credential near 2.5 KB, and
+        // the access and NEX tokens are fetched again at start.
         root.SetNamedValue(L"refresh_token", json::JsonValue::CreateStringValue(
                                                  winrt::to_hstring(identity.refresh_token)));
-        root.SetNamedValue(
-            L"access_expires_at",
-            json::JsonValue::CreateNumberValue(static_cast<double>(identity.access_expires_at)));
-        root.SetNamedValue(L"nex_expires_at", json::JsonValue::CreateNumberValue(
-                                                  static_cast<double>(identity.nex_expires_at)));
-        credentials::PasswordVault vault;
-        vault.Add(credentials::PasswordCredential(AccountResource, L"session", root.Stringify()));
+        // Memory first: a rotated refresh token must survive a failed vault write.
         account = identity;
         account_verified = identity.pid != 0 && nx::ValidToken(identity.nex_token) &&
                            identity.nex_expires_at > nx::EpochSeconds();
         nx::SetIdentity(identity, Provider());
+        credentials::PasswordVault vault;
+        vault.Add(credentials::PasswordCredential(AccountResource, L"session", root.Stringify()));
         return true;
     } catch (...) {
         return false;
@@ -422,7 +431,7 @@ bool RefreshFriends() {
         if (!response)
             return false;
         if (static_cast<unsigned>(response->StatusCode()) == 401) {
-            RemoveAccount(&identity);
+            Reauthorize(identity);
             return false;
         }
         if (static_cast<unsigned>(response->StatusCode()) != 200)

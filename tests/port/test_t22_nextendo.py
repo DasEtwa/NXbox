@@ -372,8 +372,9 @@ int main(int argc, char **argv) {
             return HttpResponse{200, rotated};
           }
           assert(requests == 2 && saves == 1);
+          // The old NEX token stays valid until a replacement arrives.
           assert(stored.refresh_token == "rotated-refresh" &&
-                 stored.nex_token.empty());
+                 stored.nex_token == identity.nex_token);
           assert(request.url == "https://nextendo.network/api/nex-token");
           assert(request.headers.at("Authorization") == "Bearer new-access");
           auto game = identity;
@@ -787,21 +788,26 @@ class NextendoTests(unittest.TestCase):
 
     def test_winrt_session_restore_vault_fields_and_social_refresh_wiring(self):
         frontend = (ROOT / "src/eden_uwp/nextendo_online.cpp").read_text()
-        for field in (
-            "access_token",
-            "refresh_token",
-            "access_expires_at",
-            "nex_token",
-            "nex_expires_at",
-            "profile_id",
-        ):
+        # The vault keeps the refresh token and account metadata only; short-lived tokens
+        # are fetched again at start.
+        for field in ("refresh_token", "profile_id"):
             self.assertRegex(frontend, rf'root\.SetNamedValue\(\s*L"{field}"')
             self.assertIn(f'L"{field}"', frontend[frontend.index("nx::Identity ParseIdentity") :])
+        for field in ("access_token", "nex_token", "access_expires_at", "nex_expires_at"):
+            self.assertNotRegex(frontend, rf'root\.SetNamedValue\(\s*L"{field}"')
+        save = frontend[frontend.index("bool SaveAccount") : frontend.index("void SignOut")]
+        self.assertLess(save.index("account = identity"), save.index("vault.Add"))
         startup = frontend[frontend.index("void Initialize") : frontend.index("bool SetEnabled")]
         # Startup must not block the library on the network; the worker refreshes first.
         self.assertNotIn("EnsureFreshSession", startup)
         self.assertIn("std::jthread(PollSocial)", startup)
-        self.assertIn("EnsureFreshSession(true)", frontend[frontend.index("bool SetEnabled") :])
+        enable = frontend[frontend.index("bool SetEnabled") : frontend.index("bool SaveAccount")]
+        self.assertNotIn("EnsureFreshSession", enable)
+        # A rejected social call only forces a refresh; only the refresh endpoint signs out.
+        self.assertNotIn("RemoveAccount(&identity)", frontend)
+        self.assertEqual(frontend.count("Reauthorize(identity)"), 3)
+        self.assertIn("if (social_worker.joinable())\n        return;", startup)
+        self.assertIn("retry_after = tick + std::chrono::seconds(60)", frontend)
         self.assertIn("nx::SessionNeedsRefresh(identity, now)", frontend)
         self.assertRegex(frontend, r"nx::RefreshSession\(\s*identity")
         self.assertRegex(frontend, r"SaveAccount,\s*\[\]\s*\{\s*RemoveAccount\(\);")
