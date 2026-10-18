@@ -15,6 +15,7 @@
 namespace Service::Nextendo {
 
 inline constexpr std::string_view ApiOrigin = "https://nextendo.network";
+inline constexpr std::string_view PhoneCallbackUri = "https://www.nspx.dev/NXbox/nextendo/";
 inline constexpr std::string_view CallbackUri = "http://127.0.0.1:17822/callback";
 // NXbox's public PKCE application on nextendo.network. It is not a secret; LocalState/nextendo.json
 // may still override it.
@@ -67,6 +68,65 @@ inline std::optional<std::string> UrlDecode(std::string_view input) {
         value += static_cast<char>(c);
     }
     return value;
+}
+
+// Reject ambiguous forms (including octal-looking octets) before publishing a LAN address.
+inline bool IsPrivateIPv4(std::string_view ip) {
+    unsigned octets[4]{};
+    for (int i = 0; i < 4; ++i) {
+        const auto dot = ip.find('.');
+        const auto part = ip.substr(0, dot);
+        if (part.empty() || part.size() > 3 || (part.size() > 1 && part[0] == '0'))
+            return false;
+        for (const char c : part) {
+            if (c < '0' || c > '9')
+                return false;
+            octets[i] = octets[i] * 10 + c - '0';
+        }
+        if (octets[i] > 255 || (i == 3) != (dot == std::string_view::npos))
+            return false;
+        if (i != 3)
+            ip.remove_prefix(dot + 1);
+    }
+    return octets[0] == 10 || (octets[0] == 172 && octets[1] >= 16 && octets[1] <= 31) ||
+           (octets[0] == 192 && octets[1] == 168);
+}
+
+inline std::string PhoneState(std::string_view random, std::string_view ip) {
+    if (random.size() != 22 ||
+        random.find_first_not_of(
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_") !=
+            std::string_view::npos ||
+        !IsPrivateIPv4(ip))
+        return {};
+    return std::string(random) + '~' + std::string(ip) + "~17822";
+}
+
+// The LAN listener accepts only an unambiguous code and the exact transaction state.
+inline std::optional<std::string> PhoneCallbackCode(std::string_view target,
+                                                    std::string_view state) {
+    if (!target.starts_with("/callback?") || target.size() > 4096 ||
+        target.find('#') != std::string_view::npos)
+        return std::nullopt;
+    std::map<std::string, std::string> fields;
+    auto query = target.substr(10);
+    while (!query.empty()) {
+        const auto end = query.find('&');
+        const auto pair = query.substr(0, end);
+        const auto equal = pair.find('=');
+        if (equal == std::string_view::npos)
+            return std::nullopt;
+        const auto key = UrlDecode(pair.substr(0, equal));
+        const auto value = UrlDecode(pair.substr(equal + 1));
+        if (!key || !value || !fields.emplace(*key, *value).second)
+            return std::nullopt;
+        if (end == std::string_view::npos)
+            break;
+        query.remove_prefix(end + 1);
+    }
+    if (fields["state"] != state || fields["code"].empty() || fields.contains("error"))
+        return std::nullopt;
+    return fields["code"];
 }
 
 struct Identity {
@@ -203,10 +263,11 @@ class Authorization {
 public:
     using Clock = std::chrono::steady_clock;
     Authorization(std::string client_id, std::string verifier, std::string challenge,
-                  std::string state, Clock::time_point now)
+                  std::string state, Clock::time_point now,
+                  std::string_view redirect_uri = CallbackUri)
         : client_id_(std::move(client_id)), verifier_(std::move(verifier)),
-          challenge_(std::move(challenge)), state_(std::move(state)),
-          deadline_(now + std::chrono::minutes(5)) {}
+          challenge_(std::move(challenge)), state_(std::move(state)), redirect_uri_(redirect_uri),
+          deadline_(now + std::chrono::minutes(redirect_uri == PhoneCallbackUri ? 10 : 5)) {}
 
     std::string AuthorizeUrl() const {
         if (client_id_.empty() || verifier_.size() < 43 || verifier_.size() > 128 ||
@@ -215,7 +276,7 @@ public:
         }
         return std::string(ApiOrigin) +
                "/api/oauth/authorize?response_type=code&client_id=" + UrlEncode(client_id_) +
-               "&redirect_uri=" + UrlEncode(CallbackUri) +
+               "&redirect_uri=" + UrlEncode(redirect_uri_) +
                "&scope=identity+friends+presence+game.matchmaking&app=nxbox&state=" +
                UrlEncode(state_) + "&code_challenge=" + UrlEncode(challenge_) +
                "&code_challenge_method=S256";
@@ -237,7 +298,7 @@ public:
             Cancel();
             return result_ = AuthResult::Expired;
         }
-        const std::string prefix = std::string(CallbackUri) + '?';
+        const std::string prefix = redirect_uri_ + '?';
         if (AuthorizeUrl().empty() || !callback.starts_with(prefix) || callback.size() > 4096 ||
             callback.find('#') != std::string_view::npos || profile_id.empty()) {
             return AuthResult::InvalidCallback;
@@ -273,7 +334,7 @@ public:
                             "application/x-www-form-urlencoded",
                             "grant_type=authorization_code&code=" + UrlEncode(fields["code"]) +
                                 "&client_id=" + UrlEncode(client_id_) + "&redirect_uri=" +
-                                UrlEncode(CallbackUri) + "&code_verifier=" + UrlEncode(verifier_),
+                                UrlEncode(redirect_uri_) + "&code_verifier=" + UrlEncode(verifier_),
                             {}};
         // Consume once even if the transport fails. A code cannot safely be replayed.
         Cancel();
@@ -295,7 +356,7 @@ public:
     }
 
 private:
-    std::string client_id_, verifier_, challenge_, state_;
+    std::string client_id_, verifier_, challenge_, state_, redirect_uri_;
     Clock::time_point deadline_;
     AuthResult result_ = AuthResult::Pending;
 };

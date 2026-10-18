@@ -250,6 +250,11 @@
                                L"aqui e digite o endereço completo com Menu em até cinco minutos."},
     {Text::NextendoCallbackTitle, L"Digite o endereço final do navegador"},
     {Text::NextendoEnterReturn, L"Digitar endereço de retorno"},
+    {Text::NextendoPhoneHint, L"Escaneie com o celular na mesma rede Wi-Fi."},
+    {Text::NextendoBrowser, L"Usar navegador do Xbox"},
+    {Text::NextendoPhoneUnavailable,
+     L"Rede local indisponível. Pressione X para usar o navegador do Xbox."},
+    {Text::NextendoPhoneExpired, L"O login expirou. Pressione B e depois X para tentar novamente."},
     {Text::NextendoFriendsLoaded, L"Lista de amigos atualizada."},
 
     {Text::SrcNewGames, L"Novos jogos"}, {Text::SrcUpdates, L"Novas atualizações"},

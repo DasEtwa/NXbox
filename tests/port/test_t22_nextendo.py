@@ -179,6 +179,47 @@ int main(int argc, char **argv) {
            AuthResult::Ready);
     assert(calls == 2);
   }
+  if (mode == "phone-auth") {
+    const auto state = PhoneState(std::string(22, 'r'), "172.16.0.2");
+    assert(state == std::string(22, 'r') + "~172.16.0.2~17822");
+    for (auto ip : {"10.0.0.1", "172.31.255.254", "192.168.1.2"})
+      assert(IsPrivateIPv4(ip));
+    for (auto ip : {"127.0.0.1", "172.15.1.1", "172.32.0.1", "192.169.1.1",
+                    "10.01.0.1", "10.0.0.256", "10.0.0.1.2", "10.0.0", "10.0.0.", ""})
+      assert(!IsPrivateIPv4(ip));
+    assert(PhoneState("short", "10.0.0.1").empty());
+    assert(PhoneState(std::string(22, '~'), "10.0.0.1").empty());
+    assert(PhoneState(std::string(22, 'r'), "8.8.8.8").empty());
+    const auto target = "/callback?code=phone%2Bcode&state=" + UrlEncode(state);
+    assert(PhoneCallbackCode(target, state) == "phone+code");
+    for (const auto &bad : {target + "&state=duplicate", target + "&code=duplicate",
+                            target + "&error=denied", target + "#fragment",
+                            std::string("/other?code=x&state=") + state,
+                            std::string("/callback?code=%00&state=") + state})
+      assert(!PhoneCallbackCode(bad, state));
+    assert(!PhoneCallbackCode(target, "wrong"));
+    Authorization flow("client", std::string(43, 'v'), std::string(43, 'c'), state,
+                       now, PhoneCallbackUri);
+    assert(flow.AuthorizeUrl().find("redirect_uri=" + UrlEncode(PhoneCallbackUri)) !=
+           std::string::npos);
+    assert(flow.Complete(std::string(CallbackUri) + target.substr(9), now,
+                         "profile-a", {}, {}) == AuthResult::InvalidCallback);
+    int calls = 0;
+    assert(flow.Complete(std::string(PhoneCallbackUri) + target.substr(9),
+        now + std::chrono::minutes(9), "profile-a", [&](const HttpRequest &request) {
+          if (++calls == 1) {
+            assert(request.body.find("redirect_uri=" + UrlEncode(PhoneCallbackUri)) !=
+                   std::string::npos);
+            assert(request.body.find("code=phone%2Bcode") != std::string::npos);
+          }
+          return HttpResponse{200, identity};
+        }, [](const Identity &) { return true; }) == AuthResult::Ready);
+    assert(calls == 2);
+    Authorization expired("client", std::string(43, 'v'), std::string(43, 'c'), state,
+                          now, PhoneCallbackUri);
+    assert(expired.Complete(std::string(PhoneCallbackUri) + target.substr(9),
+        now + std::chrono::minutes(10), "profile-a", {}, {}) == AuthResult::Expired);
+  }
   if (mode == "auth-rejection") {
     int calls = 0;
     auto http = [&](const HttpRequest &) {
@@ -674,6 +715,9 @@ class NextendoTests(unittest.TestCase):
 
     def test_mock_http_authorization_and_single_use_code(self):
         self.run_case("auth-success")
+
+    def test_phone_state_callback_and_redirect_uri(self):
+        self.run_case("phone-auth")
 
     def test_callback_origin_csrf_duplicate_fields_and_encoding(self):
         self.run_case("auth-rejection")
