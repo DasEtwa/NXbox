@@ -29,6 +29,40 @@ int main() {
         "  switch i32 %1, label %end [\n    i32 1, label %end\n  ]\n"
         "  ret void\n}\n!0 = !{i32 1}\n") == 5);
 
+    // The opt-in uses the upstream small-draw heuristic, plus a stream-output guard.
+    using D3D12::CanSkipPendingGraphicsPso;
+    assert(!CanSkipPendingGraphicsPso(false, 100, 100, false));
+    assert(!CanSkipPendingGraphicsPso(true, 6, 100, false));
+    assert(!CanSkipPendingGraphicsPso(true, 100, 6, false));
+    assert(!CanSkipPendingGraphicsPso(true, 0, 100, false));
+    assert(!CanSkipPendingGraphicsPso(true, 100, 0, false));
+    assert(!CanSkipPendingGraphicsPso(true, 100, 100, true));
+    assert(CanSkipPendingGraphicsPso(true, 7, 7, false));
+    {
+        Cache pending{1, 1};
+        std::promise<void> entered, release;
+        auto gate = release.get_future().share();
+        assert(pending.Submit(1, [&] {
+            entered.set_value();
+            gate.wait();
+            return std::make_shared<int>(42);
+        }));
+        entered.get_future().wait();
+        // A pending draw can return without waiting for the blocked compiler.
+        assert(CanSkipPendingGraphicsPso(true, 100, 100, false));
+        assert(pending.Lookup(1).status == Cache::Status::Pending);
+        assert(!pending.CanSubmit());
+        assert(!pending.Submit(2, [] { return std::make_shared<int>(7); }));
+        assert(pending.Lookup(2).status == Cache::Status::Missing);
+        // Skipping must not poison the request: protected draws using the same key
+        // can still wait, and later draws consume the published result.
+        assert(!CanSkipPendingGraphicsPso(true, 3, 3, false));
+        release.set_value();
+        auto ready = pending.WaitFor(1, std::chrono::seconds{2});
+        assert(ready.status == Cache::Status::Ready && *ready.result == 42);
+        assert(pending.Lookup(1).result == ready.result);
+    }
+
     Cache cache{2, 2};
     std::promise<void> release;
     auto wait = release.get_future().share();
@@ -148,5 +182,15 @@ class AsyncPsoTests(unittest.TestCase):
         self.assertIn("live.envs[index].Snapshot(texture_source)", source)
         self.assertIn("DrawsSkippedPendingPso", source)
         self.assertIn("DispatchesSkippedPendingPso", source)
+        graphics = source.split("static const bool skip_pending =", 1)[1].split(
+            "Count(FrameCount::DrawsSkippedPendingPso)", 1
+        )[0]
+        self.assertIn('BisectEnabled("NXBOX_D3D12_ASYNC_SHADERS")', graphics)
+        self.assertIn("draw.index_buffer.count, draw.vertex_buffer.count", graphics)
+        self.assertIn("maxwell3d->regs.transform_feedback_enabled != 0", graphics)
+        self.assertIn("if (!may_skip && pso_waited.insert(request_hash).second)", graphics)
+        # Only Ready results enter the guest cache; pending/missing remain retryable.
+        after_wait = graphics.split("if (settled.status == AsyncCache::Status::Ready)", 1)[1]
+        self.assertNotIn("StoreGuestGraphics", after_wait.split("return settled.result", 1)[1])
         emitter = (ROOT / "src/shader_recompiler/backend/hlsl/emit_hlsl.cpp").read_text()
         self.assertIn("[loop] while (true)", emitter)

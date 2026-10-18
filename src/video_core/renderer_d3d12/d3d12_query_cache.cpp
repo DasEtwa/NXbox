@@ -19,6 +19,7 @@
 #include "video_core/renderer_d3d12/d3d12_query_resolve.h"
 #include "video_core/renderer_d3d12/d3d12_shader.h"
 #include "video_core/renderer_d3d12/d3d12_transform_feedback.h"
+#include "video_core/submission_trace.h"
 
 namespace D3D12 {
 using VideoCommon::QueryType;
@@ -72,7 +73,12 @@ public:
     }
     size_t WriteCounter(VAddr address, bool timestamp, u32,
                         std::optional<u32> stream = std::nullopt) override {
+        VideoCommon::SubmissionTrace::Log("query_report_begin cpu={:x} type={}", address,
+                                          static_cast<u32>(type));
         const auto counter = runtime.ReadCounter(type, stream.value_or(0));
+        VideoCommon::SubmissionTrace::Log("query_report_end cpu={:x} type={} value={} pending={}",
+                                          address, static_cast<u32>(type), counter.value,
+                                          static_cast<bool>(counter.result.buffer));
         const auto query = BuildQuery(timestamp, address, counter.value);
         if (counter.result.buffer) {
             auto& entry = slot_queries[query];
@@ -81,6 +87,8 @@ public:
                                      : VideoCommon::QueryFlagBits{});
             std::scoped_lock lock{pending_mutex};
             snapshots.emplace(query, counter.result);
+            if (VideoCommon::SubmissionTrace::Active())
+                trace_frames.emplace(query, VideoCommon::SubmissionTrace::frame.load());
             unsynced.push_back(query);
             return query;
         }
@@ -136,6 +144,11 @@ public:
             auto& query = slot_queries[index];
             std::memcpy(&query.value, snapshot->second.mapped_span.data(), sizeof(u64));
             query.flags |= VideoCommon::QueryFlagBits::IsFinalValueSynced;
+            if (const auto trace = trace_frames.find(index); trace != trace_frames.end()) {
+                Diagnostic(fmt::format("D3D12_QUERY_RESOLVED frame={} cpu={:x} value={}",
+                                       trace->second, query.guest_address, query.value));
+                trace_frames.erase(trace);
+            }
         }
         batches.pop_front();
     }
@@ -143,10 +156,12 @@ public:
         std::scoped_lock lock{pending_mutex};
         std::erase(pending, index);
         snapshots.erase(index);
+        trace_frames.erase(index);
         SimpleStreamer::Free(index);
     }
 
 private:
+    std::unordered_map<size_t, u64> trace_frames;
     QueryCacheRuntime& runtime;
     QueryType type;
     mutable std::mutex pending_mutex;
@@ -320,7 +335,9 @@ struct QueryCacheRuntimeImpl {
         if (!any) {
             return;
         }
+        VideoCommon::SubmissionTrace::Log("query_bank_finish_begin");
         context.Finish(FrameCount::ForcedSubmitQueryBank);
+        VideoCommon::SubmissionTrace::Log("query_bank_finish_end");
         for (u32 index = 0; index < BankCount; ++index) {
             if (index != bank && bank_count[index]) {
                 Consume(index, bank_count[index]);
@@ -344,7 +361,9 @@ struct QueryCacheRuntimeImpl {
         bank = (bank + 1) % BankCount;
         count = 0;
         if (bank_count[bank]) {
+            VideoCommon::SubmissionTrace::Log("query_bank_wait_begin tick={}", bank_tick[bank]);
             context.Wait(bank_tick[bank], "query_bank");
+            VideoCommon::SubmissionTrace::Log("query_bank_wait_end tick={}", bank_tick[bank]);
             Consume(bank, bank_count[bank]);
             bank_count[bank] = 0;
         }
@@ -426,7 +445,9 @@ struct QueryCacheRuntimeImpl {
             context.Commands()->CopyBufferRegion(result.buffer->handle.Get(), result.offset,
                                                  resource->handle.Get(), offset, 8);
         }
+        VideoCommon::SubmissionTrace::Log("query_readback_wait_begin cpu={:x}", object.address);
         context.Finish(FrameCount::ForcedSubmitQueryReadback);
+        VideoCommon::SubmissionTrace::Log("query_readback_wait_end cpu={:x}", object.address);
         u64 value{};
         std::memcpy(&value, result.mapped_span.data(), 8);
         return value;
@@ -716,6 +737,8 @@ bool QueryCacheRuntime::CompareConditional(VideoCommon::LookupData first,
                                            VideoCommon::LookupData second, bool equal) {
     if (BisectEnabled("NXBOX_D3D12_NO_QUERIES"))
         return false;
+    VideoCommon::SubmissionTrace::Log("predicate_compare first_cpu={:x} second_cpu={:x} equal={}",
+                                      first.address, second.address, equal);
     impl->RequireClosed();
     if (!first.address) {
         EndHostConditionalRendering();
@@ -729,6 +752,7 @@ bool QueryCacheRuntime::CompareConditional(VideoCommon::LookupData first,
                True(object.found_query->flags & VideoCommon::QueryFlagBits::IsHostManaged);
     };
     if (host_managed(first) || host_managed(second)) {
+        VideoCommon::SubmissionTrace::Log("predicate_fallback host_managed=1");
         EndHostConditionalRendering();
         return false;
     }
@@ -826,6 +850,42 @@ void QueryCacheRuntime::SetGpuPredicate(DAddr address, D3D12_PREDICATION_OP op) 
     impl->predicate_op = op;
     ResumeHostConditionalRendering();
 }
+StagingBufferRef QueryCacheRuntime::PreparePredicateTrace() {
+    if (!VideoCommon::SubmissionTrace::Active() || !impl->predicate_set)
+        return {};
+    // Allocation can submit under memory/staging pressure. Do it before binding
+    // draw state and before opening native queries.
+    impl->RequireClosed();
+    return impl->readback.Request(8);
+}
+// Observe the same predicate bytes the following draw consumes, without forcing a
+// CPU decision or a fence wait. Copies themselves must execute unconditionally.
+void QueryCacheRuntime::TracePredicate(u64 frame, u64 pass, u64 draw,
+                                       const StagingBufferRef& result) {
+    if (!VideoCommon::SubmissionTrace::Active())
+        return;
+    if (!impl->predicate_set) {
+        VideoCommon::SubmissionTrace::Log("host_predicate draw={} pass={} active=0", draw, pass);
+        return;
+    }
+    const auto op = impl->predicate_op;
+    PauseHostConditionalRendering();
+    impl->context.Transition(impl->predicate, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    impl->context.Retain(result.buffer);
+    impl->context.BeforeCopyWrite(result.buffer, result.offset, 8);
+    impl->context.Commands()->CopyBufferRegion(result.buffer->handle.Get(), result.offset,
+                                               impl->predicate->handle.Get(), 0, 8);
+    ResumeHostConditionalRendering();
+    impl->context.AfterCompletion([result, op, frame, pass, draw] {
+        u64 value{};
+        std::memcpy(&value, result.mapped_span.data(), 8);
+        Diagnostic(
+            fmt::format("D3D12_PREDICATE frame={} pass={} draw={} value={} op={} executes={}",
+                        frame, pass, draw, value, static_cast<u32>(op),
+                        op == D3D12_PREDICATION_OP_EQUAL_ZERO ? value != 0 : value == 0));
+    });
+}
+
 QueryCacheRuntime::Timestamp QueryCacheRuntime::CaptureTimestamp() {
     if (BisectEnabled("NXBOX_D3D12_NO_QUERIES"))
         return {};

@@ -890,6 +890,10 @@ public:
         }
     }
 
+    bool HasDownloads() const {
+        return download_thread_.joinable() || !queue_.Empty();
+    }
+
     // Returns true when the window was closed.
     bool Run() {
         const auto closed_token =
@@ -2514,6 +2518,10 @@ bool ShopScreen::TakeSourcesRequest() {
 bool ShopScreen::TakeNavigationRequest() {
     return impl_->screen.TakeNavigationRequest();
 }
+bool ShopScreen::HasDownloads() const {
+    return impl_->screen.HasDownloads();
+}
+
 bool ShopScreen::Typing() const {
     return impl_->screen.Typing();
 }

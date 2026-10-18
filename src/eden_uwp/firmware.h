@@ -8,6 +8,7 @@
 namespace EdenXbox {
 struct FirmwareStatus {
     std::string version;
+    bool conversion_required = false;
     bool install_failed = false;
     bool home_available = false;
     bool mii_edit_available = false;

@@ -13,6 +13,7 @@
 #include <cwctype>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <iterator>
 #include <memory>
 #include <string>
@@ -319,7 +320,7 @@ private:
 
     // Lists LocalState\games again, on a worker thread. The focus stays on the same game when it
     // is still there.
-    void StartScan() {
+    void StartScan(bool convert_nsz = true) {
         keep_title_id_ = SelectedTitleId();
         games_.clear();
         tinfoil_index_ = -1;
@@ -332,7 +333,7 @@ private:
         hero_key_ = -2;
         selected_ = 0;
         keys_missing_ = false;
-        scan_ = std::make_unique<LibraryScan>(local_state_);
+        scan_ = std::make_unique<LibraryScan>(local_state_, convert_nsz);
         Diagnostic("UI library scan started");
     }
 
@@ -414,6 +415,7 @@ private:
     // ---- Input ----
 
     void Update(Clock::time_point now) {
+        AdoptDelete(now);
         AdoptScan();
         if (shop_) {
             shop_->SetTinfoilAvailable(tinfoil_index_ >= 0);
@@ -434,7 +436,93 @@ private:
         Refresh(now);
     }
 
+    void AdoptDelete(Clock::time_point now) {
+        if (delete_stage_ == 1 && delete_candidates_.valid() &&
+            delete_candidates_.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+            try {
+                delete_files_ = delete_candidates_.get();
+            } catch (const std::exception& failure) {
+                Diagnostic("LIBRARY_DELETE list failed reason=" + std::string(failure.what()));
+                delete_files_.clear();
+            }
+            if (delete_files_.empty()) {
+                delete_stage_ = 0;
+                Toast(Tr(Text::DeleteFailed), now);
+            } else {
+                delete_stage_ = 2;
+            }
+        }
+        if (delete_stage_ == 4 && delete_result_.valid() &&
+            delete_result_.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+            bool ok = false;
+            try {
+                ok = delete_result_.get();
+            } catch (const std::exception& failure) {
+                Diagnostic("LIBRARY_DELETE failed reason=" + std::string(failure.what()));
+            }
+            delete_stage_ = 0;
+            details_open_ = false;
+            delete_files_.clear();
+            Toast(Tr(ok ? Text::DeleteDone : Text::DeleteFailed), now);
+            StartScan(false);
+        }
+    }
+
+    void OpenDelete() {
+        // The shop keeps downloading across tabs. Do not delete a live .partial file or
+        // race a transfer publishing a replacement under the path the player reviewed.
+        if (shop_ && shop_->HasDownloads()) {
+            Toast(Tr(Text::DeleteDownloadBusy), Clock::now());
+            input_.ConsumeUntilRelease();
+            return;
+        }
+        delete_stage_ = 1;
+        delete_row_ = 0;
+        delete_confirm_ = false;
+        const auto game = Game(selected_);
+        const auto local = local_state_;
+        delete_candidates_ = std::async(
+            std::launch::async, [game, local] { return LibraryDeleteCandidates(game, local); });
+        input_.ConsumeUntilRelease();
+    }
+
     void HandleInput(Clock::time_point now) {
+        if (delete_stage_) {
+            if (delete_stage_ == 1 || delete_stage_ == 4)
+                return;
+            if (input_.Pressed(Button::B)) {
+                delete_stage_ = delete_stage_ == 3 ? 2 : 0;
+                delete_confirm_ = false;
+            } else if (input_.Pressed(Button::Up)) {
+                delete_row_ = std::max(0, delete_row_ - 1);
+            } else if (input_.Pressed(Button::Down)) {
+                delete_row_ = std::min(static_cast<int>(delete_files_.size()) - 1, delete_row_ + 1);
+            } else if (delete_stage_ == 2 && input_.Pressed(Button::A)) {
+                auto& file = delete_files_[Idx(delete_row_)];
+                if (file.optional)
+                    file.selected = !file.selected;
+            } else if (delete_stage_ == 2 && input_.Pressed(Button::X)) {
+                delete_stage_ = 3;
+                delete_row_ = 0;
+                delete_confirm_ = false; // Cancel is the default in the final confirmation.
+            } else if (delete_stage_ == 3 &&
+                       (input_.Pressed(Button::Left) || input_.Pressed(Button::Right))) {
+                delete_confirm_ = !delete_confirm_;
+            } else if (delete_stage_ == 3 && input_.Pressed(Button::A)) {
+                if (!delete_confirm_) {
+                    delete_stage_ = 2;
+                } else {
+                    delete_stage_ = 4;
+                    const auto files = delete_files_;
+                    const auto local = local_state_;
+                    delete_result_ = std::async(std::launch::async, [files, local] {
+                        return DeleteLibraryFiles(files, local);
+                    });
+                }
+            }
+            input_.ConsumeUntilRelease();
+            return;
+        }
         if (update_open_) {
             const auto state = updater_.State();
             if (state == UpdateState::Failed || state == UpdateState::MissingPortal) {
@@ -481,7 +569,9 @@ private:
             return;
         }
         if (details_open_) {
-            if (input_.Pressed(Button::A) || input_.Pressed(Button::B)) {
+            if (input_.Pressed(Button::A)) {
+                OpenDelete();
+            } else if (input_.Pressed(Button::B)) {
                 details_open_ = false;
                 input_.ConsumeUntilRelease();
             }
@@ -692,6 +782,12 @@ private:
 
     void Launch(Clock::time_point now) {
         const GameEntry& game = Game(selected_);
+        if (game.incomplete) {
+            details_open_ = true;
+            Toast(Tr(Text::IncompleteFile), now);
+            input_.ConsumeUntilRelease();
+            return;
+        }
         result_ = winrt::to_string(game.path.wstring());
         Diagnostic("UI library launch " + game.title_id + " " + result_);
         launched_ = selected_;
@@ -1083,7 +1179,9 @@ private:
         } else {
             DrawToast(now);
         }
-        if (details_open_) {
+        if (delete_stage_) {
+            DrawDelete();
+        } else if (details_open_) {
             DrawDetails();
         }
         if (resolution_open_) {
@@ -1153,6 +1251,8 @@ private:
             if (!internet_art_ || !backgrounds_)
                 return;
             const auto& game = Game(key);
+            if (game.incomplete)
+                return;
             if (!visual.background_checked) {
                 // NACP slot 0 is American English; slot 1 is British English.
                 std::string english;
@@ -1338,7 +1438,9 @@ private:
                                          ? std::wstring(Tr(Text::FirmwareMissing))
                                          : std::wstring(Tr(Text::FirmwareInstalled)) + L" " +
                                                Widen(firmware_status_.version);
-        if (firmware_status_.install_failed) {
+        if (firmware_status_.conversion_required) {
+            firmware_text = Tr(Text::FirmwareConvertDump);
+        } else if (firmware_status_.install_failed) {
             firmware_text = firmware_status_.version.empty()
                                 ? std::wstring(Tr(Text::FirmwareInstallFailed))
                                 : firmware_text + L" · " + Tr(Text::FirmwareInstallFailed);
@@ -1517,8 +1619,19 @@ private:
             return {{Theme::kButtonA, L"A", Tr(Text::HintSelect)},
                     {Theme::kButtonB, L"B", Tr(Text::HintBack)}};
         }
+        if (delete_stage_) {
+            if (delete_stage_ == 1 || delete_stage_ == 4)
+                return {};
+            if (delete_stage_ == 3)
+                return {{Theme::kButtonA, L"A", Tr(Text::HintSelect)},
+                        {Theme::kButtonB, L"B", Tr(Text::HintBack)}};
+            return {{Theme::kButtonA, L"A", Tr(Text::HintSelect)},
+                    {Theme::kButtonX, L"X", Tr(Text::DeleteReview)},
+                    {Theme::kButtonB, L"B", Tr(Text::HintBack)}};
+        }
         if (details_open_) {
-            return {{Theme::kButtonB, L"B", Tr(Text::HintBack)}};
+            return {{Theme::kButtonA, L"A", Tr(Text::DeleteGame)},
+                    {Theme::kButtonB, L"B", Tr(Text::HintBack)}};
         }
         std::vector<Hint> hints;
         if (return_home_)
@@ -1705,8 +1818,8 @@ private:
     void DrawDetails() {
         const GameEntry& game = Game(selected_);
         renderer_.FillRounded(RectF(0.0f, 0.0f, kCanvasWidth, kCanvasHeight), 0.0f, Theme::kVeil);
-        const D2D1_RECT_F sheet =
-            RectF(kSheetLeft, kSheetTop, kSheetLeft + kSheetWidth, kSheetTop + kSheetHeight);
+        const D2D1_RECT_F sheet = RectF(kSheetLeft, kSheetTop, kSheetLeft + kSheetWidth,
+                                        kSheetTop + kSheetHeight + 100.0f);
         renderer_.FillRounded(sheet, 32.0f, Theme::kSheet);
         renderer_.StrokeRounded(Inflate(sheet, -0.5f), 31.5f, 1.0f, Theme::kHairline);
         const float left = sheet.left + kSheetPadding;
@@ -1740,6 +1853,59 @@ private:
                                  RectF(left + kSheetLabelWidth, y, right, y + kSheetRowHeight),
                                  Theme::kText, HAlign::Left, VAlign::Middle);
             y += kSheetRowHeight;
+        }
+        DrawChoicePill(renderer_, RectF(left, y + 16.0f, left + 310.0f, y + 16.0f + kPillHeight),
+                       Tr(Text::DeleteGame), false, true);
+    }
+
+    void DrawDelete() {
+        const auto sheet = RectF(250.0f, 120.0f, 1670.0f, 950.0f);
+        DrawSheet(renderer_, sheet);
+        const float left = sheet.left + kSheetPadding;
+        const float right = sheet.right - kSheetPadding;
+        renderer_.DrawString(Tr(Text::DeleteGame), Font::Heading,
+                             RectF(left, 145.0f, right, 205.0f), Theme::kText);
+        const Text message = delete_stage_ == 1   ? Text::DeleteListing
+                             : delete_stage_ == 4 ? Text::DeleteBusy
+                             : delete_stage_ == 3 ? Text::DeleteConfirm
+                                                  : Text::DeleteChoose;
+        renderer_.DrawString(Tr(message), Font::Body, RectF(left, 215.0f, right, 285.0f),
+                             Theme::kTextSecondary);
+        if (delete_stage_ == 1 || delete_stage_ == 4)
+            return;
+        std::uint64_t bytes = 0;
+        for (const auto& file : delete_files_)
+            if (file.selected)
+                bytes += file.size;
+        const auto total = FormatSize(bytes);
+        renderer_.DrawString(total.amount + L" " + total.unit, Font::MetaMono,
+                             RectF(left, 290.0f, right, 335.0f), Theme::kText);
+        const int first = (delete_row_ / 6) * 6;
+        float y = 345.0f;
+        for (int i = first; i < std::min(first + 6, static_cast<int>(delete_files_.size())); ++i) {
+            const auto& file = delete_files_[Idx(i)];
+            const auto size = FormatSize(file.size);
+            const auto label =
+                std::wstring(file.selected ? L"[+] " : L"[ ] ") + file.path.filename().wstring();
+            renderer_.DrawString(label, Font::Meta, RectF(left, y, right - 210.0f, y + 32.0f),
+                                 i == delete_row_ ? Theme::kText : Theme::kTextSecondary);
+            renderer_.DrawString(size.amount + L" " + size.unit, Font::MetaMono,
+                                 RectF(right - 200.0f, y, right, y + 32.0f), Theme::kText);
+            renderer_.DrawString(file.path.parent_path().wstring(), Font::RowSub,
+                                 RectF(left, y + 32.0f, right, y + 64.0f), Theme::kTextSecondary);
+            y += 70.0f;
+        }
+        renderer_.DrawString(
+            std::to_wstring(delete_row_ + 1) + L" / " + std::to_wstring(delete_files_.size()),
+            Font::MetaMono, RectF(left, 780.0f, right, 825.0f), Theme::kTextSecondary);
+        if (delete_stage_ == 3) {
+            DrawChoicePill(renderer_, RectF(left, 850.0f, left + 260.0f, 910.0f),
+                           Tr(Text::DeleteCancel), false, !delete_confirm_);
+            DrawChoicePill(renderer_, RectF(left + 290.0f, 850.0f, left + 590.0f, 910.0f),
+                           Tr(Text::DeleteGame), false, delete_confirm_);
+        } else {
+            renderer_.DrawString(Tr(Text::DeleteReviewHint), Font::Body,
+                                 RectF(left, 850.0f, right, 920.0f), Theme::kText);
         }
     }
 
@@ -1829,6 +1995,12 @@ private:
     SyncAccount sync_account_ = SyncAccount::SignedOut;
     int launched_ = -1;
     bool details_open_ = false;
+    int delete_stage_ = 0; // 1: listing, 2: choices, 3: confirmation, 4: deleting
+    int delete_row_ = 0;
+    bool delete_confirm_ = false;
+    std::vector<LibraryDeleteFile> delete_files_;
+    std::future<std::vector<LibraryDeleteFile>> delete_candidates_;
+    std::future<bool> delete_result_;
     bool resolution_open_ = false;
     bool resolution_save_failed_ = false;
     int resolution_choice_ = 0;

@@ -10,6 +10,7 @@
 #include "video_core/dirty_flags.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/rasterizer_interface.h"
+#include "video_core/submission_trace.h"
 
 namespace Tegra::Engines {
 
@@ -276,6 +277,13 @@ void Maxwell3D::DrawManager::UpdateTopology(Maxwell3D& maxwell3d) {
 void Maxwell3D::DrawManager::ProcessDraw(Maxwell3D& maxwell3d, bool draw_indexed, u32 instance_count) {
     LOG_TRACE(HW_GPU, "called, topology={}, count={}", draw_state.topology, draw_indexed ? draw_state.index_buffer.count : draw_state.vertex_buffer.count);
     UpdateTopology(maxwell3d);
+    VideoCommon::SubmissionTrace::Log(
+        "guest_draw indexed={} count={} instances={} execute={} condition_gpu={:x} mode={} "
+        "override={}",
+        draw_indexed, draw_indexed ? draw_state.index_buffer.count : draw_state.vertex_buffer.count,
+        instance_count, maxwell3d.ShouldExecute(), maxwell3d.regs.render_enable.Address(),
+        static_cast<u32>(maxwell3d.regs.render_enable.mode),
+        static_cast<u32>(maxwell3d.regs.render_enable_override));
     if (maxwell3d.ShouldExecute()) {
         maxwell3d.rasterizer->Draw(draw_indexed, instance_count);
     }
@@ -284,6 +292,10 @@ void Maxwell3D::DrawManager::ProcessDraw(Maxwell3D& maxwell3d, bool draw_indexed
 void Maxwell3D::DrawManager::ProcessDrawIndirect(Maxwell3D& maxwell3d) {
     LOG_TRACE(HW_GPU, "called, topology={}, is_indexed={}, includes_count={}, buffer_size={}, max_draw_count={}", draw_state.topology, indirect_state.is_indexed, indirect_state.include_count, indirect_state.buffer_size, indirect_state.max_draw_counts);
     UpdateTopology(maxwell3d);
+    VideoCommon::SubmissionTrace::Log(
+        "guest_indirect indexed={} max_draws={} execute={} count_buffer={} byte_count={}",
+        indirect_state.is_indexed, indirect_state.max_draw_counts, maxwell3d.ShouldExecute(),
+        indirect_state.include_count, indirect_state.is_byte_count);
     if (maxwell3d.ShouldExecute()) {
         maxwell3d.rasterizer->DrawIndirect();
     }

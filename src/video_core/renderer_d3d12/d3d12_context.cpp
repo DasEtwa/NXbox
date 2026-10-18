@@ -519,6 +519,7 @@ void FrameProfile::EndFrame(bool presented) {
                                       "descriptor_table_reuses",
                                       "descriptor_writes",
                                       "root_cbv_binds",
+                                      "descriptor_copy_calls",
                                       "descriptor_writes_cbv",
                                       "descriptor_writes_srv",
                                       "descriptor_writes_uav",
@@ -788,7 +789,7 @@ Context::Context() {
     for (const auto* knob :
          {"NXBOX_D3D12_NO_PSO_LIBRARY", "NXBOX_D3D12_GPU_ASTC", "NXBOX_D3D12_NO_COMPUTE",
           "NXBOX_D3D12_NO_DRAWS", "NXBOX_D3D12_NO_QUERIES", "NXBOX_D3D12_SUBMIT_TRACE",
-          "NXBOX_D3D12_FENCE_BATCHING"})
+          "NXBOX_D3D12_FENCE_BATCHING", "NXBOX_D3D12_BATCH_DESCRIPTOR_COPIES"})
         Diagnostic(fmt::format("D3D12 bisect {}={}", knob, BisectEnabled(knob) ? 1 : 0));
     D3D12_FEATURE_DATA_SHADER_MODEL model{D3D_SHADER_MODEL_6_0};
     Check(device->CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL, &model, sizeof(model)),

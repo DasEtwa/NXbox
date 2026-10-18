@@ -89,6 +89,8 @@ public:
         u64 tick{};
         u64 frequency{};
     };
+    StagingBufferRef PreparePredicateTrace();
+    void TracePredicate(u64 frame, u64 pass, u64 draw, const StagingBufferRef& result);
     Timestamp CaptureTimestamp();
     u64 ReadTimestamp(const Timestamp& timestamp);
 

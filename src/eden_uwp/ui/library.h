@@ -17,6 +17,7 @@ struct GameEntry {
     std::string title_id;       // 16 upper-case hex digits
     std::wstring name;          // from the package's control.nacp
     std::filesystem::path path; // absolute path of the .nsp or .xci
+    bool incomplete = false;
     std::uint64_t size = 0;     // bytes
     std::int64_t mtime = 0;     // last write time, in seconds
     std::filesystem::path icon; // cached JPEG in LocalState\library, empty when there is none
@@ -24,6 +25,18 @@ struct GameEntry {
     // names the cloud folder from the first non-empty one, whatever the UI language is.
     std::vector<std::string> nacp_names;
 };
+
+// Worker-only operations. Candidate paths are restricted again immediately before deletion.
+struct LibraryDeleteFile {
+    std::filesystem::path path;
+    std::uint64_t size = 0;
+    bool optional = false;
+    bool selected = true;
+};
+std::vector<LibraryDeleteFile> LibraryDeleteCandidates(const GameEntry& game,
+                                                       const std::filesystem::path& local_state);
+bool DeleteLibraryFiles(const std::vector<LibraryDeleteFile>& files,
+                        const std::filesystem::path& local_state);
 
 // Scans LocalState\games (.nsp and .xci, not recursive) on a worker thread, so the screen keeps
 // drawing and pumping events meanwhile.

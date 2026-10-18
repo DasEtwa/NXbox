@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright 2026 NSPX
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""Async PSOs get one bounded wait before a draw is skipped.
+"""Protected async PSOs get one bounded wait before a draw is skipped.
 Skipped draws are lost for good when the game renders them once: SM3DW bakes
 its level ambient light at load and the level stayed black on Xbox (async on)."""
 
@@ -18,7 +18,7 @@ class PsoWait(unittest.TestCase):
         source = CACHE.read_text()
         for counter in ("DrawsSkippedPendingPso", "DispatchesSkippedPendingPso"):
             skip = source.index(f"Count(FrameCount::{counter})")
-            before = source[skip - 900 : skip]
+            before = source[skip - 2200 : skip]
             self.assertIn("pso_waited.insert(", before)
             self.assertIn("async->WaitFor(", before)
 

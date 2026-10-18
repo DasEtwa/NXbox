@@ -13,6 +13,7 @@
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/memory_manager.h"
 #include "video_core/rasterizer_interface.h"
+#include "video_core/submission_trace.h"
 #include "video_core/textures/decoders.h"
 
 namespace Tegra::Engines {
@@ -111,6 +112,10 @@ void KeplerCompute::ProcessLaunch() {
     const GPUVAddr launch_desc_loc = regs.launch_desc_loc.Address();
     memory_manager.ReadBlockUnsafe(launch_desc_loc, &launch_description,
                                    LaunchParams::NUM_LAUNCH_PARAMETERS * sizeof(u32));
+    VideoCommon::SubmissionTrace::Log(
+        "guest_compute program={:x} grid={},{},{}", launch_description.program_start,
+        launch_description.grid_dim_x.Value(), launch_description.grid_dim_y.Value(),
+        launch_description.grid_dim_z.Value());
     rasterizer->DispatchCompute();
 }
 
