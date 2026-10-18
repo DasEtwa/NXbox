@@ -2,12 +2,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "frontend_common/firmware_install.h"
 
+#include "common/fs/fs_util.h"
 #include "common/logging.h"
 #include "core/core.h"
 #include "core/file_sys/romfs.h"
 #include "core/hle/service/set/settings_types.h"
 #include "frontend_common/content_manager.h"
 #include "frontend_common/firmware_files.h"
+#include "frontend_common/firmware_sources.h"
 
 namespace FirmwareManager {
 namespace {
@@ -35,31 +37,32 @@ std::string InstalledVersion(Core::System& system) {
     return nca ? ArchiveVersion(*nca) : std::string{};
 }
 
-InstallResult InstallFirmware(Core::System& system, const std::vector<std::filesystem::path>& files,
-                              const std::function<bool(size_t, size_t)>& callback) {
+std::string VerifyFirmware(Core::System& system, const std::vector<std::filesystem::path>& files,
+                           const std::function<bool(size_t, size_t)>& callback) {
     if (files.empty()) {
-        return InstallResult::NoNCAs;
+        return {};
     }
     auto& vfs = *system.GetFilesystem();
     // Decrypt headers with the user's loaded keys and verify each source before deleting anything.
-    bool has_version = false;
+    std::string version;
     bool has_mii_model = false;
     for (size_t i = 0; i < files.size(); ++i) {
-        const auto file = vfs.OpenFile(files[i].generic_string(), FileSys::OpenMode::Read);
-        const auto name = files[i].filename().string();
+        const auto file =
+            vfs.OpenFile(Common::FS::PathToUTF8String(files[i]), FileSys::OpenMode::Read);
+        const auto name = Common::FS::PathToUTF8String(files[i].filename());
         if (!file || !file->GetSize()) {
             LOG_ERROR(Frontend, "Firmware NCA {} is missing or empty", name);
-            return InstallResult::FailedCorrupted;
+            return {};
         }
         const FileSys::NCA nca(file);
         if (nca.GetStatus() != Loader::ResultStatus::Success) {
             LOG_ERROR(Frontend, "Firmware NCA {} failed to parse: {}", name,
                       Loader::GetResultStatusString(nca.GetStatus()));
-            return InstallResult::FailedCorrupted;
+            return {};
         }
         if (nca.GetTitleId() == 0x0100000000000809ULL &&
             nca.GetType() == FileSys::NCAContentType::Data) {
-            has_version = has_version || !ArchiveVersion(nca).empty();
+            version = ArchiveVersion(nca);
         }
         // Retail dumps ship the Mii model archive as PublicData, not Data.
         if (nca.GetTitleId() == 0x0100000000000802ULL &&
@@ -77,14 +80,29 @@ InstallResult InstallFirmware(Core::System& system, const std::vector<std::files
         if (cancelled || status != Loader::ResultStatus::Success) {
             LOG_ERROR(Frontend, "Firmware NCA {} failed integrity check: {}", name,
                       Loader::GetResultStatusString(status));
-            return InstallResult::FailedCorrupted;
+            return {};
         }
     }
-    if (!has_version || !has_mii_model) {
+    if (version.empty() || !has_mii_model) {
         LOG_ERROR(Frontend, "Firmware set incomplete: system_version={} mii_model={}",
-                  has_version, has_mii_model);
+                  !version.empty(), has_mii_model);
+        return {};
+    }
+    return version;
+}
+
+InstallResult InstallFirmware(Core::System& system, const std::vector<std::filesystem::path>& files,
+                              const std::function<bool(size_t, size_t)>& callback) {
+    if (files.empty())
+        return InstallResult::NoNCAs;
+    const auto version = VerifyFirmware(system, files, callback);
+    if (version.empty())
+        return InstallResult::FailedCorrupted;
+    if (Sources::OlderVersion(version, InstalledVersion(system))) {
+        LOG_WARNING(Frontend, "source_older_than_installed");
         return InstallResult::FailedCorrupted;
     }
+    auto& vfs = *system.GetFilesystem();
     auto& controller = system.GetFileSystemController();
     const auto content = controller.GetSystemNANDContentDirectory();
     if (!content || !content->IsWritable() || !content->CleanSubdirectoryRecursive("registered")) {
@@ -96,8 +114,10 @@ InstallResult InstallFirmware(Core::System& system, const std::vector<std::files
     }
     // Keep the desktop layout and raw copy semantics, including metadata NCAs.
     for (size_t i = 0; i < files.size(); ++i) {
-        const auto source = vfs.OpenFile(files[i].generic_string(), FileSys::OpenMode::Read);
-        const auto destination = registered->CreateFileRelative(files[i].filename().string());
+        const auto source =
+            vfs.OpenFile(Common::FS::PathToUTF8String(files[i]), FileSys::OpenMode::Read);
+        const auto destination =
+            registered->CreateFileRelative(Common::FS::PathToUTF8String(files[i].filename()));
         if (!FileSys::VfsRawCopy(source, destination) || callback(files.size(), i + 1)) {
             controller.CreateFactories(vfs);
             return InstallResult::FailedCopy;
