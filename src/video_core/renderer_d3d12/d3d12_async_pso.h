@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
 #include <deque>
 #include <functional>
 #include <memory>
@@ -17,6 +18,13 @@
 #include <vector>
 
 namespace D3D12 {
+// Match the upstream asynchronous-shader heuristic: small draws can build persistent
+// textures only once. Stream output also has side effects that cannot be dropped.
+constexpr bool CanSkipPendingGraphicsPso(bool enabled, std::uint32_t index_count,
+                                         std::uint32_t vertex_count, bool transform_feedback) {
+    return enabled && index_count > 6 && vertex_count > 6 && !transform_feedback;
+}
+
 // Jobs own immutable inputs. Only this map is shared with the requesting thread;
 // expensive compilation never runs with its mutex held. One pool serves both stages.
 //

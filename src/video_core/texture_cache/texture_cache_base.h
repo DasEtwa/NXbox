@@ -11,6 +11,7 @@
 #include <limits>
 #include <mutex>
 #include <span>
+#include <string>
 #include <type_traits>
 // TODO: find out which don't require stable iters
 #include <unordered_map>
@@ -168,6 +169,8 @@ public:
     u64 CapturePassSequence() const noexcept {
         return pass_dump_has_set ? pass_dump_sequence + 1 : 0;
     }
+
+    std::string RecordPassDumpPresentation(DAddr cpu_addr, const ImageView* view);
 
     /// Return a constant reference to the given image view id
     [[nodiscard]] const ImageView& GetImageView(ImageViewId id) const noexcept;
@@ -454,6 +457,12 @@ private:
     u64 pass_dump_sequence = 0;
     bool pass_dump_has_set = false;
     std::vector<ImageId> pass_dump_sampled;
+    struct PassDumpTarget {
+        ImageId id;
+        u64 sequence;
+        u32 slot;
+    };
+    std::vector<PassDumpTarget> pass_dump_targets;
     u32 rt_active_mask = 0;
     std::array<ImageId, 8> rt_image_id{};
     ImageId rt_depth_image_id{};

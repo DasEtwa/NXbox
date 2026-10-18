@@ -24,6 +24,7 @@ class GuestVisibilityTests(unittest.TestCase):
 #include <mutex>
 using u64=std::uint64_t; using DAddr=u64;
 namespace VideoCommon {
+namespace SubmissionTrace { template<class... Args> void Log(const char*, Args&&...) {} }
 enum class CacheType { BufferCache=1,TextureCache=2,QueryCache=4,All=7 };
 CacheType operator&(CacheType a,CacheType b) { return CacheType(int(a)&int(b)); }
 }

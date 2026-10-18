@@ -1,0 +1,140 @@
+# SM3DW first-use PSOs and shadow streaks
+
+Title: `010028600EBDA000`. This investigation used existing local artifacts only;
+no console run, Windows build, CI, network access, commit, or package was produced.
+Artifact directory names are not reliable title identification: for example,
+`probe-mario-play/diag.txt` actually identifies BotW. Measurements below come from
+logs that identify the requested title.
+
+## Measured evidence
+
+Paths below are relative to the local NXbox artifact directory.
+
+- `sm3dw-p2d/diag.txt:23-24`: requested title; `astc=0`,
+  `asynchronous_shaders=false`, `astc_sync=false`.
+- Lines 47-48: native per-PSO blobs unsupported/disabled; pipeline library disabled
+  on Xbox/UWP, DXIL disk cache active. These are direct creates, not measured
+  pipeline-library lookup misses.
+- Line 655: 284 frames, one new guest pipeline/PSO, lookup 332.663 ms,
+  translation/DXC/native PSO recording-thread buckets all zero, texture upload
+  0.061 ms, repack 0.001 ms, zero pending draws skipped.
+- Line 739: zero presented frames in the profile window, 122 guest misses and
+  PSOs, lookup 12985.048 ms, upload 25.939 ms, repack 7.298 ms, zero pending draws
+  skipped. Line 747 reports a 14342 ms worst gap; line 748 reports GPU work
+  `17525/13674/78`, upload `9/1/23`, conversion `0/0/0`.
+- Lines 751/818: lookup 4077.802/2697.854 ms with 110/8 new PSOs; texture upload
+  0.565/0.336 ms and repack 0.017/0.005 ms. These are interval totals, not timings
+  of individual compilations, and the windows are not necessarily aligned to
+  GAME_PRESENT windows.
+- Independent `sm3dw-p1d/diag.txt:739`: lookup 12938.781 ms, 122 misses/PSOs,
+  upload 26.258 ms, repack 7.273 ms, zero pending draws skipped.
+- Earlier `mario-PAD/diag.txt:550`: 131 misses/PSOs, lookup 322.880 ms and
+  30798 pending draws skipped. It is a different build/run, not a controlled A/B.
+
+The dominant measured first-use cost is waiting inside pipeline lookup. GPU-thread
+translation/DXC buckets being zero does not prove compilation was free: async
+workers have no recording-thread profiler sink. The code already snapshots guest
+inputs and compiles translation, HLSL, DXC, and native PSOs on workers, then the
+recording thread waits up to 5000 ms once per new request. Upload and conversion
+measurements do not support ASTC decode as the dominant cause in these windows.
+The old logs cannot apportion worker time among translation, DXC, and driver PSO
+creation, or time an individual animation's hitch.
+
+## Change and limits
+
+`NXBOX_D3D12_ASYNC_SHADERS=1` with `NXBOX_D3D12_ASYNC_PSO=1` bypasses that wait
+for pending graphics draws only when both index and vertex counts exceed six
+and transform feedback is disabled. The small-draw rule matches
+`renderer_vulkan/vk_pipeline_cache.cpp::BuiltPipeline`; it preserves the existing
+bounded wait for likely one-shot texture-generation quads. Compute retains its
+existing wait. Pending requests remain retryable, including queue saturation;
+a later small draw of a previously skipped PSO can still take its bounded wait.
+
+This is an opt-in visual tradeoff, not a proof that a draw has no side effects.
+Transient geometry/effects can disappear until ready, and large one-shot draws
+or shader storage writes are not identified by this heuristic. Small draws and
+compute can still hitch; guest snapshot costs and texture work remain on the
+recording thread. Defaults are unchanged. The added timing reads run only with
+PSO_TRACE enabled. PSO_TRACE now includes cumulative worker wall time and thread
+ID; PSO_WAIT records recording-thread wait wall time.
+Subtract adjacent phase timestamps for translation, HLSL, per-stage DXC, root
+signature, and native PSO durations. Disk recipe persistence after `done` is not
+included in that marker; PSO_WAIT includes the wait for final publication.
+
+## Shadow diagnosis
+
+No artifact establishes the specific shadow-producing pass or its bound depth
+format, bias, sampler, clear, and border together. No shadow rendering behavior
+was changed. The first hypothesis to test is depth-bias precision/scale at shadow
+map rasterization: FillGraphicsState rounds `regs.depth_bias / 2` to an integer,
+where Vulkan keeps a float and has format-dependent handling. This is a
+low-confidence lead, not a demonstrated bug; the native D3D12 API itself takes
+an integer bias and uses format-dependent units.
+
+Comparison sampling is already gated by both TSC compare enable and shader
+comparison instructions (`MakeSamplerDesc`); comparison function is mapped with
+`+1`, border components are copied from the guest, D16/D24/D32 format families
+are represented explicitly, and clear depth comes from `regs.clear_depth`.
+Those paths provide no evidence for replacing them with a constant or changing
+the bias sign. The selected-frame PSO trace now includes the actual integer bias,
+slope bias, and clamp so the hypothesis can be checked against the offending pass.
+
+## Console experiment for the tester
+
+Build/package run IDs: none; the lead must build/package the uncommitted change.
+
+1. For hitch A/B, put the following KEY=VALUE lines in `LocalState\nxbox_env.txt`:
+
+   ```text
+   NXBOX_RENDERER=d3d12
+   NXBOX_D3D12_ASYNC_PSO=1
+   NXBOX_D3D12_ASYNC_SHADERS=0
+   NXBOX_D3D12_FRAME_PROFILE=1
+   NXBOX_D3D12_PSO_TRACE=1
+   ```
+
+   Fully restart NXbox, select the requested title, enter the same save/level,
+   then trigger jump, attack, transformation and a new particle effect once,
+   then repeat them. Save `eden_uwp_diag.txt`, `eden_log.txt` if present, and a
+   video with action times. Repeat from the same scene with ASYNC_SHADERS=1.
+   Preserve/restore an identical copy of the title's cache before each run for
+   a controlled comparison; do not compare a cold baseline to a warmed candidate.
+   Do not use PSO_WAIT_MS=0 as a substitute: it also drops small one-shot passes.
+   Success: eligible misses produce pending-draw skips and resume when Ready,
+   with reduced worst gaps, and ambient lighting remains correct after entering
+   and re-entering a level. Check first-run missing effects and persistent black
+   textures explicitly. Trace/log I/O affects timing; repeat timing runs with
+   PSO_TRACE removed after the phase diagnosis.
+
+2. Separate shadow capture (capture downloads stall rendering, so do not use it
+   for hitch measurements). Replace the environment file with:
+
+   ```text
+   NXBOX_RENDERER=d3d12
+   NXBOX_D3D12_ASYNC_PSO=1
+   NXBOX_D3D12_ASYNC_SHADERS=0
+   NXBOX_D3D12_DRAW_TRACE_FRAME=1800
+   NXBOX_D3D12_DEPTH_TRACE=1
+   NXBOX_PASS_DUMP_FRAME=1800
+   ```
+
+   Leave NXBOX_PASS_DUMP_DIR unset: `mesa_window.cpp::LoadRuntimeEnvironment`
+   supplies the absolute writable `LocalState\passdump` directory. Fully restart,
+   select SM3DW, and reproduce the streak scene before presented frame 1800.
+   Keep the camera still through that frame; retain the save, input script/timing,
+   screenshot/video and the entire `passdump` directory (`manifest.jsonl`,
+   `sampled.jsonl`, `pass_*.raw`) plus diagnostics. If the streak is absent at
+   frame 1800, repeat with both frame variables set to the same later frame
+   while holding that scene; an unrelated frame does not establish the cause.
+   Depth trace is limited to four draws/clears per frame. Draw trace is capped at
+   3000 draws; vertex-byte tracing is further limited to small non-indexed draws.
+   Missing draws beyond the cap are inconclusive. Pass dumps include sampled depth
+   textures but color attachments only in manifest.jsonl, not every depth write.
+   Capture a reference using the same save, timing and NXBOX_PASS_DUMP_FRAME on
+   a working Vulkan build; collect its passdump under a separate directory.
+   Run `python3 tools/nxbox/pass_diff.py reference native --out shadow-diff`.
+   Inspect the first divergent color pass, its sampled depth raw data and the
+   matching D3D12_DRAW_TRACE PSO bias/DSV values. The diff tool cannot decode all
+   packed depth formats; retain raw data for direct depth analysis. If the map
+   is already corrupt, inspect depth write/clear/format and bias; if it is clean,
+   inspect comparison sampling, coordinates and border at the consuming pass.
