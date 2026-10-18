@@ -13,6 +13,11 @@ else()
 endif()
 add_test(NAME demand-commit-policy COMMAND demand-commit-tests)
 
+add_executable(scratch-buffer-tests scratch_buffer.cpp)
+target_compile_features(scratch-buffer-tests PRIVATE cxx_std_20)
+target_include_directories(scratch-buffer-tests PRIVATE ../../src)
+add_test(NAME scratch-buffer-alloc-failure COMMAND scratch-buffer-tests)
+
 if(WIN32)
   add_executable(sparse-memory-tests sparse_memory.cpp ../../src/common/sparse_memory.cpp)
   target_compile_features(sparse-memory-tests PRIVATE cxx_std_20)
