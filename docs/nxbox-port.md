@@ -522,6 +522,26 @@ readbacks, graphics regressions, loading hangs, or shutdown hangs. Mandatory DMA
 guest command-list ends can limit batching; the console result, including cold loading, is still
 required to establish the actual performance gain.
 
+## Mid-frame submission (NXBOX_D3D12_FLUSH_DRAWS, 18/10/2026)
+
+Nothing reaches the queue before the first guest fence of a frame, and a game that waits for that
+fence before it submits the next frame (the Super Mario Odyssey opening cutscene) leaves the GPU
+idle while the GPU thread records and the GPU thread idle while the GPU runs. On the desktop build
+under Wine (576 draws a frame) that was 35.4 ms of recording and 21.1 ms of execution, one after the
+other: the 57.4 ms frame is their sum.
+
+`NXBOX_D3D12_FLUSH_DRAWS=N` in `LocalState\nxbox_env.txt` submits the open command list through
+`Context::Submit` every N recorded draws, between draws, so the GPU starts on the first part of a
+frame while the rest is still being recorded. Unset, `0` or anything that is not a positive number
+leaves every submission point as it was. A cut takes the path a guest fence already takes (the new
+list rebinds all state), and wakes the fencing thread like `FlushCommands` does. The startup log
+records `D3D12 flush_draws=N`, and `D3D12_FRAME_PROFILE` counts the extra submissions in
+`forced_submits_flush_draws` and `ExecuteCommandLists`.
+
+Every extra list rebinds state on the recording thread, so a small N gives back part of what it
+gains. Compare N = 0, 32, 128 and 512 on the same warmed scene and record the frame time,
+`gpu_thread_cpu_pct`, `gpu_busy_ms` and `ExecuteCommandLists_per_frame`.
+
 ## Persona 5 Royal is playable on Xbox Series X (28/09/2026)
 
 Measured on the console with remote input:
