@@ -195,9 +195,13 @@ public:
         SetAxis(pad, 0, key_axis(KeyLeftStickRight, KeyLeftStickLeft, reading.LeftThumbstickX));
         SetAxis(pad, 1, key_axis(KeyLeftStickUp, KeyLeftStickDown, reading.LeftThumbstickY));
         SetAxis(pad, 2,
-                motion.suppress_right_stick ? 0.0f : static_cast<float>(reading.RightThumbstickX));
+                motion.suppress_right_stick
+                    ? 0.0f
+                    : key_axis(KeyRightStickRight, KeyRightStickLeft, reading.RightThumbstickX));
         SetAxis(pad, 3,
-                motion.suppress_right_stick ? 0.0f : static_cast<float>(reading.RightThumbstickY));
+                motion.suppress_right_stick
+                    ? 0.0f
+                    : key_axis(KeyRightStickUp, KeyRightStickDown, reading.RightThumbstickY));
     }
 
     /// Gamepad virtual keys from the CoreWindow. Device Portal remote input only arrives this way,
@@ -330,7 +334,9 @@ private:
             {"PLUS", B::Plus},   {"MINUS", B::Minus},   {"LSTICK", B::LStick}, {"RSTICK", B::RStick},
             {"DUP", B::DUp},     {"DDOWN", B::DDown},   {"DLEFT", B::DLeft},   {"DRIGHT", B::DRight},
             {"LSTICK_UP", KeyLeftStickUp},     {"LSTICK_DOWN", KeyLeftStickDown},
-            {"LSTICK_RIGHT", KeyLeftStickRight}, {"LSTICK_LEFT", KeyLeftStickLeft}};
+            {"LSTICK_RIGHT", KeyLeftStickRight}, {"LSTICK_LEFT", KeyLeftStickLeft},
+            {"RSTICK_UP", KeyRightStickUp},     {"RSTICK_DOWN", KeyRightStickDown},
+            {"RSTICK_RIGHT", KeyRightStickRight}, {"RSTICK_LEFT", KeyRightStickLeft}};
         for (const auto& [key, bit] : table)
             if (name == key)
                 return bit;
@@ -342,11 +348,15 @@ private:
     std::chrono::steady_clock::time_point script_start{};
     bool script_loaded = false;
 
-    // Bits 0-15 follow Settings::NativeButton; the rest are left-stick directions.
+    // Bits 0-15 follow Settings::NativeButton; the rest are stick directions.
     static constexpr int KeyLeftStickUp = 16;
     static constexpr int KeyLeftStickDown = 17;
     static constexpr int KeyLeftStickRight = 18;
     static constexpr int KeyLeftStickLeft = 19;
+    static constexpr int KeyRightStickUp = 20;
+    static constexpr int KeyRightStickDown = 21;
+    static constexpr int KeyRightStickRight = 22;
+    static constexpr int KeyRightStickLeft = 23;
 
     static int KeyBit(int key) {
         switch (key) {
@@ -390,6 +400,14 @@ private:
             return KeyLeftStickRight;
         case 0xD6:
             return KeyLeftStickLeft;
+        case 0xD7:
+            return KeyRightStickUp;
+        case 0xD8:
+            return KeyRightStickDown;
+        case 0xD9:
+            return KeyRightStickRight;
+        case 0xDA:
+            return KeyRightStickLeft;
         default:
             return -1;
         }
