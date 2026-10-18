@@ -152,3 +152,27 @@ test("direct boot deployment and local export reject unsafe destinations", async
     await expect(copyGames([name], "", "")).rejects.toMatchObject({ code: "inputInvalid" });
   }
 });
+
+test("a drive prepared before the folders keeps its flat copy instead of copying the game again", async () => {
+  const root = await mkdtemp(join(tmpdir(), "nxbox-legacy-"));
+  try {
+    const name = "Game [0100123456780000].nsp",
+      source = join(root, name),
+      keys = join(root, "prod.keys");
+    const bytes = Buffer.alloc(16);
+    bytes.write("PFS0");
+    await writeFile(source, bytes);
+    await writeFile(keys, `header_key = ${"12".repeat(32)}\n`);
+    const out = join(root, "usb");
+    await mkdir(join(out, "NXbox/games"), { recursive: true });
+    await writeFile(join(out, "NXbox/games", name), bytes);
+    const progress: string[] = [];
+    await prepareDrive(out, { games: [source], keys }, (file: string) => {
+      progress.push(file);
+    });
+    expect(await Bun.file(join(out, "NXbox/games/Base", name)).exists()).toBe(false);
+    expect(progress.some((file) => file.includes(name))).toBe(false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

@@ -386,8 +386,14 @@ impl App {
                         }
                     }
                 };
+                // Steps report either a destination or a full local path; show only the file name.
                 self.status = match v["file"].as_str() {
-                    Some(f) => format!("{step}: {f}"),
+                    Some(f) => {
+                        let name = std::path::Path::new(f)
+                            .file_name()
+                            .map_or_else(|| f.to_string(), |n| n.to_string_lossy().into_owned());
+                        format!("{step}: {name}")
+                    }
                     None => step.into(),
                 };
                 self.progress = match (v["sent"].as_f64(), v["total"].as_f64()) {

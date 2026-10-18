@@ -330,6 +330,15 @@ export async function checkDrive(
   return { root, items, ready: !items.some((i) => i.status === "fail") };
 }
 
+// Drives prepared before the Base/Updates/DLC folders keep games flat in NXbox/games. A flat file of
+// the same size is the same game, so it is not copied into the folder a second time.
+async function flatCopyExists(root: string, f: LocalFile) {
+  const name = /^NXbox\/games\/[^/]+\/([^/]+)$/.exec(f.name)?.[1];
+  if (!name) return false;
+  const flat = join(root, "NXbox/games", name);
+  return (await exists(flat)) && Bun.file(flat).size === Bun.file(f.path).size;
+}
+
 async function copyPlan(root: string, files: LocalFile[], progress: Progress) {
   const pending: LocalFile[] = [];
   const destinations = new Set<string>();
@@ -356,7 +365,7 @@ async function copyPlan(root: string, files: LocalFile[], progress: Progress) {
     const target = join(root, f.name);
     if (await exists(target)) {
       if (Bun.file(target).size !== Bun.file(f.path).size) throw new PackError("driveConflict");
-    } else pending.push(f);
+    } else if (!(await flatCopyExists(root, f))) pending.push(f);
   }
   const space = await statfs(root);
   const bytes = pending.reduce((n, f) => n + Bun.file(f.path).size, 0);
