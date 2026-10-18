@@ -244,6 +244,10 @@
      L"full address with Menu within five minutes."},
     {Text::NextendoCallbackTitle, L"Enter the final browser address"},
     {Text::NextendoEnterReturn, L"Enter return address"},
+    {Text::NextendoPhoneHint, L"Scan with your phone on the same Wi-Fi."},
+    {Text::NextendoBrowser, L"Use Xbox browser"},
+    {Text::NextendoPhoneUnavailable, L"No LAN address found. Press X to use the Xbox browser."},
+    {Text::NextendoPhoneExpired, L"Sign-in expired. Press B, then X to try again."},
     {Text::NextendoFriendsLoaded, L"Friends refreshed."},
 
     {Text::SrcNewGames, L"New games"}, {Text::SrcUpdates, L"New updates"},
