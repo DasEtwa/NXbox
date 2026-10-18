@@ -51,10 +51,14 @@ void PrepareFirmware(const std::filesystem::path& local_state) {
                 std::chrono::seconds(5));
             if (drives) {
                 for (const auto& drive : *drives) {
-                    const auto item = AwaitBounded(drive.TryGetItemAsync(L"NXbox\\firmware"),
-                                                   std::chrono::seconds(5));
-                    if (item && *item && item->try_as<winrt::Windows::Storage::StorageFolder>()) {
-                        roots.emplace_back(std::wstring(drive.Path()));
+                    for (const wchar_t* name : {L"NXbox\\firmware", L"firmware"}) {
+                        const auto item =
+                            AwaitBounded(drive.TryGetItemAsync(name), std::chrono::seconds(5));
+                        if (item && *item &&
+                            item->try_as<winrt::Windows::Storage::StorageFolder>()) {
+                            roots.emplace_back(std::wstring(drive.Path()));
+                            break;
+                        }
                     }
                 }
             }
@@ -67,22 +71,44 @@ void PrepareFirmware(const std::filesystem::path& local_state) {
                     continue;
                 }
                 std::vector<std::filesystem::path> files;
-                const bool scanned = Common::FS::Uwp::ForEachEntry(
-                    folder, [&](const auto& file, const WIN32_FIND_DATAW& data) {
-                        if (file.extension() != L".nca") {
+                std::vector<std::filesystem::path> subfolders;
+                const auto scan = [&](const std::filesystem::path& directory, bool top) {
+                    return Common::FS::Uwp::ForEachEntry(
+                        directory, [&](const auto& file, const WIN32_FIND_DATAW& data) {
+                            const auto attributes = data.dwFileAttributes;
+                            if (file.extension() != L".nca") {
+                                if (top && (attributes & FILE_ATTRIBUTE_DIRECTORY) &&
+                                    !(attributes & FILE_ATTRIBUTE_REPARSE_POINT)) {
+                                    subfolders.push_back(file);
+                                }
+                                return true;
+                            }
+                            if (attributes &
+                                (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) {
+                                return false;
+                            }
+                            files.push_back(file);
                             return true;
-                        }
-                        if (data.dwFileAttributes &
-                            (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) {
-                            return false;
-                        }
-                        files.push_back(file);
-                        return true;
-                    });
+                        });
+                };
+                bool scanned = scan(folder, true);
+                // TegraExplorer and most guides leave the NCAs one folder deeper
+                // ("firmware/Firmware 21.2.0/*.nca"): take the first subfolder that has them.
+                std::sort(subfolders.begin(), subfolders.end());
+                for (const auto& subfolder : subfolders) {
+                    if (!scanned || !files.empty()) {
+                        break;
+                    }
+                    scanned = scan(subfolder, false);
+                }
                 if (!scanned) {
                     next.install_failed = true;
                     Diagnostic("FIRMWARE scan_failed");
                     break;
+                }
+                if (files.empty()) {
+                    Diagnostic("FIRMWARE no_nca " + Common::FS::PathToUTF8String(folder));
+                    continue;
                 }
                 std::sort(files.begin(), files.end());
                 Diagnostic("FIRMWARE install_begin count=" + std::to_string(files.size()));

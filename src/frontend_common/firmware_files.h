@@ -34,9 +34,13 @@ inline std::string DisplayVersion(std::string_view bytes) {
 inline std::vector<std::filesystem::path> FirmwareFolders(
     const std::filesystem::path& local_state,
     const std::vector<std::filesystem::path>& removable_roots) {
-    std::vector<std::filesystem::path> folders{local_state / "firmware"};
+    // Where people put a dump when they skip the instructions: inside the Eden data folder, or
+    // straight on the drive root. Only folders named "firmware" are ever archived (renamed).
+    std::vector<std::filesystem::path> folders{local_state / "firmware",
+                                               local_state / "eden" / "firmware"};
     for (const auto& root : removable_roots) {
         folders.push_back(root / "NXbox" / "firmware");
+        folders.push_back(root / "firmware");
     }
     return folders;
 }
