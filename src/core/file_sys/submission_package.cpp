@@ -16,11 +16,59 @@
 #include "core/file_sys/content_archive.h"
 #include "core/file_sys/nca_metadata.h"
 #include "core/file_sys/partition_filesystem.h"
+#include "core/file_sys/pfs0_extent.h"
 #include "core/file_sys/program_metadata.h"
 #include "core/file_sys/submission_package.h"
 #include "core/loader/loader.h"
 
 namespace FileSys {
+
+namespace {
+
+struct Truncation {
+    std::string message; // Empty when the whole NSP is there.
+    bool fatal = false;  // False when only entries the loader never reads are cut off.
+};
+
+// Describes the entries of `pfs` that end after the end of `file`. A file cut short (an interrupted
+// copy or download) otherwise fails far from the cause, as an empty ticket or an NCA with a bad
+// header.
+Truncation DescribeTruncation(const VirtualFile& file, const PartitionFilesystem& pfs) {
+    const auto offsets = pfs.GetFileOffsets();
+    std::vector<Pfs0Span> spans;
+    for (const auto& [name, size] : pfs.GetFileSizes()) {
+        spans.push_back({name, offsets.at(name), size});
+    }
+    const u64 file_size = file->GetSize();
+    const Pfs0Extent extent = MeasurePfs0(spans, file_size);
+    Truncation result;
+    if (!extent.Truncated()) {
+        return result;
+    }
+
+    constexpr std::size_t MaxListed = 6;
+    std::string cut_off;
+    for (std::size_t i = 0; i < extent.cut_off.size() && i < MaxListed; ++i) {
+        const std::string& name = extent.cut_off[i];
+        cut_off += cut_off.empty() ? "" : ", ";
+        cut_off += name;
+        cut_off += name.ends_with(".tik") ? " (ticket)" : "";
+    }
+    if (extent.cut_off.size() > MaxListed) {
+        cut_off += fmt::format(", and {} more", extent.cut_off.size() - MaxListed);
+    }
+    result.fatal =
+        std::any_of(extent.cut_off.begin(), extent.cut_off.end(), [](const std::string& name) {
+            return !name.ends_with(".cert") && !name.ends_with(".xml");
+        });
+    result.message = fmt::format("NSP {} is truncated: its header describes {} bytes but the file "
+                                 "has {} bytes ({} missing). Cut off: {}",
+                                 file->GetName(), extent.required_size, file_size,
+                                 extent.required_size - file_size, cut_off);
+    return result;
+}
+
+} // Anonymous namespace
 
 NSP::NSP(VirtualFile file_, u64 title_id_, std::size_t program_index_)
     : file(std::move(file_)), expected_program_id(title_id_),
@@ -29,6 +77,14 @@ NSP::NSP(VirtualFile file_, u64 title_id_, std::size_t program_index_)
     if (pfs->GetStatus() != Loader::ResultStatus::Success) {
         status = pfs->GetStatus();
         return;
+    }
+
+    if (const Truncation truncation = DescribeTruncation(file, *pfs); truncation.fatal) {
+        LOG_ERROR(Common_Filesystem, "{}", truncation.message);
+        status = Loader::ResultStatus::ErrorIncorrectPFSFileSize;
+        return;
+    } else if (!truncation.message.empty()) {
+        LOG_WARNING(Common_Filesystem, "{}", truncation.message);
     }
 
     const auto files = pfs->GetFiles();
@@ -198,7 +254,13 @@ void NSP::SetTicketKeys(const std::vector<VirtualFile>& files) {
 
         auto ticket = Core::Crypto::Ticket::Read(ticket_file);
         if (!keys.AddTicket(ticket)) {
-            LOG_WARNING(Common_Filesystem, "Could not load NSP ticket {}", ticket_file->GetName());
+            const std::size_t declared = ticket_file->GetSize();
+            const std::size_t readable =
+                ticket_file->ReadBytes(std::min<std::size_t>(declared, 0x400)).size();
+            LOG_WARNING(Common_Filesystem,
+                        "NSP {}: ticket {} is unusable ({} bytes in the header, {} readable). NCAs "
+                        "that use its rights ID cannot be decrypted unless title.keys has the key",
+                        file->GetName(), ticket_file->GetName(), declared, readable);
             continue;
         }
     }
@@ -227,7 +289,12 @@ void NSP::ReadNCAs(const std::vector<VirtualFile>& files) {
 
         const auto nca = std::make_shared<NCA>(outer_file);
         if (nca->GetStatus() != Loader::ResultStatus::Success || nca->GetSubdirectories().empty()) {
-            program_status[nca->GetTitleId()] = nca->GetStatus();
+            // Without a readable header there is no title ID to ask for.
+            if (!nca->HasValidHeader()) {
+                LOG_WARNING(Common_Filesystem, "NSP {}: {} cannot be read ({})", file->GetName(),
+                            outer_file->GetName(), Loader::GetResultStatusString(nca->GetStatus()));
+            }
+            program_status[nca->HasValidHeader() ? nca->GetTitleId() : 0] = nca->GetStatus();
             continue;
         }
 
@@ -259,7 +326,7 @@ void NSP::ReadNCAs(const std::vector<VirtualFile>& files) {
 
                 auto next_nca = std::make_shared<NCA>(std::move(next_file));
 
-                if (next_nca->GetType() == NCAContentType::Program) {
+                if (next_nca->HasValidHeader() && next_nca->GetType() == NCAContentType::Program) {
                     program_status[next_nca->GetTitleId()] = next_nca->GetStatus();
                     program_ids.insert(next_nca->GetTitleId() & 0xFFFFFFFFFFFFF000);
                 }

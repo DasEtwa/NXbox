@@ -13,6 +13,11 @@ else()
 endif()
 add_test(NAME demand-commit-policy COMMAND demand-commit-tests)
 
+add_executable(scratch-buffer-tests scratch_buffer.cpp)
+target_compile_features(scratch-buffer-tests PRIVATE cxx_std_20)
+target_include_directories(scratch-buffer-tests PRIVATE ../../src)
+add_test(NAME scratch-buffer-alloc-failure COMMAND scratch-buffer-tests)
+
 if(WIN32)
   add_executable(sparse-memory-tests sparse_memory.cpp ../../src/common/sparse_memory.cpp)
   target_compile_features(sparse-memory-tests PRIVATE cxx_std_20)
@@ -40,6 +45,11 @@ if(ZLIB_FOUND)
   target_link_libraries(cheats-parse-tests PRIVATE ZLIB::ZLIB)
   add_test(NAME cheats-parse COMMAND cheats-parse-tests)
 endif()
+
+add_executable(pfs0-extent-tests pfs0_extent.cpp)
+target_compile_features(pfs0-extent-tests PRIVATE cxx_std_20)
+target_include_directories(pfs0-extent-tests PRIVATE ../../src)
+add_test(NAME pfs0-extent-truncation COMMAND pfs0-extent-tests)
 
 add_executable(input-state-tests input_state.cpp)
 target_compile_features(input-state-tests PRIVATE cxx_std_17)
