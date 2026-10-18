@@ -943,9 +943,16 @@ std::shared_ptr<GraphicsPipeline> BuildAsyncGraphics(
     const u64 request_hash = Pso::HashBytes(&request, sizeof(request));
     // Async jobs that never return jam the worker pool; this shows the phase each one is stuck in.
     static const bool trace = BisectEnabled("NXBOX_D3D12_PSO_TRACE");
+    const auto compile_start =
+        trace ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     const auto mark = [&](std::string_view phase) {
-        if (trace)
-            Diagnostic(fmt::format("PSO_TRACE request={:016x} {}", request_hash, phase));
+        if (trace) {
+            const auto elapsed = std::chrono::duration<double, std::milli>(
+                                     std::chrono::steady_clock::now() - compile_start)
+                                     .count();
+            Diagnostic(fmt::format("PSO_TRACE request={:016x} {} elapsed_ms={:.3f} thread={}",
+                                   request_hash, phase, elapsed, GetCurrentThreadId()));
+        }
     };
     mark("start");
     TranslationState translation{device};
@@ -1365,10 +1372,27 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(
                     });
                 context.Profile().Count(FrameCount::GuestPipelineMisses);
             }
-            // Skipping a draw loses it for good when the game renders it once (SM3DW
-            // bakes its ambient light at level load), so give each PSO one bounded wait.
-            if (pso_waited.insert(request_hash).second) {
+            // Opt in to transient missing geometry instead of first-use stalls. Retain
+            // the bounded wait for small draws (SM3DW bakes ambient light at level load)
+            // and stream output. Compute dispatches retain their existing wait too.
+            static const bool skip_pending = BisectEnabled("NXBOX_D3D12_ASYNC_SHADERS");
+            const auto& draw = maxwell3d->draw_manager.draw_state;
+            const bool may_skip = CanSkipPendingGraphicsPso(
+                skip_pending, draw.index_buffer.count, draw.vertex_buffer.count,
+                maxwell3d->regs.transform_feedback_enabled != 0);
+            if (!may_skip && pso_waited.insert(request_hash).second) {
+                static const bool trace_wait = BisectEnabled("NXBOX_D3D12_PSO_TRACE");
+                const auto wait_start = trace_wait ? std::chrono::steady_clock::now()
+                                                   : std::chrono::steady_clock::time_point{};
                 const auto settled = async->WaitFor(request, PsoWaitBudget());
+                if (trace_wait) {
+                    const auto elapsed = std::chrono::duration<double, std::milli>(
+                                             std::chrono::steady_clock::now() - wait_start)
+                                             .count();
+                    Diagnostic(fmt::format(
+                        "PSO_WAIT request={:016x} wall_ms={:.3f} status={} thread={}", request_hash,
+                        elapsed, static_cast<int>(settled.status), GetCurrentThreadId()));
+                }
                 if (settled.status == AsyncCache::Status::Ready) {
                     StoreGuestGraphics(request, settled.result->graphics.get());
                     context.Profile().Count(FrameCount::PsoCompiles);
