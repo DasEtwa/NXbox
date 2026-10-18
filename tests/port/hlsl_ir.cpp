@@ -79,6 +79,38 @@ void DirectClipDistances() {
   Contains(text, "float4 clip1 : SV_ClipDistance1;");
   Contains(text, "output.clip0.x =");
   Contains(text, "output.clip1.y =");
+  std::ofstream("hlsl_clip.hlsl") << text;
+}
+void IntegerTextureSample() {
+  // Integer textures cannot be filtered in HLSL; nearest sampling becomes a
+  // clamped Load of the texel under the coordinate.
+  for (const auto type : {TextureType::Color2D, TextureType::ColorArray2D}) {
+    Fixture f{Stage::Fragment};
+    f.program.info.stores_frag_color[0] = true;
+    f.program.info.texture_descriptors.push_back(
+        {.type = type, .is_integer = true, .count = 1});
+    const bool array = type == TextureType::ColorArray2D;
+    const auto coords =
+        array ? f.Add(IR::Opcode::CompositeConstructF32x3,
+                      {IR::Value{0.5f}, IR::Value{0.25f}, IR::Value{1.0f}})
+              : f.Add(IR::Opcode::CompositeConstructF32x2,
+                      {IR::Value{0.5f}, IR::Value{0.25f}});
+    IR::TextureInstInfo flags{};
+    flags.type.Assign(type);
+    flags.is_integer.Assign(1);
+    const auto sample = f.Add(IR::Opcode::ImageSampleImplicitLod,
+                              {IR::Value{0u}, coords, {}, {}}, flags.raw);
+    const auto red =
+        f.Add(IR::Opcode::CompositeExtractF32x4, {sample, IR::Value{0u}});
+    f.Add(IR::Opcode::SetFragColor, {IR::Value{0u}, IR::Value{0u}, red});
+    Bindings bindings;
+    const auto text = f.Emit(bindings);
+    Contains(text, array ? "Texture2DArray<uint4> tex0" : "Texture2D<uint4> tex0");
+    Contains(text, ".GetDimensions(nx_mip, nx_d.x, nx_d.y, ");
+    Contains(text, array ? ".Load(int4(clamp(int2(floor(" : ".Load(int3(clamp(int2(floor(");
+    Require(text.find(".Sample(") == text.npos, "Integer textures must not be filtered");
+    std::ofstream(array ? "hlsl_intsample_array.hlsl" : "hlsl_intsample.hlsl") << text;
+  }
 }
 void Fragment() {
   Fixture f{Stage::Fragment};
@@ -823,6 +855,7 @@ int main() {
   try {
     Vertex();
     DirectClipDistances();
+    IntegerTextureSample();
     PackedSignedAttributes();
     Fragment();
     MultisampleFetch();
