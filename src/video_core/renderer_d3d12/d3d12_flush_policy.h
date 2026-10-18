@@ -36,7 +36,7 @@ constexpr std::uint32_t ParseFlushDraws(const char* text) noexcept {
 // whatever asked for it, closes that list, so the next one starts at zero.
 class DrawFlushCadence {
 public:
-    explicit constexpr DrawFlushCadence(std::uint32_t every) noexcept : every{every} {}
+    explicit constexpr DrawFlushCadence(std::uint32_t interval) noexcept : every{interval} {}
     constexpr void Drew() noexcept {
         ++draws;
     }
