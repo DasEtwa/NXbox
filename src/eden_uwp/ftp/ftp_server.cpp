@@ -5,8 +5,8 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
-#include <fstream>
 #include <mutex>
+#include <span>
 #include <stdexcept>
 #include <thread>
 #include <vector>
@@ -19,6 +19,9 @@
 #include <winrt/Windows.Security.Cryptography.h>
 #include <winrt/Windows.Storage.Streams.h>
 
+#include "common/fs/file.h"
+#include "common/fs/fs.h"
+#include "common/fs/fs_uwp.h"
 #include "eden_uwp/diagnostic.h"
 #include "eden_uwp/usb_library.h"
 
@@ -32,10 +35,18 @@ namespace fs = std::filesystem;
 constexpr std::uint32_t kBufferSize = 1024 * 1024;
 
 std::tm Modified(const fs::path& path) {
-    const auto time = std::chrono::file_clock::to_sys(fs::last_write_time(path));
-    const auto value = std::chrono::system_clock::to_time_t(time);
+    WIN32_FILE_ATTRIBUTE_DATA attributes{};
+    SYSTEMTIME time{};
+    if (!GetFileAttributesExFromAppW(path.c_str(), GetFileExInfoStandard, &attributes) ||
+        !FileTimeToSystemTime(&attributes.ftLastWriteTime, &time))
+        throw std::runtime_error("cannot read modification time");
     std::tm utc{};
-    gmtime_s(&utc, &value);
+    utc.tm_year = time.wYear - 1900;
+    utc.tm_mon = time.wMonth - 1;
+    utc.tm_mday = time.wDay;
+    utc.tm_hour = time.wHour;
+    utc.tm_min = time.wMinute;
+    utc.tm_sec = time.wSecond;
     return utc;
 }
 std::string Name(const fs::path& path) {
@@ -116,9 +127,9 @@ struct Session : std::enable_shared_from_this<Session> {
         for (const auto& component : fs::path(winrt::to_hstring(tail).c_str())) {
             result /= component;
             // Reject every reparse point, including directory junctions, not just symlinks.
-            const DWORD attributes = GetFileAttributesW(result.c_str());
-            if (attributes != INVALID_FILE_ATTRIBUTES &&
-                (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0)
+            WIN32_FILE_ATTRIBUTE_DATA attributes{};
+            if (GetFileAttributesExFromAppW(result.c_str(), GetFileExInfoStandard, &attributes) &&
+                (attributes.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0)
                 throw std::runtime_error("reparse point");
         }
         return result;
@@ -191,32 +202,37 @@ struct Session : std::enable_shared_from_this<Session> {
                 partial = target;
                 partial += L".part";
                 // Do not destroy a pre-existing temporary file from another producer.
-                if (fs::exists(fs::symlink_status(partial))) {
+                if (Common::FS::Exists(partial)) {
                     partial.clear();
                     throw std::runtime_error("partial exists");
                 }
-                if (verb == "APPE" && fs::exists(target)) {
-                    std::ifstream original(target, std::ios::binary);
-                    std::ofstream copy(partial, std::ios::binary | std::ios::trunc);
-                    if (!original || !copy)
+                if (verb == "APPE" && Common::FS::Exists(target)) {
+                    Common::FS::IOFile original(target, Common::FS::FileAccessMode::Read);
+                    Common::FS::IOFile copy(partial, Common::FS::FileAccessMode::Write);
+                    if (!original.IsOpen() || !copy.IsOpen())
                         throw std::runtime_error("cannot prepare append");
                     std::vector<char> chunk(kBufferSize);
-                    while (original && !stopped && transferring) {
-                        original.read(chunk.data(), static_cast<std::streamsize>(chunk.size()));
-                        copy.write(chunk.data(), original.gcount());
-                        if (!copy)
+                    std::uint64_t remaining = original.GetSize();
+                    while (remaining != 0 && !stopped && transferring) {
+                        const auto count = static_cast<std::size_t>(
+                            std::min<std::uint64_t>(chunk.size(), remaining));
+                        const auto bytes_to_copy = std::span<char>(chunk.data(), count);
+                        if (original.ReadSpan<char>(bytes_to_copy) != count ||
+                            copy.WriteSpan<char>(bytes_to_copy) != count)
                             throw std::runtime_error("append copy failed");
+                        remaining -= count;
                     }
-                    copy.close();
-                    if (original.bad() || copy.fail() || stopped || !transferring)
+                    if (remaining != 0 || !copy.Flush() || !copy.Commit() || stopped ||
+                        !transferring)
                         throw std::runtime_error("append cancelled");
+                    copy.Close();
                 }
             }
             const auto socket = AwaitData();
             connected = true;
             if (upload) {
-                std::ofstream output(partial, std::ios::binary | std::ios::app);
-                if (!output)
+                Common::FS::IOFile output(partial, Common::FS::FileAccessMode::Append);
+                if (!output.IsOpen())
                     throw std::runtime_error("cannot open upload");
                 DataReader reader(socket.InputStream());
                 reader.InputStreamOptions(InputStreamOptions::Partial);
@@ -227,15 +243,15 @@ struct Session : std::enable_shared_from_this<Session> {
                         break;
                     reader.ReadBytes(
                         winrt::array_view<std::uint8_t>(buffer.data(), buffer.data() + count));
-                    output.write(reinterpret_cast<const char*>(buffer.data()), count);
-                    if (!output)
+                    if (output.WriteSpan<std::uint8_t>(
+                            std::span<const std::uint8_t>(buffer.data(), count)) != count)
                         throw std::runtime_error("upload write failed");
                     bytes += count;
                 }
                 reader.DetachStream();
-                output.close();
-                if (output.fail() || stopped || !transferring)
+                if (!output.Flush() || !output.Commit() || stopped || !transferring)
                     throw std::runtime_error("upload cancelled");
+                output.Close();
                 if (!MoveFileExFromAppW(partial.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING))
                     throw std::runtime_error("upload rename failed");
                 partial.clear();
@@ -247,8 +263,8 @@ struct Session : std::enable_shared_from_this<Session> {
                         return;
                     const auto checked =
                         Resolve(relative.empty() ? filename : relative + "/" + filename);
-                    const bool directory = fs::is_directory(checked);
-                    const auto size = directory ? 0 : fs::file_size(checked);
+                    const bool directory = Common::FS::IsDir(checked);
+                    const auto size = directory ? 0 : Common::FS::GetSize(checked);
                     const auto utc = Modified(checked);
                     std::string line;
                     if (verb == "NLST")
@@ -281,27 +297,31 @@ struct Session : std::enable_shared_from_this<Session> {
                         bytes += line.size();
                     }
                 } else {
-                    for (const auto& item : fs::directory_iterator(target)) {
-                        if (stopped || !transferring)
-                            throw std::runtime_error("listing cancelled");
-                        entry(item.path());
-                    }
+                    if (!Common::FS::Uwp::ForEachEntry(
+                            target, [&](const fs::path& item, const auto&) {
+                                if (stopped || !transferring)
+                                    throw std::runtime_error("listing cancelled");
+                                entry(item);
+                                return true;
+                            }))
+                        throw std::runtime_error("listing failed");
                 }
             } else {
-                std::ifstream input(target, std::ios::binary);
-                if (!input)
+                Common::FS::IOFile input(target, Common::FS::FileAccessMode::Read);
+                if (!input.IsOpen())
                     throw std::runtime_error("cannot open download");
                 std::vector<char> buffer(kBufferSize);
-                while (input && !stopped && transferring) {
-                    input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
-                    const auto count = input.gcount();
-                    if (count > 0) {
-                        Write(socket,
-                              std::string_view(buffer.data(), static_cast<std::size_t>(count)));
-                        bytes += static_cast<std::uint64_t>(count);
-                    }
+                std::uint64_t remaining = input.GetSize();
+                while (remaining != 0 && !stopped && transferring) {
+                    const auto count =
+                        static_cast<std::size_t>(std::min<std::uint64_t>(buffer.size(), remaining));
+                    if (input.ReadSpan<char>(std::span<char>(buffer.data(), count)) != count)
+                        throw std::runtime_error("download read failed");
+                    Write(socket, std::string_view(buffer.data(), count));
+                    bytes += count;
+                    remaining -= count;
                 }
-                if (input.bad() || stopped || !transferring)
+                if (remaining != 0 || stopped || !transferring)
                     throw std::runtime_error("download cancelled");
             }
             success = true;
@@ -309,8 +329,7 @@ struct Session : std::enable_shared_from_this<Session> {
             // A failed transfer must leave the old destination intact.
         }
         if (!partial.empty()) {
-            std::error_code error;
-            fs::remove(partial, error);
+            DeleteFileFromAppW(partial.c_str());
         }
         CloseData();
         const bool aborted = !transferring;
@@ -417,16 +436,18 @@ struct Session : std::enable_shared_from_this<Session> {
                     throw std::runtime_error("virtual root is read-only");
                 const auto target = Resolve(*relative);
                 if (verb == "CWD" || verb == "CDUP") {
-                    if (!fs::is_directory(target))
+                    if (!Common::FS::IsDir(target))
                         throw std::runtime_error("not a directory");
                     cwd = *relative;
                     Reply("250 Directory changed.\r\n");
                 } else if (verb == "SIZE") {
-                    Reply("213 " + std::to_string(fs::file_size(target)) + "\r\n");
+                    if (!Common::FS::IsFile(target))
+                        throw std::runtime_error("not a file");
+                    Reply("213 " + std::to_string(Common::FS::GetSize(target)) + "\r\n");
                 } else if (verb == "MDTM") {
                     Reply("213 " + Timestamp(Modified(target)) + "\r\n");
                 } else if (verb == "RNFR") {
-                    if (relative->empty() || !fs::exists(target))
+                    if (relative->empty() || !Common::FS::Exists(target))
                         throw std::runtime_error("missing source");
                     rename_from = *relative;
                     Reply("350 Send RNTO.\r\n");
@@ -443,24 +464,25 @@ struct Session : std::enable_shared_from_this<Session> {
                         Reply("250 Renamed.\r\n");
                     }
                 } else if (verb == "MKD") {
-                    if (!fs::create_directory(target))
+                    if (!CreateDirectoryFromAppW(target.c_str(), nullptr))
                         throw std::runtime_error("cannot create directory");
                     Reply("257 Directory created.\r\n");
                 } else if (verb == "DELE" || verb == "RMD") {
-                    if (relative->empty() || (verb == "RMD") != fs::is_directory(target) ||
-                        !fs::remove(target))
+                    if (relative->empty() || (verb == "RMD") != Common::FS::IsDir(target) ||
+                        !(verb == "RMD" ? RemoveDirectoryFromAppW(target.c_str())
+                                        : DeleteFileFromAppW(target.c_str())))
                         throw std::runtime_error("cannot remove");
                     Changed(*relative);
                     Reply("250 Removed.\r\n");
                 } else {
                     const bool listing = verb == "LIST" || verb == "NLST" || verb == "MLSD";
-                    if (listing ? !fs::is_directory(target) : relative->empty())
+                    if (listing ? !Common::FS::IsDir(target) : relative->empty())
                         throw std::runtime_error("invalid target");
-                    if (verb == "RETR" && !fs::is_regular_file(target))
+                    if (verb == "RETR" && !Common::FS::IsFile(target))
                         throw std::runtime_error("not a file");
                     if ((verb == "STOR" || verb == "APPE") &&
-                        (!fs::is_directory(target.parent_path()) ||
-                         (fs::exists(target) && !fs::is_regular_file(target))))
+                        (!Common::FS::IsDir(target.parent_path()) ||
+                         (Common::FS::Exists(target) && !Common::FS::IsFile(target))))
                         throw std::runtime_error("invalid upload target");
                     bool has_passive;
                     {
