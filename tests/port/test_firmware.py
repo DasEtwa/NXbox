@@ -92,6 +92,16 @@ class FirmwareTests(unittest.TestCase):
         self.assertLess(source.index('"FIRMWARE no_nca "'), source.index("InstallFirmware("))
         self.assertIn('{L"NXbox\\\\firmware", L"firmware"}', source)
 
+    def test_uwp_first_launch_takes_keys_from_the_drive_before_installing(self):
+        source = (ROOT / "src/eden_uwp/firmware.cpp").read_text()
+        prepare = source.split("void PrepareFirmware(", 1)[1]
+        # The library imports keys after this runs; without them the first install would fail.
+        self.assertLess(prepare.index("CopyMissingKeys(local_state, drives)"),
+                        prepare.index("ReloadKeys()"))
+        self.assertIn('{L"prod.keys", L"title.keys"}', source)
+        self.assertIn('{L"switch\\\\", L""}', source)
+        self.assertIn("NameCollisionOption::FailIfExists", source)
+
     def test_folders_archive_and_version(self):
         with tempfile.TemporaryDirectory(prefix="nxbox-firmware-") as directory:
             root = Path(directory)
