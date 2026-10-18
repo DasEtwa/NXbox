@@ -201,6 +201,8 @@ flowchart LR
 
 ## Trying it
 
+**New to the Device Portal?** Follow the step-by-step [user guide](docs/guide.md) (Português e English).
+
 You need an Xbox Series X|S in **Developer Mode** and your own dumps:
 
 > **Series S:** NXbox is developed and tested only on a Series X. The author has no Series S, so
