@@ -5,6 +5,8 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { checkDrive, fixDrive, type DriveReport } from "./drive";
+import { runJob, type Job } from "./api";
 import { detectLanguage, PackError, strings } from "./i18n";
 import {
   draggedPath,
@@ -78,7 +80,7 @@ async function systemLanguage() {
     process.platform === "win32" &&
     !process.env.LANG &&
     !process.env.LC_ALL &&
-    !process.env.NXBOX_PACK_LANG
+    !(process.env.NXHELPER_LANG ?? process.env.NXBOX_PACK_LANG)
   ) {
     try {
       const localeProcess = Bun.spawn(
@@ -136,13 +138,131 @@ export async function main(): Promise<void> {
       console.log(text.profileDone);
       return;
     }
-    const options = parseArgs(process.argv.slice(2));
-    if (options.help) {
-      console.log(`${text.help}\n${text.profileUsage}`);
+    const printReport = (report: DriveReport) => {
+      for (const item of report.items) {
+        console.log(
+          `${{ ok: "✓", warn: "!", fail: "✗" }[item.status]} ${item.title}${item.detail ? ` — ${item.detail}` : ""}`,
+        );
+        if (item.fix) console.log(`  ${item.fix}`);
+      }
+      console.log(report.ready ? text.driveReady : text.driveNotReady);
+      process.exitCode = report.ready ? 0 : 1;
+    };
+    const args = process.argv.slice(2);
+    if (args.includes("--check-drive")) {
+      const index = args.indexOf("--check-drive");
+      if (!args[index + 1] || args.some((a, i) => i !== index && i !== index + 1 && a !== "--fix"))
+        throw new PackError("args");
+      const root = draggedPath(args[index + 1]!);
+      const report = await checkDrive(root, language);
+      printReport(args.includes("--fix") ? await fixDrive(root, report, language) : report);
       return;
     }
-    console.log(`NXbox Pack\n${text.legal}\n${text.guide}`);
+    const transfer = async (
+      mode: "drive" | "xbox",
+      argv: string[],
+      interactive: boolean,
+      destination?: string,
+    ) => {
+      const values: Record<string, string> = {};
+      let insecure = false;
+      const games: string[] = [];
+      for (let i = 0; i < argv.length; i++) {
+        const arg = argv[i]!;
+        if (arg === "--insecure-portal") {
+          insecure = true;
+          continue;
+        }
+        if (["--keys", "--title-keys", "--firmware", "--host"].includes(arg)) {
+          const value = argv[++i];
+          if (!value || value.startsWith("--")) throw new PackError("args");
+          values[arg] = value;
+        } else if (arg.startsWith("--")) throw new PackError("args");
+        else games.push(draggedPath(arg));
+      }
+      prompt ??= new Prompt();
+      const root =
+        mode === "drive"
+          ? (destination ??
+            (interactive ? draggedPath(await prompt.ask(text.drivePath)) : undefined))
+          : undefined;
+      if (interactive) {
+        for (;;) {
+          const path = await prompt.ask(text.gamePaths);
+          if (!path) break;
+          games.push(draggedPath(path));
+        }
+      }
+      const keys = values["--keys"] ?? draggedPath(await prompt.ask(text.keys));
+      if (!keys || !games.length || (mode === "drive" && !root)) throw new PackError("args");
+      let titleKeys = values["--title-keys"],
+        firmware = values["--firmware"];
+      if (interactive) {
+        titleKeys = (await prompt.ask(text.titleKeys)) || undefined;
+        firmware = (await prompt.ask(text.firmware)) || undefined;
+      }
+      let target: Job["target"];
+      if (mode === "drive") target = { kind: "export", out: root! };
+      else {
+        const discovered = values["--host"] ? [] : await discoverXbox();
+        const base = portalUrl(
+          values["--host"] ??
+            (await prompt.ask(text.host, discovered.length === 1 ? discovered[0] : "")),
+        );
+        const credentials = (await loadCredentials(base)) ?? {
+          user: await prompt.ask(text.user),
+          password: await prompt.password(text.password),
+        };
+        target = {
+          kind: "install",
+          host: base,
+          ...credentials,
+          insecure,
+          remember: /^(y|yes|s|sim)$/i.test(await prompt.ask(text.remember)),
+        };
+      }
+      await runJob(
+        {
+          mode,
+          games,
+          keys: draggedPath(keys),
+          titleKeys: titleKeys ? draggedPath(titleKeys) : undefined,
+          firmware: firmware ? draggedPath(firmware) : undefined,
+          language,
+          target,
+        },
+        (event) => {
+          if (event.report) printReport(event.report as DriveReport);
+          else if (event.warning) console.log(event.warning);
+          else if (event.file) console.log(`${event.file}: ${event.sent}/${event.total}`);
+          else if (event.done) console.log(text.transferDone);
+        },
+      );
+    };
+    if (args[0] === "--to-drive") {
+      const root = args[1];
+      if (!root) throw new PackError("args");
+      await transfer("drive", args.slice(2), false, draggedPath(root));
+      return;
+    }
+    if (args[0] === "--to-xbox") {
+      await transfer("xbox", args.slice(1), false);
+      return;
+    }
+    const options = parseArgs(args);
+    if (options.help) {
+      console.log(`${text.help}\n${text.driveUsage}\n${text.profileUsage}`);
+      return;
+    }
+    console.log(`NxHelper\n${text.legal}`);
     prompt = new Prompt();
+    const way = await prompt.ask(text.wayChoice, "1");
+    if (way === "1" || way === "2") {
+      await transfer(way === "1" ? "drive" : "xbox", [], true);
+      return;
+    }
+    if (way !== "3") throw new PackError("args");
+    console.log(text.guide);
     const game = draggedPath(await prompt.ask("→"));
     await validateFile(game);
     const titleId = validateTitleId(parseTitleId(game) ?? (await prompt.ask(text.title)));

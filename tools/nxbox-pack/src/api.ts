@@ -8,10 +8,11 @@ import { tmpdir } from "node:os";
 import { basename, extname, join } from "node:path";
 import { gameMetadata } from "./metadata";
 import compat from "./compat.json";
-import { PackError } from "./i18n";
+import { PackError, strings, type Language } from "./i18n";
+import { checkDrive, fixDrive, prepareDrive, sendToNxbox } from "./drive";
 import { filenameName, parseTitleId, validateFile, validateName, validateTitleId } from "./files";
 import { prepareFirmware } from "./firmware";
-import { prepareMods, prepareSaves, type Transfer } from "./optional";
+import { prepareMods, prepareSaves, prepareTitleKeys, type Transfer } from "./optional";
 import { downloadRuntime, latestRuntime, stageRuntime } from "./runtime";
 import { prepareContent } from "./content";
 import { discoverXbox } from "./discovery";
@@ -25,7 +26,9 @@ const LIBRARY_ID = "0000000000000000";
 
 type Emit = (event: Record<string, unknown>) => void;
 export type Job = {
-  mode: "game" | "full";
+  mode: "game" | "full" | "drive" | "xbox";
+  titleKeys?: string;
+  language?: Language;
   /** Game mode: exactly one. Full mode: zero or more, all go to the library. */
   games: string[];
   /** Full mode: boot the firmware HOME instead of the NXbox library (needs firmware). */
@@ -78,6 +81,30 @@ export async function inspect(game: string, keys?: string, language = "en") {
 }
 
 export async function runJob(job: Job, emit: Emit): Promise<void> {
+  if (job.mode === "drive" || job.mode === "xbox") {
+    const progress = (file: string, sent: number, total: number) =>
+      emit({ step: "upload", file, sent, total, ...(total === 0 && { warning: file }) });
+    if (job.mode === "drive") {
+      if (job.target.kind !== "export") throw new PackError("args");
+      emit({
+        done: true,
+        report: await prepareDrive(job.target.out, job, progress),
+        path: job.target.out,
+      });
+    } else {
+      if (job.target.kind !== "install") throw new PackError("args");
+      const base = portalUrl(job.target.host);
+      const credentials =
+        job.target.user && job.target.password
+          ? { user: job.target.user, password: job.target.password }
+          : ((await loadCredentials(base)) ?? { user: "", password: "" });
+      const portal = new DevicePortal(base, credentials, job.target.insecure ?? true);
+      const result = await sendToNxbox(portal, job, progress);
+      if (job.target.remember && credentials.user) await saveCredentials(base, credentials);
+      emit({ done: true, ...result, name: "NXbox" });
+    }
+    return;
+  }
   const temporary = await mkdtemp(join(tmpdir(), "nxbox-pack-"));
   try {
     const full = job.mode === "full";
@@ -87,6 +114,7 @@ export async function runJob(job: Job, emit: Emit): Promise<void> {
     const gameInfo = full ? undefined : await inspect(job.games[0]!, job.keys);
     const titleId = full ? LIBRARY_ID : validateTitleId(gameInfo?.titleId ?? "");
     const transfers: Transfer[] = [];
+    if (job.titleKeys) transfers.push(await prepareTitleKeys(job.titleKeys));
     if (job.firmware) {
       emit({ step: "firmware" });
       const fw = await prepareFirmware(job.firmware, job.keys, join(temporary, "firmware"));
@@ -178,18 +206,32 @@ export async function runJob(job: Job, emit: Emit): Promise<void> {
 
 export async function serveApi(): Promise<void> {
   const emit: Emit = (event) => console.log(JSON.stringify(event));
+  let language: Language = "en";
   try {
     const request = JSON.parse(await Bun.stdin.text());
+    if (["pt", "pt-BR"].includes(request.language ?? request.job?.language)) language = "pt";
     if (request.cmd === "inspect")
       emit(await inspect(request.game, request.keys, request.language));
     else if (request.cmd === "discover") emit({ hosts: await discoverXbox() });
-    else if (request.cmd === "run") await runJob(request.job, emit);
+    else if (request.cmd === "checkDrive")
+      emit(
+        await checkDrive(
+          request.path,
+          request.language === "pt" || request.language === "pt-BR" ? "pt" : "en",
+        ),
+      );
+    else if (request.cmd === "fixDrive") {
+      const language = request.language === "pt" || request.language === "pt-BR" ? "pt" : "en";
+      emit(await fixDrive(request.path, await checkDrive(request.path, language), language));
+    } else if (request.cmd === "run") await runJob(request.job, emit);
     else throw new PackError("args");
   } catch (error) {
     const cause = error instanceof Error && error.cause instanceof Error ? error.cause.message : "";
     emit({
       error: error instanceof PackError ? error.code : String(error),
       ...(cause && { detail: cause }),
+      ...(error instanceof PackError &&
+        error.code !== "args" && { message: strings[language][error.code] }),
     });
     process.exitCode = 1;
   }

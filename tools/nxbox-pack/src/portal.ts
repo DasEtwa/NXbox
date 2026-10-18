@@ -89,10 +89,14 @@ export class DevicePortal {
     if (!setting?.Name) return false;
     const value = setting.Type === "Bool" || setting.Name.endsWith("ToGame") ? "true" : "Game";
     if (String(setting.Value).toLowerCase() === value.toLowerCase()) return false;
-    const response = await this.request("PUT", `/ext/settings/${encodeURIComponent(setting.Name)}`, {
-      body: JSON.stringify({ Value: value }),
-      headers: { "Content-Type": "application/json" },
-    });
+    const response = await this.request(
+      "PUT",
+      `/ext/settings/${encodeURIComponent(setting.Name)}`,
+      {
+        body: JSON.stringify({ Value: value }),
+        headers: { "Content-Type": "application/json" },
+      },
+    );
     if (!response.ok) throw new Error(`Device Portal refused ${setting.Name}: ${response.status}`);
     return true;
   }
@@ -101,6 +105,19 @@ export class DevicePortal {
       InstalledPackages?: InstalledPackage[];
     };
     return data.InstalledPackages ?? [];
+  }
+  /** Older Xbox Device Portal versions do not expose drive capacity. */
+  async freeSpace(): Promise<number | undefined> {
+    try {
+      const data = (await (await this.request("GET", "/api/filesystem/drives")).json()) as {
+        Drives?: { Name?: string; FreeSpace?: number; FreeSpaceInBytes?: number }[];
+      };
+      const drive = data.Drives?.find((d) => /^C:(?:\\|$)/i.test(d.Name ?? ""));
+      const free = drive?.FreeSpaceInBytes ?? drive?.FreeSpace;
+      return typeof free === "number" && Number.isFinite(free) && free >= 0 ? free : undefined;
+    } catch {
+      return undefined;
+    }
   }
   async register(
     folder: string,

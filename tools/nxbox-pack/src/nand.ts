@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 import { xtsTransform } from "./xts";
-import { readdir } from "node:fs/promises";
+import { lstat, readdir } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { PackError } from "./i18n";
-import { bounded, fileReader, writeChunks, zipEntries, type Reader } from "./storage";
+import { bounded, fileReader, folderFiles, writeChunks, zipEntries, type Reader } from "./storage";
 
 export function xts(data: Buffer, key: Buffer, sector: number | bigint): Buffer {
   const tweak = Buffer.alloc(16);
@@ -39,6 +39,8 @@ export function decryptedPartition(
     },
   };
 }
+// SYSTEM is whole 0x4000-byte BIS sectors and never larger than 8 GiB; ZIP spooling uses it too.
+const validSystemSize = (size: number) => size > 0 && size <= 8 * 1024 ** 3 && size % 0x4000 === 0;
 export async function systemPartition(nand: Reader): Promise<{ offset: number; size: number }> {
   const gpt = await nand.read(512, 512);
   if (gpt.toString("ascii", 0, 8) !== "EFI PART" || gpt.readUInt32LE(12) < 92)
@@ -57,8 +59,7 @@ export async function systemPartition(nand: Reader): Promise<{ offset: number; s
       last = Number(e.readBigUInt64LE(40));
     found = { offset: first * 512, size: (last - first + 1) * 512 };
     bounded(nand.size, found.offset, found.size);
-    if (!found.size || found.size > 8 * 1024 ** 3 || found.size % 0x4000)
-      throw new PackError("nandInvalid");
+    if (!validSystemSize(found.size)) throw new PackError("nandInvalid");
   }
   if (!found) throw new PackError("nandInvalid");
   return found;
@@ -72,11 +73,63 @@ export function orderedParts<T extends { name: string }>(files: T[]): T[] {
   if (matches.some((f, i) => Number(f.name.slice(-2)) !== i)) throw new PackError("nandInvalid");
   return matches;
 }
+// Each image must come from one directory; never combine different backups.
+export function imageParts<T extends { name: string }>(
+  files: T[],
+  numericRoot = false,
+): { parts: T[]; partition: boolean } | undefined {
+  const groups = new Map<string, { parts: T[]; partition: boolean }>();
+  for (const file of files) {
+    const name = basename(file.name),
+      parent = dirname(file.name);
+    const system = /^SYSTEM(?:\.bin)?$/i.test(name);
+    const nand = /^rawnand\.bin(?:\.\d{2})?$/i.test(name);
+    const numeric =
+      /^\d{2}$/.test(name) && (/^eMMC$/i.test(basename(parent)) || (numericRoot && parent === "."));
+    if (!system && !nand && !numeric) continue;
+    const id = `${parent}/${system ? name : nand ? "rawnand" : "eMMC"}`.toLowerCase();
+    const group = groups.get(id) ?? { parts: [], partition: system };
+    group.parts.push(file);
+    groups.set(id, group);
+  }
+  if (!groups.size) return undefined;
+  if (groups.size !== 1) throw new PackError("nandInvalid");
+  const group = [...groups.values()][0]!;
+  if (group.partition) {
+    if (group.parts.length !== 1) throw new PackError("nandInvalid");
+  } else if (/^rawnand/i.test(basename(group.parts[0]!.name))) {
+    group.parts = orderedParts(group.parts);
+  } else {
+    group.parts.sort((a, b) => a.name.localeCompare(b.name));
+    if (group.parts.some((p, i) => Number(basename(p.name)) !== i))
+      throw new PackError("nandInvalid");
+  }
+  return group;
+}
 async function readSystem<T>(
   raw: Reader,
-  key: Buffer,
+  key: Buffer | undefined,
   use: (reader: Reader) => Promise<T>,
 ): Promise<T> {
+  // Plain SYSTEM exports need no BIS key. Only retry XTS when the boot sector
+  // itself is not FAT32; verification errors from a plain filesystem must survive.
+  let plain = false,
+    boot: PackError | undefined;
+  try {
+    await Fat32.open(raw);
+    plain = true;
+  } catch (error) {
+    if (!(error instanceof PackError)) throw error;
+    boot = error;
+  }
+  if (plain) return use(raw);
+  if (!key || key.length !== 32) {
+    // A boot sector that still ends in 0xaa55 is a damaged plain image, not an encrypted one:
+    // report the damage instead of blaming the keys.
+    if (boot && (raw.size < 512 || (await raw.read(0, 512)).readUInt16LE(510) === 0xaa55))
+      throw boot;
+    throw new PackError("firmwareKeys");
+  }
   // Sector zero has the same tweak under both conventions. Validate the entire
   // selected NCA set, not just the FAT boot sector, before accepting LE or BE.
   let last: unknown;
@@ -99,12 +152,16 @@ async function readSystem<T>(
 export async function withSystem<T>(
   path: string,
   temporary: string,
-  key: Buffer,
+  key: Buffer | undefined,
   use: (reader: Reader) => Promise<T>,
 ): Promise<T> {
   if (/\.zip$/i.test(path)) {
-    const parts = orderedParts(await zipEntries(path)),
+    const image = imageParts(await zipEntries(path));
+    if (!image) throw new PackError("nandInvalid");
+    const parts = image.parts,
       size = parts.reduce((n, p) => n + p.size, 0);
+    // A bare SYSTEM is spooled whole, so it gets the same limits the GPT path enforces.
+    if (image.partition && !validSystemSize(size)) throw new PackError("nandInvalid");
     // Read a bounded prefix for GPT, then spool only encrypted SYSTEM bytes.
     let prefix = Buffer.alloc(0);
     for (const p of parts) {
@@ -117,13 +174,15 @@ export async function withSystem<T>(
       }
       if (prefix.length >= Math.min(size, 1024 * 1024)) break;
     }
-    const region = await systemPartition({
-      size,
-      async read(offset, length) {
-        bounded(prefix.length, offset, length);
-        return prefix.subarray(offset, offset + length);
-      },
-    });
+    const region = image.partition
+      ? { offset: 0, size }
+      : await systemPartition({
+          size,
+          async read(offset, length) {
+            bounded(prefix.length, offset, length);
+            return prefix.subarray(offset, offset + length);
+          },
+        });
     async function* system() {
       let position = 0;
       for (const p of parts) {
@@ -150,10 +209,23 @@ export async function withSystem<T>(
       await raw.close();
     }
   }
-  const parts = orderedParts((await readdir(dirname(path))).map((name) => ({ name })));
-  const raw = await fileReader(parts.map((p) => join(dirname(path), p.name)));
+  const directory = (await lstat(path)).isDirectory();
+  const files = directory
+    ? await folderFiles(path)
+    : /^SYSTEM(?:\.bin)?$/i.test(basename(path))
+      ? [{ name: basename(path), path }]
+      : (await readdir(dirname(path)))
+          .filter((name) =>
+            /^rawnand\.bin/i.test(basename(path))
+              ? /^rawnand\.bin(?:\.\d{2})?$/i.test(name)
+              : /^\d{2}$/.test(name),
+          )
+          .map((name) => ({ name, path: join(dirname(path), name) }));
+  const image = imageParts(files, /^eMMC$/i.test(basename(directory ? path : dirname(path))));
+  if (!image) throw new PackError("nandInvalid");
+  const raw = await fileReader(image.parts.map((p) => p.path));
   try {
-    const region = await systemPartition(raw);
+    const region = image.partition ? { offset: 0, size: raw.size } : await systemPartition(raw);
     return await readSystem(
       {
         size: region.size,

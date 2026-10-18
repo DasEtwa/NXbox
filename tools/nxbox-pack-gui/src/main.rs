@@ -1,4 +1,4 @@
-// NXbox Pack GUI: a step-by-step installer over the nxbox-pack core (`nxbox-pack --api`, JSON lines).
+// NxHelper GUI: a step-by-step assistant over nxhelper-core (`nxhelper-core --api`, JSON lines).
 mod design;
 use base64::Engine;
 use eframe::egui;
@@ -19,7 +19,7 @@ fn main() -> eframe::Result {
         rgba: icon.into_raw(),
     };
     eframe::run_native(
-        "NXbox Pack",
+        "NxHelper",
         eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
                 .with_inner_size([640.0, 800.0])
@@ -39,7 +39,8 @@ fn main() -> eframe::Result {
 fn pt() -> bool {
     static LANGUAGE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *LANGUAGE.get_or_init(|| {
-        let forced = std::env::var("NXBOX_PACK_LANG")
+        let forced = std::env::var("NXHELPER_LANG")
+            .or_else(|_| std::env::var("NXBOX_PACK_LANG"))
             .ok()
             .filter(|s| s == "pt" || s == "en");
         forced
@@ -61,9 +62,9 @@ fn core(request: Value) -> Receiver<Value> {
             Err(_) => {
                 let exe = std::env::current_exe().unwrap_or_default();
                 let name = if cfg!(windows) {
-                    "nxbox-pack.exe"
+                    "nxhelper-core.exe"
                 } else {
-                    "nxbox-pack"
+                    "nxhelper-core"
                 };
                 vec![exe.with_file_name(name).to_string_lossy().into_owned()]
             }
@@ -104,11 +105,15 @@ fn core(request: Value) -> Receiver<Value> {
 enum Mode {
     Game,
     Full,
+    Drive,
+    Xbox,
+    Check,
 }
 
 #[derive(PartialEq, Clone, Copy, Debug)]
 enum Page {
     Welcome,
+    Check,
     Game,
     Keys,
     Firmware,
@@ -136,6 +141,15 @@ fn flow(mode: Option<Mode>) -> &'static [Page] {
             Page::Install,
             Page::Progress,
         ],
+        Some(Mode::Drive | Mode::Xbox) => &[
+            Page::Welcome,
+            Page::Keys,
+            Page::Firmware,
+            Page::Games,
+            Page::Install,
+            Page::Progress,
+        ],
+        Some(Mode::Check) => &[Page::Welcome, Page::Check],
         None => &[Page::Welcome],
     }
 }
@@ -149,6 +163,10 @@ struct App {
     icons: HashMap<PathBuf, egui::TextureHandle>,
     inspecting: Vec<(PathBuf, Receiver<Value>)>,
     keys: Option<PathBuf>,
+    title_keys: Option<PathBuf>,
+    drive: Option<PathBuf>,
+    report: Option<Value>,
+    warnings: Vec<String>,
     firmware: Option<PathBuf>,
     official_ui: bool,
     saves: Option<PathBuf>,
@@ -328,8 +346,19 @@ impl App {
             self.discover_rx = None;
         }
         while let Some(v) = self.run_rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            if let Some(warning) = v["warning"].as_str() {
+                self.warnings.push(warning.into());
+            }
+            if v["items"].is_array() {
+                self.report = Some(v.clone());
+                self.done = Some(v["root"].as_str().unwrap_or("").into());
+                self.run_rx = None;
+            }
+            if v["report"].is_object() {
+                self.report = Some(v["report"].clone());
+            }
             if let Some(e) = v["error"].as_str() {
-                self.error = Some(e.into());
+                self.error = Some(v["message"].as_str().unwrap_or(e).into());
             } else if v["done"].as_bool() == Some(true) {
                 self.done = Some(
                     v["path"]
@@ -344,6 +373,9 @@ impl App {
                     "runtime" => t("Baixando o NXbox", "Downloading NXbox"),
                     "prepare" => t("Preparando o jogo", "Preparing the game"),
                     "connect" => t("Conectando ao Xbox", "Connecting to the Xbox"),
+                    "upload" if self.mode == Some(Mode::Drive) => {
+                        t("Copiando para o pendrive", "Copying to the USB drive")
+                    }
                     "upload" => t("Enviando ao Xbox", "Sending to the Xbox"),
                     other => {
                         if other.is_empty() {
@@ -371,6 +403,7 @@ impl App {
     fn can_continue(&self) -> bool {
         match self.page() {
             Page::Welcome => self.mode.is_some(),
+            Page::Check => false,
             Page::Game => {
                 self.games.len() == 1
                     && self
@@ -384,9 +417,14 @@ impl App {
                     .is_some_and(|p| file_name(p).eq_ignore_ascii_case("prod.keys"))
                     && self.inspecting.is_empty()
             }
+            Page::Games if matches!(self.mode, Some(Mode::Drive | Mode::Xbox)) => {
+                !self.games.is_empty()
+            }
             Page::Firmware | Page::Games | Page::Extras => true,
             Page::Install => {
-                if self.manual {
+                if self.mode == Some(Mode::Drive) {
+                    self.drive.is_some()
+                } else if self.manual && self.mode != Some(Mode::Xbox) {
                     self.out.is_some()
                 } else {
                     !self.host.trim().is_empty()
@@ -398,7 +436,9 @@ impl App {
 
     fn start(&mut self) {
         let full = self.mode == Some(Mode::Full);
-        let target = if self.manual {
+        let target = if self.mode == Some(Mode::Drive) {
+            json!({ "kind": "export", "out": self.drive })
+        } else if self.manual && self.mode != Some(Mode::Xbox) {
             json!({ "kind": "export", "out": self.out })
         } else {
             json!({
@@ -407,17 +447,69 @@ impl App {
             })
         };
         let job = json!({
-            "mode": if full { "full" } else { "game" },
+            "mode": match self.mode { Some(Mode::Drive) => "drive", Some(Mode::Xbox) => "xbox", Some(Mode::Full) => "full", _ => "game" },
+            "titleKeys": self.title_keys, "language": if pt() { "pt" } else { "en" },
             "games": self.games, "keys": self.keys, "firmware": self.firmware,
             "officialUi": full && self.official_ui && self.firmware.is_some(),
             "name": self.games.first().and_then(|p| self.info.get(p)).and_then(|i| i["name"].as_str()),
             "saves": self.saves, "mods": self.mods, "target": target,
         });
         self.error = None;
+        self.report = None;
+        self.warnings.clear();
         self.done = None;
         self.progress = None;
         self.status = t("Iniciando a instalação", "Starting the installation").into();
         self.run_rx = Some(core(json!({ "cmd": "run", "job": job })));
+    }
+
+    fn show_report(&mut self, ui: &mut egui::Ui) {
+        let Some(report) = self.report.clone() else {
+            return;
+        };
+        if report["ready"].as_bool() == Some(true) {
+            ui.heading(t(
+                "Pronto pra plugar no Xbox",
+                "Ready to plug into the Xbox",
+            ));
+        }
+        let mut fixable = false;
+        if let Some(items) = report["items"].as_array() {
+            for item in items {
+                let (symbol, color) = match item["status"].as_str() {
+                    Some("ok") => ("✓", design::GOOD),
+                    Some("warn") => ("!", design::WARN),
+                    _ => ("✗", design::BAD),
+                };
+                ui.colored_label(
+                    design::compat_ink(color, ui.visuals().dark_mode),
+                    format!("{} {}", symbol, item["title"].as_str().unwrap_or("")),
+                );
+                if let Some(detail) = item["detail"].as_str() {
+                    ui.label(detail);
+                }
+                if let Some(fix) = item["fix"].as_str() {
+                    ui.label(fix);
+                }
+                ui.add_space(10.0);
+                fixable |= item["id"] == "firmware"
+                    && item["fix"].as_str()
+                        == Some(t(
+                            "NxHelper pode descompactar. Escolha Consertar.",
+                            "NxHelper can unpack it. Choose Fix it.",
+                        ));
+            }
+        }
+        if fixable
+            && self.run_rx.is_none()
+            && ui.add(design::primary(t("Consertar", "Fix it"))).clicked()
+        {
+            self.error = None;
+            self.done = None;
+            self.run_rx = Some(core(
+                json!({ "cmd": "fixDrive", "path": report["root"], "language": if pt() { "pt" } else { "en" } }),
+            ));
+        }
     }
 
     fn game_card(&self, ui: &mut egui::Ui, path: &Path) -> bool {
@@ -454,30 +546,6 @@ impl App {
                 });
             });
         }).response.interact(egui::Sense::click()).clicked()
-    }
-
-    fn mode_card(&mut self, ui: &mut egui::Ui, mode: Mode, title: &str, body: &str) {
-        let selected = self.mode == Some(mode);
-        let amount = design::motion(ui.ctx(), ui.id().with(title), selected, 0.15);
-        let border = design::BORDER.lerp_to_gamma(design::ACCENT, amount);
-        let frame = egui::Frame::new()
-            .fill(design::surface(ui))
-            .corner_radius(22)
-            .stroke(egui::Stroke::new(if selected { 2.0 } else { 1.0 }, border))
-            .inner_margin(20);
-        let response = frame
-            .show(ui, |ui| {
-                ui.set_width((ui.available_width()).max(0.0));
-                ui.label(egui::RichText::new(title).font(design::heading_font(ui.ctx(), 22.0)));
-                ui.add_space(4.0);
-                ui.label(body);
-            })
-            .response
-            .interact(egui::Sense::click());
-        if response.clicked() {
-            self.mode = Some(mode);
-        }
-        response.on_hover_cursor(egui::CursorIcon::PointingHand);
     }
 
     fn progress_bar(&self, ui: &mut egui::Ui) {
@@ -589,7 +657,9 @@ impl App {
                                 }
                             } else {
                                 let next = if page == Page::Install {
-                                    if self.manual {
+                                    if matches!(self.mode, Some(Mode::Drive | Mode::Xbox)) {
+                                        t("Enviar arquivos", "Send files")
+                                    } else if self.manual {
                                         t("Gerar pasta", "Create folder")
                                     } else {
                                         t("Instalar", "Install")
@@ -632,29 +702,92 @@ impl App {
             Page::Welcome => {
                 heading(
                     ui,
-                    t("Bem-vindo ao NXbox Pack", "Welcome to NXbox Pack"),
+                    t("Bem-vindo ao NxHelper", "Welcome to NxHelper"),
                     t(
                         "Este assistente prepara e instala o NXbox no seu Xbox Series X|S. Cada etapa explica o que é necessário; nada é enviado a lugar algum além do seu próprio Xbox.",
                         "This assistant prepares and installs NXbox on your Xbox Series X|S. Each step explains what is needed; nothing is sent anywhere except your own Xbox.",
                     ),
                 );
                 ui.label(t(
-                    "O que você deseja instalar?",
-                    "What would you like to install?",
+                    "Como deseja enviar seus jogos?",
+                    "How would you like to send your games?",
                 ));
                 ui.add_space(6.0);
-                self.mode_card(ui, Mode::Game, t("Somente um jogo", "A single game"), t(
-                    "Cria um aplicativo próprio para um jogo. Ele aparece como um bloco separado no Xbox e abre diretamente no jogo, sem passar pela biblioteca do emulador.",
-                    "Creates a dedicated app for one game. It appears as its own tile on the Xbox and opens straight into the game, without going through the emulator library."));
-                ui.add_space(4.0);
-                self.mode_card(ui, Mode::Full, t("NXbox completo", "Full NXbox"), t(
-                    "Instala o emulador com a biblioteca, onde é possível manter vários jogos, configurar controles, saves e mods e, opcionalmente, usar a interface oficial do Switch.",
-                    "Installs the emulator with its library, where you can keep several games, configure controllers, saves and mods and, optionally, use the official Switch interface."));
+                for (mode, label) in [
+                    (
+                        Mode::Drive,
+                        t(
+                            "Pelo pendrive (recomendado)",
+                            "With a USB drive (recommended)",
+                        ),
+                    ),
+                    (Mode::Xbox, t("Pelo Device Portal", "Over Device Portal")),
+                ] {
+                    if ui.add(design::primary(label)).clicked() {
+                        self.mode = Some(mode);
+                        self.page_index = 1;
+                    }
+                    ui.add_space(8.0);
+                }
+                if ui
+                    .small_button(t(
+                        "Instalar um jogo como app próprio",
+                        "Install a game as its own app",
+                    ))
+                    .clicked()
+                {
+                    self.mode = Some(Mode::Game);
+                    self.page_index = 1;
+                }
+                if ui
+                    .small_button(t("Conferir pendrive", "Check USB drive"))
+                    .clicked()
+                {
+                    self.mode = Some(Mode::Check);
+                    self.page_index = 1;
+                }
+                ui.add_space(8.0);
+                if ui
+                    .small_button(t("NXbox completo / exportar", "Full NXbox / export"))
+                    .clicked()
+                {
+                    self.mode = Some(Mode::Full);
+                    self.page_index = 1;
+                }
                 ui.add_space(16.0);
                 ui.small(t(
                     "Requisitos: Xbox em Modo Desenvolvedor com o Device Portal ativado (Dev Home > Remote Access) e arquivos do seu próprio Nintendo Switch.",
                     "Requirements: an Xbox in Developer Mode with Device Portal enabled (Dev Home > Remote Access) and files from your own Nintendo Switch.",
                 ));
+            }
+            Page::Check => {
+                heading(
+                    ui,
+                    t("Conferir pendrive", "Check USB drive"),
+                    t(
+                        "Escolha a raiz do pendrive preparado para o Xbox.",
+                        "Choose the root of the USB drive prepared for Xbox.",
+                    ),
+                );
+                if self.run_rx.is_none() {
+                    if let Some(path) =
+                        choose_file(ui, t("Escolher pendrive…", "Choose USB drive…"), true)
+                    {
+                        self.drive = Some(path.clone());
+                        self.report = None;
+                        self.error = None;
+                        self.done = None;
+                        self.run_rx = Some(core(
+                            json!({ "cmd": "checkDrive", "path": path, "language": if pt() { "pt" } else { "en" } }),
+                        ));
+                    }
+                } else {
+                    ui.spinner();
+                }
+                if let Some(error) = &self.error {
+                    ui.label(error);
+                }
+                self.show_report(ui);
             }
             Page::Game => {
                 heading(
@@ -712,6 +845,17 @@ impl App {
                         ui.label(t("Nenhum arquivo selecionado.", "No file selected."));
                     }
                 }
+                ui.add_space(12.0);
+                if let Some(path) = choose_file(
+                    ui,
+                    t("title.keys (opcional)…", "title.keys (optional)…"),
+                    false,
+                ) {
+                    self.title_keys = Some(path);
+                }
+                if let Some(path) = &self.title_keys {
+                    ui.label(path.display().to_string());
+                }
             }
             Page::Firmware => {
                 heading(
@@ -748,7 +892,8 @@ impl App {
                     None => t("Nenhum firmware selecionado.", "No firmware selected.").into(),
                 });
                 ui.add_space(14.0);
-                ui.add_enabled_ui(self.firmware.is_some(), |ui| {
+                if self.mode == Some(Mode::Full) {
+                    ui.add_enabled_ui(self.firmware.is_some(), |ui| {
                     ui.checkbox(&mut self.official_ui, t("Usar a interface oficial do Switch", "Use the official Switch interface"));
                     ui.indent("ui", |ui| {
                         ui.label(t(
@@ -757,8 +902,9 @@ impl App {
                         ));
                     });
                 });
-                if self.firmware.is_none() {
-                    ui.small(t("Requer firmware.", "Requires firmware."));
+                    if self.firmware.is_none() {
+                        ui.small(t("Requer firmware.", "Requires firmware."));
+                    }
                 }
             }
             Page::Games => {
@@ -771,9 +917,11 @@ impl App {
                     ),
                 );
                 if design::drop_zone(ui, "games-drop", !self.games.is_empty())
-                    && let Some(p) = rfd::FileDialog::new().pick_file()
+                    && let Some(paths) = rfd::FileDialog::new().pick_files()
                 {
-                    self.add_game(p);
+                    for path in paths {
+                        self.add_game(path);
+                    }
                 }
                 ui.add_space(8.0);
                 let mut remove = None;
@@ -862,6 +1010,32 @@ impl App {
                 }
             }
             Page::Install => {
+                if self.mode == Some(Mode::Drive) {
+                    heading(
+                        ui,
+                        t("Preparar pendrive", "Prepare USB drive"),
+                        t(
+                            "Escolha a raiz do pendrive. Os arquivos serão conferidos antes da cópia.",
+                            "Choose the USB drive root. Files will be validated before copying.",
+                        ),
+                    );
+                    if let Some(path) =
+                        choose_file(ui, t("Escolher pendrive…", "Choose USB drive…"), true)
+                    {
+                        self.drive = Some(path);
+                    }
+                    if let Some(path) = &self.drive {
+                        ui.label(path.display().to_string());
+                    }
+                    return;
+                }
+                if self.mode == Some(Mode::Xbox) {
+                    self.manual = false;
+                    ui.label(t(
+                        "O SSD interno enche rápido; recomendamos um pendrive.",
+                        "The internal SSD fills fast; a USB drive is recommended.",
+                    ));
+                }
                 heading(
                     ui,
                     t("Instalação", "Installation"),
@@ -870,34 +1044,36 @@ impl App {
                         "Choose how NXbox will reach your Xbox.",
                     ),
                 );
-                ui.radio_value(
-                    &mut self.manual,
-                    false,
-                    t(
-                        "Instalar automaticamente no Xbox",
-                        "Install automatically on the Xbox",
-                    ),
-                );
-                ui.indent("auto", |ui| {
+                if self.mode != Some(Mode::Xbox) {
+                    ui.radio_value(
+                        &mut self.manual,
+                        false,
+                        t(
+                            "Instalar automaticamente no Xbox",
+                            "Install automatically on the Xbox",
+                        ),
+                    );
+                    ui.indent("auto", |ui| {
                     ui.label(t(
-                        "O NXbox Pack se conecta ao Device Portal do Xbox pela rede local e instala tudo sozinho. O Xbox e este computador precisam estar na mesma rede.",
-                        "NXbox Pack connects to the Xbox Device Portal over the local network and installs everything by itself. The Xbox and this computer must be on the same network.",
+                        "O NxHelper se conecta ao Device Portal do Xbox pela rede local e instala tudo sozinho. O Xbox e este computador precisam estar na mesma rede.",
+                        "NxHelper connects to the Xbox Device Portal over the local network and installs everything by itself. The Xbox and this computer must be on the same network.",
                     ));
                 });
-                ui.radio_value(
-                    &mut self.manual,
-                    true,
-                    t(
-                        "Prefiro instalar manualmente",
-                        "I prefer to install manually",
-                    ),
-                );
-                ui.indent("manual", |ui| {
+                    ui.radio_value(
+                        &mut self.manual,
+                        true,
+                        t(
+                            "Prefiro instalar manualmente",
+                            "I prefer to install manually",
+                        ),
+                    );
+                    ui.indent("manual", |ui| {
                     ui.label(t(
                         "Gera a pasta do aplicativo (UWP) com todo o conteúdo já dentro. Depois, registre-a você mesmo pelo Device Portal do Xbox.",
                         "Builds the app (UWP) folder with all content already inside. You then register it yourself through the Xbox Device Portal.",
                     ));
                 });
+                }
                 ui.add_space(14.0);
                 if self.manual {
                     if let Some(p) = choose_file(
@@ -962,7 +1138,29 @@ impl App {
                 }
             }
             Page::Progress => {
+                for warning in &self.warnings {
+                    ui.label(warning);
+                }
+                if self.report.is_some() {
+                    if let Some(error) = &self.error {
+                        ui.label(error);
+                    }
+                    self.show_report(ui);
+                    return;
+                }
                 if let Some(e) = self.error.clone() {
+                    if matches!(self.mode, Some(Mode::Drive | Mode::Xbox)) {
+                        heading(
+                            ui,
+                            t("O envio não foi concluído", "The transfer did not finish"),
+                            t(
+                                "Confira o problema abaixo e tente novamente. Os arquivos já copiados foram mantidos.",
+                                "Check the problem below and try again. Files already copied were kept.",
+                            ),
+                        );
+                        ui.label(e);
+                        return;
+                    }
                     heading(
                         ui,
                         t(
@@ -975,6 +1173,15 @@ impl App {
                         ),
                     );
                     ui.monospace(e);
+                } else if self.mode == Some(Mode::Xbox) && self.done.is_some() {
+                    heading(
+                        ui,
+                        t("Arquivos enviados", "Files sent"),
+                        t(
+                            "Abra o NXbox no Xbox para importar o firmware e jogar.",
+                            "Open NXbox on Xbox to import firmware and play.",
+                        ),
+                    );
                 } else if let Some(d) = self.done.clone() {
                     let (title, body) = if self.manual {
                         (
@@ -1017,7 +1224,11 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.take_drops(&ctx);
-        if self.page() == Page::Install && !self.manual && !self.discovery_started {
+        if self.page() == Page::Install
+            && self.mode != Some(Mode::Drive)
+            && !self.manual
+            && !self.discovery_started
+        {
             self.discovery_started = true;
             self.discover_rx = Some(core(json!({ "cmd": "discover" })));
         }
@@ -1044,6 +1255,7 @@ mod screenshots {
         for theme in [egui::Theme::Dark, egui::Theme::Light] {
             for page in [
                 Page::Welcome,
+                Page::Check,
                 Page::Game,
                 Page::Keys,
                 Page::Firmware,
@@ -1052,7 +1264,9 @@ mod screenshots {
                 Page::Install,
                 Page::Progress,
             ] {
-                let mode = if matches!(page, Page::Firmware | Page::Games) {
+                let mode = if page == Page::Check {
+                    Mode::Check
+                } else if matches!(page, Page::Firmware | Page::Games) {
                     Mode::Full
                 } else {
                     Mode::Game
@@ -1088,6 +1302,10 @@ mod screenshots {
                 ("game-selected", Page::Game, false),
                 ("keys-selected", Page::Keys, false),
                 ("success", Page::Progress, true),
+                ("drive-report", Page::Progress, true),
+                ("drive-fixable", Page::Progress, true),
+                ("usb-destination", Page::Install, false),
+                ("xbox-destination", Page::Install, false),
             ] {
                 let path = PathBuf::from("Example.nsp");
                 let mut app = App {
@@ -1100,6 +1318,28 @@ mod screenshots {
                 app.info.insert(path, json!({"name":"Example adventure", "titleId":"0100123456780000", "version":"2.4.1", "publisher":"Example studio", "size":2345678901_u64,"compat":{"status":"playable"}}));
                 if done {
                     app.done = Some("Example adventure".into());
+                }
+                if name.starts_with("drive-") {
+                    app.mode = Some(Mode::Drive);
+                    app.page_index = flow(app.mode).len() - 1;
+                    let ready = name == "drive-report";
+                    app.report = Some(json!({ "root": "/example/USB", "ready": ready, "items": [
+                        { "id": "prodKeys", "status": "ok", "title": t("Chaves do console", "Console keys"), "detail": "prod.keys" },
+                        { "id": "titleKeys", "status": "warn", "title": t("Chaves de títulos", "Title keys"), "fix": t("Opcional; necessário apenas para alguns jogos.", "Optional; only needed for some games.") },
+                        { "id": "firmware", "status": if ready { "ok" } else { "fail" }, "title": "Firmware", "detail": if ready { "20.0.0 — 230 files" } else { "firmware.zip" }, "fix": if ready { "" } else { t("NxHelper pode descompactar. Escolha Consertar.", "NxHelper can unpack it. Choose Fix it.") } },
+                        { "id": "games", "status": "ok", "title": t("2 jogos encontrados", "2 games found") }
+                    ] }));
+                }
+                if name.ends_with("destination") {
+                    app.mode = Some(if name.starts_with("usb") {
+                        Mode::Drive
+                    } else {
+                        Mode::Xbox
+                    });
+                    app.page_index = flow(app.mode)
+                        .iter()
+                        .position(|p| *p == Page::Install)
+                        .unwrap();
                 }
                 let mut harness = Harness::builder()
                     .with_theme(theme)

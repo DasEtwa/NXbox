@@ -2,8 +2,51 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 export default {
+  transferDone: "Files sent. Open NXbox on your Xbox to import firmware and play.",
+  driveProd: "Console keys",
+  driveTitle: "Title keys",
+  driveFirmware: "Firmware",
+  driveGames: "Games found: {count}",
+  driveLayout: "Game outside the library: {path}",
+  driveFound: "Found at {path}",
+  driveKeysFix: "Copy a valid prod.keys (with a 32-byte header_key) into NXbox/ or the drive root.",
+  driveTitleMissing:
+    "Optional; only needed for some games. Copy title.keys into NXbox/ or the drive root.",
+  driveTitleInvalid: "Copy a valid title.keys into NXbox/ or the drive root.",
+  driveFirmwareOk: "Version {version}, {count} files",
+  driveFirmwareMissing: "Copy your whole firmware dump to NXbox/firmware/.",
+  driveUnpack: "NxHelper can unpack it. Choose Fix it.",
+  driveOldKeys: "The keys are older than the firmware. Dump keys again from your updated Switch.",
+  driveFirmwareCopy: "Copy the whole firmware dump again.",
+  driveChunksMove:
+    "These NCA chunk folders sit where NxHelper writes the finished files. Move the whole firmware dump to firmware/ at the drive root, then choose Fix it.",
+  driveNandMany:
+    "Could not pick one NAND backup: more than one was found, or its parts (00, 01, …) are incomplete. Keep a single emuMMC folder with all its parts.",
+  driveRename: "Rename the extension to lowercase so Xbox can list it.",
+  driveConvert: "Convert .xcz to .xci before copying; Xbox cannot list .xcz.",
+  driveTruncated: "Incomplete game. Finish the download or copy the complete dump again.",
+  driveNoId: "No title ID in the filename. Add [0100…] with the game title ID.",
+  driveMove: "Move the game to games/ or NXbox/games/ at the drive root.",
+  driveNoGames:
+    "No games on the drive yet. Put them in NXbox/games/ (games/ at the root also works).",
+  driveReady: "Ready to plug into the Xbox",
+  driveNotReady: "Fix the failed items before plugging into the Xbox.",
+  driveConflict:
+    "A different file has the same name. Rename it or choose another destination; nothing was copied.",
+  driveSpace: "Not enough free space. Free space or use another drive.",
+  nxboxMissing:
+    "NXbox is not installed. Install NXbox from https://github.com/NspxMiguel/NXbox/releases/latest first.",
+  xboxSpaceWarning:
+    "Console free space is unavailable. The internal SSD fills fast; a USB drive is recommended.",
+  driveUsage:
+    "nxhelper --check-drive <path> [--fix]\nnxhelper --to-drive <path> <files…> --keys <prod.keys> [--title-keys <title.keys>] [--firmware <path>]\nnxhelper --to-xbox [--host <host>] <files…> --keys <prod.keys> [--title-keys <title.keys>] [--firmware <path>]",
+  wayChoice:
+    "1 — With a USB drive (recommended)\n2 — Over Device Portal\n3 — Install a game as its own app\nChoose a way",
+  drivePath: "USB drive folder",
+  gamePaths: "Game path (repeat for more games; empty to finish)",
+
   profileUsage:
-    "Usage: nxbox-pack profile multi on|off, or nxbox-pack profile avatar <name> <image> | --character <id> --color <name> [--insecure-portal]",
+    "Usage: nxhelper profile multi on|off, or nxhelper profile avatar <name> <image> | --character <id> --color <name> [--insecure-portal]",
   profilePackage: "Package full name (choose the app whose accounts you want to edit)",
   profileMissing:
     "Profile not found, duplicate name, or invalid profile data. Open NXbox once to create its profiles.",
@@ -14,10 +57,10 @@ export default {
     "Choose a valid PNG, JPEG, WebP, GIF or BMP image (up to 20 MB). The browser must finish within two minutes.",
   avatarBrowser: "Converting in your local browser. If it did not open, open this URL on this PC:",
   avatarConverting: "Preparing your NXbox avatar…",
-  avatarConverted: "Image prepared. Return to NXbox Pack; you can close this tab.",
+  avatarConverted: "Image prepared. Return to NxHelper; you can close this tab.",
 
   guide: "Drag the game file into this window and press Enter (supported: .nsp .xci .nsz .xcz)",
-  legal: "You must own the game and dump your own keys. NXbox Pack never downloads games or keys.",
+  legal: "You must own the game and dump your own keys. NxHelper never downloads games or keys.",
   keys: "Drag your prod.keys into this window and press Enter",
   extra: "Drag an update/DLC file, or press Enter to continue (one file at a time)",
   host: "Xbox address (Dev Home > Remote Access)",
@@ -35,7 +78,7 @@ export default {
   install: "Registering your independent game app…",
   upload: "Uploading to this app's private LocalState…",
   done: "Ready. Open this game's tile in Xbox Dev Home; set its app type to Game for the full memory budget.",
-  failed: "NXbox Pack failed",
+  failed: "NxHelper failed",
   file: "Choose an existing, nonempty .nsp, .xci, .nsz or .xcz file.",
   keyFile: "Choose an existing, nonempty file named prod.keys.",
   titleInvalid:
@@ -44,7 +87,7 @@ export default {
   compressed:
     "NSZ/XCZ needs the optional nsz decompressor on PATH (nsz -D). Install it or provide an NSP/XCI dump.",
   runtimeMissing:
-    "Runtime unavailable; CI downloads may require NXBOX_PACK_GITHUB_TOKEN. Supply --runtime-url and --runtime-sha256 (CI artifact ZIP or game APPX).",
+    "Runtime unavailable; CI downloads may require NXHELPER_GITHUB_TOKEN. Supply --runtime-url and --runtime-sha256 (CI artifact ZIP or game APPX).",
   runtimeInvalid: "Runtime download, checksum or payload validation failed.",
   portal: "Device Portal request failed. Check the address, credentials and Dev Mode.",
   deploy:
@@ -69,6 +112,10 @@ export default {
   titleKeys: "Drag title.keys, or Enter to skip",
   inputInvalid:
     "Invalid folder/ZIP: unsafe paths, unsupported archive, empty data or corrupt filesystem.",
+  firmware7z: "Extract the .7z first, then select the extracted firmware folder.",
+  firmwareRar: "Extract the .rar first, then select the extracted firmware folder.",
+  firmwarePartition:
+    "Partition-based emuMMC is not supported. Use Hekate to back it up to files, then select the eMMC folder.",
   firmwareInvalid:
     "Firmware rejected: NCA filename SHA-256, encrypted NCA3 header or SystemVersion data is invalid.",
   firmwareIncomplete:
@@ -90,5 +137,5 @@ export default {
   rejectMismatch:
     "Rejected: this title ID does not belong to the game (expected its update ID or DLC range).",
   rejectDuplicate: "Rejected: this file or title ID was already added.",
-  help: "NXbox Pack\nUsage: nxbox-pack [--runtime-url HTTPS_URL --runtime-sha256 HEX] [--insecure-portal]\n--insecure-portal accepts the Xbox self-signed TLS certificate for this connection only.\nDefault runtime: latest NspxMiguel/NXbox release with a SHA-256 asset digest.\nNo games or keys are included in the staged runtime. NSZ/XCZ requires nsz on PATH.",
+  help: "NxHelper\nUsage: nxhelper [--runtime-url HTTPS_URL --runtime-sha256 HEX] [--insecure-portal]\n--insecure-portal accepts the Xbox self-signed TLS certificate for this connection only.\nDefault runtime: latest NspxMiguel/NXbox release with a SHA-256 asset digest.\nNo games or keys are included in the staged runtime. NSZ/XCZ requires nsz on PATH.",
 };

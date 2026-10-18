@@ -1,5 +1,5 @@
 {
-  "name": "nxbox-pack",
+  "name": "nxhelper",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -11,10 +11,10 @@
     "test": "bun test",
     "check": "tsc --noEmit",
     "format": "prettier --write src tests package.json tsconfig.json README.md",
-    "build": "bun build src/cli.ts --compile --outfile dist/nxbox-pack",
+    "build": "bun build src/cli.ts --compile --outfile dist/nxhelper",
     "build:windows": "bun scripts/build-windows.ts",
-    "build:macos": "bun build src/cli.ts --compile --target=bun-darwin-arm64 --outfile dist/nxbox-pack-macos-arm64",
-    "build:linux": "bun build src/cli.ts --compile --target=bun-linux-x64-baseline --outfile dist/nxbox-pack-linux-x64"
+    "build:macos": "bun build src/cli.ts --compile --target=bun-darwin-arm64 --outfile dist/nxhelper-macos-arm64",
+    "build:linux": "bun build src/cli.ts --compile --target=bun-linux-x64-baseline --outfile dist/nxhelper-linux-x64"
   },
   "dependencies": {
     "fast-xml-parser": "5.11.2",
