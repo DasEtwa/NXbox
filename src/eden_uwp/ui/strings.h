@@ -48,6 +48,11 @@ enum class Text {
     ShopInternalStorage,
     ShopExternalStorage,
 
+    FtpServer,
+    FtpHint,
+    FtpUser,
+    FtpPassword,
+    FtpStartFailed,
     InternetArtwork,
     InternetArtworkHint,
     NavSettings,

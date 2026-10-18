@@ -390,3 +390,8 @@
 {Text::DeleteFailed, L"Could not finish deleting. Check the game folders for remaining files."},
 {Text::IncompleteFile, L"Incomplete file: delete and download again"},
 {Text::DeleteDownloadBusy, L"Finish or cancel the shop downloads before deleting game files."},
+    {Text::FtpServer, L"FTP server"},
+    {Text::FtpHint,
+     L"Copy games, keys and firmware over Wi-Fi or Ethernet. Turn on to see login details."},
+    {Text::FtpUser, L"User:"}, {Text::FtpPassword, L"Password:"},
+    {Text::FtpStartFailed, L"Could not start FTP. Check your local network and try again."},

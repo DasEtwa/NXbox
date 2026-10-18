@@ -32,6 +32,7 @@
 #include "eden_uwp/accounts.h"
 #include "eden_uwp/diagnostic.h"
 #include "eden_uwp/firmware.h"
+#include "eden_uwp/ftp/ftp_server.h"
 #include "eden_uwp/home_ui_settings.h"
 #include "eden_uwp/multiplayer_screen.h"
 #include "eden_uwp/multiplayer_strings.h"
@@ -256,8 +257,10 @@ public:
                 return_home_->store(true);
         });
         // The system wants the GPU memory trimmed when the app is suspended.
-        const auto suspending_token =
-            CoreApplication::Suspending([this](const auto&, const auto&) { renderer_.Trim(); });
+        const auto suspending_token = CoreApplication::Suspending([this](const auto&, const auto&) {
+            ftp_.Stop();
+            renderer_.Trim();
+        });
         SCOPE_EXIT {
             window_.Closed(closed_token);
             CoreApplication::Suspending(suspending_token);
@@ -417,6 +420,10 @@ private:
     void Update(Clock::time_point now) {
         AdoptDelete(now);
         AdoptScan();
+        if (!scan_ && ftp_changes_ != ftp_.Changes()) {
+            ftp_changes_ = ftp_.Changes();
+            StartScan();
+        }
         if (shop_) {
             shop_->SetTinfoilAvailable(tinfoil_index_ >= 0);
             shop_->Tick(now, false);
@@ -928,6 +935,13 @@ private:
         }
         if (SelectedSetting() == Setting::Version)
             return;
+        if (SelectedSetting() == Setting::FtpServer) {
+            if (ftp_.Running())
+                ftp_.Stop();
+            else if (!ftp_.Start(local_state_))
+                Toast(Tr(Text::FtpStartFailed), now);
+            return;
+        }
         if (SelectedSetting() == Setting::InternetArt) {
             const auto file = local_state_ / "internet-art.disabled";
             std::error_code ec;
@@ -1709,6 +1723,12 @@ private:
                                       : resolution == 6 ? Text::Resolution2X
                                       : resolution == 7 ? Text::Resolution3X
                                                         : Text::Resolution1X;
+        const bool ftp_running = ftp_.Running();
+        const auto ftp_address = ftp_running ? ftp_.Address() : Tr(Text::NextendoOff);
+        const auto ftp_credentials = ftp_running
+                                         ? std::wstring(Tr(Text::FtpUser)) + L" nxbox · " +
+                                               Tr(Text::FtpPassword) + L" " + ftp_.Password()
+                                         : std::wstring(Tr(Text::FtpHint));
         const std::array<Row, static_cast<std::size_t>(Setting::Count)> rows = {
             {sync_row,
              sources_row,
@@ -1750,7 +1770,9 @@ private:
              {Tr(Text::ResolutionTitle), Tr(resolution_label), Theme::kTextSecondary,
               Tr(Text::ResolutionMemoryHint)},
              {Tr(Text::SettingsVersion), build.c_str(), Theme::kTextSecondary,
-              Tr(Text::SettingsBuildHint)}}};
+              Tr(Text::SettingsBuildHint)},
+             {Tr(Text::FtpServer), ftp_address.c_str(), Theme::kTextSecondary,
+              ftp_credentials.c_str()}}};
         constexpr float kRowTop = 340.0f;
         const float kRowPitch =
             kSettingsCategories[Idx(settings_category_)].count > 5 ? 106.0f : 128.0f;
@@ -1966,6 +1988,8 @@ private:
     Input input_;
     std::filesystem::path local_state_;
     std::unique_ptr<ShopScreen> shop_;
+    Ftp::Server ftp_;
+    std::uint64_t ftp_changes_ = 0;
     bool internet_art_ = true;
     std::unique_ptr<BackgroundArtSource> backgrounds_;
     int sources_count_ = 0; // sources saved by the Sources screen, shown on its Settings row

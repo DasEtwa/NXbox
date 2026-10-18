@@ -107,3 +107,8 @@ if(TARGET hlsl-ir-tests AND HLSL_DXC_EXECUTABLE)
     set_tests_properties(hlsl-dxc-${fixture} PROPERTIES FIXTURES_REQUIRED hlsl-emission)
   endforeach()
 endif()
+
+add_executable(ftp-protocol-tests ftp_protocol.cpp)
+target_compile_features(ftp-protocol-tests PRIVATE cxx_std_20)
+target_include_directories(ftp-protocol-tests PRIVATE ../../src)
+add_test(NAME ftp-protocol COMMAND ftp-protocol-tests)
