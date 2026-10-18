@@ -228,20 +228,21 @@ protection change, and times 10,000 aliased write + `FlushInstructionCache` iter
 `alias_us` and `protect_us` are totals over the 10,000 iterations (-1 when not measured).
 Without the variable nothing runs. This is measurement only; the JIT still uses the protect path.
 
-## Dual-mapped code memory (`NXBOX_JIT_DUALMAP=1`)
+## Dual-mapped code memory (default; `NXBOX_JIT_DUALMAP=0` opts out)
 
 The probe above proved on the console that one pagefile-backed section can be mapped twice
 (RW view + RX view), that code written through the RW view runs through the RX view, and that
 a write plus `FlushInstructionCache` costs ~0.007 us against ~12.9 us for a
-`VirtualProtectFromApp` round trip. The x64 backend now uses that, opt-in:
+`VirtualProtectFromApp` round trip. The x64 backend uses that by default since the 0.3.698
+console run (SM3DW, same input script as the baseline): JIT total 8,522 → 4,593 ms per run,
+`jitemitwx` 3,086 → 0 ms, worst frame gap 963 → 702 ms, average 52.0 → 54.1 FPS.
 
 ```
-NXBOX_JIT_DUALMAP=1
+NXBOX_JIT_DUALMAP=0   # back to the page-granular W^X path described above
 ```
 
-Default (unset, or anything but `1`) is the page-granular W^X path described above, unchanged.
 The variable is read once per process. Every `BlockOfCode` (A64 **and** A32, they share it)
-logs `NXBOX JIT_WX mode=dualmap|protect reason=...` at creation: `reason=env` for dualmap;
+logs `NXBOX JIT_WX mode=dualmap|protect reason=...` at creation: `reason=default` for dualmap;
 for protect `flag_off`, `xbyak_unpatched`, `create_section_failed:<err>`, `map_rw_failed:<err>`
 or `map_rx_failed:<err>`. Any failure falls back to the protect path, nothing else changes.
 

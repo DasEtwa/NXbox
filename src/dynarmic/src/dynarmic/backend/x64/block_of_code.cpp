@@ -100,7 +100,7 @@ size_t JitPageSize() {
 // VirtualProtectFromApp (codeGeneration capability) may later make them executable, so the port
 // keeps a dedicated allocator for that target only.
 //
-// NXBOX_JIT_DUALMAP=1 (read once) instead tries a pagefile-backed section mapped twice: the RW view is
+// By default (NXBOX_JIT_DUALMAP=0 turns it off; read once) the cache is instead a pagefile-backed section mapped twice: the RW view is
 // what Xbyak stores to (top_), the RX view is what the CPU executes and what every code address refers
 // to. The section is committed in full up front (no SEC_RESERVE), so no VirtualProtectFromApp and no
 // per-block commit are needed. Any failure is remembered in DualMapReason() and the plain W^X
@@ -108,7 +108,8 @@ size_t JitPageSize() {
 bool DualMapRequested() {
     static const bool requested = [] {
         const char* value = std::getenv("NXBOX_JIT_DUALMAP");
-        return value != nullptr && value[0] == '1' && value[1] == '\0';
+        // On by default since the 0.3.698 console run (SM3DW: JIT 8.5 s -> 4.6 s per run); "0" opts out.
+        return value == nullptr || !(value[0] == '0' && value[1] == '\0');
     }();
     return requested;
 }
@@ -336,7 +337,7 @@ bool BlockOfCode::ConfigureWx() {
         // The section is committed whole; EnsureMemoryCommitted() has nothing left to do.
         committed_size = maxSize_;
         mapped = true;
-        reason = "env";
+        reason = "default";
     }
 #endif
     if (!mapped) {

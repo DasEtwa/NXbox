@@ -43,11 +43,11 @@ def dual_branch(function_body: str) -> str:
 
 
 class FlagTests(unittest.TestCase):
-    def test_flag_is_off_by_default_and_read_once(self):
+    def test_flag_is_on_by_default_and_read_once(self):
         fn = body(BLOCK, "bool DualMapRequested()")
         self.assertIn("static const bool requested", fn)
         self.assertIn('std::getenv("NXBOX_JIT_DUALMAP")', fn)
-        self.assertIn("value[0] == '1' && value[1] == '\\0'", fn)
+        self.assertIn("value == nullptr || !(value[0] == '0' && value[1] == '\\0')", fn)
         self.assertEqual(BLOCK.count("std::getenv"), 1)
 
     def test_member_defaults_to_the_protect_path(self):
