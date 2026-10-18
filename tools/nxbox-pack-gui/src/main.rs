@@ -39,7 +39,8 @@ fn main() -> eframe::Result {
 fn pt() -> bool {
     static LANGUAGE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *LANGUAGE.get_or_init(|| {
-        let forced = std::env::var("NXBHELPER_LANG").or_else(|_| std::env::var("NXHELPER_LANG"))
+        let forced = std::env::var("NXBHELPER_LANG")
+            .or_else(|_| std::env::var("NXHELPER_LANG"))
             .or_else(|_| std::env::var("NXBOX_PACK_LANG"))
             .ok()
             .filter(|s| s == "pt" || s == "en");

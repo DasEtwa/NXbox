@@ -1,7 +1,7 @@
 name: Build NxbHelper
 on:
   push:
-    branches: [main, feat/nxhelper]
+    branches: [main, feat/nxhelper, chore/nxbhelper-brand]
     paths:
       - tools/nxbox-pack/**
       - tools/nxbox-pack-gui/**
