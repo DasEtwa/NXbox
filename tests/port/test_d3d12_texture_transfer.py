@@ -118,6 +118,7 @@ def test_preflight_precedes_cache_modification_and_preserves_fallback():
         assert contract in preflight
     # Depth blits through color Fermi surfaces are drawn when both images are depth.
     assert "dst.HostFormat().planes != src.HostFormat().planes" in preflight
+    assert "format.depth && format.conversion == FormatConversion::DepthStencil" in preflight
     assert preflight.index("if (depth)\n        return true;") < preflight.index("DrawCompatible")
     runtime_blit = native.split("void TextureCacheRuntime::BlitImage(Framebuffer*", 1)[1]
     assert "BlitHelpers().BlitDepthStencil(d, s, dst_region, src_region)" in runtime_blit

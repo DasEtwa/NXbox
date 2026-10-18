@@ -1141,9 +1141,15 @@ bool TextureCacheRuntime::CanBlitImages(const Image& dst, const Image& src,
     if (depth && (!dst.HostFormat().depth || !src.HostFormat().depth ||
                   dst.HostFormat().planes != src.HostFormat().planes))
         return reject("depth blit between images with different aspects");
-    if (dst.HostFormat().conversion != FormatConversion::None ||
-        src.HostFormat().conversion != FormatConversion::None || dst.HostFormat().converted_astc ||
-        src.HostFormat().converted_astc)
+    // DepthStencil conversion only repacks guest bytes on CPU transfers; two depth images in
+    // the same host format hold native data that BlitDepthStencil reads and writes directly.
+    const auto native = [](const FormatInfo& format) {
+        return format.conversion == FormatConversion::None ||
+               (format.depth && format.conversion == FormatConversion::DepthStencil);
+    };
+    if (!native(dst.HostFormat()) || !native(src.HostFormat()) || dst.HostFormat().converted_astc ||
+        src.HostFormat().converted_astc ||
+        (depth && dst.HostFormat().resource_format != src.HostFormat().resource_format))
         return reject("cached image format is converted");
     if (dst.info.num_samples != 1 || src.info.num_samples != 1)
         return reject("multisampled image");
