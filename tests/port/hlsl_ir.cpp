@@ -361,6 +361,30 @@ void StorageImageFormats() {
     }
   }
 }
+void IntegerTypelessImage() {
+  // A typeless image over an integer view keeps the raw uint4 value.
+  Fixture f{Stage::Compute};
+  f.program.info.image_descriptors.push_back({.type = TextureType::Color2D,
+                                              .format = ImageFormat::Typeless,
+                                              .is_written = true,
+                                              .is_read = true,
+                                              .is_integer = true,
+                                              .count = 1});
+  IR::TextureInstInfo flags{};
+  flags.type.Assign(TextureType::Color2D);
+  flags.image_format.Assign(ImageFormat::Typeless);
+  const auto coords = f.Add(IR::Opcode::CompositeConstructU32x2,
+                            {IR::Value{0u}, IR::Value{0u}});
+  const auto color = f.Add(IR::Opcode::ImageRead, {IR::Value{0u}, coords}, flags.raw);
+  f.Add(IR::Opcode::ImageWrite, {IR::Value{0u}, coords, color}, flags.raw);
+  Bindings bindings;
+  Profile profile{};
+  profile.support_typeless_image_loads = true;
+  const auto text = f.Emit(bindings, profile);
+  Contains(text, "RWTexture2D<uint4> img0");
+  Require(text.find("asuint(img0[") == text.npos && text.find("] = asfloat(") == text.npos,
+          "Integer typeless image must not be reinterpreted as float");
+}
 void ArithmeticAndPseudoResults() {
   Fixture f{Stage::Compute};
   f.program.info.uses_int64 = true;
@@ -787,6 +811,7 @@ int main() {
     ControlFlowAndWaves();
     ResourceOrderAndCompare();
     StorageImageFormats();
+    IntegerTypelessImage();
     ArithmeticAndPseudoResults();
     ChainedResourceBindings();
     NumericCoverage();

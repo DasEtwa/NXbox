@@ -200,7 +200,7 @@ EmitContext::EmitContext(IR::Program& program, Bindings& bindings, const Profile
     for (const auto& desc : info.image_descriptors) {
         images.push_back({image_binding, desc.count});
         const auto element =
-            desc.format == ImageFormat::Typeless                                          ? "float4"
+            desc.format == ImageFormat::Typeless ? (desc.is_integer ? "uint4" : "float4")
             : desc.format == ImageFormat::R8_SINT || desc.format == ImageFormat::R16_SINT ? "int"
             : (desc.format == ImageFormat::R32_UINT || desc.format == ImageFormat::R8_UINT ||
                desc.format == ImageFormat::R16_UINT)
@@ -216,7 +216,7 @@ EmitContext::EmitContext(IR::Program& program, Bindings& bindings, const Profile
     for (const auto& desc : info.image_buffer_descriptors) {
         image_buffers.push_back({image_binding, desc.count});
         const auto element =
-            desc.format == ImageFormat::Typeless                                          ? "float4"
+            desc.format == ImageFormat::Typeless ? (desc.is_integer ? "uint4" : "float4")
             : desc.format == ImageFormat::R8_SINT || desc.format == ImageFormat::R16_SINT ? "int"
             : (desc.format == ImageFormat::R32_UINT || desc.format == ImageFormat::R8_UINT ||
                desc.format == ImageFormat::R16_UINT)

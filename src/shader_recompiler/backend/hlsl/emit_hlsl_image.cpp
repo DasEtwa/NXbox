@@ -153,6 +153,14 @@ ImageFormat StorageImageFormat(EmitContext& ctx, const IR::TextureInstInfo& info
                ? ctx.info.image_buffer_descriptors.at(info.descriptor_index).format
                : ctx.info.image_descriptors.at(info.descriptor_index).format;
 }
+// Typeless images over float views are declared float4 and carried as raw bits.
+bool IsTypelessFloatImage(EmitContext& ctx, const IR::TextureInstInfo& info) {
+    if (StorageImageFormat(ctx, info) != ImageFormat::Typeless)
+        return false;
+    return !(info.type == TextureType::Buffer
+                 ? ctx.info.image_buffer_descriptors.at(info.descriptor_index).is_integer
+                 : ctx.info.image_descriptors.at(info.descriptor_index).is_integer);
+}
 bool IsSignedImage(EmitContext& ctx, const IR::TextureInstInfo& info) {
     const auto format = StorageImageFormat(ctx, info);
     return format == ImageFormat::R8_SINT || format == ImageFormat::R16_SINT;
@@ -296,7 +304,7 @@ void EmitImageRead(EmitContext& ctx, IR::Inst& inst, const IR::Value& index,
     const auto components = ImageComponents(ctx, info);
     const auto padding = components == 1 ? ", 0u, 0u, 1u" : components == 2 ? ", 0u, 1u" : "";
     const auto load = fmt::format("{}[{}]", image, IntCoordinates(coords, info.type));
-    if (StorageImageFormat(ctx, info) == ImageFormat::Typeless)
+    if (IsTypelessFloatImage(ctx, info))
         ctx.AddU32x4("{} = asuint({});", inst, load);
     else
         ctx.AddU32x4("{} = uint4({}{});", inst, load, padding);
@@ -306,7 +314,7 @@ void EmitImageWrite(EmitContext& ctx, IR::Inst& inst, const IR::Value& index,
     const auto info = inst.Flags<IR::TextureInstInfo>();
     const auto components = ImageComponents(ctx, info);
     auto value = fmt::format("{}{}", color, components == 1 ? ".x" : components == 2 ? ".xy" : "");
-    if (StorageImageFormat(ctx, info) == ImageFormat::Typeless)
+    if (IsTypelessFloatImage(ctx, info))
         value = fmt::format("asfloat({})", value);
     else if (IsSignedImage(ctx, info))
         value = fmt::format("asint({})", value);

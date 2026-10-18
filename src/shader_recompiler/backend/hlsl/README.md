@@ -59,7 +59,7 @@ checks. HLSL sources are compiled into `shader_recompiler` independently of
 | Buffers | Byte-addressed constant-buffer loads; storage/shared 8/16/32/64/128-bit loads and stores; subword writes use CAS; local memory; 64-bit guest-address lookup through storage descriptor base/size |
 | Atomics | All scalar 32-bit shared/storage/image integer atomics, including signed min/max and wrapping increment/decrement via CAS; storage FP32 add and packed half2 add/min/max via CAS; storage word-pair operations use independent 32-bit atomics |
 | Textures | 1D/2D/3D/cube and array resource declarations; implicit/explicit LOD, bias, depth compare, gather component/four offsets, gradients, dimensions/LOD queries, MSAA/texel loads; literal offsets; typed integer fetch bitcasts |
-| Images | Typed unsigned storage images and buffer images, load/store and scalar image atomics |
+| Images | Typed unsigned storage images and buffer images, load/store and scalar image atomics; typeless images as float4 (raw bits) or uint4 by the bound view's kind, reading zero without additional typed UAV loads; R8/R16 signed images as int |
 | Waves | Lane ID, 32-lane partitioned ballots/votes/masks, segmented index/up/down/xor shuffle and in-bounds result, quad lane reads, swizzle add, fine/coarse derivatives |
 | Synchronization | Group barrier with synchronization, group/device memory barriers, fragment discard |
 
@@ -118,7 +118,7 @@ be supplied by the pipeline track.
   shader model; see the [SM 6.7 announcement](https://devblogs.microsoft.com/directx/shader-model-6-7/).
   Depth bias, LOD clamps, dynamic sampled offsets and cube texel
   fetch reject. Sparse residency returns always-resident for committed resources. Integer filtered sampling rejects and requires texel fetch.
-- Typeless/signed storage images, cube UAVs, constant/storage descriptor arrays,
+- Narrow signed image atomics, cube UAVs, constant/storage descriptor arrays,
   point size/point sprite coordinates, viewport masks,
   legacy varyings and multiple geometry streams
   reject. Vertex layer/viewport outputs require the device capability in Profile.
