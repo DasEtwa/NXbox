@@ -88,7 +88,7 @@ Confira que **todos os arquivos terminaram de copiar ou baixar**: um arquivo inc
 ## Parte 3 · Jogue
 
 1. Plugue o pendrive no Xbox. Ele pergunta o que fazer com o drive: escolha **Use for media**. **Nunca escolha "games & apps": isso formata o drive e apaga tudo.** (Se você mandou tudo pelo Device Portal, pule este passo.)
-2. Abra o NXbox. Na tela **Pendrive detectado**, escolha **Usar como SSD externo**. Feche o NXbox (botão Xbox → **Sair**) e abra de novo, **uma vez**: é nessa segunda abertura que ele instala o firmware. Não desligue o console nem tire o pendrive enquanto isso. Deu certo quando a biblioteca mostra **Firmware instalado** e a versão.
+2. Abra o NXbox. Se aparecer a tela **Pendrive detectado**, escolha **Usar como SSD externo**. Feche o NXbox (botão Xbox → **Sair**) e abra de novo, **uma vez**: é nessa segunda abertura que ele instala o firmware. Não desligue o console nem tire o pendrive enquanto isso. Deu certo quando a biblioteca mostra **Firmware instalado** e a versão.
 3. Abra um jogo. Um `.nsz` é convertido na primeira vez: espere. Deu certo quando o jogo começa.
 
 ## Deu problema?
@@ -196,7 +196,7 @@ Make sure **every file has finished copying or downloading**: an incomplete file
 ## Part 3 · Play
 
 1. Plug the drive into the Xbox. It asks what to do with it: pick **Use for media**. **Never pick "games & apps": that formats the drive and erases everything.** (If you sent everything over the Device Portal, skip this step.)
-2. Open NXbox. On the **USB drive detected** screen, pick **Use as an external SSD**. Close NXbox (Xbox button → **Quit**) and open it again, **once**: that second launch is when it installs the firmware. Do not turn off the console or unplug the drive meanwhile. It worked when the library shows **Installed firmware** and its version.
+2. Open NXbox. If the **USB drive detected** screen appears, pick **Use as an external SSD**. Close NXbox (Xbox button → **Quit**) and open it again, **once**: that second launch is when it installs the firmware. Do not turn off the console or unplug the drive meanwhile. It worked when the library shows **Installed firmware** and its version.
 3. Open a game. An `.nsz` is converted the first time: wait. It worked when the game starts.
 
 ## Something wrong?
