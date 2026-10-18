@@ -11,8 +11,8 @@
 #include <thread>
 #include <vector>
 
-#include <fileapifromapp.h>
 #include <windows.h>
+#include <fileapifromapp.h>
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Networking.Connectivity.h>
 #include <winrt/Windows.Networking.Sockets.h>
