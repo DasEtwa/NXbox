@@ -28,7 +28,12 @@
 #include <winrt/Windows.Data.Json.h>
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Foundation.h>
+#include <winrt/Windows.Storage.h>
 #include <winrt/Windows.System.UserProfile.h>
+#include "eden_uwp/await_bounded.h"
+#include "eden_uwp/game_download.h"
+#include "eden_uwp/ui/strings.h"
+#include "frontend_common/library_files.h"
 
 #include "common/fs/fs.h"
 #include "common/fs/fs_util.h"
@@ -329,6 +334,22 @@ std::string ReadPackage(FileSys::RealVfsFilesystem& vfs, const fs::path& file, P
     return {};
 }
 
+std::optional<bool> TruncatedPackage(FileSys::RealVfsFilesystem& vfs, const fs::path& path) {
+    const auto file = vfs.OpenFile(Common::FS::PathToUTF8String(path), FileSys::OpenMode::Read);
+    if (!file)
+        return std::nullopt;
+    // RealVfsFile::GetSize() returns zero when opening the underlying handle fails.
+    // Query the actual length separately so an unreadable NSP cannot authorize replacement.
+    WIN32_FILE_ATTRIBUTE_DATA data{};
+    if (!GetFileAttributesExFromAppW(path.c_str(), GetFileExInfoStandard, &data) ||
+        (data.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)))
+        return std::nullopt;
+    const auto size = (static_cast<std::uint64_t>(data.nFileSizeHigh) << 32) | data.nFileSizeLow;
+    return LibraryFiles::TruncatedPfs0(size, [&](std::uint64_t offset, std::size_t size) {
+        return file->ReadBytes(size, offset);
+    });
+}
+
 // One game from one file: the cache when it still matches, otherwise the package itself.
 std::optional<GameEntry> LoadGame(FileSys::RealVfsFilesystem& vfs, const fs::path& library_dir,
                                   const std::map<std::wstring, CacheRecord>& cached,
@@ -337,6 +358,14 @@ std::optional<GameEntry> LoadGame(FileSys::RealVfsFilesystem& vfs, const fs::pat
     game.path = file;
     game.size = Common::FS::GetSize(file);
     game.mtime = ModifiedSeconds(file);
+
+    if (Lowercase(file.extension().wstring()) == L".nsp" &&
+        TruncatedPackage(vfs, file).value_or(false)) {
+        game.incomplete = true;
+        game.name = file.stem().wstring() + L" — " + Tr(Text::IncompleteFile);
+        Diagnostic("UI library incomplete " + Utf8(file.wstring()));
+        return game;
+    }
 
     const auto hit = cached.find(file.wstring());
     if (hit != cached.end() && game.size != 0 && hit->second.size == game.size &&
@@ -427,14 +456,198 @@ std::string ConvertNsz(FileSys::RealVfsFilesystem& vfs, const fs::path& nsz_path
         void(Common::FS::RemoveFile(partial));
         return "the converter wrote an empty file";
     }
-    if (!Common::FS::RenameFile(partial, nsp_path)) {
+    // Validate the finished temporary file before replacing an interrupted copy.
+    if (TruncatedPackage(vfs, partial) != std::optional<bool>{false}) {
+        void(Common::FS::RemoveFile(partial));
+        return "the converted PFS0 is incomplete or unreadable";
+    }
+    const bool replacing = Common::FS::IsFile(nsp_path);
+    if (replacing && TruncatedPackage(vfs, nsp_path) != std::optional<bool>{true}) {
+        void(Common::FS::RemoveFile(partial));
+        return "existing output is complete or unreadable";
+    }
+    // Keep the normal broker rename; PublishDownload adds StorageFile for removable storage.
+    if (!Common::FS::RenameFile(partial, nsp_path) && !PublishDownload(partial, nsp_path, error)) {
         const std::string reason = "cannot rename the output";
         void(Common::FS::RemoveFile(partial));
         return reason;
     }
+    Diagnostic("NSZ_CONVERT replaced_truncated=" + std::string(replacing ? "true" : "false") +
+               " path=" + Utf8(nsp_path.wstring()));
     return {};
 }
 } // namespace
+
+namespace {
+std::vector<fs::path> DeleteRoots(const fs::path& local_state) {
+    auto roots = ExternalGameFolders();
+    roots.push_back(local_state / "games");
+    return roots;
+}
+
+bool SafeDeletePath(const fs::path& path, const std::vector<fs::path>& roots) {
+    if (!LibraryFiles::Allowed(path, roots) || !LibraryFiles::IsPackage(path))
+        return false;
+    // Discovery supplies trusted roots. Inspect the root and every child, without querying
+    // protected ancestors such as C:\Users that a UWP app cannot inspect even for LocalState.
+    for (const auto& root : roots) {
+        if (!LibraryFiles::Allowed(path, {root}))
+            continue;
+        auto prefix = path;
+        for (;;) {
+            WIN32_FILE_ATTRIBUTE_DATA data{};
+            if (!GetFileAttributesExFromAppW(prefix.c_str(), GetFileExInfoStandard, &data) ||
+                (data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT))
+                return false;
+            if (prefix == path && (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+                return false;
+            if (LibraryFiles::Fold(prefix.wstring()) == LibraryFiles::Fold(root.wstring()))
+                break;
+            prefix = prefix.parent_path();
+        }
+        return true;
+    }
+    return false;
+}
+
+bool RemoveLibraryFile(const fs::path& path, std::string& reason) {
+    std::error_code ec;
+    if (fs::remove(path, ec))
+        return true;
+    reason = "filesystem: " + ec.message();
+    if (DeleteFileFromAppW(path.c_str()))
+        return true;
+    reason += fmt::format("; DeleteFileFromApp: error {}", GetLastError());
+    try {
+        using namespace winrt::Windows::Storage;
+        const auto file =
+            AwaitBounded(StorageFile::GetFileFromPathAsync(path.native()), std::chrono::seconds(5));
+        if (!file) {
+            reason += "; StorageFile: timed out";
+            return false;
+        }
+        auto deleting = file->DeleteAsync(StorageDeleteOption::PermanentDelete);
+        const auto status = deleting.wait_for(std::chrono::seconds(30));
+        if (status == winrt::Windows::Foundation::AsyncStatus::Completed)
+            return true;
+        if (status == winrt::Windows::Foundation::AsyncStatus::Error)
+            reason += fmt::format("; StorageFile: HRESULT 0x{:08x}",
+                                  static_cast<std::uint32_t>(deleting.ErrorCode().value));
+        else {
+            deleting.Cancel();
+            reason += "; StorageFile: timed out";
+        }
+    } catch (const winrt::hresult_error& failure) {
+        reason += fmt::format("; StorageFile: HRESULT 0x{:08x} {}",
+                              static_cast<std::uint32_t>(failure.code().value),
+                              winrt::to_string(failure.message()));
+    }
+    return false;
+}
+} // namespace
+
+std::vector<LibraryDeleteFile> LibraryDeleteCandidates(const GameEntry& game,
+                                                       const fs::path& local_state) {
+    ScopedApartment apartment;
+    std::vector<LibraryDeleteFile> result;
+    const auto roots = DeleteRoots(local_state);
+    if (!SafeDeletePath(game.path, roots))
+        return result;
+    std::set<fs::path> candidates{game.path};
+    // Local subfolders are scanned by the library too. StorageFolder enumeration reaches USB.
+    std::error_code ec;
+    fs::recursive_directory_iterator it(local_state / "games",
+                                        fs::directory_options::skip_permission_denied, ec),
+        end;
+    while (!ec && it != end) {
+        candidates.insert(it->path());
+        it.increment(ec);
+    }
+    auto folders = roots;
+    folders.push_back(game.path.parent_path());
+    for (const auto& folder : folders) {
+        try {
+            const auto storage = AwaitBounded(
+                winrt::Windows::Storage::StorageFolder::GetFolderFromPathAsync(folder.native()),
+                std::chrono::seconds(5));
+            if (!storage)
+                continue;
+            const auto files = AwaitBounded(storage->GetFilesAsync(), std::chrono::seconds(5));
+            if (files)
+                for (const auto& file : *files)
+                    candidates.emplace(std::wstring(file.Path()));
+        } catch (const winrt::hresult_error& failure) {
+            Diagnostic("LIBRARY_DELETE list failed reason=" + winrt::to_string(failure.message()));
+        }
+    }
+    const auto base = game.title_id.empty() ? LibraryFiles::FilenameTitle(game.path)
+                                            : LibraryFiles::ParseTitle(game.title_id);
+    std::set<std::wstring> seen_paths;
+    for (auto it = candidates.begin(); it != candidates.end();) {
+        if (seen_paths.insert(LibraryFiles::Fold(it->wstring())).second)
+            ++it;
+        else
+            it = candidates.erase(it);
+    }
+    FileSys::RealVfsFilesystem vfs;
+    for (const auto& path : candidates) {
+        if (!SafeDeletePath(path, roots))
+            continue;
+        const bool sibling = LibraryFiles::Sibling(game.path, path);
+        bool related = false;
+        if (!sibling && base) {
+            const auto id = LibraryFiles::FilenameTitle(path);
+            related = id && LibraryFiles::Related(*base, *id);
+            // Complete update/DLC packages need no title ID in their filename.
+            if (!id && Lowercase(path.extension().wstring()) == L".nsp") {
+                const auto file =
+                    vfs.OpenFile(Common::FS::PathToUTF8String(path), FileSys::OpenMode::Read);
+                if (file && TruncatedPackage(vfs, path) == std::optional<bool>{false}) {
+                    const FileSys::NSP package(file);
+                    for (const auto& [title_id, nca] : package.GetNCAsByTitleID())
+                        related |= LibraryFiles::Related(*base, title_id);
+                }
+            }
+        }
+        if (sibling || related)
+            result.push_back({path, Common::FS::GetSize(path), !sibling, sibling});
+    }
+    // Include converted/download sidecars even when only the update NSP exposed its title ID.
+    const auto identified = result;
+    for (const auto& path : candidates) {
+        if (!SafeDeletePath(path, roots) ||
+            std::any_of(result.begin(), result.end(),
+                        [&](const auto& file) { return file.path == path; }))
+            continue;
+        for (const auto& file : identified) {
+            if (LibraryFiles::Sibling(file.path, path)) {
+                result.push_back({path, Common::FS::GetSize(path), file.optional, !file.optional});
+                break;
+            }
+        }
+    }
+    return result;
+}
+
+bool DeleteLibraryFiles(const std::vector<LibraryDeleteFile>& files, const fs::path& local_state) {
+    ScopedApartment apartment;
+    const auto roots = DeleteRoots(local_state);
+    bool success = true;
+    for (const auto& file : files) {
+        if (!file.selected)
+            continue;
+        std::string reason;
+        const bool allowed = SafeDeletePath(file.path, roots);
+        const bool ok = allowed && RemoveLibraryFile(file.path, reason);
+        if (!allowed)
+            reason =
+                "outside scanned game folders, reparse point, unreadable attributes or not a file";
+        Diagnostic("LIBRARY_DELETE path=" + Utf8(file.path.wstring()) +
+                   (ok ? " ok reason=deleted" : " failed reason=" + reason));
+        success &= ok;
+    }
+    return success;
+}
 
 LibraryScan::LibraryScan(std::filesystem::path local_state, bool convert_nsz)
     : local_state_(std::move(local_state)), convert_nsz_(convert_nsz) {
@@ -479,6 +692,7 @@ void LibraryScan::ConvertCompressed(const std::vector<fs::path>& compressed,
     // .nsp is the package, and nothing is deleted.
     std::vector<std::pair<fs::path, fs::path>> pending; // .nsz and the .nsp it becomes
     std::optional<std::vector<fs::path>> external; // removable NXbox\games folders, looked up once
+    FileSys::RealVfsFilesystem probe;
     for (const fs::path& nsz : compressed) {
         fs::path nsp = nsz;
         nsp.replace_extension(L".nsp");
@@ -494,18 +708,24 @@ void LibraryScan::ConvertCompressed(const std::vector<fs::path>& compressed,
                 existing = folder / nsp.filename();
             }
         }
-        if (!existing.empty()) {
+        if (!existing.empty() && TruncatedPackage(probe, existing) != std::optional<bool>{true}) {
             Diagnostic("UI nsz convert " + Utf8(nsz.filename().wstring()) + " skip " +
                        Utf8(existing.wstring()) + " already exists");
             continue;
         }
+        if (!existing.empty())
+            nsp = existing; // Replace in place only after the temporary conversion succeeds.
         // The .nsp runs about 1.4 times its .nsz; 1.5 leaves a margin. The console's internal
         // storage holds only a few GB, so a big game is converted onto a removable drive with
         // room, and when no place has room the conversion is not attempted at all: a doomed
         // attempt ran for minutes on every library open and failed with "disk full" each time.
         const std::uint64_t needed = Common::FS::GetSize(nsz) * 3 / 2;
         const auto free_in = [](const fs::path& folder) { return FreeSpace(folder); };
-        const auto free_here = free_in(nsz.parent_path());
+        const auto free_here = free_in(nsp.parent_path());
+        if (!existing.empty() && (!free_here || *free_here < needed)) {
+            Diagnostic("UI nsz convert skip: replacement needs temporary space");
+            continue;
+        }
         if (!free_here || *free_here < needed) {
             bool placed = false;
             for (const fs::path& folder : *external) {
@@ -633,6 +853,7 @@ std::vector<GameEntry> LibraryScan::Scan() {
         ConvertCompressed(compressed, packages);
     }
     std::sort(packages.begin(), packages.end());
+    packages.erase(std::unique(packages.begin(), packages.end()), packages.end());
     total_.store(static_cast<int>(packages.size()));
 
     // The cache is indexed by package path: the title ID is only known after parsing.
@@ -666,7 +887,7 @@ std::vector<GameEntry> LibraryScan::Scan() {
         std::optional<GameEntry> game = LoadGame(vfs, library_dir, cached, file, stats);
         if (game) {
             // The cache files are named by title ID, so two packages of one title cannot coexist.
-            if (seen.insert(game->title_id).second) {
+            if (game->incomplete || seen.insert(game->title_id).second) {
                 games.push_back(std::move(*game));
             } else {
                 Diagnostic("UI library skip " + Utf8(file.filename().wstring()) +

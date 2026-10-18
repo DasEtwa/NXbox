@@ -33,6 +33,7 @@ public:
     bool TakeTinfoilRequest();
     bool TakeSourcesRequest();
     bool TakeNavigationRequest();
+    bool HasDownloads() const; // Includes queued and still-joining transfers. UI thread only.
     bool Typing() const; // The search keyboard is open.
 
 private:
