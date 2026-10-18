@@ -594,5 +594,5 @@ pub fn run() {
             cancel
         ])
         .run(tauri::generate_context!())
-        .expect("NxHelper failed to start");
+        .expect("NxbHelper failed to start");
 }

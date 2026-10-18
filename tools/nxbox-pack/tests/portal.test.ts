@@ -392,7 +392,7 @@ test("free space reads the selected package report and ignores missing, stale or
 });
 
 test("HTTP 500 uploads report consoleFull unless the complete file is listed", async () => {
-  const temporary = await mkdtemp(join(tmpdir(), "nxhelper-full-test-"));
+  const temporary = await mkdtemp(join(tmpdir(), "nxbhelper-full-test-"));
   try {
     const path = join(temporary, "game.nsp");
     await writeFile(path, "dump");

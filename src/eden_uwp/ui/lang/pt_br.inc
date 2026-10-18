@@ -220,7 +220,7 @@
     {Text::FirmwareMissing,
      L"Firmware: copie seu dump para firmware ou NXbox\\firmware no USB e reinicie."},
     {Text::FirmwareConvertDump,
-     L"Acesso ao dump negado: use o NxHelper em um PC para convertê-lo."},
+     L"Acesso ao dump negado: use o NxbHelper em um PC para convertê-lo."},
     {Text::FirmwareInstallFailed,
      L"Instalação falhou: confira chaves, arquivos e espaço; reinicie."},
 

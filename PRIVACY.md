@@ -4,7 +4,7 @@
 
 **Last updated: 2026-10-18**
 
-This policy covers **NXbox** (the Xbox app, including its Nextendo Network sign-in) and **NxHelper**
+This policy covers **NXbox** (the Xbox app, including its Nextendo Network sign-in) and **NxbHelper**
 (the PC tool in `tools/nxbox-pack`). It is written from the source code in this repository, so you
 can check each statement there. Where something cannot be checked in this repository, the text says
 so.
@@ -185,13 +185,13 @@ serial number, keys or a Nintendo account for this.
 the tokens in memory on the console. It does not contact Nextendo. To end NXbox's access or delete
 your data on Nextendo's side, use Nextendo's own tools or ask its operators.
 
-## NxHelper
+## NxbHelper
 
-NxHelper runs on your PC. It has no analytics and no account.
+NxbHelper runs on your PC. It has no analytics and no account.
 
 - **GitHub.** It asks `api.github.com` for the latest NXbox release (and, if there is none, for
   recent build artifacts) and downloads the runtime package. It checks the SHA-256 before using it.
-  If you set `NXHELPER_GITHUB_TOKEN`, that token is sent to `api.github.com` only. You can also give
+  If you set `NXBHELPER_GITHUB_TOKEN`, that token is sent to `api.github.com` only. You can also give
   your own HTTPS address and checksum.
 - **Your Xbox.** It talks to the Device Portal at the address you give, with your Device Portal
   login. To find the console, it opens a plain TCP connection to port 11443 on `xbox.local` and on
@@ -290,7 +290,7 @@ personal data in a public issue. Ask for a private channel and one will be arran
 **Última atualização: 2026-10-18**
 
 Esta política cobre o **NXbox** (o app do Xbox, incluindo o login da Nextendo Network) e o
-**NxHelper** (a ferramenta de PC em `tools/nxbox-pack`). Ela foi escrita a partir do código-fonte
+**NxbHelper** (a ferramenta de PC em `tools/nxbox-pack`). Ela foi escrita a partir do código-fonte
 deste repositório, então você pode conferir cada afirmação nele. Quando algo não puder ser conferido
 neste repositório, o texto diz isso.
 
@@ -478,13 +478,13 @@ tokens da memória, no console. Isso não contacta a Nextendo. Para encerrar o a
 apagar seus dados do lado da Nextendo, use as ferramentas da própria Nextendo ou fale com os
 responsáveis por ela.
 
-## NxHelper
+## NxbHelper
 
-O NxHelper roda no seu PC. Ele não tem análise de uso nem conta.
+O NxbHelper roda no seu PC. Ele não tem análise de uso nem conta.
 
 - **GitHub.** Ele pergunta a `api.github.com` qual é a última versão do NXbox (e, se não houver,
   quais são os artefatos de build recentes) e baixa o pacote de runtime. Confere o SHA-256 antes de
-  usar. Se você definir `NXHELPER_GITHUB_TOKEN`, esse token é enviado somente a `api.github.com`.
+  usar. Se você definir `NXBHELPER_GITHUB_TOKEN`, esse token é enviado somente a `api.github.com`.
   Você também pode informar o seu próprio endereço HTTPS e checksum.
 - **Seu Xbox.** Ele fala com o Device Portal no endereço que você informar, com o seu login do
   Device Portal. Para achar o console, abre uma conexão TCP simples na porta 11443 de `xbox.local` e

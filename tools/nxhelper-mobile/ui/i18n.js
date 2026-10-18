@@ -26,7 +26,7 @@ export const translations = {
     sending: "Sending to Xbox",
     preparing: "Preparing files…",
     keepOpen:
-      "Keep NxHelper open and your phone awake until the transfer finishes. Open NXbox afterwards to join large files and install firmware.",
+      "Keep NxbHelper open and your phone awake until the transfer finishes. Open NXbox afterwards to join large files and install firmware.",
     cancel: "Cancel transfer",
     cancelled:
       "Transfer cancelled. Partial files may remain on the Xbox. Send the same files again to replace them.",
@@ -92,7 +92,7 @@ export const translations = {
     sending: "Enviando ao Xbox",
     preparing: "Preparando arquivos…",
     keepOpen:
-      "Mantenha o NxHelper aberto e o celular acordado até terminar. Depois, abra o NXbox para juntar os arquivos grandes e instalar o firmware.",
+      "Mantenha o NxbHelper aberto e o celular acordado até terminar. Depois, abra o NXbox para juntar os arquivos grandes e instalar o firmware.",
     cancel: "Cancelar envio",
     cancelled:
       "Envio cancelado. Partes de arquivos podem permanecer no Xbox. Envie os mesmos arquivos novamente para substituí-las.",

@@ -36,8 +36,8 @@ if apple.exists():
         text = before + after
     project.write_text(text)
     messages = {
-        "en": "NxHelper finds your Xbox and sends games, keys and firmware over your home network.",
-        "pt-BR": "O NxHelper encontra seu Xbox e envia jogos, chaves e firmware pela rede de casa.",
+        "en": "NxbHelper finds your Xbox and sends games, keys and firmware over your home network.",
+        "pt-BR": "O NxbHelper encontra seu Xbox e envia jogos, chaves e firmware pela rede de casa.",
     }
     for language, message in messages.items():
         directory = apple / "Localizations" / f"{language}.lproj"

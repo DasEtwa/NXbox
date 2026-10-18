@@ -58,8 +58,8 @@ async function inputs(): Promise<DriveInputs> {
   };
 }
 beforeEach(async () => {
-  root = await mkdtemp(join(tmpdir(), "nxhelper-drive-test-"));
-  source = await mkdtemp(join(tmpdir(), "nxhelper-input-test-"));
+  root = await mkdtemp(join(tmpdir(), "nxbhelper-drive-test-"));
+  source = await mkdtemp(join(tmpdir(), "nxbhelper-input-test-"));
   await put(source, `firmware/${firmwareName}`);
 });
 afterEach(async () => {

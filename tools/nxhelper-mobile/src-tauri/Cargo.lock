@@ -1987,7 +1987,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "nxhelper-mobile"
+name = "nxbhelper-mobile"
 version = "0.1.0"
 dependencies = [
  "futures-util",

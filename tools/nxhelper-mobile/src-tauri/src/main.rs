@@ -1,3 +1,3 @@
 fn main() {
-    nxhelper_mobile::run();
+    nxbhelper_mobile::run();
 }

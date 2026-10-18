@@ -213,7 +213,7 @@
     {Text::FirmwareSearchedFolders, L"Firmware folders searched (Settings → System)"},
     {Text::FirmwareMissing,
      L"Firmware: copy your dump to firmware or NXbox\\firmware on USB and restart."},
-    {Text::FirmwareConvertDump, L"Dump access denied: use NxHelper on a PC to convert it."},
+    {Text::FirmwareConvertDump, L"Dump access denied: use NxbHelper on a PC to convert it."},
     {Text::FirmwareInstallFailed, L"Install failed: check keys, files and free space; restart."},
 
     {Text::SyncChooseAccount, L"Choose the console account folder"},

@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "NxHelper",
+  "productName": "NxbHelper",
   "version": "0.1.0",
   "identifier": "com.nxhelper.app",
   "build": {
@@ -10,7 +10,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "NxHelper",
+        "title": "NxbHelper",
         "width": 420,
         "height": 800
       }

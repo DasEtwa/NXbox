@@ -57,7 +57,10 @@ export function detectLanguage(
   env: Record<string, string | undefined> = process.env,
   locale: string | readonly string[] = Intl.DateTimeFormat().resolvedOptions().locale,
 ): Language {
-  const forced = matchLanguage((env.NXHELPER_LANG ?? env.NXBOX_PACK_LANG) || "", registry);
+  const forced = matchLanguage(
+    (env.NXBHELPER_LANG ?? env.NXHELPER_LANG ?? env.NXBOX_PACK_LANG) || "",
+    registry,
+  );
   if (forced !== undefined) return forced;
   const environment = env.LC_ALL || env.LC_MESSAGES || env.LANG;
   return matchPreferences(

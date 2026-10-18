@@ -60,7 +60,7 @@ namespace fs = std::filesystem;
 using winrt::Windows::Data::Json::JsonObject;
 using winrt::Windows::Data::Json::JsonValue;
 
-// A fresh report lets NxHelper preflight uploads without a Device Portal drive API.
+// A fresh report lets NxbHelper preflight uploads without a Device Portal drive API.
 void WriteStorageReport(const fs::path& local_state) {
     const fs::path temporary = local_state / "storage.json.tmp";
     try {

@@ -1,19 +1,19 @@
-# NxHelper
+# NxbHelper
 
 Prepare a USB drive or send locally owned games to an installed NXbox through Device Portal. You can
 also install a separate NXbox UWP app for each game. The app has its own identity, name, tile and
 private saves/keys/content. Once configured, its tile boots directly into the game, without opening
 the NXbox library. This packages an emulator runtime; it does not recompile the game.
 
-Download a binary from the **Build NxHelper** workflow artifacts:
+Download a binary from the **Build NxbHelper** workflow artifacts:
 
 | File                       | Host                 |
 | -------------------------- | -------------------- |
-| `nxhelper-windows-x64.exe` | Windows x64          |
-| `nxhelper-macos-arm64`     | Apple Silicon macOS  |
-| `nxhelper-linux-x64`       | Linux x64 with glibc |
+| `nxbhelper-windows-x64.exe` | Windows x64          |
+| `nxbhelper-macos-arm64`     | Apple Silicon macOS  |
+| `nxbhelper-linux-x64`       | Linux x64 with glibc |
 
-On macOS/Linux, run `chmod +x nxhelper-*` before launching. Run the binary in a terminal. No Bun,
+On macOS/Linux, run `chmod +x nxbhelper-*` before launching. Run the binary in a terminal. No Bun,
 Windows SDK, MakeAppx, SignTool, OpenSSL, signing certificate or emulator build is required for
 uncompressed NSP/XCI files. An Intel Mac binary can be compiled with `bun-darwin-x64`; CI currently
 ships the three targets above.
@@ -24,7 +24,7 @@ Enable Xbox Developer Mode and Device Portal authentication in **Dev Home > Remo
 console must already have `Microsoft.VCLibs.140.00` (x64, version 14.0.30704.0 or newer).
 
 ```sh
-./nxhelper-macos-arm64 --insecure-portal
+./nxbhelper-macos-arm64 --insecure-portal
 ```
 
 The self-signed Device Portal TLS certificate normally requires `--insecure-portal`. This flag
@@ -46,7 +46,7 @@ For **Install a game as its own app**:
 
 Only Portuguese and English are used, selected automatically from the system locale. `LC_ALL`,
 `LC_MESSAGES` and `LANG` take precedence over `Intl`; on Windows, `Get-Culture` supplies the locale
-when no environment override is present. `NXHELPER_LANG=pt` or `en` forces the language for tests.
+when no environment override is present. `NXBHELPER_LANG=pt` or `en` forces the language for tests.
 There is no language selector.
 
 Credentials stay in memory unless you choose to save them. macOS uses Keychain via `security`; Linux
@@ -59,14 +59,14 @@ never passed in process arguments or written as plaintext configuration.
 The default source is the latest `NspxMiguel/NXbox` release's `NXbox_game_*.appx` with a GitHub
 SHA-256 digest. If unavailable, the tool tries the newest successful main-branch packaging workflow
 runs and their unexpired `nxbox-release` / `nxbox-diagnostic` artifacts. CPU-only artifacts fail
-payload validation. For authenticated CI downloads, set `NXHELPER_GITHUB_TOKEN` to a token with
+payload validation. For authenticated CI downloads, set `NXBHELPER_GITHUB_TOKEN` to a token with
 Actions read access for this repository. The token is not saved. A public release is the preferred
 distribution path for users without GitHub credentials.
 
 Alternatively, supply both a direct HTTPS URL and a trusted checksum:
 
 ```sh
-./nxhelper-macos-arm64 --insecure-portal \
+./nxbhelper-macos-arm64 --insecure-portal \
   --runtime-url https://example.org/NXbox_game_0.3.1.0_x64.appx \
   --runtime-sha256 YOUR_64_HEX_DIGIT_SHA256
 ```
@@ -81,7 +81,7 @@ and strips signed APPX bookkeeping, homebrew samples, game dumps, keys and stale
 ## Compressed games
 
 For independent app installation and full export, NSZ/XCZ files are accepted but need the optional
-[nsz decompressor](https://github.com/nicoboss/nsz) on PATH. NxHelper runs
+[nsz decompressor](https://github.com/nicoboss/nsz) on PATH. NxbHelper runs
 `nsz -D --keys <your-prod.keys> -o <private-temp-directory> <dump>` locally before deployment. It
 uploads the resulting NSP/XCI and deletes temporary output afterward. The original dump is
 preserved. Allow space for both the compressed input and decompressed output; updates/DLC follow the
@@ -118,7 +118,7 @@ See [the design and console verification plan](../../docs/nxbox-pack.md).
 
 ## Ownership
 
-You must own the game and dump your own keys. NxHelper never downloads games or keys. They are
+You must own the game and dump your own keys. NxbHelper never downloads games or keys. They are
 uploaded separately into the installed app's private LocalState, never included in the staged
 runtime or a distributable package. Do not share game dumps, keys, or console LocalState backups.
 
@@ -134,11 +134,11 @@ and **Install a game as its own app**. The GUI offers these choices plus full li
 and **Check USB drive**. Updates and DLC can be selected alongside base games.
 
 ```sh
-nxhelper --to-drive /Volumes/Xbox Game.NSP Update.nsp --keys /path/prod.keys \
+nxbhelper --to-drive /Volumes/Xbox Game.NSP Update.nsp --keys /path/prod.keys \
   --title-keys /path/title.keys --firmware /path/firmware.zip
-nxhelper --to-xbox --host 192.168.1.20 Game.nsp --keys /path/prod.keys
-nxhelper --check-drive /Volumes/Xbox
-nxhelper --check-drive /Volumes/Xbox --fix
+nxbhelper --to-xbox --host 192.168.1.20 Game.nsp --keys /path/prod.keys
+nxbhelper --check-drive /Volumes/Xbox
+nxbhelper --check-drive /Volumes/Xbox --fix
 ```
 
 `--keys` is required for the transfer commands. Title keys and firmware are optional. Firmware may
@@ -172,12 +172,14 @@ and misplaced games. It exits 0 when there are no failed items, 1 otherwise. `--
 flattens firmware into `NXbox/firmware/`; it preserves the original ZIP, NAND or directory.
 
 For the native GUI, build with `cargo build --release --locked` in `tools/nxbox-pack-gui/`. Place
-the compiled core alongside `NxHelper(.exe)` as `nxhelper-core(.exe)`. The JSON-lines API accepts
+the compiled core alongside `NxbHelper(.exe)` as `nxbhelper-core(.exe)`. The JSON-lines API accepts
 `checkDrive`/`fixDrive` with `path` and `language` (`en`/`pt`). `run` jobs also accept
 `mode: "drive"` with `target: {kind: "export", out: "/drive"}` or `mode: "xbox"` with
 `target: {kind: "install", host: "192.168.1.20"}`. Both use `games`, `keys`, optional
 `titleKeys`/`firmware`, and `language`; drive completion includes `report`. Existing `game` and
 `full` jobs remain supported.
 
-`NXBOX_PACK_LANG` and `NXBOX_PACK_GITHUB_TOKEN` remain fallback aliases for `NXHELPER_LANG` and
-`NXHELPER_GITHUB_TOKEN`. Saved credentials keep the existing service identity.
+`NXBOX_PACK_LANG` and `NXBOX_PACK_GITHUB_TOKEN` remain fallback aliases for `NXBHELPER_LANG` and
+`NXBHELPER_GITHUB_TOKEN`. Saved credentials keep the existing service identity.
+
+`NXHELPER_LANG` and `NXHELPER_GITHUB_TOKEN` remain compatibility aliases. New scripts should use `NXBHELPER_LANG` and `NXBHELPER_GITHUB_TOKEN`.

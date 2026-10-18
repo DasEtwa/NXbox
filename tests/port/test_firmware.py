@@ -125,7 +125,7 @@ class FirmwareTests(unittest.TestCase):
         for language in ("en", "pt_br"):
             text = (ROOT / f"src/eden_uwp/ui/lang/{language}.inc").read_text()
             self.assertIn("Text::FirmwareConvertDump", text)
-            self.assertIn("NxHelper", text)
+            self.assertIn("NxbHelper", text)
         ui = (ROOT / "src/eden_uwp/ui/library_screen.cpp").read_text()
         self.assertIn("firmware_status_.conversion_required", ui)
         self.assertIn("Tr(Text::FirmwareConvertDump)", ui)

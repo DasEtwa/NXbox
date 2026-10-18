@@ -1,12 +1,12 @@
 [package]
-name = "nxhelper-mobile"
+name = "nxbhelper-mobile"
 version = "0.1.0"
 edition = "2021"
 authors = ["NSPX"]
 license = "GPL-3.0-or-later"
 
 [lib]
-name = "nxhelper_mobile"
+name = "nxbhelper_mobile"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

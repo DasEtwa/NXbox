@@ -1,12 +1,12 @@
-# NxHelper mobile
+# NxbHelper mobile
 
 © 2026 NSPX · GPL-3.0-or-later · Android / iOS · `com.nxhelper.app`
 
 ## Português
 
-Baixe os artefatos do workflow **Build NxHelper mobile** no GitHub Actions e descompacte-os.
-No Android, abra `NxHelper-android.apk` e permita a instalação por essa fonte.
-No iPhone, importe `NxHelper-ios-unsigned.ipa` no AltStore ou SideStore; ele assina
+Baixe os artefatos do workflow **Build NxbHelper mobile** no GitHub Actions e descompacte-os.
+No Android, abra `NxbHelper-android.apk` e permita a instalação por essa fonte.
+No iPhone, importe `NxbHelper-ios-unsigned.ipa` no AltStore ou SideStore; ele assina
 com sua conta durante o sideload. Renove a assinatura conforme o aplicativo pedir.
 Não é uma distribuição pela App Store.
 
@@ -22,9 +22,9 @@ selecionar vários `.nca`. Não há preparação de USB nem extração de NAND/e
 
 ## English
 
-Download and unzip the artifacts from **Build NxHelper mobile** in GitHub Actions.
-On Android, open `NxHelper-android.apk` and allow installation from that source.
-On iPhone, import `NxHelper-ios-unsigned.ipa` into AltStore or SideStore; it signs
+Download and unzip the artifacts from **Build NxbHelper mobile** in GitHub Actions.
+On Android, open `NxbHelper-android.apk` and allow installation from that source.
+On iPhone, import `NxbHelper-ios-unsigned.ipa` into AltStore or SideStore; it signs
 the app with your account during sideloading. Renew signing when prompted.
 This app is not distributed through the App Store.
 

@@ -1,10 +1,10 @@
-name: Build NxHelper mobile
+name: Build NxbHelper mobile
 on:
   workflow_dispatch:
   push:
     paths:
       - tools/nxhelper-mobile/**
-      - .github/workflows/nxhelper-mobile.yml
+      - .github/workflows/nxbhelper-mobile.yml
 permissions:
   contents: read
 jobs:
@@ -58,7 +58,7 @@ jobs:
           set -euo pipefail
           apk=$(find src-tauri/gen/android/app/build/outputs/apk -name '*release-unsigned.apk' -print -quit)
           test -n "$apk"
-          keystore="$RUNNER_TEMP/nxhelper.jks"
+          keystore="$RUNNER_TEMP/nxbhelper.jks"
           trap 'rm -f "$keystore"' EXIT
           if [[ -n "$KEYSTORE_B64" && -n "$KEYSTORE_PASSWORD" && -n "$KEY_ALIAS" && -n "$KEY_PASSWORD" ]]; then
             printf '%s' "$KEYSTORE_B64" | base64 --decode > "$keystore"
@@ -72,12 +72,12 @@ jobs:
           fi
           tools="$ANDROID_HOME/build-tools/36.0.0"
           "$tools/zipalign" -f -p 4 "$apk" "$RUNNER_TEMP/aligned.apk"
-          "$tools/apksigner" sign --ks "$keystore" --ks-key-alias "$KEY_ALIAS" --ks-pass env:KEYSTORE_PASSWORD --key-pass env:KEY_PASSWORD --out NxHelper-android.apk "$RUNNER_TEMP/aligned.apk"
-          "$tools/apksigner" verify NxHelper-android.apk
+          "$tools/apksigner" sign --ks "$keystore" --ks-key-alias "$KEY_ALIAS" --ks-pass env:KEYSTORE_PASSWORD --key-pass env:KEY_PASSWORD --out NxbHelper-android.apk "$RUNNER_TEMP/aligned.apk"
+          "$tools/apksigner" verify NxbHelper-android.apk
       - uses: actions/upload-artifact@v4
         with:
-          name: NxHelper-android.apk
-          path: tools/nxhelper-mobile/NxHelper-android.apk
+          name: NxbHelper-android.apk
+          path: tools/nxhelper-mobile/NxbHelper-android.apk
           if-no-files-found: error
   ios:
     runs-on: macos-latest
@@ -110,12 +110,12 @@ jobs:
           set -euo pipefail
           app=$(find src-tauri/gen/apple -path '*.xcarchive/Products/Applications/*.app' -type d -print -quit)
           test -n "$app"
-          mkdir -p "$RUNNER_TEMP/nxhelper-ipa/Payload"
-          ditto "$app" "$RUNNER_TEMP/nxhelper-ipa/Payload/NxHelper.app"
-          cd "$RUNNER_TEMP/nxhelper-ipa"
-          zip -qry "$GITHUB_WORKSPACE/tools/nxhelper-mobile/NxHelper-ios-unsigned.ipa" Payload
+          mkdir -p "$RUNNER_TEMP/nxbhelper-ipa/Payload"
+          ditto "$app" "$RUNNER_TEMP/nxbhelper-ipa/Payload/NxbHelper.app"
+          cd "$RUNNER_TEMP/nxbhelper-ipa"
+          zip -qry "$GITHUB_WORKSPACE/tools/nxhelper-mobile/NxbHelper-ios-unsigned.ipa" Payload
       - uses: actions/upload-artifact@v4
         with:
-          name: NxHelper-ios-unsigned.ipa
-          path: tools/nxhelper-mobile/NxHelper-ios-unsigned.ipa
+          name: NxbHelper-ios-unsigned.ipa
+          path: tools/nxhelper-mobile/NxbHelper-ios-unsigned.ipa
           if-no-files-found: error

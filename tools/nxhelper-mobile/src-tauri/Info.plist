@@ -2,7 +2,7 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>NSLocalNetworkUsageDescription</key>
-<string>NxHelper finds your Xbox and sends games, keys and firmware over your home network.</string>
+<string>NxbHelper finds your Xbox and sends games, keys and firmware over your home network.</string>
 <key>CFBundleLocalizations</key><array><string>en</string><string>pt-BR</string></array>
 <key>CFBundleDevelopmentRegion</key><string>en</string>
 </dict></plist>

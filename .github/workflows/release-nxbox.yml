@@ -36,7 +36,7 @@ jobs:
     secrets: inherit
   helper:
     needs: version
-    uses: ./.github/workflows/nxbox-pack.yml
+    uses: ./.github/workflows/nxbhelper.yml
   publish:
     needs: [package, helper]
     runs-on: ubuntu-latest
@@ -49,16 +49,25 @@ jobs:
           path: out
       - uses: actions/download-artifact@v4
         with:
-          pattern: NxHelper-*
+          pattern: NxbHelper-*
           path: helper
-      - name: Zip NxHelper bundles
+      - name: Zip NxbHelper bundles
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          for bundle in helper/NxHelper-*; do
-            chmod +x "$bundle"/NxHelper "$bundle"/nxhelper-core 2>/dev/null || true
+          for bundle in helper/NxbHelper-*; do
+            chmod +x "$bundle"/NxbHelper "$bundle"/nxbhelper-core 2>/dev/null || true
             (cd "$bundle" && zip -q -r "$GITHUB_WORKSPACE/out/$(basename "$bundle").zip" .)
           done
+          # Publish legacy ZIP aliases only until the latest release already carries NxbHelper.
+          previous_assets=$(gh release view -R NspxMiguel/NXbox --json assets --jq '.assets[].name')
+          if ! printf '%s\n' "$previous_assets" | grep -q '^NxbHelper-'; then
+            for archive in out/NxbHelper-*.zip; do
+              cp "$archive" "${archive/NxbHelper-/NxHelper-}"
+            done
+          fi
           ls -l out
-      - name: Publish signed package, NxHelper and build information
+      - name: Publish signed package, NxbHelper and build information
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -66,4 +75,4 @@ jobs:
           IFS=. read -r major minor build fix <<< "${GITHUB_REF_NAME#v}"
           title="NXbox $major.$minor.$build Alpha"
           if [ -n "$fix" ] && [ "$fix" != 0 ]; then title="$title · fix $fix"; fi
-          gh release create "$GITHUB_REF_NAME" out/*.appx out/NxHelper-*.zip out/build-info.json --repo "$GITHUB_REPOSITORY" --title "$title" --verify-tag --latest --generate-notes
+          gh release create "$GITHUB_REF_NAME" out/*.appx out/*.zip out/build-info.json -R NspxMiguel/NXbox --title "$title" --verify-tag --latest --generate-notes

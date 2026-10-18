@@ -112,7 +112,7 @@ export async function saveCredentials(host: string, credentials: Credentials): P
   if (process.platform === "linux")
     return (
       (await command(
-        ["secret-tool", "store", "--label=NxHelper", "service", service, "host", host],
+        ["secret-tool", "store", "--label=NxbHelper", "service", service, "host", host],
         text,
       )) !== undefined
     );

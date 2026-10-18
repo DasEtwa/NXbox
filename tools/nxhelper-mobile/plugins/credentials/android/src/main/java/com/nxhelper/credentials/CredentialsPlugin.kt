@@ -78,7 +78,7 @@ class CredentialsPlugin(private val activity: Activity) : Plugin(activity) {
         }
     }
 
-    private val alias = "nxhelper.portal"
+    private val alias = "nxbhelper.portal"
 
     private fun key(): SecretKey {
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }

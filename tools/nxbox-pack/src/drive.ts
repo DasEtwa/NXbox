@@ -375,7 +375,7 @@ export async function fixDrive(
     const source = await firmwareSource(root),
       keys = await keyPath(root, "prod.keys");
     if (!source.source || !source.fixable || !keys) return checkDrive(root, language, deps);
-    const temporary = await mkdtemp(join(tmpdir(), "nxhelper-firmware-"));
+    const temporary = await mkdtemp(join(tmpdir(), "nxbhelper-firmware-"));
     try {
       const fw = await deps.prepare(source.source, keys, temporary);
       await copyPlan(
@@ -450,7 +450,7 @@ export async function prepareDrive(
 ): Promise<DriveReport> {
   root = resolve(root);
   if (!(await lstat(root)).isDirectory()) throw new PackError("inputInvalid");
-  const temporary = await mkdtemp(join(tmpdir(), "nxhelper-drive-"));
+  const temporary = await mkdtemp(join(tmpdir(), "nxbhelper-drive-"));
   try {
     const plan = await validatedInputs(inputs, temporary, deps);
     await copyPlan(
@@ -480,7 +480,7 @@ export async function sendToNxbox(
   onProgress: Progress = () => {},
   deps = services,
 ) {
-  const temporary = await mkdtemp(join(tmpdir(), "nxhelper-xbox-"));
+  const temporary = await mkdtemp(join(tmpdir(), "nxbhelper-xbox-"));
   try {
     const plan = await validatedInputs(inputs, temporary, deps, true);
     const packages = (await portal.packages()).filter((p) =>
