@@ -13,3 +13,7 @@ sys-locale = "0.3.2"
 
 [dev-dependencies]
 egui_kittest = { version = "0.36.0", features = ["wgpu"] }
+
+[[bin]]
+name = "NxHelper"
+path = "src/main.rs"

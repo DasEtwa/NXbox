@@ -1,6 +1,10 @@
-# NXbox Pack design
+# NxHelper design
 
-NXbox Pack creates an independent UWP app per base game using the existing NXbox game-mode runtime.
+> **Naming:** NxHelper was called NXbox Pack. The product name changed, but the folder
+> `tools/nxbox-pack/`, the `nxbox-pack` workflow and the `NXBOX_PACK_*` variables keep the old name,
+> so paths and identifiers below still say `nxbox-pack`.
+
+NxHelper creates an independent UWP app per base game using the existing NXbox game-mode runtime.
 It copies the emulator binaries into each app rather than routing a launcher tile to a shared NXbox
 installation. Each package gets a separate LocalState, saves, configuration and content. It does not
 recompile Switch code into native Xbox code.

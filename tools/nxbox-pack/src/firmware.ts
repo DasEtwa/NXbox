@@ -4,13 +4,14 @@
 import { xtsTransform } from "./xts";
 import { createDecipheriv, createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { mkdir, readFile, rm } from "node:fs/promises";
+import { lstat, mkdir, readFile, rm } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { PackError } from "./i18n";
-import { Fat32, withSystem } from "./nand";
+import { Fat32, imageParts, withSystem } from "./nand";
 import {
   bounded,
   fileReader,
+  folderFiles,
   inputFiles,
   writeChunks,
   zipEntries,
@@ -142,7 +143,8 @@ export async function verifyFirmware(files: LocalFile[], keys: Keys): Promise<Fi
     mii = false;
   for (const file of files) {
     const name = basename(file.name).toLowerCase();
-    if (!/^[a-f0-9]{32}\.nca$/.test(name) || names.has(name))
+    // Dump tools name metadata NCAs <hash>.cnmt.nca; the hash prefix is the same.
+    if (!/^[a-f0-9]{32}(?:\.cnmt)?\.nca$/.test(name) || names.has(name))
       throw new PackError("firmwareInvalid");
     names.add(name);
     const hash = createHash("sha256");
@@ -174,13 +176,25 @@ export async function prepareFirmware(
     await mkdir(temporary, { recursive: true, mode: 0o700 });
     const keys = await readKeys(keysPath);
     let files: LocalFile[];
+    if (/\.7z$/i.test(path)) throw new PackError("firmware7z");
+    if (/\.rar$/i.test(path)) throw new PackError("firmwareRar");
+    const info = await lstat(path);
+    if (info.isBlockDevice() || info.isCharacterDevice()) throw new PackError("firmwarePartition");
     const isZip = /\.zip$/i.test(path),
-      entries = isZip ? await zipEntries(path) : [];
+      entries = isZip ? await zipEntries(path) : info.isDirectory() ? await folderFiles(path) : [];
     const nand =
-      /^rawnand\.bin(?:\.\d{2})?$/i.test(basename(path)) ||
-      entries.some((e) => /^rawnand\.bin(?:\.\d{2})?$/i.test(basename(e.name)));
+      imageParts<{ name: string }>(entries, /^eMMC$/i.test(basename(path))) ||
+      (!info.isDirectory() &&
+        /^(?:rawnand\.bin(?:\.\d{2})?|SYSTEM(?:\.bin)?|\d{2})$/i.test(basename(path)));
+    // A partition-emuMMC marker only matters when nothing else in the folder can be used.
+    if (
+      !nand &&
+      entries.some((e) => /(?:^|\/)(?:emummc\.ini|raw_based)$/i.test(e.name)) &&
+      !entries.some((e) => /(?:^|\/)[a-f0-9]{32}(?:\.cnmt)?\.nca(?:\/|$)/i.test(e.name))
+    )
+      throw new PackError("firmwarePartition");
     if (nand) {
-      return await withSystem(path, temporary, key(keys, "bis_key_02", 32), async (reader) => {
+      return await withSystem(path, temporary, keys.get("bis_key_02"), async (reader) => {
         const extracted = join(temporary, "ncas");
         await rm(extracted, { recursive: true, force: true });
         await mkdir(extracted, { recursive: true, mode: 0o700 });
@@ -193,7 +207,7 @@ export async function prepareFirmware(
           if (depth > 8 || seen.has(cluster)) throw new PackError("nandInvalid");
           seen.add(cluster);
           for (const e of await fat.directory(cluster)) {
-            if (/^[a-f0-9]{32}\.nca$/i.test(e.name)) {
+            if (/^[a-f0-9]{32}(?:\.cnmt)?\.nca$/i.test(e.name)) {
               const local = join(extracted, e.name.toLowerCase());
               if (e.directory) {
                 const chunks = await fat.directory(e.cluster);
@@ -218,15 +232,43 @@ export async function prepareFirmware(
         return await verifyFirmware(out, keys);
       });
     } else {
-      files = (await inputFiles(path, join(temporary, "ncas"))).filter((f) =>
-        /\.nca$/i.test(f.name),
-      );
+      const inputs = await inputFiles(path, join(temporary, "input"));
+      files = inputs.filter((f) => /\.nca$/i.test(f.name));
+      const groups = new Map<string, LocalFile[]>();
+      for (const file of inputs) {
+        const match = file.name.match(/^(.*(?:^|\/)[a-f0-9]{32}(?:\.cnmt)?\.nca)\/([^/]+)$/i);
+        if (!match) continue;
+        const group = groups.get(match[1]!) ?? [];
+        group.push(file);
+        groups.set(match[1]!, group);
+      }
+      let index = 0;
+      for (const [name, chunks] of groups) {
+        chunks.sort((a, b) => a.name.localeCompare(b.name));
+        if (
+          chunks.some((c, i) => !/^\d{2}$/.test(basename(c.name)) || Number(basename(c.name)) !== i)
+        )
+          throw new PackError("firmwareInvalid");
+        const local = join(temporary, "joined", String(index++), basename(name));
+        async function* concatenate() {
+          for (const chunk of chunks) yield* createReadStream(chunk.path);
+        }
+        await writeChunks(local, concatenate());
+        files.push({ path: local, name });
+      }
     }
     return await verifyFirmware(files, keys);
   } catch (cause) {
     if (
       cause instanceof PackError &&
-      ["firmwareKeys", "firmwareIncomplete", "nandInvalid"].includes(cause.code)
+      [
+        "firmwareKeys",
+        "firmwareIncomplete",
+        "nandInvalid",
+        "firmware7z",
+        "firmwareRar",
+        "firmwarePartition",
+      ].includes(cause.code)
     )
       throw cause;
     throw new PackError("firmwareInvalid", { cause });

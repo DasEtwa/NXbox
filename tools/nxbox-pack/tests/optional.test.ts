@@ -118,6 +118,9 @@ test("optional transfers create every parent first and precede boot markers; fai
     let fail = false,
       existing = false;
     class Portal extends DevicePortal {
+      override async installAsGames() {
+        return false;
+      }
       override async uploadRuntime() {}
       override async register() {
         return { Name: "game", PackageFullName: "pkg" };
