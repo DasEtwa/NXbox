@@ -11,6 +11,8 @@ add_library(frontend_common STATIC
     firmware_files.h
     firmware_install.h
     firmware_install.cpp
+    firmware_sources.h
+    firmware_sources.cpp
     firmware_manager.h
     firmware_manager.cpp
     data_manager.h data_manager.cpp
@@ -31,4 +33,4 @@ endif()
 create_target_directory_groups(frontend_common)
 target_link_libraries(frontend_common
     PUBLIC core SimpleIni::SimpleIni frozen::frozen-headers
-    PRIVATE common Boost::headers)
+    PRIVATE common Boost::headers ZLIB::ZLIB)

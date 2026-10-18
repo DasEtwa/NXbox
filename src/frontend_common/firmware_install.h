@@ -18,6 +18,9 @@ enum class InstallResult { Success, NoNCAs, FailedDelete, FailedCopy, FailedCorr
 // The caller owns folder discovery and supplies a fully initialized filesystem controller.
 InstallResult InstallFirmware(Core::System& system, const std::vector<std::filesystem::path>& files,
                               const std::function<bool(size_t, size_t)>& callback);
+// Verifies a complete candidate without modifying installed content; empty means invalid.
+std::string VerifyFirmware(Core::System& system, const std::vector<std::filesystem::path>& files,
+                           const std::function<bool(size_t, size_t)>& callback);
 // Reads only the real SystemVersion archive; never reports the synthesized fallback.
 std::string InstalledVersion(Core::System& system);
 } // namespace FirmwareManager

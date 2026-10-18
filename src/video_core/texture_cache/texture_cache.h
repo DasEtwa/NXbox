@@ -806,6 +806,7 @@ void TextureCache<P>::DumpPassRenderTargets() {
             if (info.num_samples <= 1) {
                 bytes = download(image, 0, directory / file);
             }
+            pass_dump_targets.push_back({id, seq, static_cast<u32>(slot)});
             manifest << fmt::format(
                 "{{\"seq\":{},\"slot\":{},\"gpu_addr\":{},\"width\":{},\"height\":{},"
                 "\"format\":\"{}\",\"bytes\":{},\"file\":\"{}\",\"sampled\":[{}]{}}}\n",
@@ -1053,6 +1054,45 @@ bool TextureCache<P>::BlitImage(const Tegra::Engines::Fermi2D::Surface& dst,
                           copy.operation);
     }
     return true;
+}
+
+template <class P>
+std::string TextureCache<P>::RecordPassDumpPresentation(DAddr cpu_addr, const ImageView* view) {
+    if (!PassDump::GetConfig().enabled || CaptureFrame() != PassDump::GetConfig().frame)
+        return {};
+    // Presentation can happen before TickFrame closes the final pass.
+    DumpPassRenderTargets();
+    u64 sequence = 0;
+    int slot = -1;
+    if (view) {
+        for (const auto& target : pass_dump_targets) {
+            if (target.id == view->image_id) {
+                sequence = target.sequence;
+                slot = static_cast<int>(target.slot);
+            }
+        }
+    }
+    const auto* image = view ? &slot_images[view->image_id] : nullptr;
+    const std::string record =
+        fmt::format("{{\"event\":\"present\",\"frame\":{},\"cpu_addr\":{},\"source\":\"{}\","
+                    "\"gpu_addr\":{},\"format\":\"{}\",\"width\":{},\"height\":{},"
+                    "\"view_format\":\"{}\",\"view_width\":{},\"view_height\":{},"
+                    "\"producer_seq\":{},\"producer_slot\":{}}}",
+                    CaptureFrame(), cpu_addr, image ? "texture_cache" : "guest_memory",
+                    image ? image->gpu_addr : GPUVAddr{0},
+                    image ? PassDump::FormatName(image->info.format) : "unknown",
+                    image ? image->info.size.width : 0, image ? image->info.size.height : 0,
+                    view ? PassDump::FormatName(view->format) : "unknown",
+                    view ? view->size.width : 0, view ? view->size.height : 0, sequence, slot);
+    try {
+        std::filesystem::create_directories(PassDump::GetConfig().directory);
+        std::ofstream manifest{PassDump::GetConfig().directory / "manifest.jsonl", std::ios::app};
+        manifest.exceptions(std::ios::failbit | std::ios::badbit);
+        manifest << record << '\n';
+    } catch (const std::exception& error) {
+        LOG_ERROR(Render, "Pass dump presentation failed: {}", error.what());
+    }
+    return record;
 }
 
 template <class P>
@@ -2614,6 +2654,8 @@ void TextureCache<P>::DeleteImage(ImageId image_id, bool immediate_delete) {
              std::ranges::find(pass_dump_colors, image_id) != pass_dump_colors.end())) {
             DumpPassRenderTargets();
         }
+        std::erase_if(pass_dump_targets,
+                      [image_id](const auto& target) { return target.id == image_id; });
         std::erase(pass_dump_sampled, image_id);
     }
     ImageBase& image = slot_images[image_id];

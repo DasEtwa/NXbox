@@ -3,6 +3,7 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -13,6 +14,33 @@
 #include <vector>
 
 namespace D3D12 {
+// Fixed storage: descriptor copies never allocate while a draw is being recorded.
+// Flush before recycling any source descriptor; sources are CPU-only heap handles.
+template <class Handle, std::size_t Capacity = 32>
+class DescriptorCopyBatch {
+public:
+    template <class Copy>
+    void Add(Handle destination, Handle source, Copy&& copy) {
+        destinations[count] = destination;
+        sources[count++] = source;
+        if (count == Capacity)
+            Flush(copy);
+    }
+    template <class Copy>
+    void Flush(Copy&& copy) {
+        if (!count)
+            return;
+        copy(count, destinations.data(), sources.data());
+        count = 0;
+    }
+
+private:
+    static_assert(Capacity > 0);
+    std::array<Handle, Capacity> destinations{};
+    std::array<Handle, Capacity> sources{};
+    std::size_t count{};
+};
+
 // A recording owns immutable slots only until its submission tick changes.
 // Full semantic keys are compared; hash collisions cannot alias different tables.
 template <class Value>
@@ -258,8 +286,14 @@ public:
     };
     void InitCache(DescriptorCache& cache, D3D12_DESCRIPTOR_HEAP_TYPE type, u32 capacity);
     void RefreshCaches();
+    using CopyBatch = DescriptorCopyBatch<D3D12_CPU_DESCRIPTOR_HANDLE>;
+    void FlushCopies(D3D12_DESCRIPTOR_HEAP_TYPE type, CopyBatch& batch);
+    void CopyDescriptors(D3D12_DESCRIPTOR_HEAP_TYPE type, size_t count,
+                         const D3D12_CPU_DESCRIPTOR_HANDLE* destinations,
+                         const D3D12_CPU_DESCRIPTOR_HANDLE* sources);
     void WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE type, const ResourcePtr& resource, u32 kind,
-                     const void* desc, size_t size, D3D12_CPU_DESCRIPTOR_HANDLE destination);
+                     const void* desc, size_t size, D3D12_CPU_DESCRIPTOR_HANDLE destination,
+                     CopyBatch* batch = nullptr);
     static DescriptorKey MakeDescriptorKey(const ResourcePtr& resource, u32 kind, const void* desc,
                                            size_t size);
     void WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE type, const ResourcePtr& resource, u32 kind,

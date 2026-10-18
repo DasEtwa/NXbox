@@ -285,11 +285,25 @@ DescriptorTable D3D12DescriptorAllocator::FinishDrawTable(DescriptorPlan& plan, 
     const auto table = sampler ? AllocateSamplers(count) : AllocateViews(count);
     const auto type =
         sampler ? D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER : D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    for (u32 slot = 0; slot < count; ++slot) {
-        const auto& key = plan.keys[slot];
-        WriteCached(type, plan.resources[slot], key.kind, key.description.data(), key.size,
-                    table.Slot(slot));
+    static const bool batch_copies = BisectEnabled("NXBOX_D3D12_BATCH_DESCRIPTOR_COPIES");
+    std::optional<CopyBatch> batch;
+    if (batch_copies)
+        batch.emplace();
+    try {
+        for (u32 slot = 0; slot < count; ++slot) {
+            const auto& key = plan.keys[slot];
+            WriteCached(type, plan.resources[slot], key.kind, key.description.data(), key.size,
+                        table.Slot(slot), batch ? &*batch : nullptr);
+        }
+    } catch (...) {
+        // slot_contents already describes queued copies. Complete them even if a later
+        // cache allocation fails, so the next draw cannot mistake an unwritten slot for a hit.
+        if (batch)
+            FlushCopies(type, *batch);
+        throw;
     }
+    if (batch)
+        FlushCopies(type, *batch);
     previous.tick = context.CurrentTick();
     // Retain the new keys/resources and return the old storage to the draw scratch.
     // Move assignment would discard that storage and allocate again on the next draw.
@@ -300,7 +314,8 @@ DescriptorTable D3D12DescriptorAllocator::FinishDrawTable(DescriptorPlan& plan, 
 
 void D3D12DescriptorAllocator::WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE type,
                                            const ResourcePtr& resource, u32 kind, const void* desc,
-                                           size_t size, D3D12_CPU_DESCRIPTOR_HANDLE destination) {
+                                           size_t size, D3D12_CPU_DESCRIPTOR_HANDLE destination,
+                                           CopyBatch* batch) {
     const FrameProfile::Scope profile_write{context.Profile(), FramePhase::DescriptorWrites};
     RefreshCaches();
     const auto key = MakeDescriptorKey(resource, kind, desc, size);
@@ -311,7 +326,10 @@ void D3D12DescriptorAllocator::WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE type,
     auto found = cache.entries.find(key);
     if (found == cache.entries.end()) {
         if (cache.cursor == cache.capacity) {
-            // CPU descriptors were copied immediately; no fence is needed to recycle them.
+            // Pending CPU copies must consume these handles before they are recycled.
+            if (batch)
+                FlushCopies(type, *batch);
+            // Copies are synchronous; no GPU fence is needed to recycle CPU descriptors.
             cache.entries.clear();
             slot_contents.clear();
             cache.cursor = 0;
@@ -361,11 +379,36 @@ void D3D12DescriptorAllocator::WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE type,
         context.Profile().Count(by_kind[kind]);
         found = cache.entries.emplace(key, CachedDescriptor{handle, resource}).first;
     }
-    context.Device()->CopyDescriptorsSimple(1, destination, found->second.handle, type);
-    TraceApiCall(context.Device(), "CopyDescriptorsSimple", nullptr, &type, sizeof(type));
+    if (batch) {
+        batch->Add(destination, found->second.handle,
+                   [&](size_t count, const auto* destinations, const auto* sources) {
+                       CopyDescriptors(type, count, destinations, sources);
+                   });
+    } else {
+        context.Device()->CopyDescriptorsSimple(1, destination, found->second.handle, type);
+        TraceApiCall(context.Device(), "CopyDescriptorsSimple", nullptr, &type, sizeof(type));
+        context.Profile().Count(FrameCount::DescriptorCopyCalls);
+    }
     context.Profile().Count(FrameCount::DescriptorCopies);
     slot_contents[destination.ptr] = std::move(key);
 }
+void D3D12DescriptorAllocator::CopyDescriptors(D3D12_DESCRIPTOR_HEAP_TYPE type, size_t count,
+                                               const D3D12_CPU_DESCRIPTOR_HANDLE* destinations,
+                                               const D3D12_CPU_DESCRIPTOR_HANDLE* sources) {
+    const FrameProfile::Scope profile_write{context.Profile(), FramePhase::DescriptorWrites};
+    // Null range-size arrays mean one descriptor per range, including noncontiguous slots.
+    context.Device()->CopyDescriptors(static_cast<UINT>(count), destinations, nullptr,
+                                      static_cast<UINT>(count), sources, nullptr, type);
+    TraceApiCall(context.Device(), "CopyDescriptors", nullptr, &type, sizeof(type));
+    context.Profile().Count(FrameCount::DescriptorCopyCalls);
+}
+
+void D3D12DescriptorAllocator::FlushCopies(D3D12_DESCRIPTOR_HEAP_TYPE type, CopyBatch& batch) {
+    batch.Flush([&](size_t count, const auto* destinations, const auto* sources) {
+        CopyDescriptors(type, count, destinations, sources);
+    });
+}
+
 std::optional<DescriptorTable> D3D12DescriptorAllocator::FindTable(std::string_view key,
                                                                    bool sampler) {
     RefreshCaches();

@@ -91,10 +91,10 @@ class DrawTraceTests(unittest.TestCase):
         self.assertIn("constexpr u32 MaxTraceStreams = 2", source)
         self.assertIn("trace_streams{0, 0}", source)
         self.assertIn("trace_attribute.enabled == 1 && trace_attribute.slot != 0", source)
-        for resource in ("zero_vertex_buffer", "slot.resource", "padded", "packed"):
+        for resource in ("zero_vertex_buffer", "slot.resource", "padded", "packed.buffer"):
             self.assertRegex(
                 source,
-                rf"if \(trace_vertex_bytes\)\s+trace_vertex_resources\[i\] = {resource};",
+                rf"if \(trace_vertex_bytes\)\s+trace_vertex_resources\[i\] = {re.escape(resource)};",
             )
         allocation = source.index("context.CreateBuffer(VertexTraceBytes * MaxTraceStreams")
         reservation = source.index("const u64 table_tick = context.CurrentTick()")
@@ -167,6 +167,9 @@ class DrawTraceTests(unittest.TestCase):
             "depth_clip",
             "fill",
             "topology_type",
+            "depth_bias",
+            "slope_bias",
+            "bias_clamp",
         )
         self.assertEqual(set(re.findall(r"pso_(\w+)=", source)), set(fields))
         snapshot = source.index("draw_trace_pso = fmt::format")

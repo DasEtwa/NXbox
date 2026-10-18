@@ -213,7 +213,8 @@ GraphicsPipeline::GraphicsPipeline(ID3D12Device* device, ComPtr<ID3D12RootSignat
             "pso_depth_enable={} pso_depth_write={} pso_depth_func={} pso_stencil_enable={} "
             "pso_rt0_blend={} pso_rt0_src={} pso_rt0_dst={} pso_rt0_op={} pso_rt0_write_mask={} "
             "pso_independent_blend={} pso_alpha_to_coverage={} pso_cull={} pso_front_ccw={} "
-            "pso_depth_clip={} pso_fill={} pso_topology_type={}",
+            "pso_depth_clip={} pso_fill={} pso_topology_type={} "
+            "pso_depth_bias={} pso_slope_bias={} pso_bias_clamp={}",
             desc.NumRenderTargets, trace_formats, static_cast<u32>(desc.DSVFormat),
             desc.SampleDesc.Count, desc.SampleMask, ds.DepthEnable,
             static_cast<u32>(ds.DepthWriteMask), static_cast<u32>(ds.DepthFunc), ds.StencilEnable,
@@ -222,7 +223,8 @@ GraphicsPipeline::GraphicsPipeline(ID3D12Device* device, ComPtr<ID3D12RootSignat
             trace_blend.RenderTargetWriteMask, desc.BlendState.IndependentBlendEnable,
             desc.BlendState.AlphaToCoverageEnable, static_cast<u32>(trace_raster.CullMode),
             trace_raster.FrontCounterClockwise, trace_raster.DepthClipEnable,
-            static_cast<u32>(trace_raster.FillMode), static_cast<u32>(desc.PrimitiveTopologyType));
+            static_cast<u32>(trace_raster.FillMode), static_cast<u32>(desc.PrimitiveTopologyType),
+            trace_raster.DepthBias, trace_raster.SlopeScaledDepthBias, trace_raster.DepthBiasClamp);
     }
 
     if (state.stencil_enable & 2) {

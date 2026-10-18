@@ -15,10 +15,10 @@
 #include "core/core_timing.h"
 #include "video_core/dirty_flags.h"
 #include "video_core/engines/maxwell_3d.h"
-#include "video_core/engines/maxwell_3d.h"
 #include "video_core/gpu.h"
 #include "video_core/memory_manager.h"
 #include "video_core/rasterizer_interface.h"
+#include "video_core/submission_trace.h"
 #include "video_core/textures/texture.h"
 
 namespace Tegra::Engines {
@@ -587,6 +587,12 @@ void Maxwell3D::ProcessQueryGet() {
 }
 
 void Maxwell3D::ProcessQueryCondition() {
+    VideoCommon::SubmissionTrace::Log(
+        "condition_begin gpu={:x} mode={} override={}", regs.render_enable.Address(),
+        static_cast<u32>(regs.render_enable.mode), static_cast<u32>(regs.render_enable_override));
+    SCOPE_EXIT {
+        VideoCommon::SubmissionTrace::Log("condition_end execute={}", execute_on);
+    };
     if (rasterizer->AccelerateConditionalRendering()) {
         execute_on = true;
         return;
@@ -612,12 +618,20 @@ void Maxwell3D::ProcessQueryCondition() {
         case Regs::RenderEnable::Mode::Conditional: {
             Regs::ReportSemaphore::Compare cmp;
             memory_manager.ReadBlock(condition_address, &cmp, sizeof(cmp));
+            VideoCommon::SubmissionTrace::Log("condition_values initial_sequence={} "
+                                              "initial_mode={} current_sequence={} current_mode={}",
+                                              cmp.initial_sequence, cmp.initial_mode,
+                                              cmp.current_sequence, cmp.current_mode);
             execute_on = cmp.initial_sequence != 0U && cmp.initial_mode != 0U;
             break;
         }
         case Regs::RenderEnable::Mode::IfEqual: {
             Regs::ReportSemaphore::Compare cmp;
             memory_manager.ReadBlock(condition_address, &cmp, sizeof(cmp));
+            VideoCommon::SubmissionTrace::Log("condition_values initial_sequence={} "
+                                              "initial_mode={} current_sequence={} current_mode={}",
+                                              cmp.initial_sequence, cmp.initial_mode,
+                                              cmp.current_sequence, cmp.current_mode);
             execute_on = cmp.initial_sequence == cmp.current_sequence &&
                          cmp.initial_mode == cmp.current_mode;
             break;
@@ -625,6 +639,10 @@ void Maxwell3D::ProcessQueryCondition() {
         case Regs::RenderEnable::Mode::IfNotEqual: {
             Regs::ReportSemaphore::Compare cmp;
             memory_manager.ReadBlock(condition_address, &cmp, sizeof(cmp));
+            VideoCommon::SubmissionTrace::Log("condition_values initial_sequence={} "
+                                              "initial_mode={} current_sequence={} current_mode={}",
+                                              cmp.initial_sequence, cmp.initial_mode,
+                                              cmp.current_sequence, cmp.current_mode);
             execute_on = cmp.initial_sequence != cmp.current_sequence ||
                          cmp.initial_mode != cmp.current_mode;
             break;
