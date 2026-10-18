@@ -1375,7 +1375,12 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(
             // Opt in to transient missing geometry instead of first-use stalls. Retain
             // the bounded wait for small draws (SM3DW bakes ambient light at level load)
             // and stream output. Compute dispatches retain their existing wait too.
-            static const bool skip_pending = BisectEnabled("NXBOX_D3D12_ASYNC_SHADERS");
+            // Read without BisectEnabled's process cache so the next game sees setting changes.
+            char async_shaders_value[2]{};
+            const bool skip_pending =
+                GetEnvironmentVariableA("NXBOX_D3D12_ASYNC_SHADERS", async_shaders_value,
+                                        sizeof(async_shaders_value)) == 1 &&
+                async_shaders_value[0] == '1';
             const auto& draw = maxwell3d->draw_manager.draw_state;
             const bool may_skip = CanSkipPendingGraphicsPso(
                 skip_pending, draw.index_buffer.count, draw.vertex_buffer.count,

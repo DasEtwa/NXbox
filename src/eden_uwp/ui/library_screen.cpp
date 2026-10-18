@@ -227,6 +227,7 @@ public:
         official_interface_ = UseOfficialSwitchInterface(local_state_);
         renderer_backend_ = RendererSettings::Read(local_state_);
         shader_preload_ = RendererSettings::ReadShaderPreload(local_state_);
+        async_shaders_ = RendererSettings::ReadAsyncShaders(local_state_);
         xbox_button_icons_ = RendererSettings::ReadXboxButtonIcons(local_state_);
         button_layout_ = RendererSettings::ReadButtonLayout(local_state_);
         std::ifstream resolution_settings(local_state_ / "eden_settings.txt");
@@ -968,6 +969,13 @@ private:
         if (SelectedSetting() == Setting::ShaderPreload) {
             if (RendererSettings::SaveShaderPreload(local_state_, !shader_preload_))
                 shader_preload_ = !shader_preload_;
+            else
+                Toast(Tr(Text::ResolutionSaveFailed), now);
+            return;
+        }
+        if (SelectedSetting() == Setting::AsyncShaders) {
+            if (RendererSettings::SaveAsyncShaders(local_state_, !async_shaders_))
+                async_shaders_ = !async_shaders_;
             else
                 Toast(Tr(Text::ResolutionSaveFailed), now);
             return;
@@ -1807,6 +1815,9 @@ private:
              {Tr(Text::ShaderPreloadTitle),
               Tr(shader_preload_ ? Text::NextendoOn : Text::NextendoOff), Theme::kTextSecondary,
               Tr(Text::ShaderPreloadHint)},
+             {Tr(Text::AsyncShadersTitle),
+              Tr(async_shaders_ ? Text::NextendoOn : Text::NextendoOff), Theme::kTextSecondary,
+              Tr(Text::AsyncShadersHint)},
              {Tr(Text::XboxButtonIconsTitle),
               Tr(xbox_button_icons_ ? Text::NextendoOn : Text::NextendoOff), Theme::kTextSecondary,
               Tr(Text::XboxButtonIconsHint)},
@@ -1821,8 +1832,9 @@ private:
              {Tr(Text::FtpServer), ftp_address.c_str(), Theme::kTextSecondary,
               ftp_credentials.c_str()}}};
         constexpr float kRowTop = 340.0f;
-        const float kRowPitch =
-            kSettingsCategories[Idx(settings_category_)].count > 5 ? 106.0f : 128.0f;
+        const float kRowPitch = kSettingsCategories[Idx(settings_category_)].count > 6   ? 92.0f
+                                : kSettingsCategories[Idx(settings_category_)].count > 5 ? 106.0f
+                                                                                         : 128.0f;
         constexpr float kRight = kCanvasWidth - kMargin;
         constexpr float kRowsLeft = 560.0f;
         for (std::size_t category = 0; category < kSettingsCategories.size(); ++category) {
@@ -2087,6 +2099,7 @@ private:
     int renderer_choice_ = 0;
     bool resolution_global_ = false;
     bool shader_preload_ = true;
+    bool async_shaders_ = true;
     bool xbox_button_icons_ = true;
     ButtonLayout button_layout_ = ButtonLayout::Name;
     int renderer_backend_ = RendererSettings::kDirectX12;

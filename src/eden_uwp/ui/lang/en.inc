@@ -365,6 +365,9 @@
     {Text::ShaderPreloadTitle, L"Preload saved shaders"},
     {Text::ShaderPreloadHint, L"Preloads pipeline cache from earlier sessions. New effects can "
                               L"still stutter on first use. Press A to skip."},
+    {Text::AsyncShadersTitle, L"Compile shaders in the background"},
+    {Text::AsyncShadersHint, L"The game doesn't freeze when a new effect appears; the effect may "
+                             L"show up a split second later."},
     {Text::LaunchShaderPreload, L"Loading pipeline cache from earlier sessions"},
     {Text::LaunchShaderSkip, L"A Skip (new effects may still stutter)"},
 

@@ -182,10 +182,10 @@ class AsyncPsoTests(unittest.TestCase):
         self.assertIn("live.envs[index].Snapshot(texture_source)", source)
         self.assertIn("DrawsSkippedPendingPso", source)
         self.assertIn("DispatchesSkippedPendingPso", source)
-        graphics = source.split("static const bool skip_pending =", 1)[1].split(
+        graphics = source.split("const bool skip_pending =", 1)[1].split(
             "Count(FrameCount::DrawsSkippedPendingPso)", 1
         )[0]
-        self.assertIn('BisectEnabled("NXBOX_D3D12_ASYNC_SHADERS")', graphics)
+        self.assertIn('GetEnvironmentVariableA("NXBOX_D3D12_ASYNC_SHADERS"', graphics)
         self.assertIn("draw.index_buffer.count, draw.vertex_buffer.count", graphics)
         self.assertIn("maxwell3d->regs.transform_feedback_enabled != 0", graphics)
         self.assertIn("if (!may_skip && pso_waited.insert(request_hash).second)", graphics)

@@ -382,6 +382,9 @@
     {Text::ShaderPreloadTitle, L"Carregar shaders salvos"},
     {Text::ShaderPreloadHint, L"Carrega o cache de pipelines de sessões anteriores. Efeitos novos "
                               L"ainda podem engasgar no primeiro uso. Aperte A para pular."},
+    {Text::AsyncShadersTitle, L"Compilar shaders em segundo plano"},
+    {Text::AsyncShadersHint, L"O jogo não para quando aparece um efeito novo; o efeito pode surgir "
+                             L"uma fração de segundo depois."},
     {Text::LaunchShaderPreload, L"Carregando cache de pipelines de sessões anteriores"},
     {Text::LaunchShaderSkip, L"A Pular (efeitos novos ainda podem engasgar)"},
 
