@@ -176,6 +176,11 @@ fn release_sources(app: &App, sources: Vec<Source>) {
     }
 }
 #[tauri::command]
+fn can_pick_folder() -> bool {
+    cfg!(desktop)
+}
+
+#[tauri::command]
 async fn pick_files(app: App, folder: bool) -> Result<Vec<FileInfo>> {
     tauri::async_runtime::spawn_blocking(move || {
         {
@@ -192,7 +197,14 @@ async fn pick_files(app: App, folder: bool) -> Result<Vec<FileInfo>> {
         }
         let picker = app.dialog().file();
         let paths = if folder {
-            picker.blocking_pick_folder().map(|p| vec![p])
+            #[cfg(desktop)]
+            {
+                picker.blocking_pick_folder().map(|p| vec![p])
+            }
+            #[cfg(mobile)]
+            {
+                return Err("folderUnsupported".into());
+            }
         } else {
             picker
                 .add_filter("NXbox", &["nsp", "nsz", "xci", "xcz", "keys", "zip", "nca"])
@@ -576,6 +588,7 @@ pub fn run() {
             remembered,
             connect,
             pick_files,
+            can_pick_folder,
             clear_files,
             send,
             cancel

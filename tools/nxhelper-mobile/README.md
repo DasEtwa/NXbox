@@ -83,3 +83,5 @@ Host Rust tests cover private IPv4 policy, split planning for 2.5 GiB, numerical
 package versions and destination mapping. Device Portal interoperability, mobile
 picker grants, native credential stores and large-file transfers require real
 Android/iOS and Xbox validation. CI is the mobile build of record.
+
+On mobile, choose the firmware ZIP or select its loose `.nca` files. Folder picking is available only on desktop because the Tauri mobile dialog does not expose it.

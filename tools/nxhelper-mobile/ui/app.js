@@ -197,5 +197,6 @@ $("cancel").onclick = async () => {
 $("again").onclick = () => {
   if (!busy) show("pick", 3);
 };
+$("folder").hidden = !(await invoke("can_pick_folder"));
 show("find", 1);
 $("scan").click();
