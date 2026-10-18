@@ -165,6 +165,14 @@ Estimates are the maintainer's guess, not a promise; they move as bugs are found
 | The Legend of Zelda: Breath of the Wild (1.0, 1.6 + DLC) | **In-game** | Loads a save and runs in the Shrine of Resurrection at about 12 FPS with Link drawn correctly; some terrain is still broken. Bound by the OpenGL translation on the GPU thread, so it moves to the native renderer next | 1–3 months |
 | Persona 5 Royal | **In-game** | Reaches the first playable area with audio; stutters on loads and has open bugs | 3–6 weeks |
 | Mario Kart 8 Deluxe | **In-game** | With firmware dumped from the user's own console installed, it gets past the character picker and starts a Grand Prix race at up to 60 FPS on the OpenGL path; track geometry is still broken and fps drops during the race | 4–8 weeks |
+| Metroid Dread | **In-game** | NXbox 1.0.3: playable as Samus at 59–60 FPS; real-time cutscenes run at about 30 FPS | — |
+| The Legend of Zelda: Link's Awakening | **In-game** | NXbox 1.0.3: draws the screen (it was black before) and reaches gameplay at about 33 FPS | — |
+| Mario Tennis Aces | **In-game** | NXbox 1.0.3: reaches a match with the player under control at about 25 FPS, with a ~0.5 s hitch every ~8 s | — |
+| Kirby and the Forgotten Land | **In-game** | NXbox 1.0.3: reaches gameplay; 60 FPS at first, about 16 FPS in the heavier areas | — |
+| Hollow Knight: Silksong | **Menus** | NXbox 1.0.3: opens on the first try and runs the profile screen and intro at about 60 FPS; in-game control not checked yet | — |
+| Super Mario Odyssey | **Menus** | NXbox 1.0.3: gets through the opening cutscene at about 58 FPS, up to the first tutorial | — |
+| Pokémon Legends: Arceus | **Menus** | NXbox 1.0.3: the new-game opening draws correctly at about 30 FPS | — |
+| Pokémon Scarlet | **Boots** | NXbox 1.0.3: runs at 30 FPS but the screen stays gray | — |
 | Bayonetta | Not tested | Planned after Breath of the Wild | — |
 
 ## How it works
