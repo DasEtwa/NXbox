@@ -177,13 +177,13 @@ Estimates are the maintainer's guess, not a promise; they move as bugs are found
 
 Reported by testers on Xbox Series S:
 
-| Game | Report |
-| --- | --- |
-| Sonic Mania | NXbox 1.0.3 on D3D12: runs perfectly ([#12](https://github.com/NspxMiguel/NXbox/issues/12)) |
-| Mainframes | 60 FPS for 1 h 10 min without hitches |
-| Metroid Dread | NXbox 1.0.3: 60 FPS in gameplay and about 30 in cutscenes; stutters while shaders compile, and a chase QTE runs too fast to press in time |
-| Super Mario 3D World + Bowser's Fury | 3D World runs smoothly; Bowser's Fury at 30–40 FPS |
-| Cuphead | Runs fine |
+| Game | Tested by | Report |
+| --- | --- | --- |
+| Sonic Mania | [@rubiosofiaisabel57-oss](https://github.com/rubiosofiaisabel57-oss) (GitHub) | NXbox 1.0.3 on D3D12: runs perfectly ([#12](https://github.com/NspxMiguel/NXbox/issues/12)) |
+| Mainframes | @marceloasyl (Discord) | 60 FPS for 1 h 10 min without hitches |
+| Metroid Dread | @marceloasyl (Discord) | NXbox 1.0.3: 60 FPS in gameplay and about 30 in cutscenes; stutters while shaders compile, and a chase QTE runs too fast to press in time |
+| Super Mario 3D World + Bowser's Fury | @nickollas1235 (Discord) | 3D World runs smoothly; Bowser's Fury at 30–40 FPS |
+| Cuphead | @nickollas1235 (Discord) | Runs fine |
 
 ## How it works
 
