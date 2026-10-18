@@ -169,9 +169,9 @@ Estimates are the maintainer's guess, not a promise; they move as bugs are found
 | The Legend of Zelda: Link's Awakening | **In-game** | NXbox 1.0.3: draws the screen (it was black before) and reaches gameplay at about 33 FPS | — |
 | Mario Tennis Aces | **In-game** | NXbox 1.0.3: reaches a match with the player under control at about 25 FPS, with a ~0.5 s hitch every ~8 s | — |
 | Kirby and the Forgotten Land | **In-game** | NXbox 1.0.3: reaches gameplay; 60 FPS at first, about 16 FPS in the heavier areas | — |
-| Hollow Knight: Silksong | **Menus** | NXbox 1.0.3: opens on the first try and runs the profile screen and intro at about 60 FPS; in-game control not checked yet | — |
-| Super Mario Odyssey | **Menus** | NXbox 1.0.3: gets through the opening cutscene at about 58 FPS, up to the first tutorial | — |
-| Pokémon Legends: Arceus | **Menus** | NXbox 1.0.3: the new-game opening draws correctly at about 30 FPS | — |
+| Hollow Knight: Silksong | **In-game** | Opens on the first try, runs the profile screen and intro at about 60 FPS and reaches gameplay at about 44 FPS | — |
+| Super Mario Odyssey | **In-game** | Opening cutscene at about 58 FPS; past the camera tutorial, Cap Kingdom gameplay runs at about 22 FPS | — |
+| Pokémon Legends: Arceus | **In-game** | The opening draws correctly at 30 FPS; the name keyboard works (Plus confirms) and the game reaches the Hisui beach at about 27 FPS | — |
 | Pokémon Scarlet | **Boots** | NXbox 1.0.3: runs at 30 FPS but the screen stays gray | — |
 | Bayonetta | Not tested | Planned after Breath of the Wild | — |
 
