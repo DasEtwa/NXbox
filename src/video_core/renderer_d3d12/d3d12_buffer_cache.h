@@ -118,6 +118,10 @@ public:
     void BindTransformFeedbackBuffers(VideoCommon::HostBindings<Buffer>&) {}
     std::span<u8> BindMappedUniformBuffer(size_t stage, u32, u32 size);
     void BindUniformBuffer(const Buffer& buffer, u32 offset, u32 size);
+    /// Bytes the bound shader reads from the next uniform binding; consumed by that binding.
+    void SetUniformReadLimit(u32 limit) {
+        uniform_read_limit = limit;
+    }
     /// Snapshot of a uniform range in its own buffer, for when the source must be a UAV in the
     /// same draw (D3D12 cannot hold one buffer in CONSTANT_BUFFER and UNORDERED_ACCESS at once).
     BoundBuffer CopyUniform(const BoundBuffer& uniform);
@@ -134,6 +138,7 @@ private:
     StagingRing upload;
     StagingRing readback;
     StagingRing uniform_snapshots;
+    u32 uniform_read_limit = ~0U;
     ResourcePtr witness_resource;
     u64 witness_offset{}, witness_hash{}, witness_frame{};
 };
