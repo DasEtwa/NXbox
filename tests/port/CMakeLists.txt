@@ -112,3 +112,8 @@ add_executable(ftp-protocol-tests ftp_protocol.cpp)
 target_compile_features(ftp-protocol-tests PRIVATE cxx_std_20)
 target_include_directories(ftp-protocol-tests PRIVATE ../../src)
 add_test(NAME ftp-protocol COMMAND ftp-protocol-tests)
+
+add_executable(library-transfer-tests library_transfer.cpp)
+target_compile_features(library-transfer-tests PRIVATE cxx_std_20)
+target_include_directories(library-transfer-tests PRIVATE ../../src)
+add_test(NAME library-transfer COMMAND library-transfer-tests)

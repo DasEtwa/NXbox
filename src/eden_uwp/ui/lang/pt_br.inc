@@ -413,3 +413,13 @@
     {Text::FtpUser, L"Usuário:"}, {Text::FtpPassword, L"Senha:"},
     {Text::FtpStartFailed,
      L"Não foi possível iniciar o FTP. Confira a rede local e tente de novo."},
+
+    {Text::MoveToHd, L"Mover para o HD"},
+    {Text::MoveCopying, L"Copiando para o HD…"},
+    {Text::MoveDone, L"Jogo, atualizações e DLC movidos para o HD."},
+    {Text::MoveNoSpace, L"Espaço livre insuficiente no HD."},
+    {Text::MoveNoDrive, L"Conecte um HD USB e tente novamente."},
+    {Text::MoveNotInternal, L"Este jogo já está no armazenamento externo."},
+    {Text::MoveConflict, L"Já existe um arquivo no destino. Nada foi apagado."},
+    {Text::MoveFailed, L"Movimentação incompleta. Os originais só são apagados após verificar todas as cópias."},
+    {Text::MoveBusy, L"Conclua downloads, desligue o FTP e aguarde a leitura da biblioteca antes de mover."},

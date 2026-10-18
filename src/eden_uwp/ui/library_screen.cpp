@@ -418,6 +418,7 @@ private:
     // ---- Input ----
 
     void Update(Clock::time_point now) {
+        AdoptMove(now);
         AdoptDelete(now);
         AdoptScan();
         if (!scan_ && ftp_changes_ != ftp_.Changes()) {
@@ -493,7 +494,48 @@ private:
         input_.ConsumeUntilRelease();
     }
 
+    void AdoptMove(Clock::time_point now) {
+        if (!move_active_ || !move_result_.valid() ||
+            move_result_.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+            return;
+        auto result = LibraryTransfer::Result::Failed;
+        try {
+            result = move_result_.get();
+        } catch (...) {
+            Diagnostic("LIBRARY_MOVE failed");
+        }
+        move_active_ = false;
+        details_open_ = false;
+        const auto message = result == LibraryTransfer::Result::Success   ? Text::MoveDone
+                             : result == LibraryTransfer::Result::NoSpace ? Text::MoveNoSpace
+                             : result == LibraryTransfer::Result::NoDrive ? Text::MoveNoDrive
+                             : result == LibraryTransfer::Result::NotInternal
+                                 ? Text::MoveNotInternal
+                             : result == LibraryTransfer::Result::Conflict ? Text::MoveConflict
+                                                                           : Text::MoveFailed;
+        Toast(Tr(message), now);
+        StartScan(false);
+    }
+
+    void OpenMove(Clock::time_point now) {
+        if (scan_ || (shop_ && shop_->HasDownloads()) || ftp_.Running()) {
+            Toast(Tr(Text::MoveBusy), now);
+            return;
+        }
+        move_progress_.done = 0;
+        move_progress_.total = 0;
+        move_active_ = true;
+        const auto game = Game(selected_);
+        const auto local = local_state_;
+        move_result_ = std::async(std::launch::async, [this, game, local] {
+            return MoveLibraryGame(game, local, move_progress_);
+        });
+        input_.ConsumeUntilRelease();
+    }
+
     void HandleInput(Clock::time_point now) {
+        if (move_active_)
+            return;
         if (delete_stage_) {
             if (delete_stage_ == 1 || delete_stage_ == 4)
                 return;
@@ -576,7 +618,9 @@ private:
             return;
         }
         if (details_open_) {
-            if (input_.Pressed(Button::A)) {
+            if (input_.Pressed(Button::X)) {
+                OpenMove(now);
+            } else if (input_.Pressed(Button::A)) {
                 OpenDelete();
             } else if (input_.Pressed(Button::B)) {
                 details_open_ = false;
@@ -1645,6 +1689,7 @@ private:
         }
         if (details_open_) {
             return {{Theme::kButtonA, L"A", Tr(Text::DeleteGame)},
+                    {Theme::kButtonX, L"X", Tr(Text::MoveToHd)},
                     {Theme::kButtonB, L"B", Tr(Text::HintBack)}};
         }
         std::vector<Hint> hints;
@@ -1891,6 +1936,18 @@ private:
         }
         DrawChoicePill(renderer_, RectF(left, y + 16.0f, left + 310.0f, y + 16.0f + kPillHeight),
                        Tr(Text::DeleteGame), false, true);
+        DrawChoicePill(renderer_, RectF(left + 340.0f, y + 16.0f, right, y + 16.0f + kPillHeight),
+                       Tr(Text::MoveToHd), false, false);
+        if (move_active_) {
+            const auto total = move_progress_.total.load();
+            const auto done = move_progress_.done.load();
+            const auto percent = total ? static_cast<int>(100.0 * static_cast<double>(done) /
+                                                          static_cast<double>(total))
+                                       : 0;
+            renderer_.DrawString(
+                std::wstring(Tr(Text::MoveCopying)) + L" " + std::to_wstring(percent) + L"%",
+                Font::MetaMono, RectF(left, y + 90.0f, right, y + 130.0f), Theme::kText);
+        }
     }
 
     void DrawDelete() {
@@ -1989,6 +2046,9 @@ private:
     std::filesystem::path local_state_;
     std::unique_ptr<ShopScreen> shop_;
     Ftp::Server ftp_;
+    LibraryMoveProgress move_progress_;
+    std::future<LibraryTransfer::Result> move_result_;
+    bool move_active_ = false;
     std::uint64_t ftp_changes_ = 0;
     bool internet_art_ = true;
     std::unique_ptr<BackgroundArtSource> backgrounds_;

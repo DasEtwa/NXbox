@@ -17,6 +17,7 @@
 #include <fstream>
 #include <functional>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <memory>
 #include <optional>
@@ -704,6 +705,112 @@ bool DeleteLibraryFiles(const std::vector<LibraryDeleteFile>& files, const fs::p
         success &= ok;
     }
     return success;
+}
+
+LibraryTransfer::Result MoveLibraryGame(const GameEntry& game, const fs::path& local_state,
+                                        LibraryMoveProgress& progress) {
+    ScopedApartment apartment;
+    using Result = LibraryTransfer::Result;
+    const std::vector<fs::path> internal{local_state / "games"};
+    if (!SafeDeletePath(game.path, internal))
+        return Result::NotInternal;
+    const auto folders = ExternalGameFolders();
+    if (folders.empty())
+        return Result::NoDrive;
+    const auto destination = folders.front();
+    std::vector<LibraryTransfer::File> files;
+    std::map<fs::path, std::int64_t> modified;
+    std::set<std::wstring> names;
+    for (const auto& candidate : LibraryDeleteCandidates(game, local_state)) {
+        if (!SafeDeletePath(candidate.path, internal))
+            continue;
+        if (!names.insert(LibraryFiles::Fold(candidate.path.filename().wstring())).second)
+            return Result::Conflict;
+        files.push_back({candidate.path, destination / candidate.path.filename(), candidate.size});
+        modified.emplace(candidate.path, ModifiedSeconds(candidate.path));
+        if (candidate.size > (std::numeric_limits<std::uint64_t>::max)() - progress.total.load())
+            return Result::Failed;
+        progress.total.fetch_add(candidate.size);
+    }
+    LibraryTransfer::IO io;
+    io.exists = [](const auto& path) { return Common::FS::Exists(path); };
+    io.size = [](const auto& path) { return Common::FS::GetSize(path); };
+    io.unchanged = [&](const auto& file) {
+        return SafeDeletePath(file.source, internal) &&
+               Common::FS::GetSize(file.source) == file.size &&
+               ModifiedSeconds(file.source) == modified.at(file.source);
+    };
+    io.copy = [&](const auto& file) {
+        auto partial = file.target;
+        partial += L".move-partial";
+        struct Handles {
+            HANDLE input = INVALID_HANDLE_VALUE;
+            HANDLE output = INVALID_HANDLE_VALUE;
+            fs::path partial;
+            ~Handles() {
+                if (input != INVALID_HANDLE_VALUE)
+                    CloseHandle(input);
+                if (output != INVALID_HANDLE_VALUE)
+                    CloseHandle(output);
+                if (!partial.empty())
+                    DeleteFileFromAppW(partial.c_str());
+            }
+        } handles;
+        handles.input =
+            CreateFileFromAppW(file.source.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                               OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+        if (handles.input == INVALID_HANDLE_VALUE)
+            return false;
+        handles.output = CreateFileFromAppW(partial.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+                                            FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+        if (handles.output == INVALID_HANDLE_VALUE)
+            return false;
+        handles.partial = partial;
+        std::vector<char> buffer(1024 * 1024);
+        std::uint64_t copied = 0;
+        while (copied < file.size) {
+            const DWORD count =
+                static_cast<DWORD>(std::min<std::uint64_t>(buffer.size(), file.size - copied));
+            DWORD read = 0, written = 0;
+            if (!ReadFile(handles.input, buffer.data(), count, &read, nullptr) || read != count ||
+                !WriteFile(handles.output, buffer.data(), read, &written, nullptr) ||
+                written != read)
+                return false;
+            copied += written;
+            progress.done.fetch_add(written);
+        }
+        if (!FlushFileBuffers(handles.output))
+            return false;
+        CloseHandle(handles.output);
+        handles.output = INVALID_HANDLE_VALUE;
+        if (Common::FS::GetSize(partial) != file.size || Common::FS::Exists(file.target))
+            return false;
+        if (!MoveFileFromAppW(partial.c_str(), file.target.c_str())) {
+            try {
+                const auto storage = AwaitBounded(
+                    winrt::Windows::Storage::StorageFile::GetFileFromPathAsync(partial.native()),
+                    std::chrono::seconds(5));
+                if (!storage ||
+                    !AwaitBounded(storage->RenameAsync(
+                                      file.target.filename().native(),
+                                      winrt::Windows::Storage::NameCollisionOption::FailIfExists),
+                                  std::chrono::seconds(30)))
+                    return false;
+            } catch (...) {
+                return false;
+            }
+        }
+        handles.partial.clear();
+        return true;
+    };
+    io.remove = [](const auto& path) {
+        std::string reason;
+        const bool removed = RemoveLibraryFile(path, reason);
+        Diagnostic("LIBRARY_MOVE source=" + Utf8(path.wstring()) +
+                   (removed ? " removed" : " retained reason=" + reason));
+        return removed;
+    };
+    return LibraryTransfer::Move(files, FreeSpace(destination), io);
 }
 
 LibraryScan::LibraryScan(std::filesystem::path local_state, bool convert_nsz)

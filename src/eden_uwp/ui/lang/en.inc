@@ -395,3 +395,13 @@
      L"Copy games, keys and firmware over Wi-Fi or Ethernet. Turn on to see login details."},
     {Text::FtpUser, L"User:"}, {Text::FtpPassword, L"Password:"},
     {Text::FtpStartFailed, L"Could not start FTP. Check your local network and try again."},
+
+    {Text::MoveToHd, L"Move to HD"},
+    {Text::MoveCopying, L"Copying to HD…"},
+    {Text::MoveDone, L"Game, updates and DLC moved to HD."},
+    {Text::MoveNoSpace, L"Not enough free space on the HD."},
+    {Text::MoveNoDrive, L"Connect a USB drive and try again."},
+    {Text::MoveNotInternal, L"This game is already on external storage."},
+    {Text::MoveConflict, L"A destination file already exists. Nothing was deleted."},
+    {Text::MoveFailed, L"Move incomplete. Internal files are kept until all copies are verified."},
+    {Text::MoveBusy, L"Finish downloads, turn off FTP and wait for the library scan before moving."},
