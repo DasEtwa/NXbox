@@ -978,13 +978,16 @@ public:
                     task.result.internal = {};
                 if (const auto free = FreeSpace(path))
                     task.result.internal.available = *free;
-                const auto folders = ExternalGameFolders();
-                if (!folders.empty()) {
-                    task.result.external = fs::space(folders.front(), ec);
+                // Show the removable drive a download would actually use: the roomiest one.
+                // std::filesystem::space fails on removable drives, so the capacity may be unknown.
+                for (const auto& folder : ExternalGameFolders()) {
+                    const auto free = FreeSpace(folder);
+                    if (!free || *free <= task.result.external.available)
+                        continue;
+                    task.result.external = fs::space(folder, ec);
                     if (ec)
                         task.result.external = {};
-                    if (const auto free = FreeSpace(folders.front()))
-                        task.result.external.available = *free;
+                    task.result.external.available = *free;
                 }
             });
         }
@@ -2279,7 +2282,7 @@ private:
         DrawProgressBar(renderer_, RectF(x, 202.0f, x + 280.0f, 210.0f),
                         space.capacity ? static_cast<double>(space.available) / space.capacity
                                        : 0.0);
-        renderer_.DrawString(space.capacity ? FormatBytes(space.available) : L"—", Font::RowSub,
+        renderer_.DrawString(space.available ? FormatBytes(space.available) : L"—", Font::RowSub,
                              RectF(x, 218.0f, x + 280.0f, 252.0f), Theme::kTextSecondary);
     }
     void DrawSidebar() {
