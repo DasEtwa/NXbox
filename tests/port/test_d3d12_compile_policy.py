@@ -189,7 +189,11 @@ class CompilePolicyTests(unittest.TestCase):
         path = ROOT / "src/video_core/renderer_d3d12"
         cache = (path / "d3d12_pipeline_cache.cpp").read_text()
         self.assertNotIn("SetThreadPriority(", cache)
-        self.assertEqual(cache.count("!CompileHeadroomAvailable()"), 3)
+        # Draws and dispatches admit a compile when the pool is idle, or low memory held
+        # elsewhere would defer their keys forever; warmup keys can wait.
+        self.assertEqual(cache.count("!CompileHeadroomAvailable(async->Idle())"), 2)
+        self.assertEqual(cache.count("!CompileHeadroomAvailable(false)"), 1)
+        self.assertIn("if (allowed || pool_idle)\n        return true;", cache)
         compute = cache.split("ComputePipeline* PipelineCache::CurrentComputePipeline()", 1)[1]
         self.assertLess(compute.index("async->Reject("), compute.index("async->Submit("))
         # A translation that throws on the GPU thread must leave a Failed entry, not a Missing one.

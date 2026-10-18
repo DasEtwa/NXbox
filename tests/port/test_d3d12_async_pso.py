@@ -121,6 +121,7 @@ int main() {
         std::atomic<bool> stuck_done{};
         {
             Cache stall{1, 1, std::chrono::milliseconds{50}, 2};
+            assert(stall.Idle());
             assert(stall.Submit(1, [&] {
                 entered.set_value();
                 stuck_gate.wait();
@@ -129,11 +130,15 @@ int main() {
             }));
             entered.get_future().wait();
             assert(!stall.CanSubmit());
+            assert(!stall.Idle());
             std::this_thread::sleep_for(std::chrono::milliseconds{100});
             assert(stall.Stalled() == 1);
+            // A stalled job never finishes; it must not keep the memory guard deferring forever.
+            assert(stall.Idle());
             assert(stall.Submit(2, [] { return std::make_shared<int>(2); }));
             while (stall.Lookup(2).status == Cache::Status::Pending) std::this_thread::yield();
             assert(*stall.Lookup(2).result == 2);
+            assert(stall.Idle());
             assert(stall.Lookup(1).status == Cache::Status::Pending);
             assert(stall.IsStalled(1, std::chrono::milliseconds{50}) &&
                    !stall.IsStalled(2, std::chrono::milliseconds{50}));

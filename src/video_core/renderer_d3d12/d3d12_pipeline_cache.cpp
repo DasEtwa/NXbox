@@ -97,8 +97,10 @@ std::chrono::milliseconds PsoWaitBudget() {
     return budget;
 }
 
-// Shared by foreground requests and the disk warmup coordinator.
-bool CompileHeadroomAvailable() {
+// Shared by foreground requests and the disk warmup coordinator. `pool_idle` admits the compile
+// anyway: memory held elsewhere can keep the headroom below the threshold for good, and deferring
+// every key would then skip its draws forever. One compile at a time still makes progress.
+bool CompileHeadroomAvailable(bool pool_idle) {
 #ifdef NXBOX_UWP
     static std::mutex mutex;
     static CompileHeadroomGuard guard;
@@ -108,10 +110,12 @@ bool CompileHeadroomAvailable() {
         using winrt::Windows::System::MemoryManager;
         return std::pair{MemoryManager::AppMemoryUsageLimit(), MemoryManager::AppMemoryUsage()};
     });
-    if (!allowed && guard.ShouldLog(now))
+    if (allowed || pool_idle)
+        return true;
+    if (guard.ShouldLog(now))
         Diagnostic(
             fmt::format("D3D12 compile deferred: headroom={}", guard.Headroom() / (1024 * 1024)));
-    return allowed;
+    return false;
 #else
     return true;
 #endif
@@ -1389,7 +1393,8 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(
                 context.Profile().Count(FrameCount::NegativeCacheHits);
                 return nullptr;
             }
-            if (entry.status == AsyncCache::Status::Missing && !CompileHeadroomAvailable()) {
+            if (entry.status == AsyncCache::Status::Missing &&
+                !CompileHeadroomAvailable(async->Idle())) {
                 context.Profile().Count(FrameCount::DrawsSkippedPendingPso);
                 return nullptr;
             }
@@ -1665,7 +1670,8 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() try {
                 context.Profile().Count(FrameCount::NegativeCacheHits);
                 return nullptr;
             }
-            if (entry.status == AsyncCache::Status::Missing && !CompileHeadroomAvailable()) {
+            if (entry.status == AsyncCache::Status::Missing &&
+                !CompileHeadroomAvailable(async->Idle())) {
                 context.Profile().Count(FrameCount::DispatchesSkippedPendingPso);
                 return nullptr;
             }
@@ -1977,7 +1983,8 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
                             ++stats->skipped;
                             return true;
                         }
-                        if (!CompileHeadroomAvailable()) {
+                        // A deferred warmup key never starves a draw: the foreground compiles it.
+                        if (!CompileHeadroomAvailable(false)) {
                             ++stats->skipped;
                             return true;
                         }

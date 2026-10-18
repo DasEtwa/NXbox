@@ -151,6 +151,11 @@ public:
         std::scoped_lock lock{state->mutex};
         return CountStalled();
     }
+    /// Whether no job is queued or running, not counting stalled ones.
+    bool Idle() {
+        std::scoped_lock lock{state->mutex};
+        return state->pending == CountStalled();
+    }
     /// Whether `key` has been running for at least `limit`.
     bool IsStalled(const Key& key, Clock::duration limit) {
         std::scoped_lock lock{state->mutex};
