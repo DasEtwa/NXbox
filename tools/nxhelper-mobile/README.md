@@ -17,8 +17,8 @@ conectar apaga a senha salva desse Xbox. Mantenha o app aberto durante o envio.
 Depois abra o NXbox no console para juntar jogos grandes e instalar firmware.
 ZIPs de firmware são extraídos no cache do celular e precisam de espaço local;
 jogos são lidos diretamente, em trechos, inclusive quando têm mais de 10 GiB.
-As pastas de firmware devem conter arquivos `.nca` soltos; também é possível
-selecionar vários `.nca`. Não há preparação de USB nem extração de NAND/emuMMC.
+No celular, selecione o ZIP de firmware ou vários arquivos `.nca` soltos; o seletor
+de pastas está disponível somente no desktop. Não há preparação de USB nem extração de NAND/emuMMC.
 
 ## English
 
@@ -34,8 +34,8 @@ only with **Remember on this phone** checked; uncheck and connect to remove a sa
 credential for that Xbox. Keep the app open while transferring. Open NXbox afterwards
 to join large games and install firmware. Firmware ZIPs need temporary phone disk
 space; games stream directly in bounded chunks, including files above 10 GiB.
-Firmware folders must contain loose `.nca` files; selecting multiple `.nca` files
-also works. USB preparation and NAND/emuMMC extraction require the desktop version.
+On mobile, choose a firmware ZIP or multiple loose `.nca` files; folder picking
+is available only on desktop. USB preparation and NAND/emuMMC extraction require the desktop version.
 
 ## Development
 
@@ -83,5 +83,3 @@ Host Rust tests cover private IPv4 policy, split planning for 2.5 GiB, numerical
 package versions and destination mapping. Device Portal interoperability, mobile
 picker grants, native credential stores and large-file transfers require real
 Android/iOS and Xbox validation. CI is the mobile build of record.
-
-On mobile, choose the firmware ZIP or select its loose `.nca` files. Folder picking is available only on desktop because the Tauri mobile dialog does not expose it.

@@ -80,7 +80,7 @@ Faça tudo no PC, sem o NxbHelper:
 
 1. Na raiz do pendrive, monte o layout A ou B (acima).
 2. Em `games`, ponha os jogos, os updates e as DLC, tudo junto.
-3. Em `firmware`, ponha só arquivos `.nca` ou `.cnmt.nca` soltos (pode ser dentro de uma subpasta). Se o firmware veio em `.zip`, descompacte antes: o Xbox não lê `.zip`.
+3. Em `firmware`, ponha o dump em arquivos `.nca`/`.cnmt.nca`, subpastas ou `.zip`. Dumps NAND também são aceitos; NAND criptografada exige as BIS keys do seu console. Se o acesso ao dump falhar, prepare-o com o NxbHelper no PC.
 4. Keys: o NXbox procura `prod.keys` e `title.keys` em `NXbox/`, depois em `switch/` e por último na raiz, nessa ordem. Elas têm que vir de um Switch com firmware **igual ou mais novo** que o firmware que você copiou.
 
 Confira que **todos os arquivos terminaram de copiar ou baixar**: um arquivo incompleto causa erro. Como saber que deu certo: ao abrir o pendrive no PC, você vê um dos dois layouts e a pasta `firmware` está cheia de arquivos `.nca`.
@@ -91,10 +91,16 @@ Confira que **todos os arquivos terminaram de copiar ou baixar**: um arquivo inc
 2. Abra o NXbox. Se aparecer a tela **Pendrive detectado**, escolha **Usar como SSD externo**. Feche o NXbox (botão Xbox → **Sair**) e abra de novo, **uma vez**: é nessa segunda abertura que ele instala o firmware. Não desligue o console nem tire o pendrive enquanto isso. Deu certo quando a biblioteca mostra **Firmware instalado** e a versão.
 3. Abra um jogo. Um `.nsz` é convertido na primeira vez: espere. Deu certo quando o jogo começa.
 
+### Enviar pela rede ou liberar espaço interno
+
+Em **Configurações → Online → Servidor FTP**, ative o servidor e use os dados mostrados. Envie jogos para `/interno/games/` ou direto para o HD em `/hd/games/`. [Configuração do FileZilla](nxbox-ftp.md).
+
+Para mover um jogo já instalado internamente, abra **Detalhes** na biblioteca e aperte **X · Mover para o HD**, ao lado de apagar. O NXbox copia o jogo, as atualizações e DLC internos, mostra o progresso e confere os tamanhos antes de apagar os originais. Conecte o HD, aguarde a leitura da biblioteca, conclua downloads e desligue o FTP antes de mover. Arquivos existentes no destino ou espaço insuficiente bloqueiam a operação.
+
 ## Deu problema?
 
 - **`bad allocation`:** o NXbox está como App. Volte à Parte 1, passo 3.
-- **Ele pede firmware, ou dá erro ao instalar:** passe o pendrive pelo **Conferir pendrive** do NxbHelper. Keys mais velhas que o firmware não servem: tire as keys de novo de um Switch com firmware igual ou mais novo. Se você fez à mão, lembre que o Xbox lê só `.nca` soltos em `NXbox/firmware` (ou numa subpasta). Depois de instalado, a pasta do firmware muda de nome para `firmware_installed`: isso é normal.
+- **Ele pede firmware, ou dá erro ao instalar:** passe o pendrive pelo **Conferir pendrive** do NxbHelper. Keys mais velhas que o firmware não servem: tire as keys de novo de um Switch com firmware igual ou mais novo. O NXbox procura em `NXbox/firmware` e `firmware` na raiz de cada drive, além das pastas internas. Veja os caminhos exatos em **Configurações → Sistema** quando nenhum firmware for encontrado. O dump original é preservado após instalar.
 - **Tela preta:** o firmware foi instalado? Se foi, mande os logs.
 - **O pendrive não aparece:** ele tem que estar em exFAT ou NTFS, e você tem que ter escolhido **Use for media** (Parte 3, passo 1).
 
@@ -188,7 +194,7 @@ Do everything on your PC, without NxbHelper:
 
 1. At the drive root, build layout A or B (above).
 2. In `games`, put the games, updates and DLC, all together.
-3. In `firmware`, put only loose `.nca` or `.cnmt.nca` files (one subfolder is fine). If the firmware came as a `.zip`, unzip it first: the Xbox does not read a `.zip`.
+3. In `firmware`, put your dump as `.nca`/`.cnmt.nca` files, subfolders or a `.zip`. NAND dumps are also supported; encrypted NAND requires your console’s BIS keys. If dump access fails, prepare it with NxbHelper on a PC.
 4. Keys: NXbox looks for `prod.keys` and `title.keys` in `NXbox/`, then in `switch/`, and last in the root, in that order. They must come from a Switch on the **same or newer** firmware than the one you copied.
 
 Make sure **every file has finished copying or downloading**: an incomplete file causes an error. How to tell it worked: when you open the drive on your PC, you see one of the two layouts and the `firmware` folder is full of `.nca` files.
@@ -199,10 +205,16 @@ Make sure **every file has finished copying or downloading**: an incomplete file
 2. Open NXbox. If the **USB drive detected** screen appears, pick **Use as an external SSD**. Close NXbox (Xbox button → **Quit**) and open it again, **once**: that second launch is when it installs the firmware. Do not turn off the console or unplug the drive meanwhile. It worked when the library shows **Installed firmware** and its version.
 3. Open a game. An `.nsz` is converted the first time: wait. It worked when the game starts.
 
+### Send over the network or free internal space
+
+Enable **Settings → Online → FTP server** and use the displayed connection details. Send games to `/interno/games/` or straight to USB at `/hd/games/`. [FileZilla setup](nxbox-ftp.md).
+
+To move an internally installed game, open **Details** in the library and press **X · Move to HD**, next to delete. NXbox copies the game and its internal updates/DLC, displays progress and verifies sizes before deleting originals. Connect the drive, wait for the library scan, finish downloads and turn off FTP first. Existing destination files or insufficient free space block the operation.
+
 ## Something wrong?
 
 - **`bad allocation`:** NXbox is set as an App. Go back to Part 1, step 3.
-- **It asks for firmware, or the install fails:** run the drive through NxbHelper's **Check USB drive**. Keys older than the firmware don't work: dump the keys again from a Switch on the same or newer firmware. If you did it by hand, remember the Xbox reads only loose `.nca` files in `NXbox/firmware` (or one subfolder). Once installed, the firmware folder is renamed to `firmware_installed`: this is normal.
+- **It asks for firmware, or the install fails:** run the drive through NxbHelper's **Check USB drive**. Keys older than the firmware don't work: dump the keys again from a Switch on the same or newer firmware. NXbox searches `NXbox/firmware` and root-level `firmware` on each drive, plus internal folders. See the exact paths in **Settings → System** when no firmware is found. The original dump is preserved after installation.
 - **Black screen:** did the firmware install? If so, send the logs.
 - **NXbox doesn't find the drive:** it must be exFAT or NTFS, and you must have picked **Use for media** (Part 3, step 1).
 
