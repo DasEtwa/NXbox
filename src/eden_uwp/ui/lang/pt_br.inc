@@ -386,3 +386,10 @@
     {Text::ButtonLayoutHint, L"Vale no próximo jogo. No NXbox, A continua confirmando."},
     {Text::ButtonLayoutSaveFailed, L"Não foi possível salvar. Aperte A para tentar novamente."},
     {Text::ButtonLayoutNameShort, L"A"}, {Text::ButtonLayoutPositionShort, L"B"},
+
+    {Text::FtpServer, L"Servidor FTP"},
+    {Text::FtpHint,
+     L"Copie jogos, chaves e firmware por Wi-Fi ou Ethernet. Ative para ver os dados de acesso."},
+    {Text::FtpUser, L"Usuário:"}, {Text::FtpPassword, L"Senha:"},
+    {Text::FtpStartFailed,
+     L"Não foi possível iniciar o FTP. Confira a rede local e tente de novo."},

@@ -15,6 +15,9 @@ add_executable(eden-uwp WIN32
     alloc_track.h
     jit_dualmap_probe.cpp
     jit_dualmap_probe.h
+    ftp/ftp_protocol.h
+    ftp/ftp_server.h
+    ftp/ftp_server.cpp
     firmware.cpp
     firmware.h
     accounts.cpp

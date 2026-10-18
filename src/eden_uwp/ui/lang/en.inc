@@ -371,3 +371,9 @@
     {Text::ButtonLayoutHint, L"Applies on the next game launch. A still confirms in NXbox."},
     {Text::ButtonLayoutSaveFailed, L"Could not save. Press A to try again."},
     {Text::ButtonLayoutNameShort, L"A"}, {Text::ButtonLayoutPositionShort, L"B"},
+
+    {Text::FtpServer, L"FTP server"},
+    {Text::FtpHint,
+     L"Copy games, keys and firmware over Wi-Fi or Ethernet. Turn on to see login details."},
+    {Text::FtpUser, L"User:"}, {Text::FtpPassword, L"Password:"},
+    {Text::FtpStartFailed, L"Could not start FTP. Check your local network and try again."},

@@ -25,6 +25,7 @@ enum class Setting {
     ButtonLayout,
     Resolution,
     Version,
+    FtpServer,
     Count
 };
 struct SettingsCategory {
@@ -38,7 +39,7 @@ inline constexpr std::array<SettingsCategory, 6> kSettingsCategories{{
       Setting::Resolution, Setting::InternetArt},
      6},
     {Text::NavShop, {Setting::Sources, Setting::Usb}, 2},
-    {Text::SettingsOnline, {Setting::Nextendo, Setting::Multiplayer}, 2},
+    {Text::SettingsOnline, {Setting::Nextendo, Setting::Multiplayer, Setting::FtpServer}, 3},
     {Text::AccountSection,
      {Setting::ProfilePicture, Setting::Accounts, Setting::Moru, Setting::SaveSync},
      4},
