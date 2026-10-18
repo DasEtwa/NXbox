@@ -105,7 +105,7 @@ bool SupportsFormat(ID3D12Device* device, DXGI_FORMAT format, D3D12_FORMAT_SUPPO
                                                   sizeof(support))))
             entry->second = support.Support1;
     }
-    return (entry->second & required) == required;
+    return (entry->second & static_cast<UINT>(required)) == static_cast<UINT>(required);
 }
 using Maxwell = Tegra::Engines::Maxwell3D::Regs;
 // CPU expansion preserves the guest multi-draw ID independently of base IDs.
