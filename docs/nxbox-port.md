@@ -542,6 +542,26 @@ Every extra list rebinds state on the recording thread, so a small N gives back 
 gains. Compare N = 0, 32, 128 and 512 on the same warmed scene and record the frame time,
 `gpu_thread_cpu_pct`, `gpu_busy_ms` and `ExecuteCommandLists_per_frame`.
 
+Desktop result (Wine and vkd3d-proton on an RTX 3050, Odyssey opening cutscene, 576 draws a frame,
+cumulative frames 2700 to 4800, three runs per N in rotating order, same build and same TAS).
+Median frame time with the minimum and maximum over the runs:
+
+| N | Frame ms | gpu_thread_cpu_pct | gpu_busy_ms per frame | ExecuteCommandLists per frame |
+| --- | --- | --- | --- | --- |
+| 0 | 57.4 (57.3 to 57.5) | 60.9 | 21.8 | 5.7 |
+| 32 | 39.6 (39.1 to 39.9) | 93.6 | 17.1 | 23.0 |
+| 128 | 40.1 (40.0 to 40.3) | 88.9 | 17.6 | 9.7 |
+| 512 | 53.1 (52.9 to 53.4) | 66.9 | 20.9 | 6.7 |
+
+The frame time minus the GPU thread's CPU time, the part where the recording thread waits for the
+GPU, was 21.9 ms at N = 0, 2.5 ms at 32, 4.2 ms at 128 and 17.5 ms at 512. Each extra submission
+costs the GPU thread 0.06 to 0.09 ms, the submit plus the state rebound on the new list. The GPU
+also clocked higher while it was kept busy (about 1300 MHz at N = 32, 500 to 990 MHz at N = 0),
+which is why `gpu_busy_ms` fell for the same work; a console with fixed clocks does not get that
+part. Frames 3000, 4000 and 5000 are bit-identical to
+the N = 0 frames within each of the two variants the scene already produces without the knob (5041
+pixels differ between them at frame 5000). The console result is still required.
+
 ## Persona 5 Royal is playable on Xbox Series X (28/09/2026)
 
 Measured on the console with remote input:
