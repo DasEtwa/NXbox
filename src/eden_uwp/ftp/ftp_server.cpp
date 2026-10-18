@@ -31,10 +31,18 @@ namespace fs = std::filesystem;
 constexpr std::uint32_t kBufferSize = 1024 * 1024;
 
 std::tm Modified(const fs::path& path) {
-    const auto time = std::chrono::file_clock::to_sys(fs::last_write_time(path));
-    const auto value = std::chrono::system_clock::to_time_t(time);
+    WIN32_FILE_ATTRIBUTE_DATA attributes{};
+    SYSTEMTIME time{};
+    if (!GetFileAttributesExFromAppW(path.c_str(), GetFileExInfoStandard, &attributes) ||
+        !FileTimeToSystemTime(&attributes.ftLastWriteTime, &time))
+        throw std::runtime_error("cannot read modification time");
     std::tm utc{};
-    gmtime_s(&utc, &value);
+    utc.tm_year = time.wYear - 1900;
+    utc.tm_mon = time.wMonth - 1;
+    utc.tm_mday = time.wDay;
+    utc.tm_hour = time.wHour;
+    utc.tm_min = time.wMinute;
+    utc.tm_sec = time.wSecond;
     return utc;
 }
 std::string Name(const fs::path& path) {
