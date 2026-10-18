@@ -74,10 +74,13 @@ public:
 
     /// This will only grow the buffer's capacity if size is greater than the current capacity.
     /// The previously held data will be destroyed if a reallocation occurs.
+    /// If the allocation throws, the buffer, its capacity and its size are left untouched. The
+    /// capacity must never be raised before the memory exists: a retry with the same size would
+    /// skip the allocation and hand out a null or too small buffer.
     void resize_destructive(size_type size) {
         if (size > buffer_capacity) {
+            buffer = std::make_unique_for_overwrite<T[]>(size);
             buffer_capacity = size;
-            buffer = std::make_unique_for_overwrite<T[]>(buffer_capacity);
         }
         last_requested_size = size;
     }
