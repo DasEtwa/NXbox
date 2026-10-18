@@ -972,3 +972,32 @@ override; pass BotW's previous PSO-creation failure point and inspect the effect
 draw; verify SM3DW menus, stencil effects and MSAA transitions visually. Capture frame gaps,
 memory and device-removal diagnostics, and confirm any removal exits the session instead of
 freezing. Check P5R for regressions and measure the cost of default serialization.
+
+## Truncated NSPs and unreadable tickets (18/10/2026)
+
+- Animal Crossing failed with `GAME_LOAD_FAILED status=11` (`ErrorBadNPDMHeader`) and a log full
+  of `ticket file with invalid size 0` for a ticket of another game (the Tears of the Kingdom
+  update). The ticket was not Animal Crossing's: every `.nsp` in the game folders is opened as
+  external content before the game starts. The only way that read returns 0 bytes is a ticket
+  past the end of the file (`RealVfsFile::Read` returns 0 there), and every library scan since the
+  first night already listed that TotK update as `The NCA file has a bad header` (its meta NCA
+  sits just before the ticket), so the copy on the drive is shorter than its own header says.
+  The empty ticket and the bad meta NCA are one fault; `NSP::ReadNCAs` then asked the NCA without
+  a header for its title ID (the `nca_reader.cpp:210` assert). The console files could not be
+  read from the Mac, so this is inferred from the log, not measured.
+- The source dumps (`.nsp`, with valid 704-byte tickets, every NCA matching its SHA-256 id) and
+  the NSZ converter (non-NCZ entries are copied byte for byte, see `src/tests/core/file_sys/nsz.cpp`)
+  were not at fault.
+- `NSP` now measures its entries against the real file size (`core/file_sys/pfs0_extent.h`). A
+  file with a `.nca` or `.tik` entry past its end fails with `ErrorIncorrectPFSFileSize` and one
+  `Common.Filesystem` error naming the file, the declared and actual sizes and the entries cut
+  off (`NSP <name> is truncated: ...`); cut-off `.cert`/`.xml` entries only warn. A ticket that is
+  present but unusable now says which NSP it belongs to and how many bytes it has
+  (`NSP <name>: ticket <t> is unusable ...`). NCAs without a readable header no longer reach the
+  title ID assert and are logged by name instead.
+- Not proven: why Animal Crossing's own base has no readable ExeFS on the drive (its ExeFS is the
+  last 34 MB of the 6.7 GB program NCA, and the update's ExeFS then fails as a bad NPDM). The
+  copies the Mac serves decrypt to a valid `main.npdm`, so a damaged copy on the drive is the
+  leading explanation; a file that has the right size but holes (a preallocated torrent) would
+  pass the size check above.
+- Test: `tests/port/pfs0_extent.cpp` (`pfs0-extent-truncation`).

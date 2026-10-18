@@ -41,6 +41,11 @@ if(ZLIB_FOUND)
   add_test(NAME cheats-parse COMMAND cheats-parse-tests)
 endif()
 
+add_executable(pfs0-extent-tests pfs0_extent.cpp)
+target_compile_features(pfs0-extent-tests PRIVATE cxx_std_20)
+target_include_directories(pfs0-extent-tests PRIVATE ../../src)
+add_test(NAME pfs0-extent-truncation COMMAND pfs0-extent-tests)
+
 add_executable(input-state-tests input_state.cpp)
 target_compile_features(input-state-tests PRIVATE cxx_std_17)
 target_include_directories(input-state-tests PRIVATE ../../src)
