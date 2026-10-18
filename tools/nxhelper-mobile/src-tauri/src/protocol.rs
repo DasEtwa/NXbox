@@ -46,9 +46,31 @@ pub fn upload_directory(name: &str) -> Result<&'static str, String> {
         return Ok("LocalState/eden/keys");
     }
     match lower.rsplit('.').next() {
-        Some("nsp" | "nsz" | "xci" | "xcz") => Ok("LocalState/games"),
+        Some("nsp" | "nsz" | "xci" | "xcz") => Ok(game_directory(name)),
         Some("nca") => Ok("LocalState/firmware"),
         _ => Err("fileInvalid".into()),
+    }
+}
+
+fn game_directory(name: &str) -> &'static str {
+    let mut ids = name.split('[').skip(1).filter_map(|part| {
+        let (id, _) = part.split_once(']')?;
+        if id.len() != 16 || !id.starts_with("0100") || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
+        u64::from_str_radix(id, 16).ok()
+    });
+    let Some(id) = ids.next() else {
+        return "LocalState/games";
+    };
+    if ids.next().is_some() {
+        return "LocalState/games";
+    }
+    match id & 0xfff {
+        0 => "LocalState/games/Base",
+        0x800 => "LocalState/games/Updates",
+        1..=0x7ff => "LocalState/games/DLC",
+        _ => "LocalState/games",
     }
 }
 
@@ -102,6 +124,27 @@ mod tests {
             newest_package(&["NSPX.NXboxGame_99.0.0.0_x64".into()]),
             None
         );
+    }
+    #[test]
+    fn game_folder_routes() {
+        for (name, directory) in [
+            ("Game [0100123456780000].nsp", "LocalState/games/Base"),
+            ("Patch [0100123456780800].nsz", "LocalState/games/Updates"),
+            ("Extra [0100123456781001].xci", "LocalState/games/DLC"),
+            ("Unknown.xcz", "LocalState/games"),
+            ("Bad [010012345678ZZZZ].nsp", "LocalState/games"),
+            (
+                "Many [0100123456780000] [0100123456780800].nsp",
+                "LocalState/games",
+            ),
+        ] {
+            assert_eq!(upload_directory(name).unwrap(), directory);
+            // Split parts and their manifest stay in the game's directory, with original names.
+            assert_eq!(
+                part_plan(name, PART_SIZE + 1)[0].0,
+                format!("{name}.nxpart000")
+            );
+        }
     }
     #[test]
     fn upload_paths() {

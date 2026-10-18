@@ -39,6 +39,7 @@ struct FileInfo {
 }
 #[derive(Clone, Serialize)]
 struct Progress {
+    directory: &'static str,
     file: String,
     sent: u64,
     total: u64,
@@ -370,6 +371,7 @@ async fn upload_source(
                     let _ = progress_app.emit(
                         "upload-progress",
                         Progress {
+                            directory,
                             file: progress_name.clone(),
                             sent,
                             total,
@@ -382,6 +384,7 @@ async fn upload_source(
         app.emit(
             "upload-progress",
             Progress {
+                directory,
                 file: source.name.clone(),
                 sent: offset,
                 total: source.size,
@@ -414,6 +417,7 @@ async fn upload_source(
     app.emit(
         "upload-progress",
         Progress {
+            directory,
             file: source.name,
             sent: source.size,
             total: source.size,
@@ -502,10 +506,15 @@ async fn prepare(
         {
             return Err("fileConflict".into());
         }
-        output.sort_by_key(|s| match upload_directory(&s.name).unwrap_or_default() {
-            "LocalState/games" => 0,
-            "LocalState/eden/keys" => 1,
-            _ => 2,
+        output.sort_by_key(|s| {
+            let directory = upload_directory(&s.name).unwrap_or_default();
+            if directory.starts_with("LocalState/games") {
+                0
+            } else if directory == "LocalState/eden/keys" {
+                1
+            } else {
+                2
+            }
         });
         if output.is_empty() {
             return Err("fileInvalid".into());

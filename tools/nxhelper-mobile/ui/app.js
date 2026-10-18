@@ -140,7 +140,9 @@ await listen("upload-progress", ({ payload }) => {
   if (!row) {
     row = document.createElement("li");
     const name = document.createElement("span");
-    name.textContent = payload.file;
+    name.textContent = text.gameDestination
+      .replace("{file}", payload.file)
+      .replace("{folder}", payload.directory);
     const detail = document.createElement("small");
     const progress = document.createElement("progress");
     progress.setAttribute("aria-label", payload.file);

@@ -35,6 +35,7 @@ export const translations = {
     failed: "Transfer stopped",
     summary: "{files} files sent · {size}",
     step: "Step {n} of 4",
+    gameDestination: "{file} → {folder}",
     verified: "Verified",
     working: "Working…",
     nxboxMissing:
@@ -101,6 +102,7 @@ export const translations = {
     failed: "Envio interrompido",
     summary: "{files} arquivos enviados · {size}",
     step: "Etapa {n} de 4",
+    gameDestination: "{file} → {folder}",
     verified: "Verificado",
     working: "Aguarde…",
     nxboxMissing:
