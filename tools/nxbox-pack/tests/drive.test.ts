@@ -166,7 +166,7 @@ test("xcz refused before copying and collisions preflight all files", async () =
   });
   expect(await readdir(root)).toEqual([]);
   input.games.pop();
-  await put(root, "NXbox/games/Game.NSP", "different");
+  await put(root, "NXbox/games/Game.nsp", "different");
   await expect(prepareDrive(root, input, undefined, deps)).rejects.toMatchObject({
     code: "driveConflict",
   });
@@ -238,7 +238,7 @@ test("keys go into NXbox/ ahead of stale switch keys; a destination directory fa
   expect(await readFile(join(root, "NXbox/prod.keys"), "utf8")).toBe(keyText);
   await rm(join(root, "switch"), { recursive: true });
   await rm(join(root, "NXbox"), { recursive: true });
-  await mkdir(join(root, "NXbox/games/Game.NSP"), { recursive: true });
+  await mkdir(join(root, "NXbox/games/Game.nsp"), { recursive: true });
   await expect(prepareDrive(root, input, undefined, deps)).rejects.toMatchObject({
     code: "driveConflict",
   });

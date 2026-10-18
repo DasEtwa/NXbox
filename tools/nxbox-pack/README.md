@@ -156,11 +156,11 @@ NSP, NSZ and XCI extensions are lowercased automatically; base names keep their 
 Games are routed into `Base/`, `Updates/` or `DLC/` by metadata or title ID; unknown content stays
 at the games root. Files directly in `games/` remain supported.
 
-USB preparation writes keys at the drive root, games in `NXbox/games/`, and verified firmware NCAs
+USB preparation writes keys in `NXbox/`, games in `NXbox/games/`, and verified firmware NCAs
 loose in `NXbox/firmware/`. It checks free space and destination conflicts before copying. Existing
-files with the same size are skipped; different sizes stop the operation without overwriting. If
-older keys exist in `switch/`, move them aside first: Xbox reads `NXbox/` keys first, then
-`switch/`, then the drive root. The final checklist may still require firmware if none was supplied or already present.
+files with the same size are skipped; different sizes stop the operation without overwriting.
+Xbox reads `NXbox/` keys first, then `switch/`, then the drive root. The final checklist may still
+require firmware if none was supplied or already present.
 
 Device Portal transfer finds the newest installed `NSPX.NXbox_` library package. It sends games to
 `LocalState/games`, keys to `LocalState/eden/keys`, then firmware to `LocalState/firmware`. Open

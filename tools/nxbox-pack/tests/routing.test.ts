@@ -137,7 +137,7 @@ test("direct boot deployment and local export reject unsafe destinations", async
     }
   }
   const portal = new Portal("https://xbox.test", { user: "", password: "" });
-  for (const name of ["CON.nsp", "Bad:Name.nsp", "Bad\\Name.nsp"]) {
+  for (const name of ["CON.nsp", "Bad:Name.nsp", "Bad?Name.nsp"]) {
     await expect(
       deployGame({
         portal,
