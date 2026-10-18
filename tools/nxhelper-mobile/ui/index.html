@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <meta name="color-scheme" content="dark light" />
+    <title>NxHelper</title>
+    <link rel="stylesheet" href="tokens.css" />
+    <link rel="stylesheet" href="style.css" />
+    <script type="module" src="app.js"></script>
+  </head>
+  <body>
+    <main>
+      <header>
+        <span class="mark" aria-hidden="true">↗</span><span>NxHelper</span>
+      </header>
+      <p id="step" class="muted"></p>
+      <section id="find">
+        <h1 data-text="find"></h1>
+        <p data-text="network"></p>
+        <button id="scan" data-text="scan"></button>
+        <div id="hosts" aria-live="polite"></div>
+        <form id="address-form">
+          <label for="host" data-text="address"></label>
+          <input
+            id="host"
+            inputmode="decimal"
+            autocomplete="off"
+            placeholder="192.168.0.5"
+            required
+          />
+          <button data-text="continue"></button>
+        </form>
+      </section>
+      <section id="login" hidden>
+        <h1 data-text="login"></h1>
+        <p id="selected-host" class="mono"></p>
+        <form id="login-form">
+          <label for="user" data-text="user"></label>
+          <input
+            id="user"
+            autocomplete="username"
+            autocapitalize="none"
+            spellcheck="false"
+          />
+          <label for="password" data-text="password"></label>
+          <input
+            id="password"
+            type="password"
+            autocomplete="current-password"
+          />
+          <label class="check"
+            ><input id="remember" type="checkbox" /><span
+              data-text="remember"
+            ></span
+          ></label>
+          <button data-text="connect"></button>
+        </form>
+        <button class="secondary" id="back" data-text="back"></button>
+      </section>
+      <section id="pick" hidden>
+        <h1 data-text="pick"></h1>
+        <p data-text="formats"></p>
+        <button id="files" data-text="files"></button>
+        <button id="folder" class="secondary" data-text="folder"></button>
+        <ul id="file-list"></ul>
+        <button id="clear" class="secondary" data-text="clear" hidden></button>
+        <p class="muted" data-text="desktop"></p>
+        <button id="send" data-text="send" disabled></button>
+      </section>
+      <section id="transfer" hidden>
+        <h1 id="transfer-title" data-text="sending"></h1>
+        <p id="transfer-detail" data-text="keepOpen"></p>
+        <ul id="progress-list"></ul>
+        <button id="cancel" class="secondary" data-text="cancel"></button>
+        <button id="again" data-text="again" hidden></button>
+      </section>
+      <p id="status" role="status" aria-live="polite"></p>
+      <p id="warning" class="muted" aria-live="polite"></p>
+    </main>
+  </body>
+</html>

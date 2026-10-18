@@ -1,0 +1,16 @@
+{
+  "name": "nxhelper-mobile",
+  "version": "0.1.0",
+  "private": true,
+  "author": "NSPX",
+  "license": "GPL-3.0-or-later",
+  "scripts": {
+    "tauri": "tauri",
+    "prepare:mobile": "python3 scripts/prepare-mobile.py",
+    "format": "prettier --write ui package.json src-tauri/*.json src-tauri/capabilities/*.json"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.11.3",
+    "prettier": "3.6.2"
+  }
+}
