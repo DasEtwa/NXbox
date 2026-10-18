@@ -142,8 +142,15 @@ nxhelper --check-drive /Volumes/Xbox --fix
 ```
 
 `--keys` is required for the transfer commands. Title keys and firmware are optional. Firmware may
-be a folder, ZIP, `rawnand.bin` or its first numbered split. Keys and complete NSP/NSZ containers
-are validated before transfer; firmware is verified by the existing NCA verifier. Convert XCZ to XCI
+be a folder of loose NCAs (including nested `Contents/registered` trees and `.cnmt.nca` metadata),
+or NCA chunk directories named `<hash>.nca` with consecutive `00`, `01`, … files. ZIP archives
+support these layouts, DEFLATE and ZIP64. NAND sources include `rawnand.bin`, Hekate numbered
+splits, and file-based emuMMC (`emuMMC/<name>/eMMC/00`, `01`, …; boot0/boot1 are ignored). Select
+the drive root, `emuMMC`, or `eMMC` folder. Standalone `SYSTEM` and `SYSTEM.bin` images are
+accepted, either already decrypted or encrypted with `bis_key_02`. Encrypted NAND/SYSTEM images
+require the matching `bis_key_02`; decrypted images do not. Extract `.7z`/`.rar` archives first. For
+partition-based emuMMC, use Hekate to make a file backup. Keys and complete NSP/NSZ containers are
+validated before transfer; firmware is verified by the existing NCA verifier. Convert XCZ to XCI
 before USB preparation. Device Portal transfers can decompress XCZ with the optional `nsz` tool.
 NSP, NSZ and XCI extensions are lowercased automatically.
 

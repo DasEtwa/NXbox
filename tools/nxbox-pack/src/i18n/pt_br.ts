@@ -112,6 +112,10 @@ export default {
   titleKeys: "Arraste seu title.keys; Enter pula",
   inputInvalid:
     "Pasta/ZIP inválido: caminhos inseguros, formato não suportado, dados vazios ou sistema de arquivos corrompido.",
+  firmware7z: "Extraia o .7z primeiro e selecione a pasta do firmware extraído.",
+  firmwareRar: "Extraia o .rar primeiro e selecione a pasta do firmware extraído.",
+  firmwarePartition:
+    "emuMMC em partição não é suportada. Use o Hekate para fazer um backup em arquivos e selecione a pasta eMMC.",
   firmwareInvalid:
     "Firmware rejeitado: SHA-256 do nome, cabeçalho NCA3 criptografado ou dados SystemVersion inválidos.",
   firmwareIncomplete:

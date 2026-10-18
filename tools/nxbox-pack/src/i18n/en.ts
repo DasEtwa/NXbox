@@ -106,6 +106,10 @@ export default {
   titleKeys: "Drag title.keys, or Enter to skip",
   inputInvalid:
     "Invalid folder/ZIP: unsafe paths, unsupported archive, empty data or corrupt filesystem.",
+  firmware7z: "Extract the .7z first, then select the extracted firmware folder.",
+  firmwareRar: "Extract the .rar first, then select the extracted firmware folder.",
+  firmwarePartition:
+    "Partition-based emuMMC is not supported. Use Hekate to back it up to files, then select the eMMC folder.",
   firmwareInvalid:
     "Firmware rejected: NCA filename SHA-256, encrypted NCA3 header or SystemVersion data is invalid.",
   firmwareIncomplete:
