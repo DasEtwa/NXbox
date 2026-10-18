@@ -39,6 +39,8 @@ export function decryptedPartition(
     },
   };
 }
+// SYSTEM is whole 0x4000-byte BIS sectors and never larger than 8 GiB; ZIP spooling uses it too.
+const validSystemSize = (size: number) => size > 0 && size <= 8 * 1024 ** 3 && size % 0x4000 === 0;
 export async function systemPartition(nand: Reader): Promise<{ offset: number; size: number }> {
   const gpt = await nand.read(512, 512);
   if (gpt.toString("ascii", 0, 8) !== "EFI PART" || gpt.readUInt32LE(12) < 92)
@@ -57,8 +59,7 @@ export async function systemPartition(nand: Reader): Promise<{ offset: number; s
       last = Number(e.readBigUInt64LE(40));
     found = { offset: first * 512, size: (last - first + 1) * 512 };
     bounded(nand.size, found.offset, found.size);
-    if (!found.size || found.size > 8 * 1024 ** 3 || found.size % 0x4000)
-      throw new PackError("nandInvalid");
+    if (!validSystemSize(found.size)) throw new PackError("nandInvalid");
   }
   if (!found) throw new PackError("nandInvalid");
   return found;
@@ -112,15 +113,23 @@ async function readSystem<T>(
 ): Promise<T> {
   // Plain SYSTEM exports need no BIS key. Only retry XTS when the boot sector
   // itself is not FAT32; verification errors from a plain filesystem must survive.
-  let plain = false;
+  let plain = false,
+    boot: PackError | undefined;
   try {
     await Fat32.open(raw);
     plain = true;
   } catch (error) {
     if (!(error instanceof PackError)) throw error;
+    boot = error;
   }
   if (plain) return use(raw);
-  if (!key || key.length !== 32) throw new PackError("firmwareKeys");
+  if (!key || key.length !== 32) {
+    // A boot sector that still ends in 0xaa55 is a damaged plain image, not an encrypted one:
+    // report the damage instead of blaming the keys.
+    if (boot && (raw.size < 512 || (await raw.read(0, 512)).readUInt16LE(510) === 0xaa55))
+      throw boot;
+    throw new PackError("firmwareKeys");
+  }
   // Sector zero has the same tweak under both conventions. Validate the entire
   // selected NCA set, not just the FAT boot sector, before accepting LE or BE.
   let last: unknown;
@@ -151,6 +160,8 @@ export async function withSystem<T>(
     if (!image) throw new PackError("nandInvalid");
     const parts = image.parts,
       size = parts.reduce((n, p) => n + p.size, 0);
+    // A bare SYSTEM is spooled whole, so it gets the same limits the GPT path enforces.
+    if (image.partition && !validSystemSize(size)) throw new PackError("nandInvalid");
     // Read a bounded prefix for GPT, then spool only encrypted SYSTEM bytes.
     let prefix = Buffer.alloc(0);
     for (const p of parts) {

@@ -186,9 +186,13 @@ export async function prepareFirmware(
       imageParts<{ name: string }>(entries, /^eMMC$/i.test(basename(path))) ||
       (!info.isDirectory() &&
         /^(?:rawnand\.bin(?:\.\d{2})?|SYSTEM(?:\.bin)?|\d{2})$/i.test(basename(path)));
-    if (!nand && entries.some((e) => /(?:^|\/)(?:emummc\.ini|raw_based)$/i.test(e.name))) {
+    // A partition-emuMMC marker only matters when nothing else in the folder can be used.
+    if (
+      !nand &&
+      entries.some((e) => /(?:^|\/)(?:emummc\.ini|raw_based)$/i.test(e.name)) &&
+      !entries.some((e) => /(?:^|\/)[a-f0-9]{32}(?:\.cnmt)?\.nca(?:\/|$)/i.test(e.name))
+    )
       throw new PackError("firmwarePartition");
-    }
     if (nand) {
       return await withSystem(path, temporary, keys.get("bis_key_02"), async (reader) => {
         const extracted = join(temporary, "ncas");

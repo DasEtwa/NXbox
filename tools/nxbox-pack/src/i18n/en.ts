@@ -18,6 +18,10 @@ export default {
   driveUnpack: "NxHelper can unpack it. Choose Fix it.",
   driveOldKeys: "The keys are older than the firmware. Dump keys again from your updated Switch.",
   driveFirmwareCopy: "Copy the whole firmware dump again.",
+  driveChunksMove:
+    "These NCA chunk folders sit where NxHelper writes the finished files. Move the whole firmware dump to firmware/ at the drive root, then choose Fix it.",
+  driveNandMany:
+    "Could not pick one NAND backup: more than one was found, or its parts (00, 01, …) are incomplete. Keep a single emuMMC folder with all its parts.",
   driveRename: "Rename the extension to lowercase so Xbox can list it.",
   driveConvert: "Convert .xcz to .xci before copying; Xbox cannot list .xcz.",
   driveTruncated: "Incomplete game. Finish the download or copy the complete dump again.",

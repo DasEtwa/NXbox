@@ -5,7 +5,7 @@ import { constants } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
 import { readKeys, prepareFirmware, verifyFirmware } from "./firmware";
-import { fileReader, folderFiles, safePath, zipEntries, type LocalFile } from "./storage";
+import { fileReader, safePath, zipEntries, type LocalFile } from "./storage";
 import { gameExtension, parseTitleId, validateFile } from "./files";
 import { PackError, strings, type Language, type Message } from "./i18n";
 import type { DevicePortal } from "./portal";
@@ -76,32 +76,69 @@ async function misplacedKey(root: string, name: string) {
       if (await exists(path)) return path;
     }
 }
-async function firmwareSource(
-  root: string,
-): Promise<{ source?: string; files: LocalFile[]; fixable: boolean; unsupported?: Message }> {
+// Listing only: links and special files are skipped, so a stray one never hides the dump.
+async function listFiles(root: string): Promise<LocalFile[]> {
+  const files: LocalFile[] = [];
+  async function walk(path: string, prefix: string, depth: number) {
+    if (depth > 32 || files.length > 100000) throw new PackError("inputInvalid");
+    for (const e of await readdir(path, { withFileTypes: true })) {
+      if (e.isDirectory()) await walk(join(path, e.name), `${prefix}${e.name}/`, depth + 1);
+      else if (e.isFile()) files.push({ path: join(path, e.name), name: prefix + e.name });
+    }
+  }
+  await walk(root, "", 0);
+  return files;
+}
+type FirmwareSource = { source?: string; files: LocalFile[]; fixable: boolean; problem?: Message };
+async function firmwareSource(root: string): Promise<FirmwareSource> {
   const nca = /(?:^|\/)[a-f0-9]{32}(?:\.cnmt)?\.nca(?:\/|$)/i;
-  for (const path of [join(root, "NXbox/firmware"), join(root, "firmware")]) {
-    if (!(await entries(path)).length) continue;
-    const all = await folderFiles(path);
-    const files = all.filter((f) => /\.nca$/i.test(f.name) && f.name.split("/").length <= 2);
-    const loose = new Set(files.map((f) => basename(f.name).toLowerCase()));
-    const needsUnpack = all.some((f) => {
-      const match = f.name.match(nca);
-      return match && !loose.has(match[0].replace(/^\/|\/$/g, "").toLowerCase());
-    });
-    if (needsUnpack) return { source: path, files: [], fixable: true };
-    if (files.length) return { source: path, files, fixable: false };
-    if (imageParts(all)) return { source: path, files: [], fixable: true };
+  // A hint or a scan error is reported only when no other place holds usable firmware, so a
+  // stray marker, second backup or unreadable folder never hides a good dump.
+  let first: FirmwareSource | undefined;
+  const defer = (source: string, problem: Message) =>
+    (first ??= { source, files: [], fixable: false, problem });
+  const scanFailed = (source: string, error: unknown) => {
+    if (!(error instanceof PackError)) throw error;
+    defer(source, error.code === "nandInvalid" ? "driveNandMany" : error.code);
+  };
+  const destination = join(root, "NXbox/firmware");
+  for (const path of [destination, join(root, "firmware")]) {
+    try {
+      if (!(await entries(path)).length) continue;
+      const all = await listFiles(path);
+      const files = all.filter((f) => /\.nca$/i.test(f.name) && f.name.split("/").length <= 2);
+      const loose = new Set(files.map((f) => basename(f.name).toLowerCase()));
+      const needsUnpack = all.some((f) => {
+        const match = f.name.match(nca);
+        return match && !loose.has(match[0].replace(/^\/|\/$/g, "").toLowerCase());
+      });
+      if (needsUnpack) {
+        // Fix writes loose NCAs into NXbox/firmware, where a chunk folder of the same name sits.
+        if (
+          path === destination &&
+          all.some((f) => /^[a-f0-9]{32}(?:\.cnmt)?\.nca\//i.test(f.name))
+        )
+          return { source: path, files: [], fixable: false, problem: "driveChunksMove" };
+        return { source: path, files: [], fixable: true };
+      }
+      if (files.length) return { source: path, files, fixable: false };
+      if (imageParts(all)) return { source: path, files: [], fixable: true };
+    } catch (error) {
+      scanFailed(path, error);
+    }
   }
   for (const directory of [join(root, "NXbox"), root]) {
     // A file-based emuMMC can live at the drive root or under NXbox/.
     for (const child of ["emuMMC", "eMMC"]) {
       const path = join(directory, child);
-      if ((await entries(path)).length) {
-        const files = await folderFiles(path);
+      try {
+        if (!(await entries(path)).length) continue;
+        const files = await listFiles(path);
         if (imageParts(files, child === "eMMC")) return { source: path, files: [], fixable: true };
         if (files.some((f) => /(?:^|\/)(?:emummc\.ini|raw_based)$/i.test(f.name)))
-          return { source: path, files: [], fixable: false, unsupported: "firmwarePartition" };
+          defer(path, "firmwarePartition");
+      } catch (error) {
+        scanFailed(path, error);
       }
     }
     for (const e of await entries(directory)) {
@@ -109,13 +146,10 @@ async function firmwareSource(
       const path = join(directory, e.name);
       if (/^(?:rawnand\.bin(?:\.\d{2})?|SYSTEM(?:\.bin)?)$/i.test(e.name))
         return { source: path, files: [], fixable: true };
-      if (/^firmware\.(7z|rar)$/i.test(e.name))
-        return {
-          source: path,
-          files: [],
-          fixable: false,
-          unsupported: /\.7z$/i.test(e.name) ? "firmware7z" : "firmwareRar",
-        };
+      if (/^firmware\.(7z|rar)$/i.test(e.name)) {
+        defer(path, /\.7z$/i.test(e.name) ? "firmware7z" : "firmwareRar");
+        continue;
+      }
       if (/^firmware\.zip$/i.test(e.name)) return { source: path, files: [], fixable: true };
       if (/\.zip$/i.test(e.name)) {
         try {
@@ -128,7 +162,7 @@ async function firmwareSource(
       }
     }
   }
-  return { files: [], fixable: false };
+  return first ?? { files: [], fixable: false };
 }
 export function hasFixableFirmware(report: DriveReport) {
   return report.items.some(
@@ -212,8 +246,8 @@ export async function checkDrive(
     validTitle ? undefined : title ? "driveTitleInvalid" : "driveTitleMissing",
   );
   const firmware = await firmwareSource(root);
-  if (firmware.unsupported)
-    add("firmware", "fail", "driveFirmware", shown(root, firmware.source!), firmware.unsupported);
+  if (firmware.problem)
+    add("firmware", "fail", "driveFirmware", shown(root, firmware.source!), firmware.problem);
   else if (firmware.fixable)
     add("firmware", "fail", "driveFirmware", shown(root, firmware.source!), "driveUnpack");
   else if (!firmware.files.length)
@@ -340,7 +374,7 @@ export async function fixDrive(
   if (hasFixableFirmware(report)) {
     const source = await firmwareSource(root),
       keys = await keyPath(root, "prod.keys");
-    if (!source.source || !keys) return checkDrive(root, language, deps);
+    if (!source.source || !source.fixable || !keys) return checkDrive(root, language, deps);
     const temporary = await mkdtemp(join(tmpdir(), "nxhelper-firmware-"));
     try {
       const fw = await deps.prepare(source.source, keys, temporary);

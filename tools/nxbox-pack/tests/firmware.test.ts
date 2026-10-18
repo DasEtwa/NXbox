@@ -3,7 +3,16 @@
 
 import { expect, test } from "bun:test";
 import { createCipheriv, createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { deflateRawSync } from "node:zlib";
@@ -641,18 +650,143 @@ test("raw-based emuMMC marker gives Hekate guidance without an ini file", async 
     );
   }));
 
-test("destination NCA chunk directories are preserved when loose output would collide", async () =>
+function firmwareItem(report: Awaited<ReturnType<typeof checkDrive>>) {
+  return report.items.find((i) => i.id === "firmware")!;
+}
+test("NCA chunk folders in NXbox/firmware ask to move the dump; Fix leaves them alone", async () =>
   workspace(async (root, keys) => {
     const drive = join(root, "drive");
     await put(drive, "prod.keys", await readFile(keys));
-    for (const file of [version, mii])
-      await put(drive, `NXbox/firmware/${file.name}/00`, file.data);
+    for (const file of [version, mii]) {
+      await put(drive, `NXbox/firmware/${file.name}/00`, file.data.subarray(0, 1000));
+      await put(drive, `NXbox/firmware/${file.name}/01`, file.data.subarray(1000));
+    }
+    for (const language of ["en", "pt"] as const) {
+      const report = await checkDrive(drive, language);
+      expect(hasFixableFirmware(report)).toBe(false);
+      expect(report.ready).toBe(false);
+      expect(firmwareItem(report)).toMatchObject({
+        status: "fail",
+        detail: "NXbox/firmware",
+        fix: strings[language].driveChunksMove,
+      });
+    }
+    const after = await fixDrive(drive, await checkDrive(drive));
+    expect(firmwareItem(after).fix).toBe(strings.en.driveChunksMove);
+    for (const file of [version, mii]) {
+      expect(
+        (await readFile(join(drive, `NXbox/firmware/${file.name}/00`))).equals(
+          file.data.subarray(0, 1000),
+        ),
+      ).toBe(true);
+      expect(
+        (await readFile(join(drive, `NXbox/firmware/${file.name}/01`))).equals(
+          file.data.subarray(1000),
+        ),
+      ).toBe(true);
+    }
+    // The advice works: the same dump under the drive-root firmware/ is fixable.
+    await rename(join(drive, "NXbox/firmware"), join(drive, "firmware"));
+    const moved = await checkDrive(drive);
+    expect(hasFixableFirmware(moved)).toBe(true);
+    expect(firmwareItem(await fixDrive(drive, moved)).status).toBe("ok");
+  }));
+test("two file emuMMCs are reported without losing the rest of the report", async () =>
+  workspace(async (root, keys) => {
+    const drive = join(root, "drive");
+    await put(drive, "NXbox/prod.keys", await readFile(keys));
+    await put(drive, "emuMMC/SD00/eMMC/00", nandImage());
+    await put(drive, "emuMMC/SD01/eMMC/00", nandImage());
+    for (const language of ["en", "pt"] as const) {
+      const report = await checkDrive(drive, language);
+      expect(report.ready).toBe(false);
+      expect(report.items.find((i) => i.id === "prodKeys")!.status).toBe("ok");
+      expect(report.items.some((i) => i.id === "games")).toBe(true);
+      expect(firmwareItem(report)).toMatchObject({
+        status: "fail",
+        detail: "emuMMC",
+        fix: strings[language].driveNandMany,
+      });
+    }
+    // Usable firmware elsewhere on the drive wins over the ambiguous folder.
+    await put(
+      drive,
+      "firmware.zip",
+      zipSync({ [version.name]: version.data, [mii.name]: mii.data }),
+    );
+    const report = await checkDrive(drive);
+    expect(hasFixableFirmware(report)).toBe(true);
+    expect(firmwareItem(await fixDrive(drive, report)).status).toBe("ok");
+  }));
+test("a symlink beside loose NCAs does not hide the firmware", async () =>
+  workspace(async (root, keys) => {
+    const drive = join(root, "drive");
+    await put(drive, "NXbox/prod.keys", await readFile(keys));
+    for (const file of [version, mii]) await put(drive, `NXbox/firmware/${file.name}`, file.data);
+    try {
+      await symlink(root, join(drive, "NXbox/firmware/link"), "dir");
+    } catch {
+      return; // This system does not allow the test user to create links.
+    }
+    const item = firmwareItem(await checkDrive(drive));
+    expect(item.status).toBe("ok");
+    expect(item.detail).toContain("18.1.0");
+  }));
+test("a partition emuMMC marker does not hide firmware found elsewhere", async () =>
+  workspace(async (root, keys) => {
+    const drive = join(root, "drive");
+    await put(drive, "NXbox/prod.keys", await readFile(keys));
+    await put(drive, "emuMMC/RAW1/raw_based", Buffer.alloc(4));
+    await put(drive, "emuMMC/emummc.ini", "[emummc]\n");
+    const hint = firmwareItem(await checkDrive(drive));
+    expect(hint.fix).toBe(strings.en.firmwarePartition);
+    await put(
+      drive,
+      "firmware.zip",
+      zipSync({ [version.name]: version.data, [mii.name]: mii.data }),
+    );
+    const report = await checkDrive(drive);
+    expect(hasFixableFirmware(report)).toBe(true);
+    expect(firmwareItem(await fixDrive(drive, report)).status).toBe("ok");
+    const dump = join(root, "dump");
+    await put(dump, "emuMMC/RAW1/raw_based", Buffer.alloc(4));
+    for (const file of [version, mii]) await put(dump, `firmware/${file.name}`, file.data);
+    expect((await prepareFirmware(dump, keys, join(root, "out"))).version).toBe("18.1.0");
+  }));
+test("a truncated plain SYSTEM reports damage, not missing keys", async () =>
+  workspace(async (root, keys) => {
+    const noBis = `header_key = ${headerKey.toString("hex")}\nkey_area_key_application_00 = ${area.toString("hex")}\n`;
+    await writeFile(keys, noBis);
+    const truncated = await put(root, "SYSTEM", fatImage().subarray(0, 0x8000));
+    await expect(prepareFirmware(truncated, keys, join(root, "out"))).rejects.toMatchObject({
+      code: "nandInvalid",
+    });
+    // An encrypted image without the BIS key still points at the keys.
+    const encrypted = await put(root, "SYSTEM.bin", encryptedSystem().subarray(0, 0x8000));
+    await expect(prepareFirmware(encrypted, keys, join(root, "out2"))).rejects.toMatchObject({
+      code: "firmwareKeys",
+    });
+    const drive = join(root, "drive");
+    await put(drive, "NXbox/prod.keys", noBis);
+    await put(drive, "NXbox/SYSTEM", fatImage().subarray(0, 0x8000));
     const before = await checkDrive(drive);
     expect(hasFixableFirmware(before)).toBe(true);
-    const after = await fixDrive(drive, before);
-    expect(after.items.find((i) => i.id === "firmware")!.fix).toBe(strings.en.driveConflict);
-    for (const file of [version, mii])
-      expect(
-        (await readFile(join(drive, `NXbox/firmware/${file.name}/00`))).equals(file.data),
-      ).toBe(true);
+    expect(firmwareItem(await fixDrive(drive, before)).fix).toBe(strings.en.driveFirmwareCopy);
+  }));
+test("SYSTEM inside a ZIP is size-checked before it is spooled", async () =>
+  workspace(async (root, keys) => {
+    const odd = await put(root, "odd.zip", zipSync({ SYSTEM: Buffer.alloc(0x4000 + 5) }));
+    await expect(prepareFirmware(odd, keys, join(root, "odd"))).rejects.toMatchObject({
+      code: "nandInvalid",
+    });
+    expect(await readdir(join(root, "odd"))).toEqual([]);
+    // A header that declares more than 8 GiB is refused without reading the data.
+    const huge = zip64({ SYSTEM: Buffer.alloc(2 * 1024 * 1024) });
+    const central = huge.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]));
+    huge.writeBigUInt64LE(9n * 1024n ** 3n, central + 46 + huge.readUInt16LE(central + 28) + 4);
+    const path = await put(root, "huge.zip", huge);
+    await expect(prepareFirmware(path, keys, join(root, "huge"))).rejects.toMatchObject({
+      code: "nandInvalid",
+    });
+    expect(await readdir(join(root, "huge"))).toEqual([]);
   }));

@@ -22,6 +22,10 @@ export default {
   driveOldKeys:
     "As chaves são anteriores ao firmware. Extraia as chaves novamente do Switch atualizado.",
   driveFirmwareCopy: "Copie todo o dump do firmware novamente.",
+  driveChunksMove:
+    "Estas pastas de pedaços de NCA estão onde o NxHelper grava os arquivos prontos. Mova todo o dump do firmware para firmware/ na raiz do pendrive e escolha Consertar.",
+  driveNandMany:
+    "Não deu para escolher um backup da NAND: há mais de um, ou faltam partes (00, 01, …). Deixe só uma pasta emuMMC com todas as partes.",
   driveRename: "Renomeie a extensão para minúsculas para o Xbox listar o jogo.",
   driveConvert: "Converta .xcz para .xci antes de copiar; o Xbox não lista .xcz.",
   driveTruncated: "Jogo incompleto. Termine o download ou copie o dump completo novamente.",
