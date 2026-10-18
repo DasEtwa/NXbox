@@ -60,6 +60,42 @@ namespace fs = std::filesystem;
 using winrt::Windows::Data::Json::JsonObject;
 using winrt::Windows::Data::Json::JsonValue;
 
+// A fresh report lets NxHelper preflight uploads without a Device Portal drive API.
+void WriteStorageReport(const fs::path& local_state) {
+    const fs::path temporary = local_state / "storage.json.tmp";
+    try {
+        ULARGE_INTEGER free_bytes{}, total_bytes{};
+        if (!GetDiskFreeSpaceExW(local_state.c_str(), &free_bytes, &total_bytes, nullptr)) {
+            winrt::throw_last_error();
+        }
+        SYSTEMTIME utc{};
+        GetSystemTime(&utc);
+        const auto updated = fmt::format("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", utc.wYear,
+                                         utc.wMonth, utc.wDay, utc.wHour, utc.wMinute, utc.wSecond);
+        {
+            std::ofstream output(temporary, std::ios::trunc);
+            output << fmt::format(R"({{"free":{},"total":{},"updated":"{}"}})", free_bytes.QuadPart,
+                                  total_bytes.QuadPart, updated);
+            output.close();
+            if (!output) {
+                throw std::ios_base::failure("storage report write failed");
+            }
+        }
+        const fs::path destination = local_state / "storage.json";
+        const bool renamed = fs::exists(destination)
+                                 ? ReplaceFileFromAppW(destination.c_str(), temporary.c_str(),
+                                                       nullptr, 0, nullptr, nullptr) != 0
+                                 : MoveFileFromAppW(temporary.c_str(), destination.c_str()) != 0;
+        if (!renamed) {
+            winrt::throw_last_error();
+        }
+    } catch (...) {
+        std::error_code cleanup_error;
+        fs::remove(temporary, cleanup_error);
+        Diagnostic("UI library storage report write failed");
+    }
+}
+
 // What a cached LocalState\library\<TITLEID16>.json says about a game.
 struct CacheRecord {
     std::string title_id;
@@ -1082,6 +1118,7 @@ std::vector<GameEntry> LibraryScan::Scan() {
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() -
                                                               started)
             .count()));
+    WriteStorageReport(local_state_);
     return games;
 }
 

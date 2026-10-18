@@ -38,10 +38,14 @@ export default {
   driveConflict:
     "Um arquivo diferente tem o mesmo nome. Renomeie ou escolha outro destino; nada foi copiado.",
   driveSpace: "Espaço livre insuficiente. Libere espaço ou use outro pendrive.",
+  consoleFull:
+    "O armazenamento interno do Xbox está cheio. Apague jogos que não usa no NXbox ou use um pendrive como SSD externo.",
+  consoleFullSpace:
+    "O armazenamento interno do Xbox está cheio: faltam {size}. Apague jogos que não usa no NXbox ou use um pendrive como SSD externo.",
   nxboxMissing:
     "O NXbox não está instalado. Instale primeiro em https://github.com/NspxMiguel/NXbox/releases/latest.",
   xboxSpaceWarning:
-    "Espaço livre do console indisponível. O SSD interno enche rápido; recomendamos um pendrive.",
+    "Espaço livre do console indisponível. Abra o NXbox uma vez para ele informar o espaço livre.",
   driveUsage:
     "nxhelper --check-drive <caminho> [--fix]\nnxhelper --to-drive <caminho> <arquivos…> --keys <prod.keys> [--title-keys <title.keys>] [--firmware <caminho>]\nnxhelper --to-xbox [--host <host>] <arquivos…> --keys <prod.keys> [--title-keys <title.keys>] [--firmware <caminho>]",
   wayChoice:
