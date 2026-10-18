@@ -142,9 +142,9 @@ Its operator sees them and your IP address.
 
 ## Nextendo Network (optional)
 
-Settings, Online: Nextendo Network. It is off by default. This repository contains no Nextendo
-client ID or server address. They come from a `nextendo.json` file in `LocalState`. Nothing is sent
-to Nextendo until you sign in or turn online on.
+Settings, Online: Nextendo Network. It is off by default. NXbox ships with its public Nextendo
+client ID and Nextendo's public server addresses; a `nextendo.json` file in `LocalState` can
+override them. Nothing is sent to Nextendo until you sign in or turn online on.
 
 **Sign-in.** NXbox opens `https://nextendo.network/api/oauth/authorize` in the Xbox browser using
 OAuth with PKCE. The request carries NXbox's public client ID, the return address
@@ -174,12 +174,12 @@ Each call carries your access token and NXbox's client ID, and Nextendo sees you
 Nextendo decides what it shows to your friends and how long it keeps data. See its own terms.
 
 **Game connections.** With online on, game connections to the hostnames that Nintendo-era online
-services use (for example `*.nintendowifi.net`) are resolved to the Nextendo server addresses from
-`nextendo.json`, so what the game sends goes to Nextendo's servers. The account token NXbox hands to
-the game contains your Nextendo game token, the game's version, random identifiers created for that
-token and a fixed placeholder serial number. It is signed with a key Nextendo gave you, or with a
-temporary key made on the console. NXbox does not read your console's serial number, keys or a
-Nintendo account for this.
+services use (for example `*.nintendowifi.net`) are resolved to the Nextendo server addresses (the
+defaults or those in `nextendo.json`), so what the game sends goes to Nextendo's servers. The
+account token NXbox hands to the game contains your Nextendo game token, the game's version, random
+identifiers created for that token and a fixed placeholder serial number. It is signed with a key
+Nextendo gave you, or with a temporary key made on the console. NXbox does not read your console's
+serial number, keys or a Nintendo account for this.
 
 **Signing out.** Pressing X on the Nextendo screen while signed in deletes the stored credential and
 the tokens in memory on the console. It does not contact Nextendo. To end NXbox's access or delete
@@ -432,9 +432,9 @@ operador dele os vê, e vê seu endereço IP.
 
 ## Nextendo Network (opcional)
 
-Ajustes, Online: Nextendo Network. Vem desligada. Este repositório não contém ID de cliente nem
-endereço de servidor da Nextendo. Eles vêm de um arquivo `nextendo.json` em `LocalState`. Nada é
-enviado à Nextendo até você entrar na conta ou ligar o online.
+Ajustes, Online: Nextendo Network. Vem desligada. O NXbox já vem com o ID de cliente público dele e
+os endereços públicos dos servidores da Nextendo; um arquivo `nextendo.json` em `LocalState` pode
+substituí-los. Nada é enviado à Nextendo até você entrar na conta ou ligar o online.
 
 **Login.** O NXbox abre `https://nextendo.network/api/oauth/authorize` no navegador do Xbox usando
 OAuth com PKCE. O pedido leva o ID de cliente público do NXbox, o endereço de retorno
@@ -466,12 +466,12 @@ dela.
 
 **Conexões dos jogos.** Com o online ligado, as conexões dos jogos aos nomes de host que os serviços
 online da era Nintendo usam (por exemplo `*.nintendowifi.net`) são resolvidas para os endereços de
-servidor da Nextendo que estão no `nextendo.json`, então o que o jogo envia vai para os servidores
-da Nextendo. O token de conta que o NXbox entrega ao jogo contém seu token de jogo da Nextendo, a
-versão do jogo, identificadores aleatórios criados para esse token e um número de série fixo de
-preenchimento. Ele é assinado com uma chave que a Nextendo forneceu, ou com uma chave temporária
-criada no console. O NXbox não lê o número de série do seu console, as chaves dele nem uma conta
-Nintendo para isso.
+servidor da Nextendo (os padrões ou os do `nextendo.json`), então o que o jogo envia vai para os
+servidores da Nextendo. O token de conta que o NXbox entrega ao jogo contém seu token de jogo da
+Nextendo, a versão do jogo, identificadores aleatórios criados para esse token e um número de série
+fixo de preenchimento. Ele é assinado com uma chave que a Nextendo forneceu, ou com uma chave
+temporária criada no console. O NXbox não lê o número de série do seu console, as chaves dele nem
+uma conta Nintendo para isso.
 
 **Sair da conta.** Apertar X na tela da Nextendo com a conta ligada apaga a credencial guardada e os
 tokens da memória, no console. Isso não contacta a Nextendo. Para encerrar o acesso do NXbox ou
