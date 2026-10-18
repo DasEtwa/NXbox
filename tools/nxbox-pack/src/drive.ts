@@ -281,7 +281,7 @@ export async function checkDrive(
     id: "games",
     status: games.length ? "ok" : "fail",
     title: message(language, "driveGames", { count: games.length }),
-    ...(!games.length && { fix: message(language, "driveMove") }),
+    ...(!games.length && { fix: message(language, "driveNoGames") }),
   });
   for (const path of games) {
     const extension = gameExtension(path);

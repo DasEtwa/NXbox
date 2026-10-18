@@ -31,6 +31,8 @@ export default {
   driveTruncated: "Jogo incompleto. Termine o download ou copie o dump completo novamente.",
   driveNoId: "Sem ID de título no nome. Adicione [0100…] com o ID do jogo.",
   driveMove: "Mova o jogo para games/ ou NXbox/games/ na raiz do pendrive.",
+  driveNoGames:
+    "Ainda não há jogos no pendrive. Coloque em NXbox/games/ (games/ na raiz também funciona).",
   driveReady: "Pronto pra plugar no Xbox",
   driveNotReady: "Corrija os itens com falha antes de plugar no Xbox.",
   driveConflict:

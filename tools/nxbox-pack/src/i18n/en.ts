@@ -27,6 +27,8 @@ export default {
   driveTruncated: "Incomplete game. Finish the download or copy the complete dump again.",
   driveNoId: "No title ID in the filename. Add [0100…] with the game title ID.",
   driveMove: "Move the game to games/ or NXbox/games/ at the drive root.",
+  driveNoGames:
+    "No games on the drive yet. Put them in NXbox/games/ (games/ at the root also works).",
   driveReady: "Ready to plug into the Xbox",
   driveNotReady: "Fix the failed items before plugging into the Xbox.",
   driveConflict:
