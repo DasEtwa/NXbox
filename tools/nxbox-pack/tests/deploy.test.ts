@@ -153,6 +153,9 @@ test("staging through registration and verified content uploads completes over H
 test("a failed game upload never enables direct boot", async () => {
   const pushed: string[] = [];
   class FailingPortal extends DevicePortal {
+    override async installAsGames() {
+      return false;
+    }
     override async uploadRuntime(): Promise<void> {}
     override async register() {
       return { Name: "game", PackageFullName: "game_full_name" };
