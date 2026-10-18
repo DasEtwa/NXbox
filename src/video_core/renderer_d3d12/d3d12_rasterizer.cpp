@@ -3429,6 +3429,7 @@ bool RasterizerD3D12::AccelerateSurfaceCopy(const Tegra::Engines::Fermi2D::Surfa
                f.block_height == 1;
     };
     bool accelerated = false;
+    const char* reason = nullptr;
     // Color SrcCopy blits run on the GPU: exact same-format copies as copies, scaled or
     // format-changing ones as draws (CanBlitImages checks the cached images).
     // Depth, ROP/blend operations and converted formats retain the software path.
@@ -3440,10 +3441,37 @@ bool RasterizerD3D12::AccelerateSurfaceCopy(const Tegra::Engines::Fermi2D::Surfa
         // Preserve the shared cache's CPU-only heuristic for tiny copies; creating
         // and uploading two textures can cost more than the software copy itself.
         gpu_copy.must_accelerate = copy_config.must_accelerate || bytes >= (256ULL << 10);
+        texture_runtime.blit_reject = nullptr;
         accelerated = texture_cache.BlitImage(dst, src, gpu_copy);
+        reason = texture_runtime.blit_reject ? texture_runtime.blit_reject
+                                             : "no cached image for the surfaces";
+    } else {
+        reason = src.layer != 0 || dst.layer != 0 || src.depth != 1 || dst.depth != 1
+                     ? "layered or 3D surface"
+                 : !plain(format) || !plain(src_format) ? "surface format is depth or converted"
+                 : copy_config.operation != Tegra::Engines::Fermi2D::Operation::SrcCopy
+                     ? "operation is not SrcCopy"
+                     : "disabled by NXBOX_D3D12_NO_FERMI_COPY";
     }
     if (!accelerated) {
         texture_runtime.RecordSoftwareBlit(dst.Address());
+        // The first 32 large software blits, then one in 512: enough to name the cause.
+        static std::atomic<u32> logged{0};
+        const u32 index = logged.fetch_add(1, std::memory_order_relaxed);
+        if (bytes >= (256ULL << 10) && (index < 32 || index % 512 == 0)) {
+            Diagnostic(fmt::format(
+                "D3D12_FERMI_SOFTWARE reason=\"{}\" src_format={} dst_format={} src={}x{} "
+                "dst={}x{} src_linear={} dst_linear={} src_region={},{}-{},{} "
+                "dst_region={},{}-{},{} filter={} operation={} src_addr={:#x} dst_addr={:#x}",
+                reason, static_cast<u32>(src.format), static_cast<u32>(dst.format), src.width,
+                src.height, dst.width, dst.height,
+                src.linear == Tegra::Engines::Fermi2D::MemoryLayout::Pitch,
+                dst.linear == Tegra::Engines::Fermi2D::MemoryLayout::Pitch, copy_config.src_x0,
+                copy_config.src_y0, copy_config.src_x1, copy_config.src_y1, copy_config.dst_x0,
+                copy_config.dst_y0, copy_config.dst_x1, copy_config.dst_y1,
+                static_cast<u32>(copy_config.filter), static_cast<u32>(copy_config.operation),
+                src.Address(), dst.Address()));
+        }
     }
     context.Profile().Count(accelerated ? FrameCount::FermiBlitsAccelerated
                                         : FrameCount::FermiBlitsSoftware);
