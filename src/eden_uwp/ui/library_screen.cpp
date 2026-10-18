@@ -1812,6 +1812,19 @@ private:
             if (focused)
                 DrawRing(renderer_, rect, (kRowPitch - 16.0f) / 2.0f + kRingGap, 1.0f);
         }
+        if (firmware_status_.version.empty() &&
+            kSettingsCategories[Idx(settings_category_)].title == Text::SettingsSystem) {
+            float folder_y = kRowTop + static_cast<float>(row_count) * kRowPitch + 8.0f;
+            renderer_.DrawString(Tr(Text::FirmwareSearchedFolders), Font::RowSub,
+                                 RectF(kRowsLeft, folder_y, kRight, folder_y + 32.0f),
+                                 Theme::kText);
+            for (const auto& folder : firmware_status_.searched_folders) {
+                folder_y += 32.0f;
+                renderer_.DrawString(folder.wstring(), Font::MetaMono,
+                                     RectF(kRowsLeft, folder_y, kRight, folder_y + 32.0f),
+                                     Theme::kTextSecondary);
+            }
+        }
     }
 
     // What the package says about the focused game, in a sheet over the dimmed screen.

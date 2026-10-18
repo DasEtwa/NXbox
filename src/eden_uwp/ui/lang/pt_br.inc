@@ -216,6 +216,7 @@
      L"O NXbox está instalado como App, limitado a 1 GB de memória. No Dev Home, selecione o "
      L"NXbox, Ver detalhes, e mude o tipo para Jogo (Game). Aperte B para sair."},
     {Text::FirmwareInstalled, L"Firmware instalado"},
+    {Text::FirmwareSearchedFolders, L"Pastas de firmware pesquisadas (Configurações → Sistema)"},
     {Text::FirmwareMissing,
      L"Firmware: copie seu dump para firmware ou NXbox\\firmware no USB e reinicie."},
     {Text::FirmwareConvertDump,
@@ -378,11 +379,11 @@
     {Text::XboxButtonIconsTitle, L"Ícones dos botões do Xbox"},
     {Text::XboxButtonIconsHint,
      L"Usa ícones do controle Xbox. Entra em vigor no próximo jogo iniciado."},
-    {Text::ShaderPreloadTitle, L"Compilar shaders antes de jogar"},
-    {Text::ShaderPreloadHint,
-     L"Evita travadas e tela preta no começo. Aperte B na tela de carregamento para pular."},
-    {Text::LaunchShaderPreload, L"Carregando shaders para uma melhor experiência"},
-    {Text::LaunchShaderSkip, L"B Pular (o jogo pode travar no começo)"},
+    {Text::ShaderPreloadTitle, L"Carregar shaders salvos"},
+    {Text::ShaderPreloadHint, L"Carrega o cache de pipelines de sessões anteriores. Efeitos novos "
+                              L"ainda podem engasgar no primeiro uso. Aperte A para pular."},
+    {Text::LaunchShaderPreload, L"Carregando cache de pipelines de sessões anteriores"},
+    {Text::LaunchShaderSkip, L"A Pular (efeitos novos ainda podem engasgar)"},
 
     {Text::ButtonLayoutTitle, L"Botão de confirmar"}, {Text::ButtonLayoutName, L"Confirmar com A"},
     {Text::ButtonLayoutPosition, L"Confirmar com B"},

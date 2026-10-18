@@ -210,6 +210,7 @@
      L"NXbox is installed as an App, limited to 1 GB of memory. In Dev Home select NXbox, View "
      L"details, and set App type to Game. Press B to exit."},
     {Text::FirmwareInstalled, L"Installed firmware"},
+    {Text::FirmwareSearchedFolders, L"Firmware folders searched (Settings → System)"},
     {Text::FirmwareMissing,
      L"Firmware: copy your dump to firmware or NXbox\\firmware on USB and restart."},
     {Text::FirmwareConvertDump, L"Dump access denied: use NxHelper on a PC to convert it."},
@@ -361,11 +362,11 @@
     {Text::XboxButtonIconsTitle, L"Xbox button icons"},
     {Text::XboxButtonIconsHint,
      L"Use Xbox controller icons. Takes effect on the next game launch."},
-    {Text::ShaderPreloadTitle, L"Compile shaders before playing"},
-    {Text::ShaderPreloadHint,
-     L"Avoids stutters and a black screen at startup. Press B on the loading screen to skip."},
-    {Text::LaunchShaderPreload, L"Loading shaders for a smoother experience"},
-    {Text::LaunchShaderSkip, L"B Skip (the game may stutter at first)"},
+    {Text::ShaderPreloadTitle, L"Preload saved shaders"},
+    {Text::ShaderPreloadHint, L"Preloads pipeline cache from earlier sessions. New effects can "
+                              L"still stutter on first use. Press A to skip."},
+    {Text::LaunchShaderPreload, L"Loading pipeline cache from earlier sessions"},
+    {Text::LaunchShaderSkip, L"A Skip (new effects may still stutter)"},
 
     {Text::ButtonLayoutTitle, L"Confirm button"}, {Text::ButtonLayoutName, L"Confirm with A"},
     {Text::ButtonLayoutPosition, L"Confirm with B"},

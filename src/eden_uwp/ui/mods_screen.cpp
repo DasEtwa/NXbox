@@ -303,7 +303,7 @@ private:
             return;
         }
         if (chip_ != 0 && RowCount() < kVisibleRows) {
-            if (sparse_loads_ >= kMaxSparseLoads) {
+            if (chip_ != kTranslationsChip && sparse_loads_ >= kMaxSparseLoads) {
                 return;
             }
             ++sparse_loads_;

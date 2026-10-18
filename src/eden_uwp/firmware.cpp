@@ -195,7 +195,8 @@ void PrepareFirmware(const std::filesystem::path& local_state) {
         next.version = FirmwareManager::InstalledVersion(system);
         std::vector<std::filesystem::path> roots;
         for (const auto& drive : drives)
-            roots.emplace_back(std::wstring(drive.Path()));
+            if (!drive.Path().empty())
+                roots.emplace_back(std::wstring(drive.Path()));
         auto io = FirmwareIO();
         bool extraction_failed = false;
         io.log = [&](const std::string& text) {
@@ -211,8 +212,10 @@ void PrepareFirmware(const std::filesystem::path& local_state) {
                 next.conversion_required = true;
         };
         Sources::SweepTemporary(io, local_state);
-        const auto sources =
-            Sources::Discover(io, FirmwareManager::FirmwareFolders(local_state, roots), roots);
+        next.searched_folders = FirmwareManager::FirmwareFolders(local_state, roots);
+        for (const auto& folder : next.searched_folders)
+            Diagnostic("FIRMWARE searched " + Common::FS::PathToUTF8String(folder));
+        const auto sources = Sources::Discover(io, next.searched_folders, roots);
         const auto record_path = local_state / "firmware_source.txt";
         auto records = Common::FS::ReadStringFromFile(record_path, Common::FS::FileType::TextFile);
         std::vector<std::filesystem::path> temporary_paths;

@@ -414,6 +414,63 @@ std::optional<GameEntry> LoadGame(FileSys::RealVfsFilesystem& vfs, const fs::pat
     return game;
 }
 
+// A successful conversion may live on another drive while the original NSZ is read-only.
+// Persist the source/output association, rather than inferring completion from sibling names.
+fs::path ConversionRecordPath(const fs::path& local_state, const fs::path& source) {
+    std::uint64_t hash = 14695981039346656037ull;
+    for (const unsigned char byte : Utf8(LibraryFiles::Fold(source.wstring()))) {
+        hash ^= byte;
+        hash *= 1099511628211ull;
+    }
+    return local_state / "library" / fmt::format("nsz-{:016x}.json", hash);
+}
+
+std::optional<fs::path> ConvertedOutput(const fs::path& record_path, const fs::path& source) {
+    try {
+        std::ifstream input(record_path, std::ios::binary);
+        const std::string text((std::istreambuf_iterator<char>(input)), {});
+        JsonObject record;
+        if (!JsonObject::TryParse(winrt::to_hstring(text), record) ||
+            std::wstring(record.GetNamedString(L"source")) != source.native() ||
+            record.GetNamedNumber(L"source_size") !=
+                static_cast<double>(Common::FS::GetSize(source)) ||
+            record.GetNamedNumber(L"source_mtime") != static_cast<double>(ModifiedSeconds(source)))
+            return std::nullopt;
+        const fs::path output{std::wstring(record.GetNamedString(L"output"))};
+        const auto size = Common::FS::GetSize(output);
+        if (size != 0 && record.GetNamedNumber(L"output_size") == static_cast<double>(size))
+            return output;
+    } catch (...) {
+        // Missing, changed or disconnected outputs remain eligible for conversion.
+    }
+    return std::nullopt;
+}
+
+void RememberConversion(const fs::path& record_path, const fs::path& source,
+                        const fs::path& output) {
+    try {
+        JsonObject record;
+        record.SetNamedValue(L"source", JsonValue::CreateStringValue(source.native()));
+        record.SetNamedValue(L"source_size", JsonValue::CreateNumberValue(
+                                                 static_cast<double>(Common::FS::GetSize(source))));
+        record.SetNamedValue(L"source_mtime", JsonValue::CreateNumberValue(
+                                                  static_cast<double>(ModifiedSeconds(source))));
+        record.SetNamedValue(L"output", JsonValue::CreateStringValue(output.native()));
+        record.SetNamedValue(L"output_size", JsonValue::CreateNumberValue(
+                                                 static_cast<double>(Common::FS::GetSize(output))));
+        fs::create_directories(record_path.parent_path());
+        auto temporary = record_path;
+        temporary += L".tmp";
+        const auto text = winrt::to_string(record.Stringify());
+        if (Common::FS::WriteStringToFile(temporary, Common::FS::FileType::TextFile, text) !=
+                text.size() ||
+            !MoveFileExFromAppW(temporary.c_str(), record_path.c_str(), MOVEFILE_REPLACE_EXISTING))
+            Diagnostic("NSZ_CONVERT completion_record_failed");
+    } catch (...) {
+        Diagnostic("NSZ_CONVERT completion_record_failed");
+    }
+}
+
 // Converts one .nsz into the .nsp at `nsp_path`. The converter writes to "<name>.nsp.partial",
 // which is renamed only when the conversion is complete, so a half-written .nsp never exists under
 // its real name. Returns why it failed, or an empty string when the .nsp is complete.
@@ -694,6 +751,11 @@ void LibraryScan::ConvertCompressed(const std::vector<fs::path>& compressed,
     std::optional<std::vector<fs::path>> external; // removable NXbox\games folders, looked up once
     FileSys::RealVfsFilesystem probe;
     for (const fs::path& nsz : compressed) {
+        if (const auto completed = ConvertedOutput(ConversionRecordPath(local_state_, nsz), nsz)) {
+            packages.push_back(*completed);
+            Diagnostic("NSZ_CONVERT already_converted path=" + Utf8(completed->wstring()));
+            continue;
+        }
         fs::path nsp = nsz;
         nsp.replace_extension(L".nsp");
         if (!external) {
@@ -711,6 +773,9 @@ void LibraryScan::ConvertCompressed(const std::vector<fs::path>& compressed,
         if (!existing.empty() && TruncatedPackage(probe, existing) != std::optional<bool>{true}) {
             Diagnostic("UI nsz convert " + Utf8(nsz.filename().wstring()) + " skip " +
                        Utf8(existing.wstring()) + " already exists");
+            packages.push_back(existing);
+            if (TruncatedPackage(probe, existing) == std::optional<bool>{false})
+                RememberConversion(ConversionRecordPath(local_state_, nsz), nsz, existing);
             continue;
         }
         if (!existing.empty())
@@ -798,6 +863,7 @@ void LibraryScan::ConvertCompressed(const std::vector<fs::path>& compressed,
             }
             continue;
         }
+        RememberConversion(ConversionRecordPath(local_state_, nsz), nsz, nsp);
         Diagnostic("UI nsz convert " + file_name + " ok");
         // The .nsz goes only now that its .nsp is complete and in place.
         if (!Common::FS::RemoveFile(nsz)) {

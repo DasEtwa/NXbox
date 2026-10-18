@@ -368,6 +368,7 @@ enum class Text {
     LaunchAppType,
     FirmwareInstalled,
     FirmwareMissing,
+    FirmwareSearchedFolders,
     FirmwareInstallFailed,
     FirmwareConvertDump,
     HomeComboPrompt,
