@@ -25,6 +25,7 @@
 #endif
 #include "common/logging.h"
 #include "video_core/renderer_d3d12/d3d12_completion.h"
+#include "video_core/renderer_d3d12/d3d12_descriptor.h"
 #include "video_core/renderer_d3d12/d3d12_footprint.h"
 #include "video_core/renderer_d3d12/d3d12_ring_allocator.h"
 
@@ -794,6 +795,15 @@ Context::Context() {
                            static_cast<u32>(model.HighestShaderModel)));
     if (model.HighestShaderModel < D3D_SHADER_MODEL_6_0)
         throw std::runtime_error("D3D12 requires shader model 6.0");
+    D3D12_FEATURE_DATA_D3D12_OPTIONS options{};
+    const bool have_options = SUCCEEDED(
+        device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &options, sizeof(options)));
+    const bool minmax =
+        have_options && options.TiledResourcesTier >= D3D12_TILED_RESOURCES_TIER_2;
+    SetMinMaxFilteringSupported(minmax);
+    Diagnostic(fmt::format("D3D12 tiled resources tier={} minmax_filtering={}",
+                           have_options ? static_cast<int>(options.TiledResourcesTier) : -1,
+                           minmax ? 1 : 0));
     Diagnostic("D3D12 CreateDevice complete; creating direct queue");
     D3D12_COMMAND_QUEUE_DESC desc{};
     desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;

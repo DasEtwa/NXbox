@@ -102,6 +102,9 @@ struct BindingState {
 DXGI_FORMAT DsvFormat(DXGI_FORMAT view_format);
 // shader_compares: the shader samples with a depth reference (TextureDescriptor::is_depth).
 D3D12_SAMPLER_DESC MakeSamplerDesc(const Tegra::Texture::TSCEntry& entry, bool shader_compares);
+// Min/max reduction samplers need TiledResourcesTier 2. The Xbox Series reports tier 1 and
+// removes the device (DXGI_ERROR_INVALID_CALL) on such a CreateSampler; set once per device.
+void SetMinMaxFilteringSupported(bool supported);
 
 struct DescriptorKey {
     std::array<u8, 64> description{};

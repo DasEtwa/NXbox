@@ -4,6 +4,7 @@
 #include "video_core/renderer_d3d12/d3d12_descriptor.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <stdexcept>
 #include <unordered_set>
@@ -140,6 +141,15 @@ D3D12_TEXTURE_ADDRESS_MODE AddressMode(WrapMode mode, TextureFilter mag_filter) 
 }
 } // namespace
 
+namespace {
+std::atomic<bool> minmax_filtering_supported{true};
+std::atomic<bool> minmax_fallback_logged{false};
+} // namespace
+
+void SetMinMaxFilteringSupported(bool supported) {
+    minmax_filtering_supported.store(supported);
+}
+
 D3D12_SAMPLER_DESC MakeSamplerDesc(const Tegra::Texture::TSCEntry& entry, bool shader_compares) {
     D3D12_SAMPLER_DESC desc{};
     const u32 min_linear = entry.min_filter == TextureFilter::Linear ? 1 : 0;
@@ -159,6 +169,17 @@ D3D12_SAMPLER_DESC MakeSamplerDesc(const Tegra::Texture::TSCEntry& entry, bool s
         reduction = D3D12_FILTER_REDUCTION_TYPE_MAXIMUM;
     }
     const float anisotropy = std::clamp(entry.MaxAnisotropy(), 1.0f, 16.0f);
+    if ((reduction == D3D12_FILTER_REDUCTION_TYPE_MINIMUM ||
+         reduction == D3D12_FILTER_REDUCTION_TYPE_MAXIMUM) &&
+        !minmax_filtering_supported.load()) {
+        // A point sample reads one texel, so min and max equal the standard result there.
+        // Linear or anisotropic min/max has no exact substitute; standard filtering is close.
+        const bool point = min_linear == 0 && mag_linear == 0 && mip_linear == 0 &&
+                           anisotropy <= 1.0f;
+        if (!point && !minmax_fallback_logged.exchange(true))
+            Diagnostic("D3D12 min/max sampler filtering unsupported; using standard");
+        reduction = D3D12_FILTER_REDUCTION_TYPE_STANDARD;
+    }
     desc.Filter = anisotropy > 1.0f
                       ? static_cast<D3D12_FILTER>(D3D12_ANISOTROPIC_FILTERING_BIT |
                                                   D3D12_ENCODE_BASIC_FILTER(1, 1, 1, reduction))
