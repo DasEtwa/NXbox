@@ -296,6 +296,7 @@ Nintendo, Microsoft, Atlus or SEGA. The artwork was created for NXbox.
 NXbox ships no games, firmware or keys, does not help anyone get them, and is not affiliated with
 Nintendo or Microsoft. Bring your own dumps. The rules, what the app downloads at runtime, and how to
 report a problem are in [LEGAL.md](LEGAL.md).
+The privacy policy is in [PRIVACY.md](PRIVACY.md).
 
 ## License
 
