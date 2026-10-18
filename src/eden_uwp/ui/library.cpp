@@ -782,7 +782,7 @@ LibraryTransfer::Result MoveLibraryGame(const GameEntry& game, const fs::path& l
     };
     io.copy = [&](const auto& file) {
         auto partial = file.target;
-        partial += L".move-partial";
+        partial += L".move.partial";
         struct Handles {
             HANDLE input = INVALID_HANDLE_VALUE;
             HANDLE output = INVALID_HANDLE_VALUE;
