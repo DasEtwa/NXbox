@@ -479,11 +479,23 @@ public:
     void LogInfoQueue() noexcept;
     void Wait(u64 tick, std::string_view site = "other");
     bool IsFree(u64 tick) const;
+    // Recording thread: include pending commands without forcing a queue submission.
+    u64 PendingFenceTick() const {
+        return recording ? CurrentTick() : LastSubmittedTick();
+    }
+    u64 LastSubmittedTick() const {
+        return submitted.load(std::memory_order_acquire);
+    }
+    // True once the queue signals this tick. A failed Submit also counts, so waiters reach
+    // WaitSubmitted and report the failure instead of waiting for a submission that cannot come.
+    bool IsTickSubmitted(u64 tick) const {
+        return LastSubmittedTick() >= tick || submit_failed.load(std::memory_order_acquire);
+    }
     // Completion thread: never submit or touch command recording state.
     void WaitSubmitted(u64 tick, std::string_view site = "other");
     void Collect();
     u64 CurrentTick() const {
-        return submitted + 1;
+        return LastSubmittedTick() + 1;
     }
     void Transition(const ResourcePtr& resource, D3D12_RESOURCE_STATES state);
     // Color textures only: mip + layer * mip count (one plane; 3D has one layer).
@@ -568,7 +580,9 @@ private:
     // may run while a transition method is collecting or emitting these barriers.
     std::vector<D3D12_RESOURCE_BARRIER> transition_barriers;
 
-    u64 submitted{};
+    std::atomic<u64> submitted{};
+    // Set when Submit throws, cleared by the next completed submission.
+    std::atomic<bool> submit_failed{};
     bool recording{};
     u64 recording_generation{};
     RecordedDrawState recorded_state;

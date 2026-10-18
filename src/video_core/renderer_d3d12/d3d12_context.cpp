@@ -6,6 +6,7 @@
 #include <array>
 #include <atomic>
 #include <cstring>
+#include <exception>
 #include <mutex>
 #include <set>
 #include <stdexcept>
@@ -786,7 +787,8 @@ Context::Context() {
     }
     for (const auto* knob :
          {"NXBOX_D3D12_NO_PSO_LIBRARY", "NXBOX_D3D12_GPU_ASTC", "NXBOX_D3D12_NO_COMPUTE",
-          "NXBOX_D3D12_NO_DRAWS", "NXBOX_D3D12_NO_QUERIES", "NXBOX_D3D12_SUBMIT_TRACE"})
+          "NXBOX_D3D12_NO_DRAWS", "NXBOX_D3D12_NO_QUERIES", "NXBOX_D3D12_SUBMIT_TRACE",
+          "NXBOX_D3D12_FENCE_BATCHING"})
         Diagnostic(fmt::format("D3D12 bisect {}={}", knob, BisectEnabled(knob) ? 1 : 0));
     D3D12_FEATURE_DATA_SHADER_MODEL model{D3D_SHADER_MODEL_6_0};
     Check(device->CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL, &model, sizeof(model)),
@@ -1023,6 +1025,16 @@ void Context::MarkWork(std::string_view label) {
                         static_cast<UINT>((marker.size() + 1) * sizeof(wchar_t)));
 }
 u64 Context::Submit(FrameCount reason) {
+    // Device removal can throw after the command list was closed but before its tick was
+    // signalled. Fences that captured that tick would never count as submitted.
+    struct FailureFlag {
+        std::atomic<bool>& flag;
+        int exceptions{std::uncaught_exceptions()};
+        ~FailureFlag() {
+            if (std::uncaught_exceptions() > exceptions)
+                flag.store(true, std::memory_order_release);
+        }
+    } failure_flag{submit_failed};
     const FrameProfile::Scope profile_submit{profile, FramePhase::Submit};
     InvalidateRecordedState();
     // QueueFence and FlushCommands can both request the same submission.
@@ -1085,6 +1097,7 @@ u64 Context::Submit(FrameCount reason) {
     }
     Check(queue->Signal(fence.Get(), tick), "Signal", device.Get());
     submitted = tick;
+    submit_failed.store(false, std::memory_order_release);
     if (BisectEnabled("NXBOX_D3D12_SUBMIT_TRACE"))
         WaitSubmitted(tick, "submit trace");
     // Report progress even when the guest has stopped presenting.

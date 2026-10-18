@@ -3382,7 +3382,14 @@ void RasterizerD3D12::TiledCacheBarrier() {
 void RasterizerD3D12::FlushCommands() {
     // Cache batches and guest callbacks belong to FenceManager, never submission.
     context.Submit(FrameCount::ForcedSubmitGuestFlush);
+    fence_manager.NotifyDeferredSubmit();
     default_pipeline_cache->FlushDiskCache();
+}
+void RasterizerD3D12::FlushDeferredFences() {
+    fence_manager.FlushPendingFences();
+}
+void RasterizerD3D12::NotifyFencesSubmitted() {
+    fence_manager.NotifyDeferredSubmit();
 }
 void RasterizerD3D12::TickFrame() {
     // Bisect toggles: each one skips one cache's per-frame aging.

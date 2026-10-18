@@ -112,6 +112,9 @@ public:
     void FragmentBarrier() override;
     void TiledCacheBarrier() override;
     void FlushCommands() override;
+    void FlushDeferredFences() override;
+    // Present submitted the recording; wake the fencing thread if fences are batched.
+    void NotifyFencesSubmitted();
     void TickFrame() override;
     bool AccelerateSurfaceCopy(const Tegra::Engines::Fermi2D::Surface& src,
                                const Tegra::Engines::Fermi2D::Surface& dst,

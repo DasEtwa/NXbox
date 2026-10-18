@@ -7,6 +7,7 @@
 #pragma once
 
 #include <algorithm>
+#include <chrono>
 #include <condition_variable>
 #include <cstring>
 #include <deque>
@@ -111,7 +112,7 @@ public:
             func();
         }
         fences.push(std::move(new_fence));
-        if (should_flush) {
+        if (should_flush && ShouldFlushFence()) {
             rasterizer.FlushCommands();
         }
         if constexpr (can_async_check) {
@@ -125,6 +126,18 @@ public:
         syncpoint_manager.IncrementGuest(value);
         std::function<void()> func([this, value] { syncpoint_manager.IncrementHost(value); });
         SignalFence(std::move(func));
+    }
+
+    /// Wakes the fencing thread after a submission that can make a deferred fence submitted.
+    /// The lock orders the wake-up after the thread's IsFenceSubmitted check, so it cannot be
+    /// missed between that check and the sleep. Never call this while holding the fence lock.
+    void NotifySubmitted() {
+        if constexpr (can_async_check) {
+            {
+                std::scoped_lock lock{guard};
+            }
+            cv.notify_all();
+        }
     }
 
     void WaitPendingFences([[maybe_unused]] bool force) {
@@ -141,6 +154,7 @@ public:
                 wait_finished->store(true, std::memory_order_release);
                 cv.notify_all();
             });
+            FlushPendingFences();
             std::unique_lock lk(guard);
             cv.wait(lk,
                     [&] { return thread_error || wait_finished->load(std::memory_order_acquire); });
@@ -168,6 +182,12 @@ protected:
     void StopFenceThread() {
         if constexpr (can_async_check) {
             fence_thread.request_stop();
+            {
+                // The release thread checks stop_requested() under this lock before it sleeps;
+                // without it, the stop could land between that check and the wait and the join
+                // would block forever.
+                std::scoped_lock lock{guard};
+            }
             cv.notify_all();
             if (fence_thread.joinable())
                 fence_thread.join();
@@ -183,6 +203,17 @@ protected:
     virtual bool IsFenceSignaled(TFence& fence) const = 0;
     /// Waits until a fence has been signalled by the host GPU.
     virtual void WaitFence(TFence& fence) = 0;
+
+    // Backends may share a submission across fences, but a forced drain must submit it.
+    virtual bool ShouldFlushFence() const {
+        return true;
+    }
+    virtual void FlushPendingFences() {}
+    virtual bool IsFenceSubmitted([[maybe_unused]] const TFence& fence) const {
+        return true;
+    }
+    // Backstop for a submission that does not call NotifySubmitted().
+    std::chrono::milliseconds submit_backstop{1};
 
     VideoCore::RasterizerInterface& rasterizer;
     Tegra::GPU& gpu;
@@ -234,6 +265,15 @@ private:
                     cv.wait(lock, [&] { return stop_token.stop_requested() || !fences.empty(); });
                     if (stop_token.stop_requested()) [[unlikely]] {
                         return;
+                    }
+                    if (!IsFenceSubmitted(fences.front())) {
+                        // A deferred tick must not start the backend's GPU timeout yet.
+                        // NotifySubmitted() ends this wait; the timeout only covers submissions
+                        // that do not notify. Stop still wakes it, so the thread can be joined.
+                        cv.wait_for(lock, submit_backstop, [&] {
+                            return stop_token.stop_requested() || IsFenceSubmitted(fences.front());
+                        });
+                        continue;
                     }
                     current_fence = std::move(fences.front());
                     current_operations = std::move(pending_operations.front());
