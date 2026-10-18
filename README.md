@@ -15,7 +15,8 @@ SPDX-License-Identifier: GPL-3.0-or-later
   A port of <a href="https://git.eden-emu.dev/eden-emu/eden">Eden</a> to the Xbox UWP sandbox: the Switch's ARM64 code runs
   through a JIT, and its graphics go straight to Direct3D 12 through a native renderer written for the console, with
   OpenGL on Mesa kept as a fallback.<br>
-  <a href="https://github.com/NspxMiguel/NXbox/releases/latest"><b>Download the latest release</b></a>
+  <a href="https://github.com/NspxMiguel/NXbox/releases/latest"><b>Download the latest release</b></a> ·
+  <a href="https://discord.gg/2SxEDzVyJM"><b>Join the Discord</b></a>
 </p>
 
 <p align="center">
@@ -147,6 +148,7 @@ Written up in the [port notes](docs/nxbox-port.md).
   hard work on a small budget. Progress comes in bursts, and long waits are usually tool limits.
 - **What you need:** an Xbox in Developer Mode, and your own game dumps, firmware and keys.
   NXbox ships none of them.
+- **Community:** news, test builds and bug reports on the [NXbox Discord](https://discord.gg/2SxEDzVyJM).
 - **Asking for a game:** open an issue naming the title and version you own. Games the maintainer
   can buy and test move faster.
 
