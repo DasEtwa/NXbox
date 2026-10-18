@@ -773,8 +773,11 @@ bool ContainsAny(const std::string& lower, const std::vector<const char*>& words
 
 bool IsTranslationEntry(const ModEntry& entry) {
     static const std::vector<const char*> words = {
-        "translat", "tradu", "dub", "dublag", "subtitl", "legenda", "localiz", "locali",
-        "language", "idioma", "lingua", "traduc", "voice", "voz", "audio pt", "ptbr", "pt-br"};
+        "translat", "tradu",    "dub",     "dublag",  "subtitl",  "legenda", "localiz",
+        "locali",   "language", "idioma",  "lingua",  "traduc",   "voice",   "voz",
+        "audio pt", "ptbr",     "pt-br",   "pt br",   "portugu",  "brazil",  "brasil",
+        "english",  "spanish",  "español", "french",  "français", "german",  "deutsch",
+        "italian",  "japanese", "korean",  "chinese", "mandarin"};
     return entry.category == "Translation" ||
            ContainsAny(Lower(entry.name), words) || ContainsAny(Lower(entry.category), words);
 }
