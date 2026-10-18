@@ -19,6 +19,9 @@ inline constexpr std::string_view CallbackUri = "http://127.0.0.1:17822/callback
 // NXbox's public PKCE application on nextendo.network. It is not a secret; LocalState/nextendo.json
 // may still override it.
 inline constexpr std::string_view DefaultClientId = "nxc_LDo_hp0Ecrhp";
+// Nextendo's public game and NAT servers, the same defaults as their own citron fork.
+inline constexpr std::string_view DefaultServerAddress = "51.178.29.194";
+inline constexpr std::string_view DefaultNatAddress = "164.132.111.120";
 
 inline std::string UrlEncode(std::string_view input) {
     constexpr char digits[] = "0123456789ABCDEF";

@@ -271,17 +271,25 @@ void Initialize(const std::filesystem::path& local_state) {
                 .RawString();
     }
     nx::Config config;
-    config.client_id = std::string(nx::DefaultClientId);
+    const auto defaults = [&config] {
+        config.client_id = std::string(nx::DefaultClientId);
+        config.server_address = std::string(nx::DefaultServerAddress);
+        config.nat_address = std::string(nx::DefaultNatAddress);
+    };
+    defaults();
     try {
         std::ifstream file(local_state / "nextendo.json");
         const std::string contents((std::istreambuf_iterator<char>(file)), {});
         if (!contents.empty() && contents.size() < 16384) {
             const auto data = json::JsonObject::Parse(winrt::to_hstring(contents));
-            config.server_address = winrt::to_string(data.GetNamedString(L"server_address", L""));
-            config.nat_address = winrt::to_string(data.GetNamedString(L"nat_address", L""));
-            if (const auto id = winrt::to_string(data.GetNamedString(L"client_id", L""));
-                !id.empty())
-                config.client_id = id;
+            // Each non-empty value in nextendo.json overrides its default.
+            const auto override_with = [&data](const wchar_t* key, std::string& value) {
+                if (auto text = winrt::to_string(data.GetNamedString(key, L"")); !text.empty())
+                    value = std::move(text);
+            };
+            override_with(L"server_address", config.server_address);
+            override_with(L"nat_address", config.nat_address);
+            override_with(L"client_id", config.client_id);
         }
         const auto values =
             winrt::Windows::Storage::ApplicationData::Current().LocalSettings().Values();
@@ -289,7 +297,7 @@ void Initialize(const std::filesystem::path& local_state) {
             config.enabled = winrt::unbox_value<bool>(values.Lookup(EnabledKey));
     } catch (...) {
         config = {};
-        config.client_id = std::string(nx::DefaultClientId);
+        defaults();
     }
     nx::Configure(std::move(config));
     // Provisioned Nextendo key only; no lookup of console keys, firmware, or PRODINFO.
