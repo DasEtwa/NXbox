@@ -364,6 +364,9 @@
     {Text::ShaderPreloadTitle, L"Compile shaders before playing"},
     {Text::ShaderPreloadHint,
      L"Avoids stutters and a black screen at startup. Press B on the loading screen to skip."},
+    {Text::AsyncShadersTitle, L"Compile shaders in the background"},
+    {Text::AsyncShadersHint, L"The game doesn't freeze when a new effect appears; the effect may "
+                             L"show up a split second later."},
     {Text::LaunchShaderPreload, L"Loading shaders for a smoother experience"},
     {Text::LaunchShaderSkip, L"B Skip (the game may stutter at first)"},
 

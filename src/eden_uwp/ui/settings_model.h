@@ -21,6 +21,7 @@ enum class Setting {
     BackToNXbox,
     Renderer,
     ShaderPreload,
+    AsyncShaders,
     XboxButtonIcons,
     ButtonLayout,
     Resolution,
@@ -29,14 +30,14 @@ enum class Setting {
 };
 struct SettingsCategory {
     Text title;
-    std::array<Setting, 6> rows;
+    std::array<Setting, 7> rows;
     int count;
 };
 inline constexpr std::array<SettingsCategory, 6> kSettingsCategories{{
     {Text::SettingsGraphics,
-     {Setting::Renderer, Setting::ShaderPreload, Setting::XboxButtonIcons, Setting::ButtonLayout,
-      Setting::Resolution, Setting::InternetArt},
-     6},
+     {Setting::Renderer, Setting::ShaderPreload, Setting::AsyncShaders, Setting::XboxButtonIcons,
+      Setting::ButtonLayout, Setting::Resolution, Setting::InternetArt},
+     7},
     {Text::NavShop, {Setting::Sources, Setting::Usb}, 2},
     {Text::SettingsOnline, {Setting::Nextendo, Setting::Multiplayer}, 2},
     {Text::AccountSection,

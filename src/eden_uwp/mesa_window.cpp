@@ -6,6 +6,7 @@
 #include "eden_uwp/crash_logger.h"
 #include "eden_uwp/diagnostic.h"
 #include "eden_uwp/mesa_window.h"
+#include "eden_uwp/renderer_settings.h"
 #include "eden_uwp/ui/renderer.h"
 #include "video_core/renderer_d3d12/backend_selection.h"
 
@@ -31,6 +32,9 @@ void LoadRuntimeEnvironment() {
         std::filesystem::path(winrt::to_string(
             winrt::Windows::Storage::ApplicationData::Current().LocalFolder().Path())) /
         "nxbox_env.txt";
+    const bool async_shaders = RendererSettings::ReadAsyncShaders(env_file.parent_path());
+    _putenv_s("NXBOX_D3D12_ASYNC_SHADERS", async_shaders ? "1" : "0");
+    bool async_shaders_override = false;
     std::ifstream env_in(env_file);
     std::string line;
     while (std::getline(env_in, line)) {
@@ -43,9 +47,15 @@ void LoadRuntimeEnvironment() {
         }
         const std::string key = line.substr(0, eq);
         const std::string value = line.substr(eq + 1);
+        if (key == "NXBOX_D3D12_ASYNC_SHADERS")
+            async_shaders_override = true;
         _putenv_s(key.c_str(), value.c_str());
         Diagnostic("ENV " + key + "=" + value);
     }
+    const char* async_value = std::getenv("NXBOX_D3D12_ASYNC_SHADERS");
+    Diagnostic(std::string("ASYNC_SHADERS ") +
+               (async_value && std::strcmp(async_value, "1") == 0 ? "on" : "off") +
+               " source=" + (async_shaders_override ? "env" : "setting"));
     // The texture cache's per-pass dump needs an absolute, writable directory; this runs for
     // every renderer, unlike the Mesa-only knobs below.
     if (std::getenv("NXBOX_PASS_DUMP_FRAME") && !std::getenv("NXBOX_PASS_DUMP_DIR")) {

@@ -381,6 +381,9 @@
     {Text::ShaderPreloadTitle, L"Compilar shaders antes de jogar"},
     {Text::ShaderPreloadHint,
      L"Evita travadas e tela preta no começo. Aperte B na tela de carregamento para pular."},
+    {Text::AsyncShadersTitle, L"Compilar shaders em segundo plano"},
+    {Text::AsyncShadersHint, L"O jogo não para quando aparece um efeito novo; o efeito pode surgir "
+                             L"uma fração de segundo depois."},
     {Text::LaunchShaderPreload, L"Carregando shaders para uma melhor experiência"},
     {Text::LaunchShaderSkip, L"B Pular (o jogo pode travar no começo)"},
 

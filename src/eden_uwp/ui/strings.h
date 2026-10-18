@@ -349,6 +349,8 @@ enum class Text {
     LaunchShaderSkip,
     ShaderPreloadTitle,
     ShaderPreloadHint,
+    AsyncShadersTitle,
+    AsyncShadersHint,
     ButtonLayoutTitle,
     ButtonLayoutName,
     ButtonLayoutPosition,
