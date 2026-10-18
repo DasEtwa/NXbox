@@ -24,10 +24,10 @@ namespace {
 using namespace winrt::Windows::Storage;
 using namespace winrt::Windows::Foundation::Collections;
 
-// Tries "switch\<relative>" first (the common Lockpick-style SD backup layout), then
-// "<relative>" at the drive root, so a dump that was not nested under "switch" still works.
+// Tries "NXbox\<relative>" (everything kept in one folder, for drives shared with other
+// consoles), then "switch\<relative>" (the Lockpick-style SD backup layout), then the drive root.
 std::optional<IStorageItem> FindItem(const StorageFolder& drive, const wchar_t* relative) {
-    for (const auto& prefix : {L"switch\\", L""}) {
+    for (const auto& prefix : {L"NXbox\\", L"switch\\", L""}) {
         try {
             std::wstring path = prefix;
             path += relative;

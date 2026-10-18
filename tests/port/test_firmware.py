@@ -99,7 +99,8 @@ class FirmwareTests(unittest.TestCase):
         self.assertLess(prepare.index("CopyMissingKeys(local_state, drives)"),
                         prepare.index("ReloadKeys()"))
         self.assertIn('{L"prod.keys", L"title.keys"}', source)
-        self.assertIn('{L"switch\\\\", L""}', source)
+        # Keys kept inside NXbox\ (one folder per console on a shared drive) are found first.
+        self.assertIn('{L"NXbox\\\\", L"switch\\\\", L""}', source)
         self.assertIn("NameCollisionOption::FailIfExists", source)
 
     def test_folders_archive_and_version(self):

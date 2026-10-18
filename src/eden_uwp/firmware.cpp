@@ -29,7 +29,7 @@ FirmwareStatus status;
 
 // The library's USB import copies the keys only after this runs, so the first launch with a fresh
 // drive would try its firmware without keys and fail. Take missing keys from the drive first, from
-// the same places the import looks (switch\ first, then the drive root).
+// the same places the import looks (NXbox\, then switch\, then the drive root).
 void CopyMissingKeys(const std::filesystem::path& local_state,
                      const std::vector<winrt::Windows::Storage::StorageFolder>& drives) {
     using namespace winrt::Windows::Storage;
@@ -39,7 +39,7 @@ void CopyMissingKeys(const std::filesystem::path& local_state,
         }
         bool copied = false;
         for (const auto& drive : drives) {
-            for (const wchar_t* prefix : {L"switch\\", L""}) {
+            for (const wchar_t* prefix : {L"NXbox\\", L"switch\\", L""}) {
                 if (copied) {
                     break;
                 }
