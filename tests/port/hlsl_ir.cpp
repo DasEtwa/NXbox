@@ -62,6 +62,24 @@ void Vertex() {
   Require(text == second, "Emission must preserve the IR");
   std::ofstream("hlsl_vertex.hlsl") << text;
 }
+void DirectClipDistances() {
+  // Direct stores leave used_clip_distances at zero; the output must still
+  // declare every written group (Mario Tennis Aces failed DXC on clip0).
+  Fixture f{Stage::VertexB};
+  f.program.info.stores.Set(IR::Attribute::PositionX);
+  f.program.info.stores.Set(IR::Attribute::ClipDistance0);
+  f.program.info.stores.Set(IR::Attribute::ClipDistance5);
+  f.Add(IR::Opcode::SetAttribute,
+        {IR::Value{IR::Attribute::ClipDistance0}, IR::Value{1.0f}, IR::Value{0u}});
+  f.Add(IR::Opcode::SetAttribute,
+        {IR::Value{IR::Attribute::ClipDistance5}, IR::Value{1.0f}, IR::Value{0u}});
+  Bindings bindings;
+  const auto text = f.Emit(bindings);
+  Contains(text, "float4 clip0 : SV_ClipDistance0;");
+  Contains(text, "float4 clip1 : SV_ClipDistance1;");
+  Contains(text, "output.clip0.x =");
+  Contains(text, "output.clip1.y =");
+}
 void Fragment() {
   Fixture f{Stage::Fragment};
   f.program.info.stores_frag_color[0] = true;
@@ -804,6 +822,7 @@ void NestedReturns() {
 int main() {
   try {
     Vertex();
+    DirectClipDistances();
     PackedSignedAttributes();
     Fragment();
     MultisampleFetch();
