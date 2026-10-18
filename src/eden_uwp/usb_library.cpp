@@ -82,25 +82,37 @@ std::vector<std::filesystem::path> ListExternalGames() {
         for (const auto& drive : *drives) {
             try {
                 // TryGetItemAsync: a drive without the folder is the normal case, not an error.
-                const auto item = AwaitBounded(drive.TryGetItemAsync(L"NXbox\\games"),
-                                               std::chrono::seconds(5));
+                const auto item =
+                    AwaitBounded(drive.TryGetItemAsync(L"NXbox\\games"), std::chrono::seconds(5));
                 const auto folder = item && *item ? item->try_as<StorageFolder>() : nullptr;
                 if (!folder) {
                     continue;
                 }
-                const auto files = AwaitBounded(folder.GetFilesAsync(), std::chrono::seconds(5));
-                if (!files) {
-                    continue;
-                }
-                for (const auto& file : *files) {
-                    const std::filesystem::path path{std::wstring(file.Path())};
-                    auto extension = path.extension().wstring();
-                    std::transform(extension.begin(), extension.end(), extension.begin(),
-                                   [](wchar_t c) { return static_cast<wchar_t>(std::towlower(c)); });
-                    if (extension == L".nsp" || extension == L".nsz" || extension == L".xci") {
-                        result.push_back(path);
-                        Diagnostic("USB_GAME " + winrt::to_string(file.Path()));
+                std::vector<StorageFolder> pending{folder};
+                while (!pending.empty()) {
+                    const auto current = pending.back();
+                    pending.pop_back();
+                    const auto files =
+                        AwaitBounded(current.GetFilesAsync(), std::chrono::seconds(5));
+                    if (!files) {
+                        continue;
                     }
+                    for (const auto& file : *files) {
+                        const std::filesystem::path path{std::wstring(file.Path())};
+                        auto extension = path.extension().wstring();
+                        std::transform(
+                            extension.begin(), extension.end(), extension.begin(),
+                            [](wchar_t c) { return static_cast<wchar_t>(std::towlower(c)); });
+                        if (extension == L".nsp" || extension == L".nsz" || extension == L".xci") {
+                            result.push_back(path);
+                            Diagnostic("USB_GAME " + winrt::to_string(file.Path()));
+                        }
+                    }
+                    const auto children =
+                        AwaitBounded(current.GetFoldersAsync(), std::chrono::seconds(5));
+                    if (children)
+                        for (const auto& child : *children)
+                            pending.push_back(child);
                 }
             } catch (const winrt::hresult_error& error) {
                 Diagnostic("USB_LIBRARY_SKIP " + winrt::to_string(error.message()));
@@ -112,7 +124,7 @@ std::vector<std::filesystem::path> ListExternalGames() {
     return result;
 }
 
-std::vector<std::filesystem::path> ExternalGameFolders() {
+std::vector<std::filesystem::path> ExternalGameFolders(bool create) {
     std::vector<std::filesystem::path> result;
     try {
         const auto drives = AwaitBounded(KnownFolders::RemovableDevices().GetFoldersAsync(),
@@ -122,6 +134,14 @@ std::vector<std::filesystem::path> ExternalGameFolders() {
         }
         for (const auto& drive : *drives) {
             try {
+                if (!create) {
+                    const auto item = AwaitBounded(drive.TryGetItemAsync(L"NXbox\\games"),
+                                                   std::chrono::seconds(5));
+                    const auto folder = item && *item ? item->try_as<StorageFolder>() : nullptr;
+                    if (folder)
+                        result.emplace_back(std::wstring(folder.Path()));
+                    continue;
+                }
                 const auto root = AwaitBounded(
                     drive.CreateFolderAsync(L"NXbox", CreationCollisionOption::OpenIfExists),
                     std::chrono::seconds(5));

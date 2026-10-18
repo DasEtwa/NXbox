@@ -3,14 +3,15 @@
 
 import { writeFile } from "node:fs/promises";
 import { join, posix } from "node:path";
-import { gameExtension } from "./files";
+import { destinationProgress, gameDestination } from "./files";
 import { packageIdentity } from "./manifest";
 import type { Transfer } from "./optional";
 import { safePath } from "./storage";
-import { PackError } from "./i18n";
+import { PackError, type Language } from "./i18n";
 import type { DevicePortal } from "./portal";
 export async function deployGame(options: {
   portal: DevicePortal;
+  language?: Language;
   titleId: string;
   runtimeDirectory: string;
   runtimeFiles: string[];
@@ -37,17 +38,24 @@ export async function deployGame(options: {
   await portal.makeFolder(pkg.PackageFullName, "LocalState", "eden");
   await portal.makeFolder(pkg.PackageFullName, "LocalState/eden", "keys");
   await portal.pushFile(pkg.PackageFullName, keys, "LocalState/eden/keys", "prod.keys");
-  for (const [index, path] of content.entries()) {
-    // The library lists every file in games/, so keep the original names there.
-    const remoteName = library
-      ? posix.basename(path.replaceAll("\\", "/"))
-      : `${index === 0 ? "base" : `addon-${index}`}${gameExtension(path)}`;
+  const destinations: string[] = [];
+  for (const path of content) {
+    const destination = safePath(await gameDestination(path, keys));
+    destinations.push(destination);
+    const directory = posix.dirname(`LocalState/games/${destination}`);
+    if (directory !== "LocalState/games")
+      await portal.makeFolder(pkg.PackageFullName, "LocalState/games", posix.basename(directory));
     await portal.pushFile(
       pkg.PackageFullName,
       path,
-      "LocalState/games",
-      remoteName,
-      (sent, total) => options.onProgress?.(remoteName, sent, total),
+      directory,
+      posix.basename(destination),
+      (sent, total) =>
+        options.onProgress?.(
+          destinationProgress(`games/${destination}`, options.language),
+          sent,
+          total,
+        ),
     );
   }
   const folders = new Set([
@@ -88,7 +96,7 @@ export async function deployGame(options: {
   // Activate direct boot only after all content transfers have been verified.
   if (library) return identity;
   for (const [file, value] of [
-    ["game.txt", `games\\base${gameExtension(content[0]!)}\n`],
+    ["game.txt", `games\\${destinations[0]!.replaceAll("/", "\\")}\n`],
     ["skip_library.txt", "1\n"],
   ] as const) {
     const path = join(temporary, file);

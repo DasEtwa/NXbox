@@ -6,7 +6,13 @@ import { tmpdir } from "node:os";
 import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
 import { readKeys, prepareFirmware, verifyFirmware } from "./firmware";
 import { fileReader, safePath, zipEntries, type LocalFile } from "./storage";
-import { gameExtension, parseTitleId, validateFile } from "./files";
+import {
+  destinationProgress,
+  gameDestination,
+  gameExtension,
+  parseTitleId,
+  validateFile,
+} from "./files";
 import { PackError, strings, type Language, type Message } from "./i18n";
 import type { DevicePortal } from "./portal";
 import { imageParts } from "./nand";
@@ -275,8 +281,8 @@ export async function checkDrive(
   }
   const games: string[] = [];
   for (const directory of [join(root, "games"), join(root, "NXbox/games")])
-    for (const e of await entries(directory))
-      if (e.isFile() && /\.(nsp|nsz|xci|xcz)$/i.test(e.name)) games.push(join(directory, e.name));
+    for (const f of (await entries(directory)).length ? await listFiles(directory) : [])
+      if (/\.(nsp|nsz|xci|xcz)$/i.test(f.name)) games.push(f.path);
   items.push({
     id: "games",
     status: games.length ? "ok" : "fail",
@@ -324,6 +330,15 @@ export async function checkDrive(
   return { root, items, ready: !items.some((i) => i.status === "fail") };
 }
 
+// Drives prepared before the Base/Updates/DLC folders keep games flat in NXbox/games. A flat file of
+// the same size is the same game, so it is not copied into the folder a second time.
+async function flatCopyExists(root: string, f: LocalFile) {
+  const name = /^NXbox\/games\/[^/]+\/([^/]+)$/.exec(f.name)?.[1];
+  if (!name) return false;
+  const flat = join(root, "NXbox/games", name);
+  return (await exists(flat)) && Bun.file(flat).size === Bun.file(f.path).size;
+}
+
 async function copyPlan(root: string, files: LocalFile[], progress: Progress) {
   const pending: LocalFile[] = [];
   const destinations = new Set<string>();
@@ -350,7 +365,7 @@ async function copyPlan(root: string, files: LocalFile[], progress: Progress) {
     const target = join(root, f.name);
     if (await exists(target)) {
       if (Bun.file(target).size !== Bun.file(f.path).size) throw new PackError("driveConflict");
-    } else pending.push(f);
+    } else if (!(await flatCopyExists(root, f))) pending.push(f);
   }
   const space = await statfs(root);
   const bytes = pending.reduce((n, f) => n + Bun.file(f.path).size, 0);
@@ -426,7 +441,7 @@ async function validatedInputs(
       path = await prepareContent(source, join(temporary, `game-${index}`), inputs.keys);
     }
     await validateGame(path);
-    games.push({ path, name: safePath(basename(path, extname(path)) + gameExtension(path)) });
+    games.push({ path, name: safePath(await gameDestination(path, inputs.keys)) });
   }
   if (new Set(games.map((f) => f.name.toLowerCase())).size !== games.length)
     throw new PackError("driveConflict");
@@ -464,7 +479,7 @@ export async function prepareDrive(
         })),
         ...plan.games.map((f) => ({ path: f.path, name: `NXbox/games/${f.name}` })),
       ],
-      onProgress,
+      (file, sent, total) => onProgress(destinationProgress(file, inputs.language), sent, total),
     );
     return await checkDrive(root, inputs.language ?? "en", deps);
   } finally {
@@ -498,7 +513,10 @@ export async function sendToNxbox(
     if (!packages[0]) throw new PackError("nxboxMissing");
     const pkg = packages[0].PackageFullName;
     const groups = [
-      { directory: "LocalState/games", files: plan.games },
+      ...plan.games.map((f) => ({
+        directory: `LocalState/games/${dirname(f.name)}`.replace(/\/\.$/, ""),
+        files: [f],
+      })),
       { directory: "LocalState/eden/keys", files: plan.keys },
       { directory: "LocalState/firmware", files: plan.firmware?.files ?? [] },
     ];
@@ -526,7 +544,11 @@ export async function sendToNxbox(
       }
       for (const f of group.files)
         await portal.pushFile(pkg, f.path, group.directory, basename(f.name), (sent, total) =>
-          onProgress(f.name, sent, total),
+          onProgress(
+            destinationProgress(`${group.directory}/${basename(f.name)}`, inputs.language),
+            sent,
+            total,
+          ),
         );
     }
     return { package: pkg, warnings };

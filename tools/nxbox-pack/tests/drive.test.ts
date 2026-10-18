@@ -156,7 +156,7 @@ test("prepareDrive creates exact layout, lowercase extension and ready report", 
   ]);
   expect(await readdir(join(root, "NXbox/games"))).toEqual(["Game.nsp"]);
   expect(await readdir(join(root, "NXbox/firmware"))).toEqual([firmwareName]);
-  expect(progress).toContain("NXbox/games/Game.nsp");
+  expect(progress).toContain("Game.nsp → NXbox/games");
 });
 test("xcz refused before copying and collisions preflight all files", async () => {
   const input = await inputs();

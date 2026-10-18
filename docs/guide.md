@@ -79,7 +79,7 @@ Como saber que deu certo: depois de copiar para o pendrive, rode **Conferir pend
 Faça tudo no PC, sem o NxbHelper:
 
 1. Na raiz do pendrive, monte o layout A ou B (acima).
-2. Em `games`, ponha os jogos, os updates e as DLC, tudo junto.
+2. Em `games`, ponha os jogos, os updates e as DLC; as subpastas são opcionais.
 3. Em `firmware`, ponha o dump em arquivos `.nca`/`.cnmt.nca`, subpastas ou `.zip`. Dumps NAND também são aceitos; NAND criptografada exige as BIS keys do seu console. Se o acesso ao dump falhar, prepare-o com o NxbHelper no PC.
 4. Keys: o NXbox procura `prod.keys` e `title.keys` em `NXbox/`, depois em `switch/` e por último na raiz, nessa ordem. Elas têm que vir de um Switch com firmware **igual ou mais novo** que o firmware que você copiou.
 
@@ -193,7 +193,7 @@ How to tell it worked: after copying to the drive, run **Check USB drive**. If i
 Do everything on your PC, without NxbHelper:
 
 1. At the drive root, build layout A or B (above).
-2. In `games`, put the games, updates and DLC, all together.
+2. In `games`, put the games, updates and DLC; subfolders are optional.
 3. In `firmware`, put your dump as `.nca`/`.cnmt.nca` files, subfolders or a `.zip`. NAND dumps are also supported; encrypted NAND requires your console’s BIS keys. If dump access fails, prepare it with NxbHelper on a PC.
 4. Keys: NXbox looks for `prod.keys` and `title.keys` in `NXbox/`, then in `switch/`, and last in the root, in that order. They must come from a Switch on the **same or newer** firmware than the one you copied.
 

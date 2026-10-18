@@ -663,7 +663,8 @@ std::vector<LibraryDeleteFile> LibraryDeleteCandidates(const GameEntry& game,
     }
     auto folders = roots;
     folders.push_back(game.path.parent_path());
-    for (const auto& folder : folders) {
+    for (std::size_t index = 0; index < folders.size(); ++index) {
+        const auto folder = folders[index];
         try {
             const auto storage = AwaitBounded(
                 winrt::Windows::Storage::StorageFolder::GetFolderFromPathAsync(folder.native()),
@@ -674,6 +675,18 @@ std::vector<LibraryDeleteFile> LibraryDeleteCandidates(const GameEntry& game,
             if (files)
                 for (const auto& file : *files)
                     candidates.emplace(std::wstring(file.Path()));
+            const auto children = AwaitBounded(storage->GetFoldersAsync(), std::chrono::seconds(5));
+            if (children) {
+                for (const auto& child : *children) {
+                    const fs::path path{std::wstring(child.Path())};
+                    WIN32_FILE_ATTRIBUTE_DATA data{};
+                    if (LibraryFiles::Allowed(path, roots) &&
+                        GetFileAttributesExFromAppW(path.c_str(), GetFileExInfoStandard, &data) &&
+                        !(data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) &&
+                        std::find(folders.begin(), folders.end(), path) == folders.end())
+                        folders.push_back(path);
+                }
+            }
         } catch (const winrt::hresult_error& failure) {
             Diagnostic("LIBRARY_DELETE list failed reason=" + winrt::to_string(failure.message()));
         }
@@ -764,9 +777,12 @@ LibraryTransfer::Result MoveLibraryGame(const GameEntry& game, const fs::path& l
     for (const auto& candidate : LibraryDeleteCandidates(game, local_state)) {
         if (!SafeDeletePath(candidate.path, internal))
             continue;
-        if (!names.insert(LibraryFiles::Fold(candidate.path.filename().wstring())).second)
+        const auto relative = candidate.path.lexically_relative(internal.front());
+        if (!names.insert(LibraryFiles::Fold(relative.wstring())).second)
             return Result::Conflict;
-        files.push_back({candidate.path, destination / candidate.path.filename(), candidate.size});
+        files.push_back({candidate.path,
+                         LibraryTransfer::Target(candidate.path, internal.front(), destination),
+                         candidate.size});
         modified.emplace(candidate.path, ModifiedSeconds(candidate.path));
         if (candidate.size > (std::numeric_limits<std::uint64_t>::max)() - progress.total.load())
             return Result::Failed;
@@ -781,6 +797,8 @@ LibraryTransfer::Result MoveLibraryGame(const GameEntry& game, const fs::path& l
                ModifiedSeconds(file.source) == modified.at(file.source);
     };
     io.copy = [&](const auto& file) {
+        if (!Common::FS::CreateDirs(file.target.parent_path()))
+            return false;
         auto partial = file.target;
         partial += L".move.partial";
         struct Handles {
@@ -1032,6 +1050,15 @@ std::vector<GameEntry> LibraryScan::Scan() {
     const auto started = std::chrono::steady_clock::now();
     const fs::path games_dir = local_state_ / "games";
     const fs::path library_dir = local_state_ / "library";
+
+    auto game_roots = ExternalGameFolders(false);
+    game_roots.push_back(games_dir);
+    for (const auto& root : game_roots) {
+        for (const auto* name : {"Base", "Updates", "DLC"}) {
+            if (!Common::FS::CreateDirs(root / name))
+                Diagnostic("UI library folders: cannot create " + Utf8((root / name).wstring()));
+        }
+    }
 
     // Big games arrive from NXbox Pack as parts; join them before looking for games.
     SplitUpload::JoinSplitUploads(games_dir, [](const std::string& line) { Diagnostic(line); });

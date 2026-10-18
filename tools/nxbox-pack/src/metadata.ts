@@ -173,17 +173,7 @@ export async function gameMetadata(path: string, keysPath: string, language: str
     const keys = await readKeys(keysPath),
       headerKey = keys.get("header_key");
     if (headerKey?.length !== 32) throw new Error("Missing header key");
-    let entries: Entry[];
-    if (/\.nsp$/i.test(path)) entries = await partition(r, "PFS0");
-    else {
-      const card = await r.read(0x100, 0x40);
-      if (card.toString("ascii", 0, 4) !== "HEAD") throw new Error("Invalid XCI");
-      const offset = Number(card.readBigUInt64LE(0x30));
-      const root = await partition(slice(r, offset, r.size - offset), "HFS0");
-      const secure = root.find((e) => e.name === "secure");
-      if (!secure) throw new Error("Missing secure partition");
-      entries = await partition(secure.reader, "HFS0");
-    }
+    const entries = await packageEntries(r, path);
     await ticketKeys(entries, keys);
     for (const e of entries.filter((e) => e.name.endsWith(".nca"))) {
       try {
@@ -210,4 +200,19 @@ export async function gameMetadata(path: string, keysPath: string, language: str
   } finally {
     await r.close();
   }
+}
+
+export async function packageEntries(r: Reader, path: string): Promise<Entry[]> {
+  let entries: Entry[];
+  if (/\.(nsp|nsz)$/i.test(path)) entries = await partition(r, "PFS0");
+  else {
+    const card = await r.read(0x100, 0x40);
+    if (card.toString("ascii", 0, 4) !== "HEAD") throw new Error("Invalid XCI");
+    const offset = Number(card.readBigUInt64LE(0x30));
+    const root = await partition(slice(r, offset, r.size - offset), "HFS0");
+    const secure = root.find((e) => e.name === "secure");
+    if (!secure) throw new Error("Missing secure partition");
+    entries = await partition(secure.reader, "HFS0");
+  }
+  return entries;
 }

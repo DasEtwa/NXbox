@@ -369,6 +369,7 @@ export async function main(): Promise<void> {
     console.log(text.install);
     let lastProgress = 0;
     const identity = await deployGame({
+      language,
       portal,
       titleId,
       runtimeDirectory: directory,

@@ -80,6 +80,7 @@ export default {
   name: "Game display name",
   runtime: "Downloading and verifying the NXbox runtime…",
   install: "Registering your independent game app…",
+  gameDestination: "{file} → {folder}",
   upload: "Uploading to this app's private LocalState…",
   done: "Ready. Open this game's tile in Xbox Dev Home; set its app type to Game for the full memory budget.",
   failed: "NxbHelper failed",

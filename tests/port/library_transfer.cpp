@@ -6,8 +6,16 @@
 
 int main() {
   using namespace LibraryTransfer;
-  const std::vector<File> files{{"internal/game.nsp", "hd/game.nsp", 10},
-                                {"internal/update.nsp", "hd/update.nsp", 5}};
+  assert(Target("internal/Updates/x.nsp", "internal", "hd") ==
+         "hd/Updates/x.nsp");
+  assert(Target("internal/x.nsp", "internal", "hd") == "hd/x.nsp");
+  assert(Target("internal/DLC/nested/x.nsp", "internal", "hd") ==
+         "hd/DLC/nested/x.nsp");
+  assert(Target("internal/Base/x.nsp", "internal", "hd") !=
+         Target("internal/Updates/x.nsp", "internal", "hd"));
+  const std::vector<File> files{
+      {"internal/Base/game.nsp", "hd/Base/game.nsp", 10},
+      {"internal/Updates/update.nsp", "hd/Updates/update.nsp", 5}};
   for (int scenario = 0; scenario < 7; ++scenario) {
     std::map<fs::path, std::uint64_t> disk{{files[0].source, 10},
                                            {files[1].source, 5}};

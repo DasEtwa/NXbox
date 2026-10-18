@@ -23,6 +23,11 @@ struct IO {
     std::function<bool(const File&)> copy;
     std::function<bool(const fs::path&)> remove;
 };
+// The caller validates that source is inside the internal games root.
+inline fs::path Target(const fs::path& source, const fs::path& internal,
+                       const fs::path& destination) {
+    return destination / source.lexically_relative(internal);
+}
 // Refuse before writing if any destination collides or capacity is unknown. Originals survive
 // every copy/verification failure; delete only after the entire group has been verified.
 inline Result Move(const std::vector<File>& files, std::optional<std::uint64_t> available,
