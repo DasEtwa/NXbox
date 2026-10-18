@@ -11,6 +11,7 @@
 #include <fmt/format.h>
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Storage.Streams.h>
+#include <winrt/Windows.Storage.h>
 #include <winrt/Windows.Web.Http.Headers.h>
 #include <winrt/Windows.Web.Http.h>
 
@@ -25,6 +26,8 @@ namespace {
 using namespace winrt::Windows::Foundation;
 using namespace winrt::Windows::Storage::Streams;
 using namespace winrt::Windows::Web::Http;
+using winrt::Windows::Storage::NameCollisionOption;
+using winrt::Windows::Storage::StorageFile;
 
 constexpr int MaxAttempts = 20;
 constexpr uint32_t ChunkSize = 4u << 20;
@@ -220,6 +223,52 @@ bool DownloadFile(const std::string& url, std::filesystem::path& destination,
         }
     }
     Diagnostic("DOWNLOAD_FAILED");
+    return false;
+}
+
+bool PublishDownload(const std::filesystem::path& partial, const std::filesystem::path& complete,
+                     std::string& error) {
+    std::error_code ec;
+    std::filesystem::rename(partial, complete, ec);
+    if (!ec) {
+        return true;
+    }
+    error = fmt::format("rename: {} ({})", ec.message(), ec.value());
+    // The broker's Win32 calls reach a removable drive where the plain rename is refused. They
+    // do not replace, so a file already under the final name goes first.
+    if (FS::Exists(complete) && !FS::RemoveFile(complete)) {
+        error += "; cannot remove the existing file";
+    } else if (MoveFileFromAppW(partial.c_str(), complete.c_str())) {
+        return true;
+    } else {
+        error += fmt::format("; MoveFileFromApp: error {}", GetLastError());
+    }
+    // StorageFile goes through the same broker UWP apps use for the drive's own folders.
+    try {
+        const auto file = AwaitBounded(StorageFile::GetFileFromPathAsync(partial.native()),
+                                       std::chrono::seconds(5));
+        if (!file) {
+            error += "; StorageFile: timed out";
+            return false;
+        }
+        auto renaming =
+            file->RenameAsync(complete.filename().native(), NameCollisionOption::ReplaceExisting);
+        const auto status = renaming.wait_for(std::chrono::seconds(60));
+        if (status == AsyncStatus::Completed) {
+            return true;
+        }
+        if (status == AsyncStatus::Error) {
+            error += fmt::format("; StorageFile: HRESULT 0x{:08x}",
+                                 static_cast<std::uint32_t>(renaming.ErrorCode().value));
+        } else {
+            renaming.Cancel();
+            error += "; StorageFile: timed out";
+        }
+    } catch (const winrt::hresult_error& failure) {
+        error += fmt::format("; StorageFile: HRESULT 0x{:08x} {}",
+                             static_cast<std::uint32_t>(failure.code().value),
+                             winrt::to_string(failure.message()));
+    }
     return false;
 }
 

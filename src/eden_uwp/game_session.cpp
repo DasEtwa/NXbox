@@ -1171,8 +1171,9 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
     while (!closed.load(std::memory_order_acquire) &&
            !guest_exited.load(std::memory_order_acquire) &&
            !session_ui.return_home.load(std::memory_order_acquire)) {
-        // Mesa cannot recover a removed device. Leave through the existing shutdown/error path
-        // instead of keeping a live guest behind a permanently frozen presentation surface.
+        // Neither renderer can reuse a removed device. Native command failure is terminal too;
+        // leave through the shutdown/error path instead of running a guest behind a frozen image.
+        // The Mesa-only device-loss marker may be stale while the native renderer is active.
         char command_failure[2]{};
         const bool commands_stopped =
             GetEnvironmentVariableA("NXBOX_D3D12_COMMAND_FAILURE", command_failure,
@@ -1184,10 +1185,10 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
             GetEnvironmentVariableA("NXBOX_NATIVE_D3D12_ACTIVE", native_active,
                                     sizeof(native_active)) == 1 &&
             native_active[0] == '1';
-        if (!native_renderer &&
-            (commands_stopped || (GetEnvironmentVariableA("NXBOX_D3D12_DEVICE_LOST", device_lost,
-                                                          sizeof(device_lost)) == 1 &&
-                                  device_lost[0] == '1'))) {
+        if (commands_stopped || (!native_renderer &&
+                                 GetEnvironmentVariableA("NXBOX_D3D12_DEVICE_LOST", device_lost,
+                                                         sizeof(device_lost)) == 1 &&
+                                 device_lost[0] == '1')) {
             for (const char* name :
                  {"NXBOX_D3D12_DRED", "NXBOX_D3D12_DRED2", "NXBOX_D3D12_PSO_FAIL_FIRST",
                   "NXBOX_D3D12_FIRST_FAILURE", "NXBOX_D3D12_BATCH", "NXBOX_D3D12_SYNC_ERROR"}) {
