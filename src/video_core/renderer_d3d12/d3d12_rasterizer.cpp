@@ -15,6 +15,7 @@
 #include <set>
 #include <string_view>
 #include <type_traits>
+#include <unordered_map>
 #include <fmt/format.h>
 #include "common/alignment.h"
 #include "common/logging.h"
@@ -92,6 +93,20 @@ RasterizerD3D12::~RasterizerD3D12() {
 }
 
 namespace {
+// Support1 flags of a format on this device, asked once per format (clears ask per attachment).
+bool SupportsFormat(ID3D12Device* device, DXGI_FORMAT format, D3D12_FORMAT_SUPPORT1 required) {
+    static std::mutex mutex;
+    static std::unordered_map<DXGI_FORMAT, UINT> known;
+    std::scoped_lock lock{mutex};
+    const auto [entry, fresh] = known.try_emplace(format, 0u);
+    if (fresh) {
+        D3D12_FEATURE_DATA_FORMAT_SUPPORT support{format};
+        if (SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &support,
+                                                  sizeof(support))))
+            entry->second = support.Support1;
+    }
+    return (entry->second & required) == required;
+}
 using Maxwell = Tegra::Engines::Maxwell3D::Regs;
 // CPU expansion preserves the guest multi-draw ID independently of base IDs.
 // Scoped to the GPU thread and restored after each indirect batch.
@@ -2818,12 +2833,36 @@ void RasterizerD3D12::Clear(u32 layer_count) try {
                                : srv.ViewDimension == D3D12_SRV_DIMENSION_TEXTURE2DARRAY
                                    ? srv.Texture2DArray.ArraySize
                                    : 1;
-            if (layer >= layers)
-                return false;
             const u32 mip = msaa ? 0
                             : srv.ViewDimension == D3D12_SRV_DIMENSION_TEXTURE2DARRAY
                                 ? srv.Texture2DArray.MostDetailedMip
                                 : srv.Texture2D.MostDetailedMip;
+            // A clear view the resource cannot back leaves the RTV/DSV slot unwritten in a release
+            // runtime, and the Xbox driver then reads a null pointer inside ClearRenderTargetView
+            // (Super Mario Odyssey on Series S). Volume targets clear one depth slice.
+            const auto resource_desc = view->ImageHandle()->handle->GetDesc();
+            const bool volume = resource_desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D;
+            const u32 slices =
+                volume ? std::max<u32>(1, resource_desc.DepthOrArraySize >> mip) : layers;
+            if (layer >= slices)
+                return false;
+            const char* invalid = nullptr;
+            if (resource_desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE1D)
+                invalid = "clear attachment is a 1D texture";
+            else if (mip >= resource_desc.MipLevels ||
+                     (!volume && first + layer >= resource_desc.DepthOrArraySize))
+                invalid = "clear attachment subresource is out of range";
+            else if (!SupportsFormat(context.Device(),
+                                     is_depth ? DsvFormat(srv.Format) : srv.Format,
+                                     is_depth ? D3D12_FORMAT_SUPPORT1_DEPTH_STENCIL
+                                              : D3D12_FORMAT_SUPPORT1_RENDER_TARGET))
+                invalid = is_depth ? "clear attachment format cannot be a depth target"
+                                   : "clear attachment format cannot be a render target";
+            if (invalid) {
+                view->LogUnsupported(invalid);
+                SkipDraw(invalid);
+                return false;
+            }
             attachment.resource = view->ImageHandle();
             attachment.width =
                 static_cast<u32>(attachment.resource->handle->GetDesc().Width >> mip);
@@ -2856,6 +2895,9 @@ void RasterizerD3D12::Clear(u32 layer_count) try {
                 if (msaa) {
                     desc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2DMSARRAY;
                     desc.Texture2DMSArray = {first + layer, 1};
+                } else if (volume) {
+                    desc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE3D;
+                    desc.Texture3D = {mip, layer, 1};
                 } else {
                     desc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2DARRAY;
                     desc.Texture2DArray = {mip, first + layer, 1, 0};
