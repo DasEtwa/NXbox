@@ -142,7 +142,8 @@ export async function verifyFirmware(files: LocalFile[], keys: Keys): Promise<Fi
     mii = false;
   for (const file of files) {
     const name = basename(file.name).toLowerCase();
-    if (!/^[a-f0-9]{32}\.nca$/.test(name) || names.has(name))
+    // Dump tools name metadata NCAs <hash>.cnmt.nca; the hash prefix is the same.
+    if (!/^[a-f0-9]{32}(?:\.cnmt)?\.nca$/.test(name) || names.has(name))
       throw new PackError("firmwareInvalid");
     names.add(name);
     const hash = createHash("sha256");
@@ -193,7 +194,7 @@ export async function prepareFirmware(
           if (depth > 8 || seen.has(cluster)) throw new PackError("nandInvalid");
           seen.add(cluster);
           for (const e of await fat.directory(cluster)) {
-            if (/^[a-f0-9]{32}\.nca$/i.test(e.name)) {
+            if (/^[a-f0-9]{32}(?:\.cnmt)?\.nca$/i.test(e.name)) {
               const local = join(extracted, e.name.toLowerCase());
               if (e.directory) {
                 const chunks = await fat.directory(e.cluster);

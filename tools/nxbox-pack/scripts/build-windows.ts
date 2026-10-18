@@ -11,7 +11,7 @@ const child = Bun.spawn(
     "--compile",
     ...(process.platform === "win32" ? [] : ["--target=bun-windows-x64-baseline"]),
     "--outfile",
-    "dist/nxbox-pack-windows-x64.exe",
+    "dist/nxhelper-windows-x64.exe",
   ],
   { stdin: "inherit", stdout: "inherit", stderr: "inherit" },
 );

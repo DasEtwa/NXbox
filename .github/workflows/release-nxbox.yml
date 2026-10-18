@@ -34,8 +34,11 @@ jobs:
     with:
       package_version: ${{ needs.version.outputs.package_version }}
     secrets: inherit
+  helper:
+    needs: version
+    uses: ./.github/workflows/nxbox-pack.yml
   publish:
-    needs: package
+    needs: [package, helper]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -44,8 +47,19 @@ jobs:
         with:
           name: nxbox-release
           path: out
-      - name: Publish signed package and build information
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: NxHelper-*
+          path: helper
+      - name: Zip NxHelper bundles
+        run: |
+          for bundle in helper/NxHelper-*; do
+            chmod +x "$bundle"/NxHelper "$bundle"/nxhelper-core 2>/dev/null || true
+            (cd "$bundle" && zip -q -r "$GITHUB_WORKSPACE/out/$(basename "$bundle").zip" .)
+          done
+          ls -l out
+      - name: Publish signed package, NxHelper and build information
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" out/*.appx out/build-info.json --repo "$GITHUB_REPOSITORY" --verify-tag --latest --generate-notes
+          gh release create "$GITHUB_REF_NAME" out/*.appx out/NxHelper-*.zip out/build-info.json --repo "$GITHUB_REPOSITORY" --verify-tag --latest --generate-notes

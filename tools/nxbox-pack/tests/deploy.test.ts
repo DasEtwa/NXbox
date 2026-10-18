@@ -33,7 +33,7 @@ function runtimeFixture(): Record<string, Uint8Array> {
     ].map((name) => [name, name === "nxbox.exe" ? executable : Buffer.from("fixture")]),
   );
 }
-test("staging through registration and verified content uploads completes over HTTP", async () => {
+test("staging through registration and verified content uploads completes through the HTTP transport", async () => {
   const titleId = "01007EF00011E000";
   const identity = `NSPX.NXbox.${titleId}`;
   const installed = { Name: "Game", PackageFullName: `${identity}_0.2.0.0_x64__xb0tjvbn8pcrt` };
@@ -41,64 +41,59 @@ test("staging through registration and verified content uploads completes over H
   const runtime = new Map<string, Uint8Array>();
   const uploadOrder: string[] = [];
   let registered = false;
-  const server = Bun.serve({
-    hostname: "127.0.0.1",
-    port: 0,
-    async fetch(request) {
-      const url = new URL(request.url);
-      expect(request.headers.get("Authorization")).toBe(
-        `Basic ${Buffer.from("user:password").toString("base64")}`,
+  // Exercise the same streaming HTTP requests without requiring a listening socket.
+  const transport = (async (input, init) => {
+    const request = new Request(String(input), init);
+    const url = new URL(request.url);
+    expect(request.headers.get("Authorization")).toBe(
+      `Basic ${Buffer.from("user:password").toString("base64")}`,
+    );
+    if (request.method === "POST") expect(request.headers.get("X-CSRF-Token")).toBe("token");
+    if (url.pathname.endsWith("/machinename"))
+      return Response.json(
+        { ComputerName: "Xbox" },
+        { headers: { "Set-Cookie": "CSRF-Token=token" } },
       );
-      if (request.method === "POST") expect(request.headers.get("X-CSRF-Token")).toBe("token");
-      if (url.pathname.endsWith("/machinename"))
-        return Response.json(
-          { ComputerName: "Xbox" },
-          { headers: { "Set-Cookie": "CSRF-Token=token" } },
-        );
-      if (
-        url.pathname.endsWith("/upload") ||
-        (url.pathname.endsWith("/file") && request.method === "POST")
-      ) {
-        const form = await request.formData();
-        const file = form.get("file") as File;
-        const bytes = new Uint8Array(await file.arrayBuffer());
-        if (url.pathname.endsWith("/upload")) {
-          const folder = Buffer.from(
-            url.searchParams.get("destinationFolder")!,
-            "base64",
-          ).toString();
-          // Like the console: each upload replaces the files already in that folder.
-          for (const key of [...runtime.keys()])
-            if (key.slice(0, key.lastIndexOf("\\")) === folder) runtime.delete(key);
-          for (const part of form.getAll("file") as File[])
-            runtime.set(`${folder}\\${part.name}`, new Uint8Array(await part.arrayBuffer()));
-        } else {
-          expect(url.searchParams.get("packagefullname")).toBe(installed.PackageFullName);
-          const path = `${url.searchParams.get("path")!.replaceAll("\\", "/")}/${file.name}`;
-          uploads.set(path, bytes);
-          uploadOrder.push(path);
-        }
-        return new Response("");
+    if (
+      url.pathname.endsWith("/upload") ||
+      (url.pathname.endsWith("/file") && request.method === "POST")
+    ) {
+      const form = await request.formData();
+      const file = form.get("file") as File;
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      if (url.pathname.endsWith("/upload")) {
+        const folder = Buffer.from(url.searchParams.get("destinationFolder")!, "base64").toString();
+        // Like the console: each upload replaces the files already in that folder.
+        for (const key of [...runtime.keys()])
+          if (key.slice(0, key.lastIndexOf("\\")) === folder) runtime.delete(key);
+        for (const part of form.getAll("file") as File[])
+          runtime.set(`${folder}\\${part.name}`, new Uint8Array(await part.arrayBuffer()));
+      } else {
+        expect(url.searchParams.get("packagefullname")).toBe(installed.PackageFullName);
+        const path = `${url.searchParams.get("path")!.replaceAll("\\", "/")}/${file.name}`;
+        uploads.set(path, bytes);
+        uploadOrder.push(path);
       }
-      if (url.pathname.endsWith("/register")) {
-        registered = true;
-        return new Response("");
-      }
-      if (url.pathname.endsWith("/state")) return Response.json({ Code: 0 });
-      if (url.pathname.endsWith("/packages"))
-        return Response.json({ InstalledPackages: registered ? [installed] : [] });
-      if (url.pathname.endsWith("/folder")) return new Response("");
-      if (url.pathname.endsWith("/files")) {
-        const prefix = url.searchParams.get("path")!.replaceAll("\\", "/") + "/";
-        return Response.json({
-          Items: [...uploads]
-            .filter(([path]) => path.startsWith(prefix))
-            .map(([path, data]) => ({ Name: path.slice(prefix.length), FileSize: data.length })),
-        });
-      }
-      return new Response("Unexpected endpoint", { status: 404 });
-    },
-  });
+      return new Response("");
+    }
+    if (url.pathname.endsWith("/register")) {
+      registered = true;
+      return new Response("");
+    }
+    if (url.pathname.endsWith("/state")) return Response.json({ Code: 0 });
+    if (url.pathname.endsWith("/packages"))
+      return Response.json({ InstalledPackages: registered ? [installed] : [] });
+    if (url.pathname.endsWith("/folder")) return new Response("");
+    if (url.pathname.endsWith("/files")) {
+      const prefix = url.searchParams.get("path")!.replaceAll("\\", "/") + "/";
+      return Response.json({
+        Items: [...uploads]
+          .filter(([path]) => path.startsWith(prefix))
+          .map(([path, data]) => ({ Name: path.slice(prefix.length), FileSize: data.length })),
+      });
+    }
+    return new Response("Unexpected endpoint", { status: 404 });
+  }) as typeof fetch;
   const temporary = await mkdtemp(join(tmpdir(), "nxbox-pack-deploy-test-"));
   try {
     const runtimeDirectory = join(temporary, "runtime");
@@ -114,10 +109,15 @@ test("staging through registration and verified content uploads completes over H
     await writeFile(base, Buffer.alloc(2 * 1024 * 1024, 7));
     const update = join(temporary, "update.nsp");
     await writeFile(update, "synthetic update");
-    const portal = new DevicePortal(`http://127.0.0.1:${server.port}`, {
-      user: "user",
-      password: "password",
-    });
+    const portal = new DevicePortal(
+      "https://xbox.test:11443",
+      {
+        user: "user",
+        password: "password",
+      },
+      false,
+      transport,
+    );
     expect(
       await deployGame({
         portal,
@@ -145,7 +145,6 @@ test("staging through registration and verified content uploads completes over H
     expect(new TextDecoder().decode(manifest)).toContain(identity);
     expect(new TextDecoder().decode(manifest)).not.toContain("windows.protocol");
   } finally {
-    server.stop(true);
     await rm(temporary, { recursive: true, force: true });
   }
 });
