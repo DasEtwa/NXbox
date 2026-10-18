@@ -54,4 +54,7 @@ int main() {
         line, std::regex(
                   R"(-[rwx-]{9} 1 nxbox nxbox [0-9]+ [A-Z][a-z]{2} [ 0-9][0-9] [0-9]{4} .+\r\n)")));
     assert(ListLine("games", true, 0, utc) == "drwxr-xr-x 1 nxbox nxbox 0 Oct  8 2026 games\r\n");
+    assert(InGames("interno/games/test.nsp"));
+    assert(InGames("hd/GAMES/test.nsp"));
+    assert(!InGames("hd/firmware/test.nca"));
 }

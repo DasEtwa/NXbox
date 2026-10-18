@@ -20,6 +20,7 @@
 #include <winrt/Windows.Storage.Streams.h>
 
 #include "eden_uwp/diagnostic.h"
+#include "eden_uwp/usb_library.h"
 
 namespace EdenXbox::Ftp {
 namespace {
@@ -54,6 +55,7 @@ struct Session : std::enable_shared_from_this<Session> {
     StreamSocket data{nullptr};
     StreamSocketListener passive{nullptr};
     fs::path root;
+    fs::path external;
     std::string password;
     std::string ip;
     std::string peer;
@@ -99,8 +101,19 @@ struct Session : std::enable_shared_from_this<Session> {
         finished.wait(lock, [&] { return done.load(); });
     }
     fs::path Resolve(const std::string& relative) const {
-        fs::path result = root;
-        for (const auto& component : fs::path(winrt::to_hstring(relative).c_str())) {
+        if (relative.empty())
+            return root; // Only CWD and listings may use the virtual root.
+        const auto slash = relative.find('/');
+        const auto alias = relative.substr(0, slash);
+        fs::path result;
+        if (alias == "interno")
+            result = root;
+        else if (alias == "hd" && !external.empty())
+            result = external;
+        else
+            throw std::runtime_error("root unavailable");
+        const auto tail = slash == std::string::npos ? std::string{} : relative.substr(slash + 1);
+        for (const auto& component : fs::path(winrt::to_hstring(tail).c_str())) {
             result /= component;
             // Reject every reparse point, including directory junctions, not just symlinks.
             const DWORD attributes = GetFileAttributesW(result.c_str());
@@ -249,10 +262,30 @@ struct Session : std::enable_shared_from_this<Session> {
                     Write(socket, line);
                     bytes += line.size();
                 };
-                for (const auto& item : fs::directory_iterator(target)) {
-                    if (stopped || !transferring)
-                        throw std::runtime_error("listing cancelled");
-                    entry(item.path());
+                if (relative.empty()) {
+                    for (const auto* alias : {"interno", "hd"}) {
+                        if (std::string_view(alias) == "hd" && external.empty())
+                            continue;
+                        std::string line;
+                        if (verb == "NLST")
+                            line = std::string(alias) + "\r\n";
+                        else if (verb == "MLSD")
+                            line = std::string("type=dir; ") + alias + "\r\n";
+                        else {
+                            std::tm date{};
+                            date.tm_year = 126;
+                            date.tm_mday = 1;
+                            line = ListLine(alias, true, 0, date);
+                        }
+                        Write(socket, line);
+                        bytes += line.size();
+                    }
+                } else {
+                    for (const auto& item : fs::directory_iterator(target)) {
+                        if (stopped || !transferring)
+                            throw std::runtime_error("listing cancelled");
+                        entry(item.path());
+                    }
                 }
             } else {
                 std::ifstream input(target, std::ios::binary);
@@ -378,6 +411,10 @@ struct Session : std::enable_shared_from_this<Session> {
                 return true;
             }
             try {
+                const bool virtual_directory = relative->find('/') == std::string::npos;
+                if (virtual_directory && verb != "CWD" && verb != "CDUP" && verb != "LIST" &&
+                    verb != "NLST" && verb != "MLSD")
+                    throw std::runtime_error("virtual root is read-only");
                 const auto target = Resolve(*relative);
                 if (verb == "CWD" || verb == "CDUP") {
                     if (!fs::is_directory(target))
@@ -532,9 +569,12 @@ bool Server::Start(const fs::path& local_state) {
         fs::create_directories(local_state / "games");
         fs::create_directories(local_state / "eden" / "keys");
         fs::create_directories(local_state / "firmware");
+        const auto game_folders = ExternalGameFolders();
+        const fs::path external =
+            game_folders.empty() ? fs::path{} : game_folders.front().parent_path();
         StreamSocketListener listener;
         const std::weak_ptr<State> weak = state_;
-        listener.ConnectionReceived([weak, local_state](const auto&, const auto& args) {
+        listener.ConnectionReceived([weak, local_state, external](const auto&, const auto& args) {
             const auto owner = weak.lock();
             const auto socket = args.Socket();
             if (!owner) {
@@ -557,6 +597,7 @@ bool Server::Start(const fs::path& local_state) {
             auto session = std::make_shared<Session>();
             session->control = socket;
             session->root = local_state;
+            session->external = external;
             session->ip = owner->ip;
             session->password = owner->password;
             session->changes = owner->changes;

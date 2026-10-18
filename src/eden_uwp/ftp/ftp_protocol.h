@@ -123,6 +123,11 @@ inline bool InGames(std::string_view path) {
     std::transform(folded.begin(), folded.end(), folded.begin(), [](unsigned char letter) {
         return static_cast<char>(letter >= 'A' && letter <= 'Z' ? letter + ('a' - 'A') : letter);
     });
+    for (const auto prefix : {std::string_view("interno/"), std::string_view("hd/")})
+        if (folded.starts_with(prefix)) {
+            folded.erase(0, prefix.size());
+            break;
+        }
     return folded == "games" || folded.starts_with("games/");
 }
 } // namespace EdenXbox::Ftp

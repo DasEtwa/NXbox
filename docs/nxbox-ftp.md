@@ -6,14 +6,14 @@ game launch), or when the app suspends. Enable it again after resuming. Every st
 generates a new six-digit password. The settings row displays the private IPv4 URL,
 username `nxbox`, and password. No password is written to diagnostics.
 
-The FTP root is the app's LocalState. Upload games into `/games/`, keys into
-`/eden/keys/`, and firmware files into `/firmware/`. These folders are created on
+The FTP root is the app's LocalState. Upload games into `/interno/games/`, keys into
+`/interno/eden/keys/`, and firmware files into `/interno/firmware/`. These folders are created on
 server start. Uploads are streamed through a 1 MiB buffer into a sibling `.part`
 file and replace the destination only after completion. Failed/cancelled uploads
 remove that temporary file and retain an existing destination. APPE copies the old
 file with the same bounded buffer before appending, requiring room for both copies.
 The `.part` suffix is reserved. REST supports offset zero only; choose **overwrite**
-when retrying a failed transfer. The library rescans after changes under `/games/`.
+when retrying a failed transfer. The library rescans after changes under `/interno/games/`.
 Existing key and firmware loading/install flows are unchanged.
 
 There is one authenticated control session at a time. Passive connections use
@@ -45,8 +45,8 @@ These checks do not compile the WinRT implementation or exercise networking.
 3. Under **Transfer Settings**, select **Passive**, enable **Limit number of
    simultaneous connections**, and enter **1**. Set **Transfer → Transfer type →
    Binary**. Connect. Confirm `/games`, `/eden/keys`, and `/firmware` are listed.
-4. Upload `prod.keys` to `/eden/keys/`, firmware `.nca` files to `/firmware/`, and
-   a legally owned game named `My Game.nsp` to `/games/`. Wait for **226** and an
+4. Upload `prod.keys` to `/interno/eden/keys/`, firmware `.nca` files to `/interno/firmware/`, and
+   a legally owned game named `My Game.nsp` to `/interno/games/`. Wait for **226** and an
    empty queue. Confirm the game appears after the library rescan. Reconnect and
    download it; compare its SHA-256 with the source. Repeat with a file over 10 GiB.
 5. Rename and delete a game through FileZilla; confirm the library refreshes.
@@ -64,3 +64,5 @@ These checks do not compile the WinRT implementation or exercise networking.
 
 MSVC/UWP compilation, console firewall behavior, suspension cancellation, actual
 large-file transfers and visual rendering require Windows/Xbox verification.
+
+The FTP root contains `/interno` (LocalState) and `/hd` (the first external drive’s NXbox folder, using the same discovery as the game library). Send USB games to `/hd/games/`. If no drive is connected when FTP starts, `/hd` is unavailable; reconnect the drive and restart FTP. Virtual roots cannot be renamed or deleted.
