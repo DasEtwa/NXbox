@@ -71,6 +71,9 @@ public:
     ~NCA() override;
 
     Loader::ResultStatus GetStatus() const;
+    // False when the NCA header could not be read, so that the title ID and the content type are
+    // not available either.
+    bool HasValidHeader() const;
 
     std::vector<VirtualFile> GetFiles() const override;
     std::vector<VirtualDir> GetSubdirectories() const override;
@@ -105,6 +108,7 @@ private:
 
     bool encrypted = false;
     bool is_update = false;
+    bool has_valid_header = false;
 
     Core::Crypto::KeyManager& keys;
     std::shared_ptr<NcaReader> reader;

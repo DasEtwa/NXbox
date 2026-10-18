@@ -43,6 +43,7 @@ NCA::NCA(VirtualFile file_, const NCA* base_nca, bool allow_missing_base)
         status = Loader::ResultStatus::ErrorBadNCAHeader;
         return;
     }
+    has_valid_header = true;
 
     // Ensure we have the proper key area keys to continue.
     const u8 master_key_id = MasterKeyIdForKeyGeneration(reader->GetKeyGeneration());
@@ -166,6 +167,10 @@ NCA::~NCA() = default;
 
 Loader::ResultStatus NCA::GetStatus() const {
     return status;
+}
+
+bool NCA::HasValidHeader() const {
+    return has_valid_header;
 }
 
 std::vector<VirtualFile> NCA::GetFiles() const {
