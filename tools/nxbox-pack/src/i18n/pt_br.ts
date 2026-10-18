@@ -86,6 +86,7 @@ export default {
   name: "Nome do jogo",
   runtime: "Baixando e verificando o runtime do NXbox…",
   install: "Registrando seu aplicativo independente do jogo…",
+  gameDestination: "{file} → {folder}",
   upload: "Enviando para o LocalState privado deste aplicativo…",
   done: "Pronto. Abra o ícone deste jogo no Dev Home do Xbox; defina seu tipo como Game para usar toda a memória disponível.",
   failed: "NxbHelper falhou",

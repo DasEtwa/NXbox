@@ -132,7 +132,7 @@ test("staging through registration and verified content uploads completes throug
     expect(new TextDecoder().decode(uploads.get("/LocalState/game.txt"))).toBe("games\\base.nsp\n");
     expect(new TextDecoder().decode(uploads.get("/LocalState/skip_library.txt"))).toBe("1\n");
     expect(uploads.get("/LocalState/games/base.nsp")?.length).toBe(2 * 1024 * 1024);
-    expect(uploads.has("/LocalState/games/addon-1.nsp")).toBe(true);
+    expect(uploads.has("/LocalState/games/update.nsp")).toBe(true);
     expect(uploads.has("/LocalState/eden/keys/prod.keys")).toBe(true);
     expect(uploadOrder.slice(-2)).toEqual(["/LocalState/game.txt", "/LocalState/skip_library.txt"]);
     const names = [...runtime.keys()];

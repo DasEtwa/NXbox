@@ -201,6 +201,9 @@ flowchart LR
 
 ## Trying it
 
+Games can use `games/Base`, `games/Updates` and `games/DLC` subfolders. Files directly in
+`games/` remain supported.
+
 **New to the Device Portal?** Follow the step-by-step [user guide](docs/guide.md) (Português e English).
 
 You need an Xbox Series X|S in **Developer Mode** and your own dumps:

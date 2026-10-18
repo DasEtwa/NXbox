@@ -7,6 +7,7 @@ import { createCipheriv } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { gameDestination } from "../src/files";
 import { inspect } from "../src/api";
 import { controlMetadata, partition, romFiles } from "../src/metadata";
 import { xtsTransform } from "../src/xts";
@@ -60,15 +61,15 @@ function rom() {
   }
   return b;
 }
-function nca(encrypted: boolean, rights = false) {
+function nca(encrypted: boolean, rights = false, titleId = 0x0100123456780000n, contentType = 2) {
   const section = Buffer.concat([Buffer.alloc(0x200), rom()]),
     size = Math.ceil((0xc00 + section.length) / 512) * 512,
     data = Buffer.alloc(size),
     h = Buffer.alloc(0xc00);
   h.write("NCA3", 0x200);
-  h[0x205] = 2;
+  h[0x205] = contentType;
   h.writeBigUInt64LE(BigInt(size), 0x208);
-  h.writeBigUInt64LE(0x0100123456780000n, 0x210);
+  h.writeBigUInt64LE(titleId, 0x210);
   h.writeUInt32LE(6, 0x240);
   h.writeUInt32LE(size / 512, 0x244);
   const fs = h.subarray(0x400, 0x600);
@@ -216,3 +217,31 @@ test("partition bounds and cyclic RomFS entries are rejected", async () => {
   fs[3] = 1;
   await expect(romFiles(reader(cyclic), fs)).rejects.toThrow("Cyclic");
 });
+
+for (const [id, folder] of [
+  [0x0100123456780000n, "Base"],
+  [0x0100123456780800n, "Updates"],
+  [0x0100123456781001n, "DLC"],
+] as const) {
+  test(`encrypted Meta NCA routes ${folder} without filename ID in NSP, NSZ and XCI`, async () =>
+    workspace(async (root, keys) => {
+      const meta = [{ name: "meta.cnmt.nca", data: nca(false, false, id, 1) }];
+      for (const extension of ["nsp", "nsz", "xci"]) {
+        const path = join(root, `No ID.${extension}`);
+        let bytes = pack(meta);
+        if (extension === "xci") {
+          const prefix = Buffer.alloc(0x10000);
+          prefix.write("HEAD", 0x100);
+          prefix.writeBigUInt64LE(0x10000n, 0x130);
+          bytes = Buffer.concat([prefix, pack([{ name: "secure", data: pack(meta, true) }], true)]);
+        }
+        await writeFile(path, bytes);
+        expect(await gameDestination(path, keys)).toBe(`${folder}/No ID.${extension}`);
+      }
+      const misleading = join(root, "Wrong [0100123456780000].nsp");
+      await writeFile(misleading, pack(meta));
+      expect(await gameDestination(misleading, keys)).toBe(
+        `${folder}/Wrong [0100123456780000].nsp`,
+      );
+    }));
+}

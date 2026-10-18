@@ -4,6 +4,7 @@
 // SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include <random>
 #include "common/scope_exit.h"
 #include "common/settings.h"
@@ -1283,7 +1284,14 @@ void KProcess::LoadModule(KernelCore& kernel, CodeSet code_set, KProcessAddress 
         m_page_table.SetProcessMemoryPermission(segment.addr + base_addr, segment.size, permission);
     };
 
-    this->GetMemory().WriteBlock(base_addr, code_set.memory.data(), code_set.memory.size());
+    // MapPages cleared the code region (heap fill is zero), so the image's trailing zeros, its
+    // .bss, need no write. Writing them commits backing memory the game may never touch.
+    const auto& image = code_set.memory;
+    const auto last = std::find_if(image.rbegin(), image.rend(), [](u8 byte) { return byte != 0; });
+    const size_t written = static_cast<size_t>(image.rend() - last);
+    this->GetMemory().WriteBlock(base_addr, image.data(), written);
+    LOG_INFO(Kernel, "NXBOX LOAD_MODULE base={:#x} image={:#x} zero_tail_skipped={:#x}",
+             GetInteger(base_addr), image.size(), image.size() - written);
 
     ReprotectSegment(code_set.CodeSegment(), Svc::MemoryPermission::ReadExecute);
     ReprotectSegment(code_set.RODataSegment(), Svc::MemoryPermission::Read);

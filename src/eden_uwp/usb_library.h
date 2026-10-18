@@ -12,7 +12,7 @@ namespace EdenXbox {
 
 // All StorageFolder helpers below must run on an MTA worker, never the UI thread.
 std::vector<std::filesystem::path> ListExternalGames();
-std::vector<std::filesystem::path> ExternalGameFolders();
+std::vector<std::filesystem::path> ExternalGameFolders(bool create = true);
 std::optional<std::uint64_t> StorageFreeSpace(const std::filesystem::path& folder);
 // Free bytes for writing into `folder`: the smaller of std::filesystem::space and the
 // StorageFolder System.FreeSpace property. On the console the first overstated the internal

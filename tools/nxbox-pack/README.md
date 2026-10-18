@@ -152,13 +152,15 @@ require the matching `bis_key_02`; decrypted images do not. Extract `.7z`/`.rar`
 partition-based emuMMC, use Hekate to make a file backup. Keys and complete NSP/NSZ containers are
 validated before transfer; firmware is verified by the existing NCA verifier. Convert XCZ to XCI
 before USB preparation. Device Portal transfers can decompress XCZ with the optional `nsz` tool.
-NSP, NSZ and XCI extensions are lowercased automatically.
+NSP, NSZ and XCI extensions are lowercased automatically; base names keep their original case.
+Games are routed into `Base/`, `Updates/` or `DLC/` by metadata or title ID; unknown content stays
+at the games root. Files directly in `games/` remain supported.
 
-USB preparation writes keys at the drive root, games in `NXbox/games/`, and verified firmware NCAs
+USB preparation writes keys in `NXbox/`, games in `NXbox/games/`, and verified firmware NCAs
 loose in `NXbox/firmware/`. It checks free space and destination conflicts before copying. Existing
-files with the same size are skipped; different sizes stop the operation without overwriting. If
-older keys exist in `switch/`, move them aside first: Xbox reads those before the root keys. The
-final checklist may still require firmware if none was supplied or already present.
+files with the same size are skipped; different sizes stop the operation without overwriting.
+Xbox reads `NXbox/` keys first, then `switch/`, then the drive root. The final checklist may still
+require firmware if none was supplied or already present.
 
 Device Portal transfer finds the newest installed `NSPX.NXbox_` library package. It sends games to
 `LocalState/games`, keys to `LocalState/eden/keys`, then firmware to `LocalState/firmware`. Open
