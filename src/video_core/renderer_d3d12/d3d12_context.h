@@ -95,6 +95,7 @@ enum class FrameCount : size_t {
     DescriptorTableReuses,
     DescriptorWrites,
     RootCbvBinds,
+    DescriptorCopyCalls,
     DescriptorWritesCbv,
     DescriptorWritesSrv,
     DescriptorWritesUav,
