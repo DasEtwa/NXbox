@@ -279,6 +279,12 @@ NXbox is an independent fork, developed with the help of AI coding tools, and it
 sent upstream. It is not affiliated with or endorsed by its upstream projects,
 Nintendo, Microsoft, Atlus or SEGA. The artwork was created for NXbox.
 
+## Legal
+
+NXbox ships no games, firmware or keys, does not help anyone get them, and is not affiliated with
+Nintendo or Microsoft. Bring your own dumps. The rules, what the app downloads at runtime, and how to
+report a problem are in [LEGAL.md](LEGAL.md).
+
 ## License
 
 GNU GPL version 3 or later; see [LICENSE.txt](LICENSE.txt). Existing source notices and third-party
