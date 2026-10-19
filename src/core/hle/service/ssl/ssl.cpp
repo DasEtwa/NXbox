@@ -132,16 +132,11 @@ public:
         shared_data->connection_count--;
         if (fd_to_close.has_value()) {
             const s32 fd = *fd_to_close;
-            if (!do_not_close_socket) {
-                LOG_ERROR(Service_SSL,
-                          "do_not_close_socket was changed after setting socket; is this right?");
-            } else {
-                auto bsd = system.ServiceManager().GetService<Service::Sockets::BSD_USA>("bsd:u");
-                if (bsd) {
-                    auto err = bsd->CloseImpl(fd);
-                    if (err != Service::Sockets::Errno::SUCCESS) {
-                        LOG_ERROR(Service_SSL, "Failed to close duplicated socket: {}", err);
-                    }
+            auto bsd = system.ServiceManager().GetService<Service::Sockets::BSD_USA>("bsd:u");
+            if (bsd) {
+                auto err = bsd->CloseImpl(fd);
+                if (err != Service::Sockets::Errno::SUCCESS) {
+                    LOG_ERROR(Service_SSL, "Failed to close duplicated socket: {}", err);
                 }
             }
         }
@@ -187,24 +182,34 @@ private:
 
     Result SetSocketDescriptor(s32 in_fd, Out<s32> out_fd) {
         LOG_DEBUG(Service_SSL, "called, fd={}", in_fd);
+        *out_fd = -1;
+        // Switchbrew: SetSocketDescriptor may only succeed once per connection.
+        R_UNLESS(!socket, ResultInvalidSocket);
         ASSERT(!did_handshake);
         auto bsd = system.ServiceManager().GetService<Service::Sockets::BSD_USA>("bsd:u");
         ASSERT_OR_EXECUTE(bsd, { return ResultInternalError; });
 
         auto const res_v = bsd->DuplicateSocketImpl(in_fd);
-        if (auto *res = std::get_if<s32>(&res_v)) {
+        if (auto* res = std::get_if<s32>(&res_v)) {
             const s32 dup_fd = *res;
-            *out_fd = do_not_close_socket ? dup_fd : -1;
-            if (!do_not_close_socket)
-                fd_to_close = dup_fd;
             auto const sock = bsd->GetSocket(dup_fd);
             if (!sock.has_value()) {
                 LOG_ERROR(Service_SSL, "invalid socket fd {} after duplication", dup_fd);
+                const auto close_error = bsd->CloseImpl(dup_fd);
+                if (close_error != Service::Sockets::Errno::SUCCESS) {
+                    LOG_ERROR(Service_SSL, "Failed to close duplicated socket: {}", close_error);
+                }
                 return ResultInvalidSocket;
             }
             socket = std::move(*sock);
             // Share it: DoHandshake, SetIoMode and GetSocketDescriptor still read `socket`.
             backend->SetSocket(socket);
+            // Retain ownership or transfer the duplicate to the caller, never both.
+            if (do_not_close_socket) {
+                *out_fd = dup_fd;
+            } else {
+                fd_to_close = dup_fd;
+            }
             return ResultSuccess;
         }
         LOG_ERROR(Service_SSL, "Failed to duplicate socket with fd {}", in_fd);
@@ -380,6 +385,9 @@ private:
     Result SetOption(OptionType option, s32 value) {
         switch (option) {
         case OptionType::DoNotCloseSocket:
+            // Switchbrew says this is set before SetSocketDescriptor, but Mario Kart 8 Deluxe
+            // changes it afterwards. Accept it; ownership of the duplicate was decided when the
+            // descriptor was set (the caller got -1, so the service still closes it).
             do_not_close_socket = bool(value);
             break;
         case OptionType::GetServerCertChain:
