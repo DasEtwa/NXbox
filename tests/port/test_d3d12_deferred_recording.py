@@ -28,8 +28,10 @@ def source():
 #include "video_core/renderer_d3d12/d3d12_record_args.h"
 #include "video_core/renderer_d3d12/d3d12_recording_progress.h"
 thread_local bool track_allocations = false;
+thread_local bool fail_allocation = false;
 static std::atomic<unsigned> producer_allocations{};
 void* operator new(size_t bytes) {
+    if (std::exchange(fail_allocation, false)) throw std::bad_alloc();
     if (track_allocations) ++producer_allocations;
     if (auto* result = std::malloc(bytes ? bytes : 1)) return result;
     throw std::bad_alloc();
@@ -325,6 +327,42 @@ int main() {
         EncodeCall<[](void*, ID3D12Resource*) { assert(false); }>(failed_pool, &resource);
     failed_pool.Close(); failed_worker.join(); assert(resource.refs == 1);
     std::cout << "failed recorder drains exhausted pool without stranding producer or COM holds OK\n";
+    // A scratch allocation failure occurs after the header has been consumed. The
+    // failure drain must resume that record, not interpret its payload as a header.
+    RecordStream<> scratch_failure;
+    unsigned scratch_replays = 0;
+    EncodeCall<[](void* target, uint64_t, uint64_t, ID3D12Resource*) {
+        ++*static_cast<unsigned*>(target);
+    }>(scratch_failure, uint64_t{0}, uint64_t{0}, &resource);
+    EncodeCall<[](void* target, uint64_t, uint64_t, ID3D12Resource*) {
+        ++*static_cast<unsigned*>(target);
+    }>(scratch_failure, uint64_t{0}, uint64_t{0}, &resource);
+    scratch_failure.Close();
+    fail_allocation = true;
+    try { scratch_failure.Consume(&scratch_replays); assert(false); }
+    catch (const std::bad_alloc&) {}
+    assert(resource.refs == 3 && scratch_replays == 0);
+    assert(scratch_failure.Consume(&scratch_replays, false));
+    assert(resource.refs == 2);
+    assert(scratch_failure.Consume(&scratch_replays, false));
+    assert(resource.refs == 1 && scratch_replays == 0);
+    assert(!scratch_failure.Consume(&scratch_replays, false));
+    std::cout << "scratch allocation failure preserves record framing and releases holds OK\n";
+    RecordStream<31, 3> scratch_pool;
+    std::thread scratch_worker([&] {
+        fail_allocation = true;
+        bool execute = true;
+        for (;;) {
+            try { if (!scratch_pool.Consume(nullptr, execute)) break; }
+            catch (const std::bad_alloc&) { execute = false; }
+        }
+        assert(!execute);
+    });
+    for (unsigned i=0; i<10000; ++i)
+        EncodeCall<[](void*, ID3D12Resource*, const UINT*) { assert(false); }>(
+            scratch_pool, &resource, Snapshot(words, 4));
+    scratch_pool.Close(); scratch_worker.join(); assert(resource.refs == 1);
+    std::cout << "scratch allocation failure drains chunk backpressure and shutdown OK\n";
     // Failed/abandoned replay still drops references and wakes descriptor-pool waiters.
     RecordStream<> failed;
     EncodeCall<[](void*, ID3D12Resource*) { throw std::runtime_error("injected"); }>(failed, &resource);
@@ -389,12 +427,80 @@ int main() {
     return preamble
 
 
+def startup_source():
+    context = (ROOT / "src/video_core/renderer_d3d12/d3d12_context.cpp").read_text()
+    start = context.index("void Context::StartRecorder() {")
+    end = context.index("void Context::RecorderBegin()", start)
+    return (
+        r"""
+#include <cassert>
+#include <iostream>
+#include <string>
+#include <thread>
+#include "video_core/renderer_d3d12/d3d12_record_stream.h"
+#include "video_core/renderer_d3d12/d3d12_recording_progress.h"
+static int failure_stage;
+static void InjectFailure(int stage) {
+    if (failure_stage == stage) throw std::runtime_error("startup failure");
+}
+namespace Common {
+enum class ThreadPriority { Critical };
+void SetCurrentThreadName(const char*) { InjectFailure(1); }
+void SetCurrentThreadPriority(ThreadPriority) { InjectFailure(2); }
+}
+namespace D3D12 {
+struct RecordingTarget { void* owner{}; int *list{}, *list1{}, *list8{}; };
+struct FakeList {
+    int value{};
+    int* Get() { return &value; }
+    int As(int** output) { InjectFailure(4); *output = &value; return 0; }
+};
+struct FakeExtended {
+    int* value{};
+    int** operator&() { return &value; }
+    int* Get() { return value; }
+};
+struct Context {
+    std::unique_ptr<RecordStream<>> stream;
+    std::atomic<uint64_t> submitted{};
+    std::atomic<bool> submit_failed{};
+    RecordingProgress recorder_progress{submitted, submit_failed};
+    std::thread recorder;
+    struct {
+        bool Enabled() { return false; }
+        void BindRecorder(std::thread::native_handle_type) {}
+    } profile;
+    struct { int depth_bounds_status{}, independent_stencil_status{}; } facade;
+    FakeList commands;
+    FakeExtended extended1, extended8;
+    void InitializeLists() { InjectFailure(3); }
+    void StartRecorder();
+};
+"""
+        + context[start:end]
+        + r"""
+}
+int main() {
+    for (failure_stage = 1; failure_stage <= 4; ++failure_stage) {
+        D3D12::Context context;
+        try { context.StartRecorder(); assert(false); }
+        catch (const std::runtime_error& error) {
+            assert(std::string(error.what()) == "startup failure");
+        }
+        assert(!context.recorder.joinable() && context.submit_failed);
+    }
+    std::cout << "recorder name/priority/list/interface startup failures propagate and join OK\n";
+}
+"""
+    )
+
+
 class DeferredRecording(unittest.TestCase):
-    def run_binary(self, sanitizer):
+    def run_binary(self, sanitizer, make_source=source):
         with tempfile.TemporaryDirectory(prefix="d3d12-recorder-") as tmp:
             cpp = Path(tmp) / "test.cpp"
             binary = Path(tmp) / "test"
-            cpp.write_text(source())
+            cpp.write_text(make_source())
             compilation = subprocess.run(
                 [
                     "clang++",
@@ -420,6 +526,12 @@ class DeferredRecording(unittest.TestCase):
 
     def test_address_undefined(self):
         self.run_binary("address,undefined")
+
+    def test_startup_address_undefined(self):
+        self.run_binary("address,undefined", startup_source)
+
+    def test_startup_thread(self):
+        self.run_binary("thread", startup_source)
 
     def test_thread(self):
         self.run_binary("thread")
