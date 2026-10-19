@@ -39,6 +39,18 @@ int main() {
     }
     assert(!CompatibleDrawStates(4, 8, writes));
     assert(!CompatibleDrawStates(16, 8, writes));
+    // A buffer read through an SRV and written through a UAV by one draw stays in UAV
+    // (Dragon Ball Sparking! Zero skipped 33-84 draws a frame on this); nothing else merges.
+    for (auto read : {64u, 128u, 192u}) {
+        assert(MergesIntoBufferUav(read, 8));
+        assert(MergesIntoBufferUav(8, read));
+        assert(MergesIntoBufferUav(8 | read, read));
+    }
+    assert(!MergesIntoBufferUav(8, 8));
+    assert(!MergesIntoBufferUav(1, 8));
+    assert(!MergesIntoBufferUav(4, 64));
+    assert(!MergesIntoBufferUav(16, 64));
+    assert(!MergesIntoBufferUav(64, 128));
     assert(IsValidBufferView(4096, 256, 128, 128));
     assert(!IsValidBufferView(0, 256, 0, 128));
     assert(!IsValidBufferView(4096, 256, 0, 0));
@@ -56,6 +68,12 @@ int main() {
 
 
 class D3D12FeedbackTests(unittest.TestCase):
+    def test_buffer_uav_merge_only_applies_to_buffers(self):
+        for name in ("d3d12_rasterizer.cpp", "d3d12_dispatch.cpp"):
+            source = (ROOT / "src/video_core/renderer_d3d12" / name).read_text()
+            merge = source.index("MergesIntoBufferUav(")
+            self.assertIn("D3D12_RESOURCE_DIMENSION_BUFFER", source[merge : merge + 400])
+
     def test_feedback_and_draw_validation(self):
         with tempfile.TemporaryDirectory(prefix="nxbox-d3d12-feedback-") as temp:
             source = Path(temp) / "feedback.cpp"

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 
+#include "video_core/renderer_d3d12/d3d12_feedback.h"
 #include "video_core/renderer_d3d12/d3d12_root_signature.h"
 
 namespace D3D12 {
@@ -84,7 +85,9 @@ void ComputeDispatch::Bind(const ComputeBindings& bindings) {
             throw std::invalid_argument("D3D12 compute storage requires a DEFAULT UAV resource");
         // A whole-resource tracker cannot represent conflicting views.
         for (const auto& other : bindings.resources)
-            if (other.resource == use.resource && other.state != use.state)
+            if (other.resource == use.resource && other.state != use.state &&
+                !(MergesIntoBufferUav(other.state, use.state) &&
+                  use.resource->handle->GetDesc().Dimension == D3D12_RESOURCE_DIMENSION_BUFFER))
                 throw std::invalid_argument("D3D12 conflicting compute resource states");
     }
     context.InvalidateRecordedState();
@@ -97,8 +100,13 @@ void ComputeDispatch::Bind(const ComputeBindings& bindings) {
     UavBarrier();
     std::vector<std::pair<ResourcePtr, D3D12_RESOURCE_STATES>> transitions;
     transitions.reserve(bindings.resources.size());
-    for (const auto& use : bindings.resources)
-        transitions.emplace_back(use.resource, use.state);
+    for (const auto& use : bindings.resources) {
+        auto state = use.state;
+        for (const auto& other : bindings.resources)
+            if (other.resource == use.resource && MergesIntoBufferUav(other.state, use.state))
+                state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        transitions.emplace_back(use.resource, state);
+    }
     context.TransitionBatch(transitions);
     ID3D12DescriptorHeap* heaps[]{bindings.resource_heap.Get(), bindings.sampler_heap.Get()};
     commands->SetDescriptorHeaps(2, heaps);
