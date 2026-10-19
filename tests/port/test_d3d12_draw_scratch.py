@@ -13,6 +13,8 @@ ROOT = Path(__file__).resolve().parents[2]
 NATIVE = ROOT / "src/video_core/renderer_d3d12"
 
 MOCK = r"""
+#include "video_core/renderer_d3d12/d3d12_descriptor.h"
+using D3D12::DescriptorSources;
 #include <array>
 #include <cassert>
 #include <cstdint>
@@ -28,21 +30,35 @@ using ResourcePtr = std::shared_ptr<int>;
 bool BisectEnabled(const char*) { return false; }
 """
 ALLOCATOR = r"""
-enum class FrameCount { DescriptorTableReuses };
+enum class FrameCount { DescriptorTableReuses, DescriptorCopies, DescriptorCopyCalls };
+enum class FramePhase { DescriptorWrites };
+struct FrameProfile { struct Scope { template<class T> Scope(T&, FramePhase) {} }; };
+struct D3D12_CPU_DESCRIPTOR_HANDLE { std::uintptr_t ptr{}; };
 constexpr int D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER = 0;
 constexpr int D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV = 1;
 struct DescriptorTable {
     u32 first = 0;
+    D3D12_CPU_DESCRIPTOR_HANDLE cpu{};
     u32 Slot(u32 index) const { return first + index; }
 };
 struct Context {
     u64 tick = 1;
-    unsigned reuses = 0;
+    unsigned reuses = 0, copies = 0;
     u64 CurrentTick() const { return tick; }
     Context& Profile() { return *this; }
-    void Count(FrameCount) { ++reuses; }
+    void Count(FrameCount count, u64 = 1) {
+        if (count == FrameCount::DescriptorTableReuses) ++reuses;
+    }
+    Context* Device() { return this; }
+    void CopyDescriptors(int, const D3D12_CPU_DESCRIPTOR_HANDLE*, const u32*, u32,
+                         const D3D12_CPU_DESCRIPTOR_HANDLE*, const u32*, int) { ++copies; }
+
 };
+void TraceApiCall(Context*, const char*, void*, const void*, std::size_t) {}
 struct D3D12DescriptorAllocator {
+    bool descriptor_fastpath = false;
+    struct Cache { u64 generation = 1; } view_cache, sampler_cache;
+    void RefreshCaches() {}
     struct CopyBatch {};
     struct PreviousDrawTable {
         u64 tick = 0;
@@ -121,6 +137,26 @@ int main() {
     allocator.FinishDrawTable(plan, true);
     plan.resources.clear();
     assert(lifetime.expired());
+    // Execute the production bulk-copy branch, then prove that an identical
+    // source array reuses only within its recording tick.
+    D3D12DescriptorAllocator fast;
+    fast.descriptor_fastpath = true;
+    auto sources = [&] {
+        plan.Reset({1, 2, 1});
+        plan.sources.generation = 1;
+        for (u32 i = 0; i < 4; ++i) plan.sources.handles[i] = i + 10;
+    };
+    sources();
+    fast.FinishDrawTable(plan);
+    assert(fast.context.copies == 1 && fast.writes == 0);
+    sources();
+    assert(fast.CanReuseDrawTable(plan));
+    fast.FinishDrawTable(plan);
+    assert(fast.context.copies == 1);
+    ++fast.context.tick;
+    assert(!fast.CanReuseDrawTable(plan));
+    fast.FinishDrawTable(plan);
+    assert(fast.context.copies == 2);
 }
 """
 
@@ -147,6 +183,9 @@ class DrawScratchTests(unittest.TestCase):
                 [
                     "clang++",
                     "-std=c++20",
+                    "-I",
+                    str(ROOT / "src"),
+                    "-fsanitize=address,undefined",
                     "-Wall",
                     "-Wextra",
                     "-Werror",
