@@ -10,6 +10,7 @@
 #include <map>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -1009,6 +1010,24 @@ std::pair<s32, Errno> BSD_USA::RecvFromImpl(s32 fd, u32 flags, std::vector<u8>& 
     return {ret, bsd_errno};
 }
 
+namespace {
+// RecvImpl and RecvFromImpl switch the shared host socket to non-blocking for MSG_DONTWAIT. A send
+// from another guest thread inside that window failed with EAGAIN although the guest socket blocks:
+// Mario Kart 8 Deluxe lost about 4 UDP packets a second to its race peers that way. A blocking guest
+// socket retries until the host socket is blocking again and takes the data, as on the console.
+template <typename SendOnce>
+std::pair<s32, Errno> SendAsGuestExpects(s32 guest_flags, SendOnce&& send) {
+    auto result = send();
+    for (int attempt = 0; result.second == Errno::AGAIN &&
+                          (guest_flags & Network::FLAG_O_NONBLOCK) == 0 && attempt < 50;
+         ++attempt) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{1});
+        result = send();
+    }
+    return result;
+}
+} // namespace
+
 std::pair<s32, Errno> BSD_USA::SendImpl(s32 fd, u32 flags, std::span<const u8> message) {
     if (!IsFileDescriptorValid(fd)) {
         return {-1, Errno::BADF};
@@ -1017,7 +1036,9 @@ std::pair<s32, Errno> BSD_USA::SendImpl(s32 fd, u32 flags, std::span<const u8> m
         LOG_WARNING(Service, "Uninitialized socket");
         return {-1, Errno::BADF};
     }
-    return Translate(file_descriptors[fd]->socket->Send(message, flags));
+    auto& descriptor = *file_descriptors[fd];
+    return SendAsGuestExpects(descriptor.flags,
+                              [&] { return Translate(descriptor.socket->Send(message, flags)); });
 }
 
 std::pair<s32, Errno> BSD_USA::SendToImpl(s32 fd, u32 flags, std::span<const u8> message,
@@ -1039,7 +1060,10 @@ std::pair<s32, Errno> BSD_USA::SendToImpl(s32 fd, u32 flags, std::span<const u8>
         p_addr_in = &addr_in;
     }
 
-    const auto result = Translate(file_descriptors[fd]->socket->SendTo(flags, message, p_addr_in));
+    auto& descriptor = *file_descriptors[fd];
+    const auto result = SendAsGuestExpects(descriptor.flags, [&] {
+        return Translate(descriptor.socket->SendTo(flags, message, p_addr_in));
+    });
     if (p_addr_in && UdpPeerTrace::Enabled()) {
         UdpPeerTrace::Record(fd, addr_in, true, result.first > 0 ? static_cast<size_t>(result.first) : 0);
     }
