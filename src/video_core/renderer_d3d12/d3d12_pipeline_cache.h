@@ -15,6 +15,7 @@
 #include <unordered_map>
 #include <utility>
 
+#include "common/cityhash.h"
 #include "shader_recompiler/stage.h"
 #include "video_core/renderer_d3d12/d3d12_async_pso.h"
 #include "video_core/renderer_d3d12/d3d12_compute_pipeline.h"
@@ -51,7 +52,10 @@ static_assert(std::has_unique_object_representations_v<GraphicsPipelineKey>);
 
 struct GraphicsPipelineKeyHash {
     size_t operator()(const GraphicsPipelineKey& key) const noexcept {
-        return static_cast<size_t>(Pso::HashBytes(&key, sizeof(key)));
+        if (!StateFastpathEnabled())
+            return static_cast<size_t>(Pso::HashBytes(&key, sizeof(key)));
+        return static_cast<size_t>(
+            Common::CityHash64(reinterpret_cast<const char*>(&key), sizeof(key)));
     }
 };
 
@@ -140,6 +144,9 @@ private:
     std::unordered_map<DXGI_FORMAT, CachedFeature<D3D12_FEATURE_DATA_FORMAT_SUPPORT>>
         format_support;
     Pso::ByteHashCache<128> vertex_specialization_hash;
+    StateInputCache<GraphicsStateInputs> graphics_state_inputs;
+    GraphicsPipelineKey cached_graphics_request{};
+    Pso::TopologyInfo cached_topology{};
     GraphicsPipelineKey last_graphics_request{};
     IGraphicsPipeline* last_graphics_pipeline{};
     std::array<u64, 6> guest_hashes{};

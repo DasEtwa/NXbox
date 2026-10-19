@@ -485,9 +485,69 @@ ResourcePtr RasterizerD3D12::CopyFeedback(const ResourcePtr& source,
     return selected->resource;
 }
 
-// Binds everything a draw needs and invokes draw(commands, params-independent). Order matters:
-// every descriptor allocation (which may submit the open command list when a ring is full)
-// happens BEFORE any per-draw state is recorded.
+// Original dynamic-state calculations, shared by cache misses and verification.
+RasterizerD3D12::DynamicState RasterizerD3D12::ComputeDynamicState(
+    const Maxwell& regs, const Pso::GraphicsPsoState& attachment_state,
+    const Pso::FramebufferFormats& formats, u32 width, u32 height,
+    const IGraphicsPipeline& pipeline) {
+    DynamicState result;
+    auto& viewports = result.viewports;
+    auto& scissors = result.scissors;
+    auto& y_flip = result.y_flip;
+    for (size_t i = 0; i < Maxwell::NumViewports; ++i) {
+        const auto viewport_result =
+            regs.viewport_scale_offset_enabled ? MakeViewport(regs, i) : MakeFullViewport(regs);
+        viewports[i] = viewport_result.viewport;
+        if (viewports[i].MinDepth > viewports[i].MaxDepth) {
+            static bool logged_inverted_depth = false;
+            if (!logged_inverted_depth) {
+                logged_inverted_depth = true;
+                Diagnostic(fmt::format("D3D12 viewport {} MinDepth={} > MaxDepth={}", i,
+                                       viewports[i].MinDepth, viewports[i].MaxDepth));
+            }
+        }
+        static const bool viewport_z01 = BisectEnabled("NXBOX_D3D12_VIEWPORT_Z01");
+        if (viewport_z01) {
+            viewports[i].MinDepth = 0.0f;
+            viewports[i].MaxDepth = 1.0f;
+        }
+        scissors[i] = MakeScissor(regs, i);
+        scissors[i].right = std::min(scissors[i].right, static_cast<LONG>(width));
+        scissors[i].bottom = std::min(scissors[i].bottom, static_cast<LONG>(height));
+        scissors[i].left = std::min(scissors[i].left, scissors[i].right);
+        scissors[i].top = std::min(scissors[i].top, scissors[i].bottom);
+        if (i == 0)
+            y_flip = viewport_result.y_flip;
+    }
+    const bool back_only = regs.stencil_two_side_enable && regs.gl_cull_test_enabled &&
+                           static_cast<u32>(regs.gl_cull_face) == 0x404;
+    const auto cull =
+        Pso::CullMode(regs.gl_cull_test_enabled != 0, static_cast<u32>(regs.gl_cull_face));
+    if (attachment_state.stencil_enable && Pso::DsvHasStencil(formats.depth) && regs.zeta_enable &&
+        regs.stencil_enable &&
+        Pso::IndependentStencil(regs.stencil_two_side_enable != 0, cull.mode,
+                                regs.stencil_front_ref, regs.stencil_back_ref,
+                                regs.stencil_front_func_mask, regs.stencil_back_func_mask,
+                                regs.stencil_front_mask, regs.stencil_back_mask)) {
+        result.stencil = {1, regs.stencil_front_ref, regs.stencil_back_ref};
+    } else {
+        const UINT stencil_ref = back_only ? regs.stencil_back_ref : regs.stencil_front_ref;
+        result.stencil = {0, stencil_ref, stencil_ref};
+    }
+    const bool replicate_alpha = Pso::ConstantBlendFactors(attachment_state) == 2;
+    result.blend = {replicate_alpha ? regs.blend_color.a : regs.blend_color.r,
+                    replicate_alpha ? regs.blend_color.a : regs.blend_color.g,
+                    replicate_alpha ? regs.blend_color.a : regs.blend_color.b, regs.blend_color.a};
+    if (attachment_state.depth_bounds) {
+        result.depth_bounds = {std::clamp(regs.depth_bounds[0], 0.0f, 1.0f),
+                               std::clamp(regs.depth_bounds[1], 0.0f, 1.0f)};
+    }
+    result.words = pipeline.RootConstants({width, height, y_flip});
+    return result;
+}
+
+// Binds everything a draw needs. Descriptor allocations (which can submit the open
+// command list) happen before recording state.
 template <typename Func>
 void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     // A guest fence cuts the list between draws; so does this. Nothing of this draw has been
@@ -627,8 +687,28 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
             return;
     }
     draw_phase.emplace(context.Profile(), FramePhase::GraphicsState);
-    FillGraphicsState(*maxwell3d, attachment_state);
-    Pso::ApplyFramebufferFormats(attachment_state, formats);
+    const GraphicsStateInputs current_attachment{
+        context.GraphicsStateTracker().Update(*maxwell3d),
+        {},
+        formats,
+        static_cast<u32>(maxwell3d->draw_manager.draw_state.topology),
+        regs.zeta_enable,
+        is_indexed,
+        {regs.pipelines[2].enable != 0, regs.pipelines[3].enable != 0}};
+    const bool reuse_attachment =
+        StateFastpathEnabled() && attachment_inputs.Matches(current_attachment);
+    if (!reuse_attachment || StateVerifyEnabled()) {
+        FillGraphicsState(*maxwell3d, attachment_state);
+        Pso::ApplyFramebufferFormats(attachment_state, formats);
+        if (StateVerifyEnabled() && reuse_attachment &&
+            std::memcmp(&cached_attachment_state, &attachment_state, sizeof(attachment_state)) != 0)
+            StateVerifyMismatch("pipeline", &cached_attachment_state, &attachment_state,
+                                sizeof(attachment_state));
+        cached_attachment_state = attachment_state;
+        attachment_inputs.Store(current_attachment);
+    } else {
+        attachment_state = cached_attachment_state;
+    }
     if (attachment_diagnostics < 8) {
         ++attachment_diagnostics;
         std::string message = "D3D12_ATTACHMENTS count=" + std::to_string(guest_rts);
@@ -1829,34 +1909,40 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     if (context.RecordState(recorded.targets.Update(target_key)))
         commands->OMSetRenderTargets(num_rts, num_rts ? &rtv_base : nullptr, TRUE,
                                      has_depth ? &dsv_handle : nullptr);
-    std::array<D3D12_VIEWPORT, Maxwell::NumViewports> viewports{};
-    std::array<D3D12_RECT, Maxwell::NumViewports> scissors{};
-    bool y_flip = false;
-    for (size_t i = 0; i < Maxwell::NumViewports; ++i) {
-        const auto result =
-            regs.viewport_scale_offset_enabled ? MakeViewport(regs, i) : MakeFullViewport(regs);
-        viewports[i] = result.viewport;
-        if (viewports[i].MinDepth > viewports[i].MaxDepth) {
-            static bool logged_inverted_depth = false;
-            if (!logged_inverted_depth) {
-                logged_inverted_depth = true;
-                Diagnostic(fmt::format("D3D12 viewport {} MinDepth={} > MaxDepth={}", i,
-                                       viewports[i].MinDepth, viewports[i].MaxDepth));
-            }
+    context.GraphicsStateTracker().SetRenderArea(render_area.width, render_area.height);
+    const GraphicsStateInputs dynamic_graphics{
+        context.GraphicsStateTracker().Update(*maxwell3d),
+        {},
+        formats,
+        static_cast<u32>(draw_state.topology),
+        regs.zeta_enable,
+        is_indexed,
+        {regs.pipelines[2].enable != 0, regs.pipelines[3].enable != 0}};
+    const DynamicStateInputs current_dynamic{dynamic_graphics, render_area.width,
+                                             render_area.height, static_cast<u32>(topology),
+                                             pipeline};
+    const bool reuse_dynamic = StateFastpathEnabled() && dynamic_inputs.Matches(current_dynamic);
+    if (!reuse_dynamic || StateVerifyEnabled()) {
+        auto slow = ComputeDynamicState(regs, attachment_state, formats, render_area.width,
+                                        render_area.height, *pipeline);
+        if (StateVerifyEnabled() && reuse_dynamic) {
+            const auto compare = [](std::string_view what, const auto& fast, const auto& slow) {
+                if (std::memcmp(&fast, &slow, sizeof(fast)) != 0)
+                    StateVerifyMismatch(what, &fast, &slow, sizeof(fast));
+            };
+            compare("viewport", cached_dynamic_state.viewports, slow.viewports);
+            compare("viewport", cached_dynamic_state.y_flip, slow.y_flip);
+            compare("viewport", cached_dynamic_state.words, slow.words);
+            compare("scissor", cached_dynamic_state.scissors, slow.scissors);
+            compare("stencil", cached_dynamic_state.stencil, slow.stencil);
+            compare("blend", cached_dynamic_state.blend, slow.blend);
+            compare("depth_bounds", cached_dynamic_state.depth_bounds, slow.depth_bounds);
         }
-        static const bool viewport_z01 = BisectEnabled("NXBOX_D3D12_VIEWPORT_Z01");
-        if (viewport_z01) {
-            viewports[i].MinDepth = 0.0f;
-            viewports[i].MaxDepth = 1.0f;
-        }
-        scissors[i] = MakeScissor(regs, i);
-        scissors[i].right = std::min(scissors[i].right, static_cast<LONG>(render_area.width));
-        scissors[i].bottom = std::min(scissors[i].bottom, static_cast<LONG>(render_area.height));
-        scissors[i].left = std::min(scissors[i].left, scissors[i].right);
-        scissors[i].top = std::min(scissors[i].top, scissors[i].bottom);
-        if (i == 0)
-            y_flip = result.y_flip;
+        cached_dynamic_state = slow;
+        dynamic_inputs.Store(current_dynamic);
     }
+    const auto& viewports = cached_dynamic_state.viewports;
+    const auto& scissors = cached_dynamic_state.scissors;
     static const bool depth_trace = BisectEnabled("NXBOX_D3D12_DEPTH_TRACE");
     if (has_depth && depth_trace && depth_trace_draws++ < 4) {
         const auto& viewport = viewports[0];
@@ -1882,43 +1968,26 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     if (needs_index && context.RecordState(recorded.index.Update(index_view)))
         commands->IASetIndexBuffer(&index_view);
 
-    auto words = pipeline->RootConstants({render_area.width, render_area.height, y_flip});
+    auto words = cached_dynamic_state.words;
     words[8] = is_indexed ? draw_state.base_index : draw_state.vertex_buffer.first;
     words[9] = draw_state.base_instance;
     words[10] = indirect_draw_id;
-    const bool back_only = regs.stencil_two_side_enable && regs.gl_cull_test_enabled &&
-                           static_cast<u32>(regs.gl_cull_face) == 0x404;
-    const auto cull =
-        Pso::CullMode(regs.gl_cull_test_enabled != 0, static_cast<u32>(regs.gl_cull_face));
-    if (attachment_state.stencil_enable && Pso::DsvHasStencil(formats.depth) && regs.zeta_enable &&
-        regs.stencil_enable &&
-        Pso::IndependentStencil(regs.stencil_two_side_enable != 0, cull.mode,
-                                regs.stencil_front_ref, regs.stencil_back_ref,
-                                regs.stencil_front_func_mask, regs.stencil_back_func_mask,
-                                regs.stencil_front_mask, regs.stencil_back_mask)) {
-        const std::array<UINT, 3> stencil{1, regs.stencil_front_ref, regs.stencil_back_ref};
-        if (context.RecordState(recorded.stencil.Update(stencil))) {
+    const auto& stencil = cached_dynamic_state.stencil;
+    if (context.RecordState(recorded.stencil.Update(stencil))) {
+        if (stencil[0]) {
             ComPtr<ID3D12GraphicsCommandList8> commands8;
             Check(commands->QueryInterface(IID_PPV_ARGS(&commands8)),
                   "D3D12 independent stencil command interface", context.Device());
-            commands8->OMSetFrontAndBackStencilRef(regs.stencil_front_ref, regs.stencil_back_ref);
+            commands8->OMSetFrontAndBackStencilRef(stencil[1], stencil[2]);
+        } else {
+            commands->OMSetStencilRef(stencil[1]);
         }
-    } else {
-        const UINT stencil_ref = back_only ? regs.stencil_back_ref : regs.stencil_front_ref;
-        const std::array<UINT, 3> stencil{0, stencil_ref, stencil_ref};
-        if (context.RecordState(recorded.stencil.Update(stencil)))
-            commands->OMSetStencilRef(stencil_ref);
     }
-    const bool replicate_alpha = Pso::ConstantBlendFactors(attachment_state) == 2;
-    const std::array<float, 4> blend{replicate_alpha ? regs.blend_color.a : regs.blend_color.r,
-                                     replicate_alpha ? regs.blend_color.a : regs.blend_color.g,
-                                     replicate_alpha ? regs.blend_color.a : regs.blend_color.b,
-                                     regs.blend_color.a};
+    const auto& blend = cached_dynamic_state.blend;
     if (context.RecordState(recorded.blend.Update(blend)))
         commands->OMSetBlendFactor(blend.data());
     if (attachment_state.depth_bounds) {
-        const std::array depth_bounds{std::clamp(regs.depth_bounds[0], 0.0f, 1.0f),
-                                      std::clamp(regs.depth_bounds[1], 0.0f, 1.0f)};
+        const auto& depth_bounds = cached_dynamic_state.depth_bounds;
         if (context.RecordState(recorded.depth_bounds.Update(depth_bounds))) {
             ComPtr<ID3D12GraphicsCommandList1> commands1;
             Check(commands->QueryInterface(IID_PPV_ARGS(&commands1)),
@@ -3611,9 +3680,9 @@ void RasterizerD3D12::LoadDiskResourcesWithPreload(
 }
 
 void RasterizerD3D12::InitializeChannel(Tegra::Control::ChannelState& channel) {
-    // The shared caches consume common dirty bits, even without a native state tracker.
+    // Preserve common cache flags while registering the native register dependencies.
     auto& dirty = channel.payload->maxwell_3d.dirty;
-    VideoCommon::Dirty::SetupDirtyFlags(dirty.tables);
+    StateTracker::SetupDirtyFlags(dirty.tables);
     dirty.flags.set();
     CreateChannel(channel);
     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
@@ -3624,6 +3693,8 @@ void RasterizerD3D12::InitializeChannel(Tegra::Control::ChannelState& channel) {
 }
 void RasterizerD3D12::BindChannel(Tegra::Control::ChannelState& channel) {
     BindToChannel(channel.bind_id);
+    StateTracker::Bind(channel.payload->maxwell_3d);
+    context.GraphicsStateTracker().Invalidate();
     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
     buffer_cache.BindToChannel(channel.bind_id);
     texture_cache.BindToChannel(channel.bind_id);
