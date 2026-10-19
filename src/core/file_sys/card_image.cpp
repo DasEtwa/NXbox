@@ -30,10 +30,10 @@ constexpr std::array partition_names{
     "logo",
 };
 
-XCI::XCI(VirtualFile file_, u64 program_id, size_t program_index)
+XCI::XCI(VirtualFile file_, u64 program_id, size_t program_index, bool program_headers_only)
     : file(std::move(file_)), program_nca_status{Loader::ResultStatus::ErrorXCIMissingProgramNCA},
-      partitions(partition_names.size()),
-      partitions_raw(partition_names.size()), keys{Core::Crypto::KeyManager::Instance()} {
+      partitions(partition_names.size()), partitions_raw(partition_names.size()),
+      keys{Core::Crypto::KeyManager::Instance()} {
     const auto header_status = TryReadHeader();
     if (header_status != Loader::ResultStatus::Success) {
         status = header_status;
@@ -60,7 +60,7 @@ XCI::XCI(VirtualFile file_, u64 program_id, size_t program_index)
 
     secure_partition = std::make_shared<NSP>(
         main_hfs.GetFile(partition_names[static_cast<std::size_t>(XCIPartition::Secure)]),
-        program_id, program_index);
+        program_id, program_index, program_headers_only);
 
     ncas = secure_partition->GetNCAsCollapsed();
     program =
@@ -68,6 +68,12 @@ XCI::XCI(VirtualFile file_, u64 program_id, size_t program_index)
     program_nca_status = secure_partition->GetProgramStatus();
     if (program_nca_status == Loader::ResultStatus::ErrorNSPMissingProgramNCA) {
         program_nca_status = Loader::ResultStatus::ErrorXCIMissingProgramNCA;
+    }
+
+    // Library discovery needs only secure application metadata and program headers.
+    if (program_headers_only) {
+        status = secure_partition->GetStatus();
+        return;
     }
 
     auto result = AddNCAFromPartition(XCIPartition::Normal);

@@ -393,7 +393,7 @@
 {Text::DeleteCancel, L"Cancel"},
 {Text::DeleteDone, L"Game files deleted."},
 {Text::DeleteFailed, L"Could not finish deleting. Check the game folders for remaining files."},
-{Text::IncompleteFile, L"Incomplete file: delete and download again"},
+{Text::IncompleteFile, L"File incomplete or corrupted: download it again"},
 {Text::DeleteDownloadBusy, L"Finish or cancel the shop downloads before deleting game files."},
     {Text::FtpServer, L"FTP server"},
     {Text::FtpHint,
@@ -410,3 +410,8 @@
     {Text::MoveConflict, L"A destination file already exists. Nothing was deleted."},
     {Text::MoveFailed, L"Move incomplete. Internal files are kept until all copies are verified."},
     {Text::MoveBusy, L"Finish downloads, turn off FTP and wait for the library scan before moving."},
+
+    {Text::UpdateWithoutBase, L"Update without the base game"},
+    {Text::DlcWithoutBase, L"DLC without the base game"},
+    {Text::LaunchMissingKeys,
+     L"Game keys are missing or incorrect. Import your prod.keys and title.keys in Settings."},

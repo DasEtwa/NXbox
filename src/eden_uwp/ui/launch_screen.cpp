@@ -96,7 +96,7 @@ void LaunchScreen::Draw(const LaunchStatus& status, Text failure, Pixels* captur
         progress = 0.95f;
         break;
     case LaunchPhase::Failed:
-        text = failure;
+        text = failure == Text::LaunchFailed ? status.failure.load() : failure;
         progress = 0;
         break;
     }

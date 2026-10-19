@@ -80,6 +80,9 @@ enum class Text {
     DeleteDone,
     DeleteFailed,
     IncompleteFile,
+    UpdateWithoutBase,
+    DlcWithoutBase,
+    LaunchMissingKeys,
 
     ResolutionTitle,
     Resolution1X,

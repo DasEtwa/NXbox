@@ -848,7 +848,7 @@ private:
         const GameEntry& game = Game(selected_);
         if (game.incomplete) {
             details_open_ = true;
-            Toast(Tr(Text::IncompleteFile), now);
+            Toast(Tr(LibraryContent::Label(game.problem)), now);
             input_.ConsumeUntilRelease();
             return;
         }

@@ -18,6 +18,7 @@ enum class LaunchPhase { Lookup, Keys, Shaders, Starting, Failed };
 
 // The shader callback publishes counters without sharing graphics objects with the UI thread.
 struct LaunchStatus {
+    std::atomic<Text> failure{Text::LaunchFailed};
     std::atomic<LaunchPhase> phase{LaunchPhase::Lookup};
     std::atomic<bool> shader_preload{false};
     std::atomic<std::size_t> built{0};

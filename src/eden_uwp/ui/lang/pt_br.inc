@@ -411,7 +411,7 @@
 {Text::DeleteCancel, L"Cancelar"},
 {Text::DeleteDone, L"Arquivos do jogo excluídos."},
 {Text::DeleteFailed, L"Não foi possível concluir a exclusão. Confira os arquivos restantes nas pastas dos jogos."},
-{Text::IncompleteFile, L"Arquivo incompleto: exclua e baixe novamente"},
+{Text::IncompleteFile, L"Arquivo incompleto ou corrompido: baixe de novo"},
 {Text::DeleteDownloadBusy, L"Conclua ou cancele os downloads da loja antes de excluir arquivos do jogo."},
     {Text::FtpServer, L"Servidor FTP"},
     {Text::FtpHint,
@@ -429,3 +429,8 @@
     {Text::MoveConflict, L"Já existe um arquivo no destino. Nada foi apagado."},
     {Text::MoveFailed, L"Movimentação incompleta. Os originais só são apagados após verificar todas as cópias."},
     {Text::MoveBusy, L"Conclua downloads, desligue o FTP e aguarde a leitura da biblioteca antes de mover."},
+
+    {Text::UpdateWithoutBase, L"Atualização sem o jogo base"},
+    {Text::DlcWithoutBase, L"DLC sem o jogo base"},
+    {Text::LaunchMissingKeys, L"As chaves do jogo estão ausentes ou incorretas. Importe prod.keys "
+                              L"e title.keys em Configurações."},

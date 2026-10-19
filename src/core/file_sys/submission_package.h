@@ -6,6 +6,7 @@
 #include <map>
 #include <memory>
 #include <set>
+#include <utility>
 #include <vector>
 #include "common/common_types.h"
 #include "core/file_sys/nca_metadata.h"
@@ -28,7 +29,8 @@ enum class ContentRecordType : u8;
 
 class NSP : public ReadOnlyVfsDirectory {
 public:
-    explicit NSP(VirtualFile file_, u64 title_id = 0, std::size_t program_index_ = 0);
+    explicit NSP(VirtualFile file_, u64 title_id = 0, std::size_t program_index_ = 0,
+                 bool program_headers_only = false);
     ~NSP() override;
 
     Loader::ResultStatus GetStatus() const;
@@ -38,6 +40,10 @@ public:
     u64 GetExtractedTitleID() const;
     std::vector<u64> GetProgramTitleIDs() const;
 
+    // Parsed CNMT identities, including titles whose program NCA failed to open.
+    const std::vector<std::pair<u64, TitleType>>& GetContentMeta() const;
+    bool HasCorruptProgram() const;
+    bool HasMissingProgramKeys() const;
     bool IsExtractedType() const;
 
     // Common (Can be safely called on both types)
@@ -71,7 +77,11 @@ private:
 
     const u64 expected_program_id;
     const std::size_t program_index;
+    const bool program_headers_only;
 
+    std::vector<std::pair<u64, TitleType>> content_meta;
+    bool corrupt_program = false;
+    bool missing_program_keys = false;
     bool extracted = false;
     Loader::ResultStatus status;
     std::map<u64, Loader::ResultStatus> program_status;
