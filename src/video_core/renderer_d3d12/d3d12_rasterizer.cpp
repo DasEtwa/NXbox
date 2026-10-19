@@ -1895,7 +1895,7 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     if (context.RecordState(recorded.topology.Update(topology)))
         commands->IASetPrimitiveTopology(topology);
     const auto bind_table = [&](UINT parameter, D3D12_GPU_DESCRIPTOR_HANDLE handle) {
-        if (context.RecordState(recorded.root_args.tables[parameter].Update(handle.ptr)))
+        if (context.RecordState(recorded.root_args.tables.Update(parameter, handle.ptr)))
             commands->SetGraphicsRootDescriptorTable(parameter, handle);
     };
     if (!root_cbvs)
@@ -1906,7 +1906,7 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     bind_table(RootSamplerTable - table_shift, sampler_table.gpu);
     for (UINT i = 0; i < root_cbv_addresses.size(); ++i) {
         if (context.RecordState(
-                recorded.root_args.cbvs[kFirstRootCbv + i].Update(root_cbv_addresses[i]))) {
+                recorded.root_args.cbvs.Update(kFirstRootCbv + i, root_cbv_addresses[i]))) {
             commands->SetGraphicsRootConstantBufferView(kFirstRootCbv + i, root_cbv_addresses[i]);
             context.Profile().Count(FrameCount::RootCbvBinds);
         }
@@ -1997,7 +1997,7 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
             commands->OMSetDepthBounds(depth_bounds[0], depth_bounds[1]);
         }
     }
-    if (context.RecordState(recorded.root_args.constants[0].Update(words.data(), words.size())))
+    if (context.RecordState(recorded.root_args.constants.Update(words.data(), words.size())))
         commands->SetGraphicsRoot32BitConstants(0, static_cast<UINT>(words.size()), words.data(),
                                                 0);
 
