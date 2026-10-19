@@ -717,17 +717,33 @@ bool D3D12DescriptorAllocator::WriteImageSrv(const DescriptorTable& table, u32 s
         const auto backing_desc = resource->handle->GetDesc();
         if (const auto adapted = AdaptSrvDimension(desc, fallback_dimension, backing_desc)) {
             desc = *adapted;
-        } else if (logged_srv_mismatches.insert(desc.ViewDimension * 16 + fallback_dimension)
-                       .second) {
-            // The unadapted view stays bound, as before: MK8D binds later cubes of a cube array to
-            // cube slots, and a null SRV in their place has not been checked on the console.
-            Diagnostic(fmt::format(
-                "D3D12 SRV dimension {} cannot become shader dimension {} "
-                "(resource={} {}x{} depth/layers={} samples={} view_type={})",
-                static_cast<int>(desc.ViewDimension), static_cast<int>(fallback_dimension),
-                static_cast<int>(backing_desc.Dimension), backing_desc.Width, backing_desc.Height,
-                backing_desc.DepthOrArraySize, backing_desc.SampleDesc.Count,
-                static_cast<int>(view.type)));
+        } else {
+            // A 2D texture with fewer than 6 layers has no faces for a cube slot. Mario Party
+            // Superstars binds an 8x8 one: the Xbox driver removed the device
+            // (DXGI_ERROR_INVALID_CALL) half a second later, so that slot reads zeros like an
+            // unbound one. Other mismatches keep the unadapted view, as before: MK8D binds later
+            // cubes of a cube array to cube slots, and a null SRV in their place has not been
+            // checked on the console.
+            const bool no_faces = (fallback_dimension == D3D12_SRV_DIMENSION_TEXTURECUBE ||
+                                   fallback_dimension == D3D12_SRV_DIMENSION_TEXTURECUBEARRAY) &&
+                                  backing_desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
+                                  backing_desc.SampleDesc.Count == 1 &&
+                                  backing_desc.DepthOrArraySize < 6;
+            if (logged_srv_mismatches.insert(desc.ViewDimension * 16 + fallback_dimension)
+                    .second) {
+                Diagnostic(fmt::format(
+                    "D3D12 SRV dimension {} cannot become shader dimension {} "
+                    "(resource={} {}x{} depth/layers={} samples={} view_type={}){}",
+                    static_cast<int>(desc.ViewDimension), static_cast<int>(fallback_dimension),
+                    static_cast<int>(backing_desc.Dimension), backing_desc.Width,
+                    backing_desc.Height, backing_desc.DepthOrArraySize,
+                    backing_desc.SampleDesc.Count, static_cast<int>(view.type),
+                    no_faces ? ", bound null" : ""));
+            }
+            if (no_faces) {
+                WriteNullSrv(table, slot, fallback_dimension);
+                return false;
+            }
         }
     }
     // NXBOX_D3D12_ARRAY_TRACE=1: once per address, report array-sampling shaders whose view

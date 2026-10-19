@@ -138,14 +138,20 @@ int main() {
     resource.DepthOrArraySize = 1;
     view.desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
     const int before_impossible = diagnostics;
+    // A single-layer 2D texture has no cube faces: the cube slot gets a null SRV of its own
+    // dimension (the mismatched view removed the device in Mario Party Superstars).
     for (auto wanted : {D3D12_SRV_DIMENSION_TEXTURECUBE,
-                        D3D12_SRV_DIMENSION_TEXTURECUBEARRAY,
-                        D3D12_SRV_DIMENSION_TEXTURE3D}) {
+                        D3D12_SRV_DIMENSION_TEXTURECUBEARRAY}) {
         for (int repeat = 0; repeat < 2; ++repeat) {
-            assert(allocator.WriteImageSrv({}, 0, view, wanted));
-            assert(allocator.written_resource == view.resource);
-            assert(allocator.written.ViewDimension == D3D12_SRV_DIMENSION_TEXTURE2D);
+            assert(!allocator.WriteImageSrv({}, 0, view, wanted));
+            assert(!allocator.written_resource);
+            assert(allocator.written.ViewDimension == wanted);
         }
+    }
+    for (int repeat = 0; repeat < 2; ++repeat) {
+        assert(allocator.WriteImageSrv({}, 0, view, D3D12_SRV_DIMENSION_TEXTURE3D));
+        assert(allocator.written_resource == view.resource);
+        assert(allocator.written.ViewDimension == D3D12_SRV_DIMENSION_TEXTURE2D);
     }
     // One diagnostic per dimension pair.
     assert(diagnostics == before_impossible + 3);
@@ -153,9 +159,14 @@ int main() {
     resource.SampleDesc.Count = 4;
     assert(allocator.WriteImageSrv({}, 0, view, D3D12_SRV_DIMENSION_TEXTURECUBE));
     assert(allocator.written.ViewDimension == D3D12_SRV_DIMENSION_TEXTURE2D);
-    // A feedback replacement must be checked, rather than the original resource.
+    // A feedback replacement must be checked, rather than the original resource: the original
+    // has 6 layers and could back a cube, the single-layer replacement cannot.
     resource.SampleDesc.Count = 1;
     auto replacement = std::make_shared<Resource>();
+    assert(!allocator.WriteImageSrv({}, 0, view, D3D12_SRV_DIMENSION_TEXTURECUBE, replacement));
+    assert(!allocator.written_resource);
+    assert(allocator.written.ViewDimension == D3D12_SRV_DIMENSION_TEXTURECUBE);
+    replacement->handle->desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE3D;
     assert(allocator.WriteImageSrv({}, 0, view, D3D12_SRV_DIMENSION_TEXTURECUBE, replacement));
     assert(allocator.written_resource == replacement);
     assert(allocator.written.ViewDimension == D3D12_SRV_DIMENSION_TEXTURE2D);
