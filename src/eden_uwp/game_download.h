@@ -24,6 +24,10 @@ bool DownloadFile(const std::string& url, std::filesystem::path& destination,
                   const std::function<void(std::uint64_t have, std::uint64_t total)>& progress = {},
                   const std::atomic<bool>* cancel = nullptr);
 
+/// Whether `file` is on the console's internal drive (the one holding LocalState), where a download
+/// must leave DownloadDrive::InternalReserve free.
+bool OnInternalDrive(const std::filesystem::path& file);
+
 /// Gives a finished download its real name: renames "<name>.partial" to `complete`, replacing a
 /// file already called that. A removable drive refuses the plain rename, so the app broker's Win32
 /// call and then StorageFile are tried too. On failure `error` lists what every step reported.

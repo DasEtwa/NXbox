@@ -199,20 +199,6 @@ std::string Utf8(const std::wstring& text) {
     return winrt::to_string(text);
 }
 
-std::int64_t ModifiedSeconds(const fs::path& file) {
-    std::error_code error;
-    const auto stamp = fs::last_write_time(file, error);
-    if (error) {
-        WIN32_FILE_ATTRIBUTE_DATA data{};
-        if (!GetFileAttributesExFromAppW(file.c_str(), GetFileExInfoStandard, &data)) {
-            return 0;
-        }
-        const auto ticks = (static_cast<std::uint64_t>(data.ftLastWriteTime.dwHighDateTime) << 32) |
-                           data.ftLastWriteTime.dwLowDateTime;
-        return static_cast<std::int64_t>(ticks / 10000000);
-    }
-    return std::chrono::duration_cast<std::chrono::seconds>(stamp.time_since_epoch()).count();
-}
 
 bool ReadRecord(const fs::path& json_file, CacheRecord& record) {
     try {
@@ -636,6 +622,21 @@ std::string ConvertNsz(FileSys::RealVfsFilesystem& vfs, const fs::path& nsz_path
     return {};
 }
 } // namespace
+
+std::int64_t ModifiedSeconds(const fs::path& file) {
+    std::error_code error;
+    const auto stamp = fs::last_write_time(file, error);
+    if (error) {
+        WIN32_FILE_ATTRIBUTE_DATA data{};
+        if (!GetFileAttributesExFromAppW(file.c_str(), GetFileExInfoStandard, &data)) {
+            return 0;
+        }
+        const auto ticks = (static_cast<std::uint64_t>(data.ftLastWriteTime.dwHighDateTime) << 32) |
+                           data.ftLastWriteTime.dwLowDateTime;
+        return static_cast<std::int64_t>(ticks / 10000000);
+    }
+    return std::chrono::duration_cast<std::chrono::seconds>(stamp.time_since_epoch()).count();
+}
 
 namespace {
 std::vector<fs::path> DeleteRoots(const fs::path& local_state) {

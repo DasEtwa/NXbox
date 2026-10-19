@@ -58,8 +58,10 @@
 #include "eden_uwp/ui/anim.h"
 #include "eden_uwp/ui/art.h"
 #include "eden_uwp/ui/art_colors.h"
+#include "eden_uwp/ui/library.h"
 #include "eden_uwp/ui/source_catalog.h"
 #include "eden_uwp/ui/strings.h"
+#include "frontend_common/download_drive.h"
 #include "eden_uwp/ui/text_entry.h"
 #include "eden_uwp/ui/theme.h"
 #include "eden_uwp/ui/tinfoil_index.h"
@@ -147,9 +149,22 @@ struct FetchResult {
     std::map<std::string, std::wstring> errors;
 };
 
+struct InstalledFile {
+    fs::path path;
+    std::uint64_t size = 0;
+    std::int64_t mtime = 0;
+    bool operator==(const InstalledFile&) const = default;
+};
+
+// Same size and mtime the library cache records, so its title ids match here too.
+InstalledFile ReadInstalledFile(const fs::path& path) {
+    return {path, Common::FS::GetSize(path), ModifiedSeconds(path)};
+}
+
 struct StorageResult {
     fs::space_info internal{};
     fs::space_info external{};
+    std::vector<InstalledFile> external_files;
 };
 
 struct ImportResult {
@@ -784,23 +799,22 @@ bool DownloadShopPackage(const Entry& entry, fs::path& destination,
                            Utf8(destination.parent_path().wstring()));
                 return false;
             }
-            if (*free < total - have) {
-                bool relocated = false;
+            if (!DownloadDrive::Fits(free, total - have, OnInternalDrive(destination))) {
+                std::vector<fs::path> candidates;
+                std::vector<DownloadDrive::Candidate> drives;
                 for (const auto& folder : ExternalGameFolders()) {
                     const auto candidate = folder / destination.filename();
                     if (candidate == destination)
                         continue;
-                    const auto size =
-                        Common::FS::IsFile(candidate) ? Common::FS::GetSize(candidate) : 0;
-                    const auto available = FreeSpace(folder);
-                    if (size <= total && available && *available >= total - size) {
-                        destination = candidate;
-                        relocated = true;
-                        break;
-                    }
+                    candidates.push_back(candidate);
+                    drives.push_back(
+                        {Common::FS::IsFile(candidate) ? Common::FS::GetSize(candidate) : 0,
+                         FreeSpace(folder)});
                 }
-                if (relocated)
+                if (const auto pick = DownloadDrive::Pick(drives, total)) {
+                    destination = candidates[*pick];
                     continue; // reopen with the selected drive's Range, not the previous offset
+                }
                 Diagnostic(fmt::format("SOURCES_DOWNLOAD no room: need {} MiB, free {} MiB",
                                        (total - have) >> 20, *free >> 20));
                 return false;
@@ -985,6 +999,13 @@ public:
         if (storage_ && storage_->done.load()) {
             internal_space_ = storage_->result.internal;
             external_space_ = storage_->result.external;
+            // A download may have finished after this snapshot started: wait for a fresh one.
+            // An unchanged list skips the rescan, which reads every library record.
+            if (!storage_->cancel.load() &&
+                storage_->result.external_files != external_installed_) {
+                external_installed_ = std::move(storage_->result.external_files);
+                ScanInstalled();
+            }
             storage_.reset();
         }
         if (!storage_ && now >= storage_refresh_) {
@@ -1006,6 +1027,11 @@ public:
                     if (ec)
                         task.result.external = {};
                     task.result.external.available = *free;
+                }
+                for (const auto& file : ListExternalGames()) {
+                    if (task.cancel.load())
+                        break;
+                    task.result.external_files.push_back(ReadInstalledFile(file));
                 }
             });
         }
@@ -1232,6 +1258,16 @@ private:
         installed_files_.clear();
         installed_sizes_.clear();
         installed_paths_.clear();
+        installed_mtimes_.clear();
+        const auto add = [this](const InstalledFile& file) {
+            if (file.size == 0)
+                return;
+            installed_paths_.push_back(file.path);
+            installed_sizes_.push_back(file.size);
+            installed_mtimes_.push_back(file.mtime);
+            installed_files_.push_back(LowerWide(file.path.filename().wstring()));
+            installed_.push_back(Tinfoil::ParsePackage(Utf8(file.path.filename().wstring())));
+        };
         std::error_code ec;
         // Same scope as the library scan: games\ and its subfolders.
         for (fs::recursive_directory_iterator it(local_state_ / L"games",
@@ -1240,15 +1276,12 @@ private:
              !ec && it != end; it.increment(ec)) {
             if (it->is_regular_file(ec) &&
                 IsGameExtension(LowerWide(it->path().extension().wstring()))) {
-                const auto size = it->file_size(ec);
-                if (ec || size == 0)
-                    continue;
-                installed_paths_.push_back(it->path());
-                installed_sizes_.push_back(size);
-                installed_files_.push_back(LowerWide(it->path().filename().wstring()));
-                installed_.push_back(Tinfoil::ParsePackage(Utf8(it->path().filename().wstring())));
+                add(ReadInstalledFile(it->path()));
             }
         }
+        // External metadata is collected by the MTA worker; never stat removable paths here.
+        for (const auto& file : external_installed_)
+            add(file);
         // The library can identify base games whose filenames contain no title ID. Trust a
         // cache record only while its path, size and modification time still match a local file.
         ec.clear();
@@ -1276,12 +1309,8 @@ private:
                 if (size.ValueType() != JsonValueType::Number ||
                     mtime.ValueType() != JsonValueType::Number)
                     continue;
-                const auto modified = fs::last_write_time(installed_paths_[i], ec);
-                if (ec || size.GetNumber() != static_cast<double>(installed_sizes_[i]) ||
-                    mtime.GetNumber() !=
-                        static_cast<double>(std::chrono::duration_cast<std::chrono::seconds>(
-                                                modified.time_since_epoch())
-                                                .count()))
+                if (size.GetNumber() != static_cast<double>(installed_sizes_[i]) ||
+                    mtime.GetNumber() != static_cast<double>(installed_mtimes_[i]))
                     continue;
                 const auto package = Tinfoil::ParsePackage("[" + id + "]");
                 if (package.kind == Kind::Game)
@@ -1753,6 +1782,10 @@ private:
         if (outcome == Outcome::Done) {
             // DownloadFile may choose another storage location; only mark an existing local file.
             ScanInstalled();
+            // Discard an in-flight pre-download snapshot and request a new one immediately.
+            if (storage_)
+                storage_->cancel.store(true);
+            storage_refresh_ = {};
         }
         Toast(outcome == Outcome::Done        ? Tr(Text::SrcDownloadDone)
               : outcome == Outcome::Cancelled ? Tr(Text::SrcDownloadCancelled)
@@ -2405,6 +2438,7 @@ private:
 
     std::shared_ptr<Task<StorageResult>> storage_;
     Clock::time_point storage_refresh_{};
+    std::vector<InstalledFile> external_installed_;
     fs::space_info internal_space_{};
     fs::space_info external_space_{};
     bool navigation_focused_ = false;
@@ -2444,6 +2478,7 @@ private:
     std::vector<std::wstring> installed_files_;
     std::vector<std::uint64_t> installed_sizes_;
     std::vector<fs::path> installed_paths_;
+    std::vector<std::int64_t> installed_mtimes_;
     std::optional<Tinfoil::Traversal> traversal_;
     std::unique_ptr<ShopArtSource> shop_art_;
     std::map<std::string, Art> art_;

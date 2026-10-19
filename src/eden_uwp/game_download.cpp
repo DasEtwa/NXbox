@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <stdexcept>
 #include <thread>
+#include <vector>
 
 #include <fmt/format.h>
 #include <winrt/Windows.Foundation.h>
@@ -20,6 +21,7 @@
 #include "eden_uwp/await_bounded.h"
 #include "eden_uwp/diagnostic.h"
 #include "eden_uwp/usb_library.h"
+#include "frontend_common/download_drive.h"
 
 namespace EdenXbox {
 namespace {
@@ -140,6 +142,12 @@ void Transfer(HttpClient& client, const Uri& uri, const std::filesystem::path& d
 }
 } // namespace
 
+bool OnInternalDrive(const std::filesystem::path& file) {
+    const std::filesystem::path local{
+        std::wstring_view{winrt::Windows::Storage::ApplicationData::Current().LocalFolder().Path()}};
+    return file.root_name() == local.root_name();
+}
+
 bool DownloadFile(const std::string& url, std::filesystem::path& destination,
                   const std::function<void(const std::filesystem::path&)>& remember_target,
                   const std::function<void(std::uint64_t, std::uint64_t)>& progress,
@@ -164,32 +172,30 @@ bool DownloadFile(const std::string& url, std::filesystem::path& destination,
                 have = 0;
             }
             auto free = AvailableSpace(destination.parent_path());
-            if (have != total && free && *free < total - have) {
-                bool selected = false;
+            if (have != total && free &&
+                !DownloadDrive::Fits(free, total - have, OnInternalDrive(destination))) {
+                std::vector<std::filesystem::path> candidates;
+                std::vector<DownloadDrive::Candidate> drives;
                 for (const auto& folder : ExternalGameFolders()) {
                     const auto candidate = folder / destination.filename();
                     if (candidate == destination) {
                         continue;
                     }
-                    const auto candidate_size = DownloadedSize(candidate);
-                    const auto candidate_free = FreeSpace(folder);
-                    // A partial download on another drive is resumed there. Do not copy the
-                    // internal partial file: restarting externally needs the full remaining size.
-                    if (candidate_size <= total && candidate_free &&
-                        *candidate_free >= total - candidate_size) {
-                        remember_target(candidate);
-                        destination = candidate;
-                        have = candidate_size;
-                        free = candidate_free;
-                        selected = true;
-                        break;
-                    }
+                    candidates.push_back(candidate);
+                    drives.push_back({DownloadedSize(candidate), FreeSpace(folder)});
                 }
-                if (!selected) {
+                // A partial download on another drive is resumed there. Do not copy the
+                // internal partial file: restarting externally needs the full remaining size.
+                const auto pick = DownloadDrive::Pick(drives, total);
+                if (!pick) {
                     Diagnostic(fmt::format("DOWNLOAD_NO_SPACE need={} MiB free={} MiB",
                                            (total - have) >> 20, *free >> 20));
                     return false;
                 }
+                remember_target(candidates[*pick]);
+                destination = candidates[*pick];
+                have = drives[*pick].have;
+                free = drives[*pick].free;
             }
             if (have != total && !free) {
                 throw std::runtime_error("cannot determine download free space");
