@@ -824,7 +824,17 @@ LibraryTransfer::Result MoveLibraryGame(const GameEntry& game, const fs::path& l
     const auto folders = ExternalGameFolders();
     if (folders.empty())
         return Result::NoDrive;
-    const auto destination = folders.front();
+    // The drive with the most room: enumeration order put a nearly full stick ahead of an empty
+    // HD, and every bigger game then failed with no space.
+    fs::path destination;
+    std::uint64_t most_free = 0;
+    for (const auto& folder : folders) {
+        const auto free = FreeSpace(folder).value_or(0);
+        if (destination.empty() || free > most_free) {
+            destination = folder;
+            most_free = free;
+        }
+    }
     std::vector<LibraryTransfer::File> files;
     std::map<fs::path, std::int64_t> modified;
     std::set<std::wstring> names;
