@@ -35,6 +35,7 @@ target_compile_features(nxbox-corpus-environment-test PRIVATE cxx_std_20)
 target_include_directories(nxbox-corpus-environment-test PRIVATE
   "${NXBOX_ROOT}/tools/hlsl-harness/host" "${NXBOX_ROOT}/src")
 target_include_directories(nxbox-corpus-environment-test SYSTEM PRIVATE ${Boost_INCLUDE_DIRS})
+target_link_libraries(nxbox-corpus-environment-test PRIVATE fmt::fmt)
 if(MSVC)
   target_compile_definitions(nxbox-corpus-environment-test PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
   target_compile_options(nxbox-corpus-environment-test PRIVATE /W4 /WX /permissive-
