@@ -662,4 +662,30 @@ constexpr std::uint64_t HashBytes(const void* data, std::size_t size,
     return h;
 }
 
+// The seed is part of the input. Exact byte comparison avoids stale specialization hashes
+// without relying on register dirty flags shared with other renderer consumers.
+template <std::size_t Capacity>
+class ByteHashCache {
+public:
+    std::uint64_t Get(const void* data, std::size_t size, std::uint64_t seed) {
+        if (size > Capacity)
+            return HashBytes(data, size, seed);
+        if (valid && size == cached_size && seed == cached_seed &&
+            std::memcmp(bytes.data(), data, size) == 0)
+            return hash;
+        hash = HashBytes(data, size, seed);
+        std::memcpy(bytes.data(), data, size);
+        cached_size = size;
+        cached_seed = seed;
+        valid = true;
+        return hash;
+    }
+
+private:
+    std::array<std::uint8_t, Capacity> bytes{};
+    std::size_t cached_size{};
+    std::uint64_t cached_seed{}, hash{};
+    bool valid{};
+};
+
 } // namespace D3D12::Pso

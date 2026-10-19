@@ -51,8 +51,13 @@ public:
             return;
         const Key key{source.get(), offset, size};
         if (const auto found = lookup.find(key); found != lookup.end()) {
-            entries.erase(found->second);
-            lookup.erase(found);
+            const auto entry = found->second;
+            entry->source = source;
+            entry->version = version;
+            entry->copy = std::move(copy);
+            entry->copy_offset = copy_offset;
+            entries.splice(entries.begin(), entries, entry);
+            return;
         }
         if (entries.size() == Capacity) {
             lookup.erase(entries.back().key);

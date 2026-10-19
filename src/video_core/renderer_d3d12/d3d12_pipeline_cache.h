@@ -139,6 +139,7 @@ private:
     CachedFeature<D3D12_FEATURE_DATA_D3D12_OPTIONS14> graphics_options14;
     std::unordered_map<DXGI_FORMAT, CachedFeature<D3D12_FEATURE_DATA_FORMAT_SUPPORT>>
         format_support;
+    Pso::ByteHashCache<128> vertex_specialization_hash;
     GraphicsPipelineKey last_graphics_request{};
     IGraphicsPipeline* last_graphics_pipeline{};
     std::array<u64, 6> guest_hashes{};
