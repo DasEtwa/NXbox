@@ -950,13 +950,14 @@ void Context::StartRecorder() {
     stream = std::make_unique<RecordStream<>>();
     stream->metrics = profile.Enabled();
     recorder = std::thread{[this] {
-        Common::SetCurrentThreadName("D3D12 recorder");
-        Common::SetCurrentThreadPriority(Common::ThreadPriority::Critical);
         RecordingTarget target;
         target.owner = this;
         bool execute = true;
         auto fail = [this] { recorder_progress.Fail(std::current_exception()); };
         try {
+            // Thread naming converts UTF-8 on Windows and can allocate/throw too.
+            Common::SetCurrentThreadName("D3D12 recorder");
+            Common::SetCurrentThreadPriority(Common::ThreadPriority::Critical);
             InitializeLists();
             facade.depth_bounds_status = commands.As(&extended1);
             facade.independent_stencil_status = commands.As(&extended8);

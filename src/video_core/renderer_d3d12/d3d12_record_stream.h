@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <vector>
 
@@ -69,12 +70,20 @@ public:
         available.notify_one();
     }
     bool Consume(void* target, bool execute = true) {
-        Header header{};
-        if (!Read(&header, sizeof(header)))
-            return false;
-        storage.resize((header.size + sizeof(std::max_align_t) - 1) / sizeof(std::max_align_t));
-        if (!Read(storage.data(), header.size))
+        if (!pending_header) {
+            Header header{};
+            if (!Read(&header, sizeof(header)))
+                return false;
+            pending_header = header;
+        }
+        // A failed scratch allocation must leave the consumed header available to the
+        // failure drain. Otherwise the next Consume interprets payload bytes as a thunk.
+        storage.resize((pending_header->size + sizeof(std::max_align_t) - 1) /
+                       sizeof(std::max_align_t));
+        if (!Read(storage.data(), pending_header->size))
             throw std::runtime_error("truncated D3D12 recording");
+        const auto header = *pending_header;
+        pending_header.reset(); // Replay releases holds even on exceptions; never retry it.
         header.replay(target, reinterpret_cast<const std::byte*>(storage.data()), execute);
         return true;
     }
@@ -153,6 +162,7 @@ private:
     size_t write_index{}, write_offset{}, read_index{}, read_offset{};
     std::atomic<uint64_t> available{};
     std::atomic<bool> closed{};
+    std::optional<Header> pending_header;  // Consumer only; survives scratch allocation failure.
     std::vector<std::max_align_t> storage; // Consumer only; no producer allocation.
 };
 } // namespace D3D12
