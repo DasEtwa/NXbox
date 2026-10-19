@@ -370,7 +370,7 @@
     {Text::AsyncShadersTitle, L"Compile shaders in the background"},
     {Text::AsyncShadersHint, L"The game doesn't freeze when a new effect appears; the effect may "
                              L"show up a split second later."},
-    {Text::LaunchShaderPreload, L"Loading pipeline cache from earlier sessions"},
+    {Text::LaunchShaderPreload, L"Compiling shaders for a smoother experience"},
     {Text::LaunchShaderSkip, L"A Skip (new effects may still stutter)"},
 
     {Text::ButtonLayoutTitle, L"Confirm button"}, {Text::ButtonLayoutName, L"Confirm with A"},

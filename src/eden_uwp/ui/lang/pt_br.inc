@@ -388,7 +388,7 @@
     {Text::AsyncShadersTitle, L"Compilar shaders em segundo plano"},
     {Text::AsyncShadersHint, L"O jogo não para quando aparece um efeito novo; o efeito pode surgir "
                              L"uma fração de segundo depois."},
-    {Text::LaunchShaderPreload, L"Carregando cache de pipelines de sessões anteriores"},
+    {Text::LaunchShaderPreload, L"Compilando shaders para uma melhor experiência"},
     {Text::LaunchShaderSkip, L"A Pular (efeitos novos ainda podem engasgar)"},
 
     {Text::ButtonLayoutTitle, L"Botão de confirmar"}, {Text::ButtonLayoutName, L"Confirmar com A"},
