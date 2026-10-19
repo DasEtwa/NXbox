@@ -16,6 +16,15 @@ using u8 = std::uint8_t;
 namespace Core {
 struct System {};
 } // namespace Core
+namespace VideoCommon::ShaderDiscovery {
+// Discovery tracing is off in these checks; the hook must still compile.
+constexpr bool Enabled() {
+    return false;
+}
+inline void Base(unsigned, std::uint64_t, bool) {}
+} // namespace VideoCommon::ShaderDiscovery
+// Out of range, so a method never matches a register this fixture does not model.
+#define MAXWELL3D_REG_INDEX(field) static_cast<u32>(sizeof(#field) + 0x10000)
 template <class Self>
 struct Common3D {
     struct Regs {
@@ -23,7 +32,17 @@ struct Common3D {
         enum class ShadowRamControl { Off, Track, TrackWithFilter, Replay };
         ShadowRamControl shadow_ram_control{};
         std::array<u32, NUM_REGS> reg_array{};
+        struct {
+            std::uint64_t Address() const {
+                return 0;
+            }
+        } program_region;
     } regs, shadow_state;
+    struct {
+        unsigned GetID() const {
+            return 0;
+        }
+    } memory_manager;
     struct {
         std::bitset<255> flags;
         std::array<std::array<u8, Regs::NUM_REGS>, 2> tables{};

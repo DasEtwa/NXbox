@@ -19,6 +19,7 @@
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/memory_manager.h"
 #include "video_core/shader_cache.h"
+#include "video_core/shader_discovery.h"
 #include "video_core/shader_environment.h"
 #include "video_core/texture_cache/util.h"
 
@@ -239,6 +240,8 @@ const ShaderInfo* ShaderCache::MakeShaderInfo(GenericEnvironment& env, VAddr cpu
         Shader::ObjectPool<Shader::Maxwell::Flow::Block> flow_block;
         Shader::Maxwell::Flow::CFG cfg{env, flow_block, env.StartAddress()};
         info->unique_hash = env.CalculateHash();
+        if (ShaderDiscovery::Enabled())
+            ShaderDiscovery::UnsupportedHash(gpu_memory->GetID(), info->unique_hash);
         info->size_bytes = env.ReadSizeBytes();
     }
     const size_t size_bytes{info->size_bytes};

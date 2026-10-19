@@ -19,6 +19,7 @@
 #include <vector>
 #include <fmt/format.h>
 #include "video_core/renderer_d3d12/d3d12_build_stats.h"
+#include "video_core/shader_discovery.h"
 #ifdef NXBOX_UWP
 #include <winrt/Windows.System.h>
 #endif
@@ -1314,6 +1315,17 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(const Pso::Framebuffer
     if (!RefreshStages(guest_hashes))
         return nullptr;
     const auto& regs = maxwell3d->regs;
+    if (VideoCommon::ShaderDiscovery::Enabled()) {
+        VideoCommon::ShaderDiscovery::Base(gpu_memory->GetID(), regs.program_region.Address(),
+                                           false);
+        for (unsigned slot = 0; slot < guest_hashes.size(); ++slot) {
+            if (guest_hashes[slot])
+                VideoCommon::ShaderDiscovery::Demand(gpu_memory->GetID(),
+                                                     regs.program_region.Address() +
+                                                         regs.pipelines[slot].offset,
+                                                     guest_hashes[slot], slot, false);
+        }
+    }
     const GraphicsStateInputs inputs{
         context.GraphicsStateTracker().Update(*maxwell3d),
         guest_hashes,
@@ -1769,6 +1781,13 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() try {
     if (!shader)
         return nullptr;
     const auto& launch = kepler_compute->launch_description;
+    if (VideoCommon::ShaderDiscovery::Enabled()) {
+        VideoCommon::ShaderDiscovery::Base(gpu_memory->GetID(),
+                                           kepler_compute->regs.code_loc.Address(), true);
+        VideoCommon::ShaderDiscovery::Demand(
+            gpu_memory->GetID(), kepler_compute->regs.code_loc.Address() + launch.program_start,
+            shader->unique_hash, 0, true);
+    }
     const std::array<u32, 6> specialization{launch.block_dim_x,     launch.block_dim_y,
                                             launch.block_dim_z,     launch.shared_alloc,
                                             launch.local_pos_alloc, launch.local_crs_alloc};

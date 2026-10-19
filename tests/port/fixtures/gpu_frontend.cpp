@@ -36,6 +36,13 @@ constexpr u32 RegisterIndex(std::string_view field) {
 namespace Core {
 struct System {};
 } // namespace Core
+namespace VideoCommon::ShaderDiscovery {
+// Discovery tracing is off in these checks; the hook must still compile.
+constexpr bool Enabled() {
+    return false;
+}
+inline void Base(unsigned, std::uint64_t, bool) {}
+} // namespace VideoCommon::ShaderDiscovery
 namespace Settings {
 static bool high = true;
 bool IsGPULevelHigh() {
@@ -55,6 +62,11 @@ struct Maxwell3D {
         } const_buffer;
         ShadowRamControl shadow_ram_control{};
         std::array<u32, NUM_REGS> reg_array{};
+        struct {
+            GPUVAddr Address() const {
+                return 0;
+            }
+        } program_region;
     } regs, shadow_state;
     struct {
         std::bitset<256> flags;
@@ -70,6 +82,9 @@ struct Maxwell3D {
         std::array<u32, 1024> words{};
         std::vector<std::pair<GPUVAddr, size_t>> reads;
         unsigned writes{};
+        unsigned GetID() const {
+            return 0;
+        }
         void WriteBlockCached(GPUVAddr address, const void* input, size_t size) {
             ++writes;
             assert(address + size <= sizeof(words));

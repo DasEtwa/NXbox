@@ -6,6 +6,7 @@
 
 #include <cstring>
 #include "common/gpu_thread_profile.h"
+#include "video_core/shader_discovery.h"
 
 #include "common/algorithm.h"
 #include "common/assert.h"
@@ -45,12 +46,33 @@ void State::ProcessData(const u32 data, const bool is_last_call) {
         return;
     }
     ProcessData(inner_buffer);
+    if (VideoCommon::ShaderDiscovery::Enabled() && is_linear) {
+        for (size_t line = 0; line < regs.line_count; ++line) {
+            const size_t offset = line * size_t{regs.line_length_in};
+            if (offset > inner_buffer.size() || regs.line_length_in > inner_buffer.size() - offset)
+                break;
+            VideoCommon::ShaderDiscovery::OwnedUpload(
+                memory_manager.GetID(), regs.dest.Address() + line * regs.dest.pitch,
+                {inner_buffer.data() + offset, regs.line_length_in});
+        }
+    }
 }
 
 void State::ProcessData(const u32* data, size_t num_data) {
     const Common::GpuProfile::PhaseScope gpu_profile_scope{
         Common::GpuProfile::Phase::InlineToMemory};
     std::span<const u8> read_buffer(reinterpret_cast<const u8*>(data), num_data * sizeof(u32));
+    // Copy synchronously into bounded discovery storage; never retain a guest span.
+    if (VideoCommon::ShaderDiscovery::Enabled() && is_linear) {
+        for (size_t line = 0; line < regs.line_count; ++line) {
+            const size_t offset = line * size_t{regs.line_length_in};
+            if (offset > read_buffer.size() || regs.line_length_in > read_buffer.size() - offset)
+                break;
+            VideoCommon::ShaderDiscovery::OwnedUpload(
+                memory_manager.GetID(), regs.dest.Address() + line * regs.dest.pitch,
+                read_buffer.subspan(offset, regs.line_length_in), true);
+        }
+    }
     ProcessData(read_buffer);
 }
 

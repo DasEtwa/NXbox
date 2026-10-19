@@ -97,6 +97,9 @@ add_library(video_core STATIC
     gpu_thread.h
     guest_memory.h
     invalidation_accumulator.h
+    shader_discovery.cpp
+    shader_discovery.h
+    shader_discovery_scanner.h
     memory_manager.cpp
     memory_manager.h
     present.h
