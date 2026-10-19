@@ -19,15 +19,18 @@ inline int PsoWorkerPriority() {
     const char* value = std::getenv("NXBOX_D3D12_PSO_WORKER_PRIORITY");
     return ParsePsoWorkerPriority(value ? value : "");
 }
+// Workers that rebuild cached pipelines during the load screen. On the Series X (Wonder, 1218
+// recipes) 4 cut the prewarm from 46 s to 29 s with the same peak memory; 6 gained 4 s more.
+inline constexpr size_t DefaultPrewarmThreads = 4;
 inline size_t ParsePrewarmThreads(std::string_view value) {
     if (value.empty())
-        return 2;
+        return DefaultPrewarmThreads;
     unsigned parsed{};
     const auto result = std::from_chars(value.data(), value.data() + value.size(), parsed);
     return result.ec == std::errc{} && result.ptr == value.data() + value.size() && parsed >= 1 &&
                    parsed <= 6
                ? parsed
-               : 2;
+               : DefaultPrewarmThreads;
 }
 inline size_t PrewarmThreads() {
     const char* value = std::getenv("NXBOX_D3D12_PREWARM_THREADS");

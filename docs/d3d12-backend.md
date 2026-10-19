@@ -266,6 +266,7 @@ change emulation behavior and are intended only to isolate device removal:
 | Variable | Effect |
 | --- | --- |
 | `NXBOX_D3D12_PSO_LIBRARY` | Opt in to native pipeline libraries on Xbox/UWP. Disabled by default because even an empty library removes the Xbox device; DXIL disk caching remains active. |
+| `NXBOX_D3D12_PREWARM_THREADS` | Workers for the disk-recipe prewarm, 1 to 6 (default 4). On the Series X, Wonder's load screen took 59 s with 2, 42 s with 4 and 38 s with 6, with the same peak memory. |
 | `NXBOX_D3D12_NO_PREWARM` | Set to `1` to disable background disk-recipe PSO prewarming. By default async workers rebuild cached requests at lowest priority; ready results share the runtime cache. |
 | `NXBOX_D3D12_NO_PSO_LIBRARY` | Skip native pipeline-library creation/load/store/serialization; keep direct PSOs and validated DXIL/recipe caching. |
 | `NXBOX_D3D12_GPU_ASTC` | Enable the GPU ASTC decoder (off by default: it corrupts small textures such as Mii face parts; the CPU conversion path is used instead). |

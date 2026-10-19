@@ -33,13 +33,13 @@ int main() {
         assert(ParsePrewarmThreads(std::to_string(i)) == i);
     for (auto bad : {"", "0", "7", "-1", "+4", "4 ", " 4", "4x", "1.5", "junk",
                      "999999999999999999999999999999999"})
-        assert(ParsePrewarmThreads(bad) == 2);
+        assert(ParsePrewarmThreads(bad) == 4);
     unsetenv("NXBOX_D3D12_PREWARM_THREADS");
-    assert(D3D12::PrewarmThreads() == 2);
-    setenv("NXBOX_D3D12_PREWARM_THREADS", "4", 1);
     assert(D3D12::PrewarmThreads() == 4);
+    setenv("NXBOX_D3D12_PREWARM_THREADS", "3", 1);
+    assert(D3D12::PrewarmThreads() == 3);
     setenv("NXBOX_D3D12_PREWARM_THREADS", "invalid", 1);
-    assert(D3D12::PrewarmThreads() == 2);
+    assert(D3D12::PrewarmThreads() == 4);
 
     Pool pool;
     pool.SetWorkerTarget(4);
