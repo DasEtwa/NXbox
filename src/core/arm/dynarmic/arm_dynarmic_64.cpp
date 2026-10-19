@@ -325,9 +325,9 @@ void ArmDynarmic64::MakeJit(Common::PageTable* page_table, std::size_t address_s
     config.enable_cycle_counting = !m_uses_wall_clock;
 
     // Code cache size. On the Xbox the whole process has a 5 GiB budget; four 512 MiB caches
-    // leave too little for the guest heap, so bound them. UWP flips one allocation RW/RX.
+    // leave too little for the guest heap, so bound them. Larger UWP caches are opt-in.
 #if defined(NXBOX_UWP)
-    config.code_cache_size = std::uint32_t(128_MiB);
+    config.code_cache_size = NxboxJit::UwpCodeCacheSize();
 #elif defined(ARCHITECTURE_arm64) || defined(__sun__) || defined(__NetBSD__) || defined(__DragonFly__) || defined(__OpenBSD__)
     config.code_cache_size = std::uint32_t(128_MiB);
 #else
@@ -436,14 +436,14 @@ void ArmDynarmic64::MakeJit(Common::PageTable* page_table, std::size_t address_s
     LOG_INFO(Core_ARM,
              "NXBOX FAULT CONFIG core={} accuracy={} optimizations={:#x} unsafe={} "
              "page_table={} fastmem={} fastmem_exclusives={} wall_clock={} "
-             "misalignment_mask={} boundary_only={} precise_context={}",
+             "misalignment_mask={} boundary_only={} precise_context={} code_cache_bytes={}",
              m_core_index, static_cast<int>(Settings::values.cpu_accuracy.GetValue()),
              static_cast<u32>(config.optimizations), config.unsafe_optimizations,
              config.page_table != nullptr, config.fastmem_pointer.has_value(),
              config.fastmem_exclusive_access, config.wall_clock_cntpct,
              config.detect_misaligned_access_via_page_table,
              config.only_detect_misalignment_via_page_table_on_page_boundary,
-             config.collect_memory_access_context);
+             config.collect_memory_access_context, config.code_cache_size);
 #endif
 #ifdef NXBOX_UWP
     if (page_table && !m_system.DebuggerEnabled() && NxboxJitCache::session &&

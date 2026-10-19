@@ -321,10 +321,16 @@ constexpr D3D12_RESOURCE_STATES BufferReadState =
     D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER | D3D12_RESOURCE_STATE_INDEX_BUFFER |
     D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
 bool IsStorageBuffer(const BindingState& bindings, const ResourcePtr& resource) {
-    for (const auto& stage : bindings.stages)
+    for (const auto& stage : bindings.stages) {
         for (const auto& storage : stage.storage)
             if (storage.resource == resource)
                 return true;
+        // DBSZ aliases constants with image buffers. Those are UAVs even for read-only
+        // shader accesses; keeping the CBV on this resource drops the entire dispatch.
+        for (const auto& texel : stage.texel)
+            if (texel.image && texel.resource == resource)
+                return true;
+    }
     return false;
 }
 

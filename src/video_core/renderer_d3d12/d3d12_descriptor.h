@@ -131,6 +131,7 @@ struct BoundBuffer {
     u32 size{};
     bool written{};
     u32 pixel_format{}; // VideoCore::Surface::PixelFormat for texel buffers
+    bool image{};       // Image buffers use UAV descriptors, including read-only images.
 };
 struct StageBufferBindings {
     std::vector<BoundBuffer> uniform;

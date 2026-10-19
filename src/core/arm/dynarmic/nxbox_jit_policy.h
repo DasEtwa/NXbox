@@ -2,12 +2,26 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <optional>
 #include "dynarmic/interface/optimization_flags.h"
 
 namespace Core::NxboxJit {
+inline bool BisectEnabled(const char* name) noexcept {
+    const auto* value = std::getenv(name);
+    return value && std::strcmp(value, "1") == 0;
+}
+
+inline std::uint32_t UwpCodeCacheSize() noexcept {
+    // DBSZ exhausts 128 MiB and recompiles hundreds of thousands of blocks after evacuation.
+    // A larger working set can avoid those resets, but costs up to 256 MiB across four cores.
+    // Keep the experiment opt-in: the captured process already peaks near its 5 GiB limit.
+    static const bool large_cache = BisectEnabled("NXBOX_JIT_LARGE_CACHE");
+    return (large_cache ? 192u : 128u) * 1024u * 1024u;
+}
+
 inline bool Disabled(const char* name) noexcept {
     const auto* value = std::getenv(name);
     return value && std::strcmp(value, "0") == 0;
