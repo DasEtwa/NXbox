@@ -355,6 +355,18 @@ private:
             }
         }
         keys_missing_ = scan_->KeysMissing();
+        const auto& failures = scan_->FailedConversions();
+        if (!failures.empty()) {
+            const auto& first = failures.front();
+            std::wstring message =
+                Tr(first.kind == NszFailure::Kind::Damaged ? Text::ConversionDamaged
+                                                           : Text::ConversionFailed);
+            std::wstring name = first.name;
+            if (failures.size() > 1)
+                name += L" (+" + std::to_wstring(failures.size() - 1) + L")";
+            message.replace(message.find(L"%s"), 2, name);
+            Toast(message, Clock::now());
+        }
         scan_.reset();
         visuals_.assign(games_.size(), Visual{});
         lift_.assign(games_.size() + 1, Tween(0.0f));

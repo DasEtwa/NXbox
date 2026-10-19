@@ -463,6 +463,60 @@ fs::path ConversionRecordPath(const fs::path& local_state, const fs::path& sourc
     return local_state / "library" / fmt::format("nsz-{:016x}.json", hash);
 }
 
+// "Game [0100...][v0]" -> "Game": the bracketed ids make a toast unreadable.
+std::wstring DisplayName(const fs::path& file) {
+    const std::wstring name = file.stem().wstring();
+    return name.substr(0, name.find(L" ["));
+}
+
+fs::path FailureRecordPath(const fs::path& local_state, const fs::path& source) {
+    auto path = ConversionRecordPath(local_state, source);
+    path.replace_extension(L".failed.json");
+    return path;
+}
+
+std::optional<std::string> PreviousFailure(const fs::path& record_path, const fs::path& source) {
+    try {
+        std::ifstream input(record_path, std::ios::binary);
+        const std::string text((std::istreambuf_iterator<char>(input)), {});
+        JsonObject record;
+        if (JsonObject::TryParse(winrt::to_hstring(text), record) &&
+            std::wstring(record.GetNamedString(L"source")) == source.native() &&
+            NszFailure::Unchanged(
+                std::stoull(winrt::to_string(record.GetNamedString(L"source_size"))),
+                std::stoll(winrt::to_string(record.GetNamedString(L"source_mtime"))),
+                Common::FS::GetSize(source), ModifiedSeconds(source))) {
+            const auto reason = winrt::to_string(record.GetNamedString(L"failure"));
+            if (NszFailure::ShouldRemember(reason, false))
+                return reason;
+        }
+    } catch (...) {
+        // Missing or invalid records must not prevent a fresh attempt.
+    }
+    std::error_code ec;
+    fs::remove(record_path, ec);
+    return std::nullopt;
+}
+
+void RememberFailure(const fs::path& record_path, const fs::path& source, std::uint64_t size,
+                     std::int64_t mtime, const std::string& failure) {
+    try {
+        JsonObject record;
+        record.SetNamedValue(L"source", JsonValue::CreateStringValue(source.native()));
+        // Strings preserve the full integer precision in JSON.
+        record.SetNamedValue(L"source_size", JsonValue::CreateStringValue(std::to_wstring(size)));
+        record.SetNamedValue(L"source_mtime", JsonValue::CreateStringValue(std::to_wstring(mtime)));
+        record.SetNamedValue(L"failure", JsonValue::CreateStringValue(winrt::to_hstring(failure)));
+        fs::create_directories(record_path.parent_path());
+        const auto text = winrt::to_string(record.Stringify());
+        if (Common::FS::WriteStringToFile(record_path, Common::FS::FileType::TextFile, text) !=
+            text.size())
+            Diagnostic("NSZ_CONVERT failure_record_write_failed");
+    } catch (...) {
+        Diagnostic("NSZ_CONVERT failure_record_write_failed");
+    }
+}
+
 std::optional<fs::path> ConvertedOutput(const fs::path& record_path, const fs::path& source) {
     try {
         std::ifstream input(record_path, std::ios::binary);
@@ -913,6 +967,10 @@ std::vector<GameEntry> LibraryScan::Take() {
     return std::move(games_);
 }
 
+const std::vector<LibraryScan::FailedConversion>& LibraryScan::FailedConversions() const {
+    return failed_conversions_;
+}
+
 void LibraryScan::ConvertCompressed(const std::vector<fs::path>& compressed,
                                     std::vector<fs::path>& packages) {
     // An .nsz with an .nsp next to it has been converted before (or the player copied both): the
@@ -946,6 +1004,12 @@ void LibraryScan::ConvertCompressed(const std::vector<fs::path>& compressed,
             packages.push_back(existing);
             if (TruncatedPackage(probe, existing) == std::optional<bool>{false})
                 RememberConversion(ConversionRecordPath(local_state_, nsz), nsz, existing);
+            continue;
+        }
+        if (const auto failure = PreviousFailure(FailureRecordPath(local_state_, nsz), nsz)) {
+            Diagnostic("UI nsz convert " + Utf8(nsz.filename().wstring()) +
+                       " skip: failed before (" + *failure + "), file unchanged");
+            failed_conversions_.push_back({DisplayName(nsz), NszFailure::Classify(*failure)});
             continue;
         }
         if (!existing.empty())
@@ -1017,6 +1081,8 @@ void LibraryScan::ConvertCompressed(const std::vector<fs::path>& compressed,
             conversion_ = Conversion{true, nsz.stem().wstring(), index,
                                      static_cast<int>(pending.size()), 0, 0};
         }
+        const auto source_size = Common::FS::GetSize(nsz);
+        const auto source_mtime = ModifiedSeconds(nsz);
         const std::string failure = ConvertNsz(
             vfs, nsz, nsp,
             [this](std::uint64_t written, std::uint64_t size) {
@@ -1030,9 +1096,19 @@ void LibraryScan::ConvertCompressed(const std::vector<fs::path>& compressed,
             if (failure.find("disk full") != std::string::npos) {
                 std::ofstream(local_state_ / "library" / (nsz.stem().wstring() + L".nospace"))
                     << FreeSpace(nsp.parent_path()).value_or(0) << '\n';
+            } else if (NszFailure::ShouldRemember(failure, cancel_.load())) {
+                const auto kind = NszFailure::Classify(failure);
+                // Only a damaged file is skipped until it changes: a drive that went away or a
+                // folder that cannot be written may clear up, and those failures are quick.
+                if (kind == NszFailure::Kind::Damaged)
+                    RememberFailure(FailureRecordPath(local_state_, nsz), nsz, source_size,
+                                    source_mtime, failure);
+                failed_conversions_.push_back({DisplayName(nsz), kind});
             }
             continue;
         }
+        std::error_code ec;
+        fs::remove(FailureRecordPath(local_state_, nsz), ec);
         RememberConversion(ConversionRecordPath(local_state_, nsz), nsz, nsp);
         Diagnostic("UI nsz convert " + file_name + " ok");
         // The .nsz goes only now that its .nsp is complete and in place.

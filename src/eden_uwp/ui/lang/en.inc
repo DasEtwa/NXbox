@@ -21,6 +21,8 @@
      L"from a USB drive."},
     {Text::ScanningTitle, L"Looking for games"},
     {Text::ConvertingTitle, L"Converting the game to the emulator's format"},
+    {Text::ConversionDamaged, L"Couldn't convert %s: the .nsz file is damaged. Copy it again."},
+    {Text::ConversionFailed, L"Couldn't convert %s."},
     {Text::SettingsTitle, L"Settings"},
     {Text::SettingsBody, L"Game sources, mods and art will live here in upcoming versions."},
     {Text::ModsSoon, L"Mods arrive in the next version."}, {Text::DetailsTitleId, L"Title ID"},

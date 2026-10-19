@@ -101,6 +101,8 @@ enum class Text {
     MissingKeysBody,
     ScanningTitle,
     ConvertingTitle,
+    ConversionDamaged,
+    ConversionFailed,
     NextendoTitle,
     NextendoOn,
     NextendoOff,

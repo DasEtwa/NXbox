@@ -10,6 +10,7 @@
 #include <thread>
 #include <vector>
 #include "frontend_common/library_transfer.h"
+#include "frontend_common/nsz_failure.h"
 
 namespace EdenXbox::Ui {
 
@@ -86,6 +87,13 @@ public:
     // keys: the library is empty because prod.keys is missing, not because there are no games.
     bool KeysMissing() const;
 
+    struct FailedConversion {
+        std::wstring name;
+        NszFailure::Kind kind;
+    };
+    // Worker-owned results; only read once Finished() is true.
+    const std::vector<FailedConversion>& FailedConversions() const;
+
     // The games, sorted by name. Moves the result out; only valid once Finished().
     std::vector<GameEntry> Take();
 
@@ -107,6 +115,7 @@ private:
     mutable std::mutex conversion_mutex_;
     Conversion conversion_;
     std::vector<GameEntry> games_;
+    std::vector<FailedConversion> failed_conversions_;
     std::thread worker_;
 };
 
