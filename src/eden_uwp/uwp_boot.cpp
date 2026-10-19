@@ -154,6 +154,7 @@ int RunHeadlessBoot(const std::string& nro_path) {
 #include <winrt/Windows.ApplicationModel.h>
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Storage.h>
+#include <winrt/Windows.System.Profile.h>
 #include <winrt/Windows.UI.Core.h>
 
 using namespace winrt;
@@ -211,6 +212,14 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
 
     void Run() {
         WriteDiag("BootView::Run entered");
+        // Which console this ran on (Series S, Series X, One...): testers' logs come from both and
+        // their performance differs a lot.
+        try {
+            WriteDiag("CONSOLE device_form=" +
+                      winrt::to_string(Windows::System::Profile::AnalyticsInfo::DeviceForm()));
+        } catch (winrt::hresult_error const& e) {
+            WriteDiag("CONSOLE device_form unavailable: " + winrt::to_string(e.message()));
+        }
 
         // A UWP app MUST activate its CoreWindow and pump the dispatcher, or the OS terminates it a
         // couple seconds after launch (no crash, no dump - exactly the "flashes then closes"
