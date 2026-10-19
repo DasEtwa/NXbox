@@ -372,7 +372,9 @@ void BufferCacheRuntime::BindVertexBuffer(u32 index, ResourcePtr buffer, u32 off
                                           u32 stride) {
     if (index >= GeometryBindings::MaxVertexBuffers)
         return;
-    const auto width = buffer ? buffer->handle->GetDesc().Width : 0;
+    const auto width = buffer ? (BufferFastpathEnabled() ? buffer->Description().Width
+                                                         : buffer->handle->GetDesc().Width)
+                              : 0;
     if (offset > width || size > width - offset) {
         InvalidRange(3, "vertex binding", offset, size, width);
         bindings.geometry.vertex[index] = {};
@@ -421,7 +423,9 @@ std::span<u8> BufferCacheRuntime::BindMappedUniformBuffer(size_t stage, u32, u32
 void BufferCacheRuntime::BindUniformBuffer(const Buffer& buffer, u32 offset, u32 size) {
     const u32 read_limit = std::exchange(uniform_read_limit, ~0U);
     auto resource = buffer.Handle();
-    const auto width = resource ? resource->handle->GetDesc().Width : 0;
+    const auto width = resource ? (BufferFastpathEnabled() ? resource->Description().Width
+                                                           : resource->handle->GetDesc().Width)
+                                : 0;
     if (!resource || !size) {
         bindings.stages[bindings.current_stage].uniform.push_back({nullptr, 0, 0});
         return;
@@ -485,7 +489,9 @@ BoundBuffer BufferCacheRuntime::CopyUniform(const BoundBuffer& uniform) {
 void BufferCacheRuntime::BindStorageBuffer(const Buffer& buffer, u32 offset, u32 size,
                                            bool is_written) {
     auto resource = buffer.Handle();
-    const auto width = resource ? resource->handle->GetDesc().Width : 0;
+    const auto width = resource ? (BufferFastpathEnabled() ? resource->Description().Width
+                                                           : resource->handle->GetDesc().Width)
+                                : 0;
     if (offset > width || size > width - offset || (offset & 3)) {
         InvalidRange(6, "raw storage binding requires an in-bounds word-aligned range", offset,
                      size, width);

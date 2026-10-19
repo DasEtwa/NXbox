@@ -1010,12 +1010,14 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     // Guest mappings can shrink between cache bindings. Do not hand invalid
     // buffer ranges to the descriptor API or poison the whole GPU thread.
     for (const auto& stage : bindings.stages) {
-        const auto valid = [](const auto& buffer, u64 alignment) {
+        const auto valid = [this](const auto& buffer, u64 alignment) {
             return !buffer.resource || !buffer.size ||
                    (buffer.offset % alignment == 0 &&
                     IsValidBufferView(buffer.resource->handle->GetGPUVirtualAddress(),
-                                      buffer.resource->handle->GetDesc().Width, buffer.offset,
-                                      buffer.size));
+                                      (buffer_runtime.BufferFastpathEnabled()
+                                           ? buffer.resource->Description().Width
+                                           : buffer.resource->handle->GetDesc().Width),
+                                      buffer.offset, buffer.size));
         };
         for (const auto& buffer : stage.uniform) {
             if (!valid(buffer, 256)) {
@@ -2332,8 +2334,11 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     }
     if (totals.uav)
         FragmentBarrier();
-    for (auto& stage : bindings.stages)
-        stage.Clear(); // drop upload-page references so the staging ring can recycle them
+    // The scope guard releases these leases on every exit, including this one.
+    if (!buffer_runtime.BufferFastpathEnabled()) {
+        for (auto& stage : bindings.stages)
+            stage.Clear(); // drop upload-page references so the staging ring can recycle them
+    }
 }
 
 // Diagnostic (NXBOX_D3D12_CBUF_TRACE_FRAME=<frame>): word 4 of constant buffer

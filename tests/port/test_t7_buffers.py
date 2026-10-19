@@ -156,6 +156,7 @@ struct Resource {
         u64 GetGPUVirtualAddress() const { return reinterpret_cast<u64>(owner); }
         Handle* operator->() { return this; }
     } handle{this};
+    Handle::Desc Description() const { return handle.GetDesc(); }
 };
 using ResourcePtr=std::shared_ptr<Resource>;
 struct Buffer { ResourcePtr resource; ResourcePtr Handle() const { return resource; } };
@@ -208,6 +209,8 @@ struct BindingState {
 static int invalid=0;
 void InvalidRange(u32, const char*, u64, u64, u64) { ++invalid; }
 struct BufferCacheRuntime {
+    bool buffer_fastpath = true;
+    bool BufferFastpathEnabled() const { return buffer_fastpath; }
     Context context;
     Staging upload{context};
     SnapshotStaging uniform_snapshots{context, {}, 0};
@@ -227,8 +230,10 @@ struct BufferCacheRuntime {
     void BindStorageBuffer(const Buffer&, u32, u32, bool);
 };
 __BINDINGS__
-int main() {
+void CheckBindings(bool fastpath) {
+    invalid = 0;
     BufferCacheRuntime runtime;
+    runtime.buffer_fastpath = fastpath;
     auto memory=runtime.context.CreateBuffer(131072,0);
     for (size_t i=0;i<memory->bytes.size();++i) memory->bytes[i]=u8(i);
     Buffer buffer{memory};
@@ -287,6 +292,10 @@ int main() {
     assert(storage.size==65536 && storage.offset==16 && storage.written);
     runtime.BindStorageBuffer(buffer,3,16,false);
     assert(!runtime.bindings.stages[0].storage.back().resource && invalid==3);
+}
+int main() {
+    CheckBindings(true);
+    CheckBindings(false);
 }
 """
 

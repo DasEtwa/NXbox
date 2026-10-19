@@ -397,6 +397,16 @@ void BufferCache<P>::BindGraphicsUniformBuffer(size_t stage, u32 index, GPUVAddr
         .size = size,
         .buffer_id = BufferId{},
     };
+    // Keep a resolved identity on duplicate notifications. Cache deletion already
+    // invalidates buffer_id; translating first also detects guest address remaps.
+    // Other runtimes retain their existing binding/dirty-bit behavior.
+    if constexpr (requires { runtime.BufferFastpathEnabled(); }) {
+        const Binding& previous = channel_state->uniform_buffers[stage][index];
+        if (runtime.BufferFastpathEnabled() && previous.device_addr == binding.device_addr &&
+            previous.size == binding.size) {
+            return;
+        }
+    }
     channel_state->uniform_buffers[stage][index] = binding;
 }
 
@@ -2065,6 +2075,12 @@ void BufferCache<P>::DeleteBuffer(BufferId buffer_id, bool do_not_mark) {
     replace(channel_state->transform_feedback_buffers);
     replace(channel_state->compute_uniform_buffers);
     replace(channel_state->compute_storage_buffers);
+    // Duplicate uniform notifications keep their resolved buffer_id, so a channel that is not
+    // current must not keep an id this deletion frees.
+    if constexpr (requires { runtime.BufferFastpathEnabled(); }) {
+        for (const size_t id : active_channel_ids)
+            std::ranges::for_each(channel_storage[id].uniform_buffers, replace);
+    }
 
     // Mark the whole buffer as CPU written to stop tracking CPU writes
     if (!do_not_mark) {
