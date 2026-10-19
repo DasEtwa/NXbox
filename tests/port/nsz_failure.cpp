@@ -22,6 +22,9 @@ int main() {
          Kind::Damaged);
   assert(Classify("game.ncz: internal error, wrote 100 bytes of the NCA "
                   "instead of 200") == Kind::Damaged);
+  // A zeroed header (unfinished download) is damage; a real container in another format is not.
+  assert(Classify("corrupt header: not a PFS0 container") == Kind::Damaged);
+  assert(Classify("not an NSZ package") == Kind::Other);
   assert(Classify("cannot open the file") == Kind::Other);
   assert(Classify("cannot create game.nsp.partial") == Kind::Other);
   assert(Classify("cannot rename the output") == Kind::Other);
