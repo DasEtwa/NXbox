@@ -222,6 +222,9 @@ struct System::Impl {
     void Run() {
         std::unique_lock<std::mutex> lk(suspend_guard);
 
+        if (auto* process = kernel.ApplicationProcess()) {
+            process->GetPageTable().GetImpl().LogJitPageTableMemoryOnce();
+        }
         kernel.SuspendEmulation(false);
         core_timing.SyncPause(false);
         is_paused.store(false, std::memory_order_relaxed);

@@ -432,6 +432,7 @@ struct Memory::Impl {
                     // Page is already marked.
                     break;
                 case Common::PageType::Memory:
+                    current_page_table->ClearJitPage(vaddr >> YUZU_PAGEBITS);
                     entry.MarkDebug(pointer, block);
                     break;
                 default:
@@ -448,7 +449,8 @@ struct Memory::Impl {
                     // Don't mess with already non-debug or rasterizer memory.
                     break;
                 case Common::PageType::DebugMemory: {
-                    entry.Store(false, Common::PageType::Memory, block, pointer);
+                    current_page_table->StorePage(vaddr >> YUZU_PAGEBITS, false,
+                                                  Common::PageType::Memory, block, pointer);
                     break;
                 }
                 default:
@@ -493,6 +495,7 @@ struct Memory::Impl {
                     break;
                 case Common::PageType::DebugMemory:
                 case Common::PageType::Memory:
+                    current_page_table->ClearJitPage(vaddr >> YUZU_PAGEBITS);
                     entry.MarkRasterizerCached();
                     break;
                 case Common::PageType::RasterizerCachedMemory:
@@ -519,9 +522,11 @@ struct Memory::Impl {
                         // It's possible that this function has been called while updating the
                         // pagetable after unmapping a VMA. In that case the underlying VMA will no
                         // longer exist, and we should just leave the pagetable entry blank.
-                        entry.Store(false, Common::PageType::Unmapped, block, 0);
+                        current_page_table->StorePage(vaddr >> YUZU_PAGEBITS, false,
+                                                      Common::PageType::Unmapped, block, 0);
                     } else {
-                        entry.Store(false, Common::PageType::Memory, block, ptr);
+                        current_page_table->StorePage(vaddr >> YUZU_PAGEBITS, false,
+                                                      Common::PageType::Memory, block, ptr);
                     }
                     break;
                 }
@@ -555,6 +560,8 @@ struct Memory::Impl {
             ASSERT_MSG(type != Common::PageType::Memory,
                        "Mapping memory page without a pointer @ {:016x}", base * YUZU_PAGESIZE);
 
+            // Keep JIT storage committed: generated readers may still be loading it.
+            page_table.ClearJitRegion(base, end);
             page_table.entries.ZeroRegion(base, end);
         } else {
             auto current_block = block_count.fetch_add(1, std::memory_order_relaxed);
@@ -563,9 +570,7 @@ struct Memory::Impl {
             page_table.entries.CommitRegion(base, end);
             while (base != end) {
                 auto host_ptr = reinterpret_cast<u64>(system.DeviceMemory().GetPointer<u8>(target)) - (base << YUZU_PAGEBITS);;
-                auto& entry = page_table.entries.GetUnchecked(base);
-
-                entry.Store(false, type, current_block, host_ptr);
+                page_table.StorePage(base, false, type, current_block, host_ptr);
                 ASSERT_MSG(page_table.entries[base].Pointer(),
                            "memory mapping base yield a nullptr within the table");
 

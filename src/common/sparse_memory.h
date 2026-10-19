@@ -11,5 +11,7 @@ namespace Common::SparseMemory {
 void* Allocate(std::size_t size) noexcept;
 // Bytes committed so far by demand faults (diagnostics).
 std::uint64_t CommittedBytes() noexcept;
+// Query current commitment of one live reservation, including raw JIT read faults.
+std::uint64_t CommittedBytes(const void* base, std::size_t size) noexcept;
 bool Free(void* base) noexcept;
 } // namespace Common::SparseMemory
