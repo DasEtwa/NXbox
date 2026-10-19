@@ -17,6 +17,7 @@
 #include <type_traits>
 #include <unordered_map>
 #include <fmt/format.h>
+#include <fmt/ranges.h>
 #include "common/alignment.h"
 #include "common/logging.h"
 #include "common/scope_exit.h"
@@ -3239,6 +3240,18 @@ void RasterizerD3D12::DispatchCompute() try {
             split_reads.push_back(std::move(read));
         else
             use(read.first, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        if (written && overlaps) {
+            // The dispatch is still skipped as a state conflict; name the subresources involved.
+            static u32 logged = 0;
+            if (logged++ < 16) {
+                std::string writes;
+                for (const auto& write : image_writes)
+                    if (write.first == read.first)
+                        writes += fmt::format("{} ", fmt::join(write.second, ","));
+                Diagnostic(fmt::format("D3D12_COMPUTE_READ_WRITE_OVERLAP reads={} writes={}",
+                                       fmt::join(read.second, ","), writes));
+            }
+        }
     }
     for (; uav_index < uav_size; ++uav_index)
         descriptors.WriteNullUav(uav, uav_index);
