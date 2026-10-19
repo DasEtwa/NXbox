@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -39,6 +40,43 @@ private:
     std::array<Handle, Capacity> destinations{};
     std::array<Handle, Capacity> sources{};
     std::size_t count{};
+};
+
+// Source handles are valid only until their CPU heap generation changes. GPU tables
+// have a separate submission lifetime; recycling CPU sources never extends it.
+template <class Handle, std::size_t Capacity = 4096>
+struct DescriptorSources {
+    // Allocate once with the persistent draw scratch, then swap in constant time.
+    std::vector<Handle> handles = std::vector<Handle>(Capacity);
+    std::uint64_t generation{};
+    std::size_t count{};
+    bool valid{};
+
+    void Reset(std::size_t size) {
+        count = size;
+        generation = 0;
+        valid = size <= Capacity;
+    }
+    template <class Generation, class Resolve>
+    void Set(std::size_t index, const DescriptorSources& previous, bool unchanged,
+             Generation&& current, Resolve&& resolve) {
+        if (!valid || index >= count)
+            return;
+        const auto handle = previous.Current(current()) && index < previous.count && unchanged
+                                ? previous.handles[index]
+                                : resolve();
+        if (generation && generation != current())
+            valid = false;
+        generation = current();
+        handles[index] = handle;
+    }
+    bool Current(std::uint64_t current) const {
+        return valid && generation == current;
+    }
+    bool Matches(const DescriptorSources& other, std::uint64_t current) const {
+        return Current(current) && other.Current(current) && count == other.count &&
+               std::equal(handles.begin(), handles.begin() + count, other.handles.begin());
+    }
 };
 
 // A recording owns immutable slots only until its submission tick changes.
@@ -142,6 +180,7 @@ struct DescriptorKey {
 };
 // Planning uses the same writers and full keys as the CPU descriptor cache.
 struct DescriptorPlan {
+    DescriptorSources<std::uintptr_t> sources;
     std::array<u32, 3> sizes{};
     std::vector<DescriptorKey> keys;
     std::vector<ResourcePtr> resources;
@@ -154,6 +193,7 @@ struct DescriptorPlan {
         // Every slot, including padding, is written before FinishDrawTable.
         // Keep key storage initialized and reuse its capacity across draws.
         keys.resize(count);
+        sources.Reset(count);
         resources.clear();
         resources.resize(count);
     }
@@ -283,10 +323,14 @@ public:
         ComPtr<ID3D12DescriptorHeap> heap;
         std::unordered_map<DescriptorKey, CachedDescriptor, DescriptorKeyHash> entries;
         u32 cursor{}, stride{}, capacity{};
+        u64 generation{1};
     };
     void InitCache(DescriptorCache& cache, D3D12_DESCRIPTOR_HEAP_TYPE type, u32 capacity);
     void RefreshCaches();
     using CopyBatch = DescriptorCopyBatch<D3D12_CPU_DESCRIPTOR_HANDLE>;
+    D3D12_CPU_DESCRIPTOR_HANDLE ResolveDescriptor(D3D12_DESCRIPTOR_HEAP_TYPE type,
+                                                  const ResourcePtr& resource,
+                                                  const DescriptorKey& key, CopyBatch* batch);
     void FlushCopies(D3D12_DESCRIPTOR_HEAP_TYPE type, CopyBatch& batch);
     void CopyDescriptors(D3D12_DESCRIPTOR_HEAP_TYPE type, size_t count,
                          const D3D12_CPU_DESCRIPTOR_HANDLE* destinations,
@@ -304,6 +348,7 @@ public:
         DescriptorTable table;
     };
     std::array<PreviousDrawTable, 2> previous_draw_tables;
+    const bool descriptor_fastpath;
     u64 cache_tick{};
     bool new_frame{true};
     DescriptorCache view_cache, sampler_cache;

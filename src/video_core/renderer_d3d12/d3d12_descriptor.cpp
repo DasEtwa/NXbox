@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdlib>
 #include <cstring>
 #include <stdexcept>
 #include <unordered_set>
@@ -228,7 +229,11 @@ D3D12_SAMPLER_DESC MakeSamplerDesc(const Tegra::Texture::TSCEntry& entry, bool s
 
 D3D12DescriptorAllocator::D3D12DescriptorAllocator(Context& context, u32 view_capacity,
                                                    u32 sampler_capacity)
-    : context{context}, views{view_capacity}, samplers{sampler_capacity} {
+    : descriptor_fastpath{[] {
+          const char* value = std::getenv("NXBOX_D3D12_DESCRIPTOR_FASTPATH");
+          return !value || std::strcmp(value, "0") != 0;
+      }()},
+      context{context}, views{view_capacity}, samplers{sampler_capacity} {
     if (!view_capacity || view_capacity > ViewHeapSize || !sampler_capacity ||
         sampler_capacity > SamplerHeapSize)
         throw std::invalid_argument("D3D12 descriptor heap capacity outside supported limits");
@@ -240,6 +245,7 @@ D3D12DescriptorAllocator::D3D12DescriptorAllocator(Context& context, u32 view_ca
     InitCache(sampler_cache, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, 256);
     InitCache(bound_rtvs, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 8);
     InitCache(bound_dsv, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 1);
+    Diagnostic(fmt::format("D3D12 descriptor_fastpath={}", descriptor_fastpath ? 1 : 0));
 }
 
 void D3D12DescriptorAllocator::InitCache(DescriptorCache& cache, D3D12_DESCRIPTOR_HEAP_TYPE type,
@@ -264,6 +270,7 @@ void D3D12DescriptorAllocator::RefreshCaches() {
         new_frame = false;
         view_cache.entries.clear();
         view_cache.cursor = 0;
+        ++view_cache.generation;
     }
 }
 DescriptorKey D3D12DescriptorAllocator::MakeDescriptorKey(const ResourcePtr& resource, u32 kind,
@@ -284,6 +291,18 @@ void D3D12DescriptorAllocator::WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE type,
     if (table.plan) {
         const u32 index = table.first + slot;
         const DescriptorKey key = MakeDescriptorKey(resource, kind, desc, size);
+        auto& plan = *table.plan;
+        if (descriptor_fastpath && plan.sources.valid) {
+            RefreshCaches();
+            auto& cache = type == D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER ? sampler_cache : view_cache;
+            const auto& previous = previous_draw_tables[type == D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER];
+            // Unchanged slots borrow immutable CPU sources without hashing or map access.
+            plan.sources.Set(
+                index, previous.plan.sources,
+                index < previous.plan.keys.size() && previous.plan.keys[index] == key,
+                [&] { return cache.generation; },
+                [&] { return ResolveDescriptor(type, resource, key, nullptr).ptr; });
+        }
         table.plan->keys.at(index) = key;
         table.plan->resources.at(index) = resource;
         return;
@@ -293,6 +312,13 @@ void D3D12DescriptorAllocator::WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE type,
 
 bool D3D12DescriptorAllocator::CanReuseDrawTable(const DescriptorPlan& plan, bool sampler) const {
     const auto& previous = previous_draw_tables[sampler ? 1 : 0];
+    if (descriptor_fastpath) {
+        const auto& cache = sampler ? sampler_cache : view_cache;
+        if (plan.sources.Current(cache.generation)) {
+            return previous.tick == context.CurrentTick() && previous.plan.sizes == plan.sizes &&
+                   previous.plan.sources.Matches(plan.sources, cache.generation);
+        }
+    }
     return previous.tick == context.CurrentTick() && previous.plan.sizes == plan.sizes &&
            previous.plan.keys == plan.keys;
 }
@@ -307,6 +333,24 @@ DescriptorTable D3D12DescriptorAllocator::FinishDrawTable(DescriptorPlan& plan, 
     const auto table = sampler ? AllocateSamplers(count) : AllocateViews(count);
     const auto type =
         sampler ? D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER : D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+    const FrameProfile::Scope profile_write{context.Profile(), FramePhase::DescriptorWrites};
+    RefreshCaches(); // Reserve may have submitted and invalidated CPU sources.
+    const auto& cache = sampler ? sampler_cache : view_cache;
+    if (descriptor_fastpath && plan.sources.Current(cache.generation)) {
+        // The destination is contiguous; every source range contains one descriptor.
+        std::array<D3D12_CPU_DESCRIPTOR_HANDLE, 4096> sources;
+        for (u32 slot = 0; slot < count; ++slot)
+            sources[slot].ptr = plan.sources.handles[slot];
+        context.Device()->CopyDescriptors(1, &table.cpu, &count, count, sources.data(), nullptr,
+                                          type);
+        TraceApiCall(context.Device(), "CopyDescriptors", nullptr, &type, sizeof(type));
+        context.Profile().Count(FrameCount::DescriptorCopyCalls);
+        context.Profile().Count(FrameCount::DescriptorCopies, count);
+        previous.tick = context.CurrentTick();
+        std::swap(previous.plan, plan);
+        previous.table = table;
+        return table;
+    }
     static const bool batch_copies = BisectEnabled("NXBOX_D3D12_BATCH_DESCRIPTOR_COPIES");
     std::optional<CopyBatch> batch;
     if (batch_copies)
@@ -338,12 +382,30 @@ void D3D12DescriptorAllocator::WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE type,
                                            const ResourcePtr& resource, u32 kind, const void* desc,
                                            size_t size, D3D12_CPU_DESCRIPTOR_HANDLE destination,
                                            CopyBatch* batch) {
-    const FrameProfile::Scope profile_write{context.Profile(), FramePhase::DescriptorWrites};
     RefreshCaches();
     const auto key = MakeDescriptorKey(resource, kind, desc, size);
     const auto old_contents = slot_contents.find(destination.ptr);
     if (old_contents != slot_contents.end() && old_contents->second == key)
         return; // The slot has not changed; never overwrite an in-flight table.
+    const auto source = ResolveDescriptor(type, resource, key, batch);
+    if (batch) {
+        batch->Add(destination, source,
+                   [&](size_t count, const auto* destinations, const auto* sources) {
+                       CopyDescriptors(type, count, destinations, sources);
+                   });
+    } else {
+        context.Device()->CopyDescriptorsSimple(1, destination, source, type);
+        TraceApiCall(context.Device(), "CopyDescriptorsSimple", nullptr, &type, sizeof(type));
+        context.Profile().Count(FrameCount::DescriptorCopyCalls);
+    }
+    context.Profile().Count(FrameCount::DescriptorCopies);
+    slot_contents[destination.ptr] = std::move(key);
+}
+D3D12_CPU_DESCRIPTOR_HANDLE D3D12DescriptorAllocator::ResolveDescriptor(
+    D3D12_DESCRIPTOR_HEAP_TYPE type, const ResourcePtr& resource, const DescriptorKey& key,
+    CopyBatch* batch) {
+    const auto kind = key.kind;
+    const void* desc = key.description.data();
     auto& cache = type == D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER ? sampler_cache : view_cache;
     auto found = cache.entries.find(key);
     if (found == cache.entries.end()) {
@@ -355,6 +417,7 @@ void D3D12DescriptorAllocator::WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE type,
             cache.entries.clear();
             slot_contents.clear();
             cache.cursor = 0;
+            ++cache.generation;
         }
         auto handle = cache.heap->GetCPUDescriptorHandleForHeapStart();
         handle.ptr += static_cast<SIZE_T>(cache.cursor++) * cache.stride;
@@ -401,23 +464,12 @@ void D3D12DescriptorAllocator::WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE type,
         context.Profile().Count(by_kind[kind]);
         found = cache.entries.emplace(key, CachedDescriptor{handle, resource}).first;
     }
-    if (batch) {
-        batch->Add(destination, found->second.handle,
-                   [&](size_t count, const auto* destinations, const auto* sources) {
-                       CopyDescriptors(type, count, destinations, sources);
-                   });
-    } else {
-        context.Device()->CopyDescriptorsSimple(1, destination, found->second.handle, type);
-        TraceApiCall(context.Device(), "CopyDescriptorsSimple", nullptr, &type, sizeof(type));
-        context.Profile().Count(FrameCount::DescriptorCopyCalls);
-    }
-    context.Profile().Count(FrameCount::DescriptorCopies);
-    slot_contents[destination.ptr] = std::move(key);
+    return found->second.handle;
 }
+
 void D3D12DescriptorAllocator::CopyDescriptors(D3D12_DESCRIPTOR_HEAP_TYPE type, size_t count,
                                                const D3D12_CPU_DESCRIPTOR_HANDLE* destinations,
                                                const D3D12_CPU_DESCRIPTOR_HANDLE* sources) {
-    const FrameProfile::Scope profile_write{context.Profile(), FramePhase::DescriptorWrites};
     // Null range-size arrays mean one descriptor per range, including noncontiguous slots.
     context.Device()->CopyDescriptors(static_cast<UINT>(count), destinations, nullptr,
                                       static_cast<UINT>(count), sources, nullptr, type);
