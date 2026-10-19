@@ -38,7 +38,7 @@ bool BisectEnabled(const char* name) noexcept {
         const char* name;
         bool value;
     };
-    thread_local std::array<Cached, 64> cache{};
+    thread_local std::array<Cached, 128> cache{};
     thread_local size_t used = 0;
     for (size_t i = 0; i < used; ++i)
         if (cache[i].name == name)
