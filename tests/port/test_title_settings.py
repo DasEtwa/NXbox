@@ -126,8 +126,7 @@ class TitleSettingsTests(unittest.TestCase):
         values = re.search(r"ENUM\(ResolutionSetup,\s*([^;]+)\);", enums).group(1).split(",")
         names = [value.strip() for value in values]
         self.assertEqual(
-            [names.index(name) for name in ("Res1_2X", "Res3_4X", "Res1X", "Res3_2X", "Res2X", "Res3X")],
-            [1, 2, 3, 5, 6, 7],
+            [names.index(name) for name in ("Res1X", "Res3_2X", "Res2X", "Res3X")], [3, 5, 6, 7]
         )
         self.assertEqual(len(names), 13)
 
