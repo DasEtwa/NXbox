@@ -219,6 +219,28 @@ bool StreamNszToNsp(const std::string& url, std::filesystem::path& target,
     return true;
 }
 
+// A removable drive can come back under another letter (the console swapped E: and F: after a
+// reset): find the same NXbox\games\... file on the drives present now.
+std::optional<std::filesystem::path> FindOnRemovableDrives(const std::filesystem::path& missing) {
+    const std::wstring text = missing.wstring();
+    std::wstring lower = text;
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+                   [](wchar_t c) { return c < 128 ? static_cast<wchar_t>(std::tolower(c)) : c; });
+    constexpr std::wstring_view marker = L"\\nxbox\\games\\";
+    const auto at = lower.find(marker);
+    if (at == std::wstring::npos) {
+        return std::nullopt;
+    }
+    const std::filesystem::path tail{text.substr(at + marker.size())};
+    for (const auto& folder : ExternalGameFolders()) {
+        const auto candidate = folder / tail;
+        if (candidate != missing && Common::FS::IsFile(candidate)) {
+            return candidate;
+        }
+    }
+    return std::nullopt;
+}
+
 std::string ResolveGamePath(const std::string& bundled, bool chosen_in_library) {
     namespace fs = std::filesystem;
     const fs::path local(
@@ -278,6 +300,12 @@ std::string ResolveGamePath(const std::string& bundled, bool chosen_in_library) 
     // A big game from NXbox Pack is on the console as parts until its first launch.
     SplitUpload::JoinSplitUploads(target.parent_path(),
                                   [](const std::string& line) { Diagnostic(line); });
+    if (!Common::FS::IsFile(target)) {
+        if (const auto moved = FindOnRemovableDrives(target)) {
+            Diagnostic("GAME_MOVED " + target.string() + " -> " + moved->string());
+            target = *moved;
+        }
+    }
     if (!Common::FS::IsFile(target)) {
         Diagnostic("GAME_MISSING " + target.string());
         return bundled;
