@@ -62,7 +62,7 @@ class FlushDrawsTests(unittest.TestCase):
         knob = knob[: knob.index("\n}\n")]
         self.assertIn("if (length == 0)\n        return DefaultFlushDraws;", knob)
         policy = (ROOT / "src/video_core/renderer_d3d12/d3d12_flush_policy.h").read_text()
-        self.assertIn("constexpr std::uint32_t DefaultFlushDraws = 32;", policy)
+        self.assertIn("constexpr std::uint32_t DefaultFlushDraws = 128;", policy)
         self.assertIn('Diagnostic(fmt::format("D3D12 flush_draws={}"', source)
         mark = source.split("void Context::MarkWork", 1)[1].split("u64 Context::Submit", 1)[0]
         self.assertLess(
