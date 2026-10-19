@@ -16,11 +16,13 @@
 #include <fmt/format.h>
 #include "common/alignment.h"
 #include "common/logging.h"
+#include "common/scope_exit.h"
 #include "common/settings.h"
 #include "video_core/framebuffer_config.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/renderer_d3d12/d3d12_descriptor.h"
 #include "video_core/renderer_d3d12/d3d12_footprint.h"
+#include "video_core/renderer_d3d12/d3d12_resolution.h"
 #include "video_core/texture_cache/accelerated_swizzle.h"
 #include "video_core/texture_cache/image_view_info.h"
 #include "video_core/texture_cache/samples_helper.h"
@@ -280,6 +282,12 @@ Image::Image(TextureCacheRuntime& runtime, const VideoCommon::ImageInfo& info, G
         (resource->handle->GetDesc().Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS)) {
         flags |= VideoCommon::ImageFlagBits::AcceleratedUpload;
     }
+    // The scaling blitter handles uncompressed single-sample 2D color/depth arrays.
+    // Keep unsupported attachments native as a group through ImageCanRescale.
+    this->info.rescaleable &= resource && info.type == VideoCommon::ImageType::e2D &&
+                              info.num_samples == 1 && info.resources.levels == 1 &&
+                              host_format.block_width == 1 && host_format.block_height == 1;
+    original_resource = resource;
     // CPU ASTC decoding runs inline on the GPU thread: Wonder spent up to 1.3 s of every 5 s
     // there while streaming a new area. accelerate_astc=2 moves it to the texture decode worker;
     // the texture samples empty until its upload lands at a later frame tick.
@@ -289,6 +297,58 @@ Image::Image(TextureCacheRuntime& runtime, const VideoCommon::ImageInfo& info, G
         flags |= VideoCommon::ImageFlagBits::AsynchronousDecode;
     }
 }
+void Image::BlitScale(const ResourcePtr& destination, const ResourcePtr& source) {
+    const auto region = [](const ResourcePtr& texture) {
+        const auto desc = texture->Description();
+        return VideoCommon::Region2D{{0, 0},
+                                     {static_cast<s32>(desc.Width), static_cast<s32>(desc.Height)}};
+    };
+    for (s32 layer = 0; layer < info.resources.layers; ++layer) {
+        const BlitSurface dst{destination, host_format, 0, static_cast<u32>(layer)};
+        const BlitSurface src{source, host_format, 0, static_cast<u32>(layer)};
+        if (host_format.depth) {
+            runtime->BlitHelpers().BlitDepthStencil(dst, src, region(destination), region(source));
+        } else {
+            const auto filter = VideoCore::Surface::IsPixelFormatInteger(info.format)
+                                    ? Tegra::Engines::Fermi2D::Filter::Point
+                                    : Tegra::Engines::Fermi2D::Filter::Bilinear;
+            runtime->BlitHelpers().BlitColor(dst, src, region(destination), region(source), filter);
+        }
+    }
+}
+
+bool Image::ScaleUp(bool ignore) {
+    const auto& resolution = Settings::values.resolution_info;
+    if (!resolution.active || IsRescaled() || !info.rescaleable || !resource)
+        return false;
+    if (!scaled_resource) {
+        const ResolutionScale scale{resolution.up_scale, resolution.down_shift};
+        auto scaled_info = info;
+        scaled_info.size.width = scale.Size(info.size.width);
+        scaled_info.size.height = scale.Size(info.size.height);
+        scaled_resource = MakeTexture(runtime->context, scaled_info, host_format);
+        if (!scaled_resource)
+            throw std::runtime_error("D3D12 scaled render-target allocation failed");
+        ignore = false;
+        has_scaled = true;
+    }
+    if (!ignore)
+        BlitScale(scaled_resource, original_resource);
+    resource = scaled_resource;
+    flags |= VideoCommon::ImageFlagBits::Rescaled;
+    return true;
+}
+
+bool Image::ScaleDown(bool ignore) {
+    if (!IsRescaled())
+        return false;
+    if (!ignore)
+        BlitScale(original_resource, scaled_resource);
+    resource = original_resource;
+    flags &= ~VideoCommon::ImageFlagBits::Rescaled;
+    return true;
+}
+
 void Image::UploadMemory(const StagingBufferRef& map,
                          std::span<const VideoCommon::BufferImageCopy> copies) {
     Transfer(map, copies, false);
@@ -328,6 +388,11 @@ void Image::DownloadMemory(std::span<const ResourcePtr> buffers, std::span<const
 void Image::Transfer(const StagingBufferRef& input,
                      std::span<const VideoCommon::BufferImageCopy> copies, bool download,
                      const ResourcePtr& gpu_destination, size_t gpu_offset) {
+    const bool restore_scaled = ScaleDown();
+    SCOPE_EXIT {
+        if (restore_scaled)
+            ScaleUp(download);
+    };
     const FrameProfile::Scope profile_transfer{runtime->context.Profile(),
                                                download ? FramePhase::TextureDownload
                                                         : FramePhase::TextureUpload};
@@ -817,8 +882,9 @@ bool Image::TransferConverted(const StagingBufferRef& input,
 }
 ImageView::ImageView(TextureCacheRuntime&, const VideoCommon::ImageViewInfo& info,
                      VideoCommon::ImageId id, Image& image)
-    : ImageViewBase{info, image.info, id, image.gpu_addr}, sample_count{image.info.num_samples},
-      image_type{image.info.type}, host_format{image.HostFormat()}, resource{image.Handle()} {
+    : ImageViewBase{info, image.info, id, image.gpu_addr}, is_rescaled{image.IsRescaled()},
+      sample_count{image.info.num_samples}, image_type{image.info.type},
+      host_format{image.HostFormat()}, resource{image.Handle()} {
     if (!resource)
         return;
     resource->Description();
@@ -1169,9 +1235,11 @@ bool TextureCacheRuntime::CanBlitImages(const Image& dst, const Image& src,
     const auto target_base = dst.TryFindBase(dst_surface.Address());
     if (!source_base || !target_base)
         return reject("surface address is not a subresource base of the cached image");
-    const BlitSurface source{src.Handle(), src.HostFormat(), static_cast<u32>(source_base->level),
+    const BlitSurface source{src.OriginalHandle(), src.HostFormat(),
+                             static_cast<u32>(source_base->level),
                              static_cast<u32>(source_base->layer)};
-    const BlitSurface target{dst.Handle(), dst.HostFormat(), static_cast<u32>(target_base->level),
+    const BlitSurface target{dst.OriginalHandle(), dst.HostFormat(),
+                             static_cast<u32>(target_base->level),
                              static_cast<u32>(target_base->layer)};
     const auto fits = [](const BlitSurface& surface, s32 x, s32 y) {
         const auto desc = surface.resource->handle->GetDesc();

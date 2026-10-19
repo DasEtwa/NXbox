@@ -66,6 +66,8 @@ public:
     struct DisplayTexture {
         ResourcePtr resource;
         D3D12_SHADER_RESOURCE_VIEW_DESC view;
+        bool scaled{};
+        u32 guest_width{}, guest_height{};
     };
     DisplayTexture FramebufferTexture(const Tegra::FramebufferConfig& config);
     ~RasterizerD3D12() override;
@@ -144,7 +146,8 @@ private:
     static DynamicState ComputeDynamicState(const Tegra::Engines::Maxwell3D::Regs& regs,
                                             const Pso::GraphicsPsoState& attachment_state,
                                             const Pso::FramebufferFormats& formats, u32 width,
-                                            u32 height, const IGraphicsPipeline& pipeline);
+                                            u32 height, const IGraphicsPipeline& pipeline,
+                                            bool rescaled);
     StateInputCache<GraphicsStateInputs> attachment_inputs;
     Pso::GraphicsPsoState cached_attachment_state{};
     StateInputCache<DynamicStateInputs> dynamic_inputs;

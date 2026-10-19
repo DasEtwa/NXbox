@@ -135,12 +135,22 @@ void EmitWriteLocal(EmitContext& ctx, std::string_view word_offset, std::string_
     ctx.Add("lmem[{}] = {};", word_offset, value);
 }
 void EmitIsTextureScaled(EmitContext& ctx, IR::Inst& inst, const IR::Value& index) {
-    ctx.AddU1("{} = (nx_texture_scaling_mask & (1u << {})) != 0u;", inst,
-              ctx.var_alloc.Consume(index));
+    // Graphics stages have independent descriptor indices but share root constants.
+    const std::string mask = ctx.stage == Stage::Compute ? "nx_texture_scaling_mask"
+                             : ctx.stage == Stage::VertexB || ctx.stage == Stage::VertexA
+                                 ? "nx_reserved0"
+                                 : fmt::format("nx_reserved1[{}]", static_cast<u32>(ctx.stage) - 1);
+    ctx.AddU1("{} = ({} & (1u << {})) != 0u;", inst, mask, ctx.var_alloc.Consume(index));
 }
 void EmitIsImageScaled(EmitContext& ctx, IR::Inst& inst, const IR::Value& index) {
-    ctx.AddU1("{} = (nx_image_scaling_mask & (1u << {})) != 0u;", inst,
-              ctx.var_alloc.Consume(index));
+    // Storage images use their global UAV register as the mask bit, across stages.
+    const auto descriptor = index.U32();
+    const u32 binding = ctx.images.at(descriptor).binding;
+    if (binding >= 32) {
+        ctx.AddU1("{} = false;", inst);
+        return;
+    }
+    ctx.AddU1("{} = (nx_image_scaling_mask & (1u << {})) != 0u;", inst, binding);
 }
 void EmitSetAttributeIndexed(EmitContext& ctx, std::string_view offset, std::string_view value,
                              std::string_view vertex) {

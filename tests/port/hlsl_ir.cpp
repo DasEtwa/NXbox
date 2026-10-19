@@ -996,6 +996,28 @@ void UndeclaredDescriptors() {
     expect(f, {"texture sampler descriptor 0", "stage VertexB", "declares 0"});
   }
 }
+void ResolutionMasks() {
+    for (const auto stage : {Stage::VertexB, Stage::Geometry, Stage::Fragment, Stage::Compute}) {
+        Fixture f{stage};
+        f.program.output_vertices = 3;
+        f.program.invocations = 1;
+        f.program.info.texture_descriptors.push_back({.type = TextureType::Color2D, .count = 1});
+        f.program.info.image_descriptors.push_back({.type = TextureType::Color2D,
+                                                    .format = ImageFormat::R32_UINT,
+                                                    .is_integer = true,
+                                                    .count = 1});
+        f.Add(IR::Opcode::IsTextureScaled, {IR::Value{0u}});
+        f.Add(IR::Opcode::IsImageScaled, {IR::Value{0u}});
+        Bindings bindings;
+        bindings.storage_buffer = 3;
+        const auto source = f.Emit(bindings);
+        Contains(source, stage == Stage::Compute    ? "nx_texture_scaling_mask &"
+                         : stage == Stage::VertexB  ? "nx_reserved0 &"
+                         : stage == Stage::Geometry ? "nx_reserved1[2] &"
+                                                    : "nx_reserved1[3] &");
+        Contains(source, "nx_image_scaling_mask & (1u << 3)");
+    }
+}
 int main(int argc, char **argv) {
   try {
     // `hlsl-ir-tests point-sprite-descriptors` runs only the point sprite and descriptor checks.
@@ -1004,7 +1026,8 @@ int main(int argc, char **argv) {
       UndeclaredDescriptors();
       return 0;
     }
-      GroupedDeclarations();
+    ResolutionMasks();
+    GroupedDeclarations();
     SingleUseInlining();
       Vertex();
       DirectClipDistances();
