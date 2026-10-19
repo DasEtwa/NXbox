@@ -71,7 +71,8 @@ public:
     ~PipelineCache() override;
     void BindToChannel(s32 id) override;
     IGraphicsPipeline* CurrentGraphicsPipeline(const Pso::FramebufferFormats& formats,
-                                               bool is_indexed) override;
+                                               bool is_indexed, u64 frame) override;
+    void RecordGraphicsDraw(u64 frame) override;
     ComputePipeline* CurrentComputePipeline();
     void LoadDiskResources(u64 title_id, std::stop_token stop_loading,
                            const VideoCore::DiskResourceLoadCallback& callback,
@@ -132,6 +133,7 @@ private:
     std::unique_ptr<AsyncCache> async;
     /// Requests that already spent their one bounded wait for an async PSO.
     std::unordered_set<u64> pso_waited;
+    RenderTargetDrawHistory rt_draw_history;
     std::unordered_set<GraphicsPipelineKey, GraphicsPipelineKeyHash> prewarmed_graphics;
     std::unordered_set<u64> prewarmed_compute;
     std::recursive_mutex pipeline_mutex;

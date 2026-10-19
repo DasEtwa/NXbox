@@ -27,6 +27,11 @@ SPDX-License-Identifier: GPL-3.0-or-later
   <a href="https://github.com/NspxMiguel/NXbox/actions/workflows/port-tests.yml"><img alt="Port tests" src="https://img.shields.io/github/actions/workflow/status/NspxMiguel/NXbox/port-tests.yml?branch=main&label=port%20tests"></a>
 </p>
 
+> [!IMPORTANT]
+> **NXbox is paused from October 25, 2026.** The project is being archived indefinitely for financial reasons: building an emulator this way depends on a paid AI subscription that I can no longer afford, and it ends on October 25. Thank you to everyone who tested on their own console and sent logs and reports. If you want to carry the project on, reach me on [Discord](https://discord.gg/2SxEDzVyJM) or at miguel@nspx.dev and I'll add you as an editor. When I've saved a little money, I'll be back. Voluntary donations help me come back sooner: Bitcoin `bc1qm64el0gp0kvk7zqhl89x0vkngu2skqxd26vpjg` ([QR code](#support-the-project)).
+>
+> *The project is paused, its legacy preserved. Not a dream abandoned, just a future postponed.*
+
 <p align="center">
   <a href="#where-it-stands">Status</a> ·
   <a href="#what-to-expect">What to expect</a> ·
@@ -39,9 +44,9 @@ SPDX-License-Identifier: GPL-3.0-or-later
   <a href="docs/nxbox-port.md">Port notes</a>
 </p>
 
-<!-- Donation address: change it here and in "Support the project" only. -->
+<!-- Donation address: change it here, in the pause notice above and in "Support the project". -->
 <p align="center">
-  <a href="#support-the-project"><img alt="Support with Bitcoin" src="https://img.shields.io/badge/Bitcoin-support%20the%20project-F7931A?logo=bitcoin&logoColor=white"></a><br>
+  <a href="#support-the-project"><img alt="Support with Bitcoin" src="https://img.shields.io/badge/Bitcoin-donate%20to%20bring%20NXbox%20back-F7931A?logo=bitcoin&logoColor=white&style=for-the-badge"></a><br>
   <sub><code>bc1qm64el0gp0kvk7zqhl89x0vkngu2skqxd26vpjg</code></sub>
 </p>
 

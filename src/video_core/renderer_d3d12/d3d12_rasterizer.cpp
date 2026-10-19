@@ -676,7 +676,8 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         const FrameProfile::Scope profile_query{context.Profile(), FramePhase::QueryState};
         query_runtime.PrepareDraw();
     }
-    IGraphicsPipeline* const pipeline = pipeline_cache->CurrentGraphicsPipeline(formats, is_indexed);
+    IGraphicsPipeline* const pipeline =
+        pipeline_cache->CurrentGraphicsPipeline(formats, is_indexed, texture_cache.CaptureFrame());
     if (!pipeline) {
         VideoCommon::SubmissionTrace::Log("host_draw_drop reason=pending_or_failed_pso");
         return;
@@ -2316,6 +2317,8 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         VideoCommon::SubmissionTrace::Log("host_draw_submit draw={} pass={}", trace_draw,
                                           texture_cache.CapturePassSequence());
         draw(commands);
+        if (color_views[0])
+            pipeline_cache->RecordGraphicsDraw(texture_cache.CaptureFrame());
         trace_submitted = true;
     }
     query_runtime.EndDraw();
@@ -2898,6 +2901,8 @@ void RasterizerD3D12::DrawTexture() {
         query_runtime.BeginDraw(false);
         context.MarkWork("DrawTexture blit");
         commands->DrawInstanced(4, 1, 0, 0);
+        if (pipeline_cache)
+            pipeline_cache->RecordGraphicsDraw(texture_cache.CaptureFrame());
         query_runtime.EndDraw();
     };
     try {
