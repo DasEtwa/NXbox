@@ -54,6 +54,8 @@ std::optional<SrvRange> ReadSrvRange(const D3D12_SHADER_RESOURCE_VIEW_DESC& d) {
         return SrvRange{d.Texture2DArray.MostDetailedMip, d.Texture2DArray.MipLevels,
                         d.Texture2DArray.FirstArraySlice, d.Texture2DArray.ArraySize,
                         d.Texture2DArray.PlaneSlice};
+    case D3D12_SRV_DIMENSION_TEXTURE3D:
+        return SrvRange{d.Texture3D.MostDetailedMip, d.Texture3D.MipLevels, 0, 1, 0};
     case D3D12_SRV_DIMENSION_TEXTURECUBE:
         return SrvRange{d.TextureCube.MostDetailedMip, d.TextureCube.MipLevels, 0, 6, 0};
     case D3D12_SRV_DIMENSION_TEXTURECUBEARRAY:
@@ -71,17 +73,32 @@ std::optional<SrvRange> ReadSrvRange(const D3D12_SHADER_RESOURCE_VIEW_DESC& d) {
 // Xbox driver samples zeros (SM3DW lost its ambient light that way).
 std::optional<D3D12_SHADER_RESOURCE_VIEW_DESC> AdaptSrvDimension(
     const D3D12_SHADER_RESOURCE_VIEW_DESC& desc, D3D12_SRV_DIMENSION wanted,
-    D3D12_RESOURCE_DIMENSION resource) {
-    if (desc.ViewDimension == wanted)
-        return desc;
+    const D3D12_RESOURCE_DESC& resource) {
+    if (resource.SampleDesc.Count > 1) {
+        const bool array = wanted == D3D12_SRV_DIMENSION_TEXTURE2DMSARRAY;
+        if (resource.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
+            desc.ViewDimension == wanted && (array || wanted == D3D12_SRV_DIMENSION_TEXTURE2DMS))
+            return desc;
+        return std::nullopt;
+    }
     const auto range = ReadSrvRange(desc);
     if (!range)
         return std::nullopt;
     const auto [mip, levels, first, size, plane] = *range;
-    const bool is_1d = resource == D3D12_RESOURCE_DIMENSION_TEXTURE1D;
-    const bool is_2d = resource == D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    auto out = desc;
+    const bool is_1d = resource.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE1D;
+    const bool is_2d = resource.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    D3D12_SHADER_RESOURCE_VIEW_DESC out{};
+    out.Format = desc.Format;
+    out.Shader4ComponentMapping = desc.Shader4ComponentMapping;
     out.ViewDimension = wanted;
+    // A 2D TIC can expose one slice of a cached array. A shader cube declaration
+    // needs complete faces from the backing resource, not that single-slice range.
+    const UINT remaining_layers =
+        resource.DepthOrArraySize - std::min<UINT>(first, resource.DepthOrArraySize);
+    const UINT cube_layers = size < 6 ? remaining_layers : size;
+    const bool cube_compatible = is_2d && plane == 0 &&
+                                 first < resource.DepthOrArraySize && cube_layers >= 6 &&
+                                 cube_layers <= resource.DepthOrArraySize - first;
     switch (wanted) {
     case D3D12_SRV_DIMENSION_TEXTURE1D:
         if (!is_1d || first != 0)
@@ -104,14 +121,19 @@ std::optional<D3D12_SHADER_RESOURCE_VIEW_DESC> AdaptSrvDimension(
         out.Texture2DArray = {mip, levels, first, size, plane, 0.0f};
         return out;
     case D3D12_SRV_DIMENSION_TEXTURECUBE:
-        if (!is_2d || first != 0 || size < 6)
+        if (!cube_compatible || first != 0)
             return std::nullopt;
         out.TextureCube = {mip, levels, 0.0f};
         return out;
     case D3D12_SRV_DIMENSION_TEXTURECUBEARRAY:
-        if (!is_2d || size < 6)
+        if (!cube_compatible)
             return std::nullopt;
-        out.TextureCubeArray = {mip, levels, first, size / 6, 0.0f};
+        out.TextureCubeArray = {mip, levels, first, cube_layers / 6, 0.0f};
+        return out;
+    case D3D12_SRV_DIMENSION_TEXTURE3D:
+        if (resource.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE3D || first != 0 || plane != 0)
+            return std::nullopt;
+        out.Texture3D = {mip, levels, 0.0f};
         return out;
     default:
         return std::nullopt;
@@ -692,14 +714,20 @@ bool D3D12DescriptorAllocator::WriteImageSrv(const DescriptorTable& table, u32 s
     }
     auto desc = view.Description();
     if (desc.ViewDimension != fallback_dimension) {
-        if (const auto adapted = AdaptSrvDimension(desc, fallback_dimension,
-                                                   resource->handle->GetDesc().Dimension)) {
+        const auto backing_desc = resource->handle->GetDesc();
+        if (const auto adapted = AdaptSrvDimension(desc, fallback_dimension, backing_desc)) {
             desc = *adapted;
         } else if (logged_srv_mismatches.insert(desc.ViewDimension * 16 + fallback_dimension)
                        .second) {
-            Diagnostic(fmt::format("D3D12 SRV dimension {} cannot become shader dimension {}",
-                                   static_cast<int>(desc.ViewDimension),
-                                   static_cast<int>(fallback_dimension)));
+            // The unadapted view stays bound, as before: MK8D binds later cubes of a cube array to
+            // cube slots, and a null SRV in their place has not been checked on the console.
+            Diagnostic(fmt::format(
+                "D3D12 SRV dimension {} cannot become shader dimension {} "
+                "(resource={} {}x{} depth/layers={} samples={} view_type={})",
+                static_cast<int>(desc.ViewDimension), static_cast<int>(fallback_dimension),
+                static_cast<int>(backing_desc.Dimension), backing_desc.Width, backing_desc.Height,
+                backing_desc.DepthOrArraySize, backing_desc.SampleDesc.Count,
+                static_cast<int>(view.type)));
         }
     }
     // NXBOX_D3D12_ARRAY_TRACE=1: once per address, report array-sampling shaders whose view
@@ -719,8 +747,8 @@ bool D3D12DescriptorAllocator::WriteImageSrv(const DescriptorTable& table, u32 s
                 desc.ViewDimension == D3D12_SRV_DIMENSION_TEXTURE2DARRAY
                     ? desc.Texture2DArray.FirstArraySlice
                     : 0,
-                slices, resource_desc.DepthOrArraySize, resource_desc.Width,
-                resource_desc.Height, static_cast<int>(resource_desc.Format)));
+                slices, resource_desc.DepthOrArraySize, resource_desc.Width, resource_desc.Height,
+                static_cast<int>(resource_desc.Format)));
         }
     }
     WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, resource, 1, &desc, sizeof(desc), table,

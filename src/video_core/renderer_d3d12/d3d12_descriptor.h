@@ -82,7 +82,7 @@ class ImageView;
 /// Rewrites an SRV description to the shader's declared dimension when the resource allows it.
 std::optional<D3D12_SHADER_RESOURCE_VIEW_DESC> AdaptSrvDimension(
     const D3D12_SHADER_RESOURCE_VIEW_DESC& desc, D3D12_SRV_DIMENSION wanted,
-    D3D12_RESOURCE_DIMENSION resource);
+    const D3D12_RESOURCE_DESC& resource);
 class Sampler;
 class Framebuffer;
 
