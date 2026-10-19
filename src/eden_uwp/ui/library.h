@@ -28,6 +28,9 @@ struct GameEntry {
     std::vector<std::string> nacp_names;
 };
 
+// The mtime the library cache records for a file; the Shop matches records with the same value.
+std::int64_t ModifiedSeconds(const std::filesystem::path& file);
+
 // Worker-only operations. Candidate paths are restricted again immediately before deletion.
 struct LibraryDeleteFile {
     std::filesystem::path path;
