@@ -28,7 +28,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 </p>
 
 > [!IMPORTANT]
-> **NXbox is paused from October 25, 2026.** The project is being archived indefinitely for financial reasons: building an emulator this way depends on a paid AI subscription that I can no longer afford, and it ends on October 25. Thank you to everyone who tested on their own console and sent logs and reports. If you want to carry the project on, reach me on [Discord](https://discord.gg/2SxEDzVyJM) or at miguel@nspx.dev and I'll add you as an editor. When I've saved a little money, I'll be back. I'm not expecting donations: this was always a hobby, and sadly it had to be paused. I also can't promise great performance in games.
+> **NXbox is paused from October 25, 2026.** The project is being archived indefinitely for financial reasons: building an emulator this way depends on a paid AI subscription that I can no longer afford, and it ends on October 25. Thank you to everyone who tested on their own console and sent logs and reports. Until then I'll try to get the games you've asked for so far working and bug-free, so that work is valued, not thrown away. If you want to carry the project on, reach me on [Discord](https://discord.gg/2SxEDzVyJM) or at miguel@nspx.dev and I'll add you as an editor. When I've saved a little money, I'll be back. I'm not expecting donations: this was always a hobby, and sadly it had to be paused. I also can't promise great performance in games.
 >
 > *The project is paused, its legacy preserved. Not a dream abandoned, just a future postponed.*
 
