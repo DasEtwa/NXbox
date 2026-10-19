@@ -221,7 +221,7 @@ constexpr Result ResultNetworkCommunicationDisabled{ErrorModule::NIFM, 1111};
 
 // Keep the service setting independent of RefreshFromHost(), which overwrites host flags.
 static std::atomic<bool> ethernet_enabled{true};
-static std::atomic<u64> next_client_id{1};
+static std::atomic<u32> next_client_id{1};
 
 static bool HasLocalConnection() {
     if (Nextendo::IsEnabled()) {
@@ -983,11 +983,11 @@ void IGeneralService::IsEthernetCommunicationEnabled(HLERequestContext& ctx) {
 
 void IGeneralService::IsAnyInternetRequestAccepted(HLERequestContext& ctx) {
     const auto buffer = ctx.ReadBuffer();
-    if (buffer.size() != sizeof(client_id)) {
+    if (buffer.size() < sizeof(client_id)) {
         IPC::ResponseBuilder{ctx, 2}.Push(ResultInvalidInput);
         return;
     }
-    u64 requested_client{};
+    u32 requested_client{};
     std::memcpy(&requested_client, buffer.data(), sizeof(requested_client));
     const bool accepted =
         requested_client == client_id && accepted_requests->load() != 0 && HasLocalConnection();

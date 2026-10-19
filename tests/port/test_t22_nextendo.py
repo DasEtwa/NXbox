@@ -878,6 +878,21 @@ class NextendoTests(unittest.TestCase):
             self.assertNotIn("https://dauth", content)
             self.assertNotIn("https://accounts.nintendo", content)
 
+    def test_nifm_client_id_fits_the_four_byte_guest_buffer(self):
+        # nn::nifm::ClientId is a u32 passed in 4-byte pointer buffers. With an 8-byte id,
+        # GetClientId and IsAnyInternetRequestAccepted returned NIFM 112 and MK8D stayed offline.
+        header = (ROOT / "src/core/hle/service/nifm/nifm.h").read_text()
+        source = (ROOT / "src/core/hle/service/nifm/nifm.cpp").read_text()
+        self.assertIn("const u32 client_id;", header)
+        self.assertIn("ctx.GetWriteBufferSize() < sizeof(client_id)", source)
+        self.assertIn("buffer.size() < sizeof(client_id)", source)
+        self.assertIn("u32 requested_client{};", source)
+
+    def test_linked_nextendo_account_reports_an_online_license(self):
+        account = (ROOT / "src/core/hle/service/acc/acc.cpp").read_text()
+        self.assertIn("Nextendo::GetIdentity(user_id.RawString()).pid ? 1 : 0", account)
+        self.assertIn("rb.Push<u32>(license_kind);", account)
+
 
 if __name__ == "__main__":
     unittest.main()

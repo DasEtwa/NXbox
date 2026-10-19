@@ -27,7 +27,8 @@ public:
     ~IGeneralService() override;
 
 private:
-    const u64 client_id;
+    // nn::nifm::ClientId is 4 bytes; games pass 4-byte pointer buffers.
+    const u32 client_id;
     std::shared_ptr<std::atomic<u32>> accepted_requests;
 
     void IsWiredConnectionAvailable(HLERequestContext& ctx);

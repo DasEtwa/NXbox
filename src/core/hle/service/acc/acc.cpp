@@ -108,8 +108,8 @@ protected:
 
 class IAsyncNetworkServiceLicenseKindContext final : public IAsyncContext {
 public:
-    explicit IAsyncNetworkServiceLicenseKindContext(Core::System& system_)
-        : IAsyncContext{system_} {
+    explicit IAsyncNetworkServiceLicenseKindContext(Core::System& system_, u32 license_kind_)
+        : IAsyncContext{system_}, license_kind{license_kind_} {
         static const FunctionInfoTyped<IAsyncNetworkServiceLicenseKindContext> functions[] = {
             {100, &IAsyncNetworkServiceLicenseKindContext::GetNetworkServiceLicenseKind,
              "GetNetworkServiceLicenseKind"},
@@ -131,8 +131,10 @@ private:
     void GetNetworkServiceLicenseKind(HLERequestContext& ctx) {
         IPC::ResponseBuilder rb{ctx, 3};
         rb.Push(ResultSuccess);
-        rb.Push<u32>(0); // No Nintendo Switch Online subscription on an offline account.
+        rb.Push<u32>(license_kind);
     }
+
+    const u32 license_kind;
 };
 
 // Nextendo's network identity is bound to one local profile, separately from offline linking.
@@ -882,9 +884,12 @@ private:
             rb.Push(ResultUnknown);
             return;
         }
+        // 1 (subscribed) for a linked Nextendo account, which plays online without Nintendo
+        // Switch Online; 0 for an offline account.
+        const u32 license_kind = Nextendo::GetIdentity(user_id.RawString()).pid ? 1 : 0;
         IPC::ResponseBuilder rb{ctx, 2, 0, 1};
         rb.Push(ResultSuccess);
-        rb.PushIpcInterface<IAsyncNetworkServiceLicenseKindContext>(ctx, system);
+        rb.PushIpcInterface<IAsyncNetworkServiceLicenseKindContext>(ctx, system, license_kind);
     }
 
     void CheckAvailability(HLERequestContext& ctx) {
