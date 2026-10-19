@@ -8,6 +8,7 @@
 #include "shader_recompiler/backend/hlsl/emit_hlsl.h"
 #include "shader_recompiler/backend/hlsl/emit_hlsl_instructions.h"
 #include "shader_recompiler/backend/hlsl/hlsl_emit_context.h"
+#include "shader_recompiler/backend/hlsl/hlsl_source.h"
 namespace Shader::Backend::HLSL {
 namespace {
 template <class Func>
@@ -308,6 +309,6 @@ std::string EmitHLSL(const Profile& profile, const RuntimeInfo& runtime_info, IR
         ctx.FinishOutput();
     ctx.Add("{}", ctx.ReturnStatement());
     bindings = pending;
-    return ctx.header + ctx.code + "}\n";
+    return StripUncalledHelpers(ctx.header + ctx.code + "}\n");
 }
 } // namespace Shader::Backend::HLSL
