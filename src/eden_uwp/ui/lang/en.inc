@@ -208,9 +208,6 @@
      L"to exit."},
     {Text::LaunchFailed,
      L"Could not start. Open NXbox to check the game and keys. Press B to exit."},
-    {Text::LaunchNeedsUpdate,
-     L"This file lacks the game's executable and needs the game's update. Put the update in the "
-     L"games folder, or use the full XCI or NSP. Press B to go back."},
     {Text::LaunchAppType,
      L"NXbox is installed as an App, limited to 1 GB of memory. In Dev Home select NXbox, View "
      L"details, and set App type to Game. Press B to exit."},
@@ -396,7 +393,7 @@
 {Text::DeleteCancel, L"Cancel"},
 {Text::DeleteDone, L"Game files deleted."},
 {Text::DeleteFailed, L"Could not finish deleting. Check the game folders for remaining files."},
-{Text::IncompleteFile, L"Incomplete file: delete and download again"},
+{Text::IncompleteFile, L"File incomplete or corrupted: download it again"},
 {Text::DeleteDownloadBusy, L"Finish or cancel the shop downloads before deleting game files."},
     {Text::FtpServer, L"FTP server"},
     {Text::FtpHint,
@@ -413,3 +410,8 @@
     {Text::MoveConflict, L"A destination file already exists. Nothing was deleted."},
     {Text::MoveFailed, L"Move incomplete. Internal files are kept until all copies are verified."},
     {Text::MoveBusy, L"Finish downloads, turn off FTP and wait for the library scan before moving."},
+
+    {Text::UpdateWithoutBase, L"Update without the base game"},
+    {Text::DlcWithoutBase, L"DLC without the base game"},
+    {Text::LaunchMissingKeys,
+     L"Game keys are missing or incorrect. Import your prod.keys and title.keys in Settings."},

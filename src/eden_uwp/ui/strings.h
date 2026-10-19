@@ -80,6 +80,9 @@ enum class Text {
     DeleteDone,
     DeleteFailed,
     IncompleteFile,
+    UpdateWithoutBase,
+    DlcWithoutBase,
+    LaunchMissingKeys,
 
     ResolutionTitle,
     Resolution1X,
@@ -383,7 +386,6 @@ enum class Text {
     LaunchStarting,
     LaunchMissing,
     LaunchFailed,
-    LaunchNeedsUpdate,
     LaunchAppType,
     FirmwareInstalled,
     FirmwareMissing,

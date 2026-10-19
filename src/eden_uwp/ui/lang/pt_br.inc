@@ -215,9 +215,6 @@
     {Text::LaunchFailed,
      L"Não foi possível iniciar. Abra o NXbox para conferir o jogo e as chaves. Pressione B "
      L"para sair."},
-    {Text::LaunchNeedsUpdate,
-     L"Este arquivo não tem o executável do jogo e precisa da atualização. Coloque a atualização "
-     L"na pasta dos jogos ou use o XCI ou NSP completo. Pressione B para voltar."},
     {Text::LaunchAppType,
      L"O NXbox está instalado como App, limitado a 1 GB de memória. No Dev Home, selecione o "
      L"NXbox, Ver detalhes, e mude o tipo para Jogo (Game). Aperte B para sair."},
@@ -414,7 +411,7 @@
 {Text::DeleteCancel, L"Cancelar"},
 {Text::DeleteDone, L"Arquivos do jogo excluídos."},
 {Text::DeleteFailed, L"Não foi possível concluir a exclusão. Confira os arquivos restantes nas pastas dos jogos."},
-{Text::IncompleteFile, L"Arquivo incompleto: exclua e baixe novamente"},
+{Text::IncompleteFile, L"Arquivo incompleto ou corrompido: baixe de novo"},
 {Text::DeleteDownloadBusy, L"Conclua ou cancele os downloads da loja antes de excluir arquivos do jogo."},
     {Text::FtpServer, L"Servidor FTP"},
     {Text::FtpHint,
@@ -432,3 +429,8 @@
     {Text::MoveConflict, L"Já existe um arquivo no destino. Nada foi apagado."},
     {Text::MoveFailed, L"Movimentação incompleta. Os originais só são apagados após verificar todas as cópias."},
     {Text::MoveBusy, L"Conclua downloads, desligue o FTP e aguarde a leitura da biblioteca antes de mover."},
+
+    {Text::UpdateWithoutBase, L"Atualização sem o jogo base"},
+    {Text::DlcWithoutBase, L"DLC sem o jogo base"},
+    {Text::LaunchMissingKeys, L"As chaves do jogo estão ausentes ou incorretas. Importe prod.keys "
+                              L"e title.keys em Configurações."},

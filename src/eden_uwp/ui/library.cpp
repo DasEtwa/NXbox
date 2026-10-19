@@ -149,6 +149,8 @@ struct PackageInfo {
     std::wstring name;
     std::vector<std::string> nacp_names;
     std::vector<std::uint8_t> icon; // JPEG bytes, empty when the package has none
+    LibraryContent::Classification content;
+    LibraryContent::Problem problem = LibraryContent::Problem::None;
     bool keys_problem = false;      // set when the package could not be read for want of keys
 };
 
@@ -275,7 +277,8 @@ std::shared_ptr<FileSys::NCA> FindControlNca(const FileSys::NSP& nsp, std::uint6
 
 // Reads a package's title ID, name and icon. Returns why the package cannot be used, or an empty
 // string on success.
-std::string ReadPackage(FileSys::RealVfsFilesystem& vfs, const fs::path& file, PackageInfo& info) {
+std::string ReadPackage(FileSys::RealVfsFilesystem& vfs, const fs::path& file, PackageInfo& info,
+                        bool read_details) {
     const FileSys::VirtualFile source =
         vfs.OpenFile(Common::FS::PathToUTF8String(file), FileSys::OpenMode::Read);
     if (!source) {
@@ -284,23 +287,65 @@ std::string ReadPackage(FileSys::RealVfsFilesystem& vfs, const fs::path& file, P
 
     std::shared_ptr<FileSys::NSP> nsp;
     if (Lowercase(file.extension().wstring()) == L".xci") {
-        const FileSys::XCI xci(source);
+        const FileSys::XCI xci(source, 0, 0, /*program_headers_only=*/true);
         if (xci.GetStatus() != Loader::ResultStatus::Success) {
+            info.problem = LibraryContent::LoadProblem(xci.GetStatus());
             return "XCI: " + Loader::GetResultStatusString(xci.GetStatus());
         }
         nsp = xci.GetSecurePartitionNSP();
     } else {
-        nsp = std::make_shared<FileSys::NSP>(source);
+        nsp = std::make_shared<FileSys::NSP>(source, 0, 0, /*program_headers_only=*/true);
     }
     if (!nsp) {
         return "no secure partition";
     }
     if (nsp->GetStatus() != Loader::ResultStatus::Success) {
+        info.problem = LibraryContent::LoadProblem(nsp->GetStatus());
         return "NSP: " + Loader::GetResultStatusString(nsp->GetStatus());
     }
     if (nsp->IsExtractedType()) {
         return "extracted NSP, it has no control data";
     }
+
+    std::vector<LibraryContent::Meta> meta;
+    for (const auto& [id, type] : nsp->GetContentMeta()) {
+        const auto kind = type == FileSys::TitleType::Application
+                              ? LibraryContent::Kind::Application
+                          : type == FileSys::TitleType::Update ? LibraryContent::Kind::Patch
+                          : type == FileSys::TitleType::AOC    ? LibraryContent::Kind::AddOnContent
+                                                               : LibraryContent::Kind::Unknown;
+        meta.push_back({id, kind});
+    }
+    info.content = LibraryContent::Classify(meta);
+    info.problem = LibraryContent::Standalone(info.content.kind);
+    info.title_id = meta.empty() ? 0 : meta.front().title_id;
+    if (nsp->HasCorruptProgram())
+        info.problem = LibraryContent::Problem::Corrupted;
+    else if (nsp->HasMissingProgramKeys())
+        info.problem = LibraryContent::Problem::MissingKeys;
+    if (info.problem != LibraryContent::Problem::None)
+        return {};
+    if (info.content.kind == LibraryContent::Kind::Application) {
+        bool has_program = false;
+        for (const auto& title : nsp->GetNCAs()) {
+            has_program |= title.second.contains(
+                {FileSys::TitleType::Application, FileSys::ContentRecordType::Program});
+        }
+        if (!has_program) {
+            info.problem = LibraryContent::Problem::Corrupted;
+            return {};
+        }
+    }
+    if (info.content.kind == LibraryContent::Kind::Unknown) {
+        const auto status = nsp->GetProgramStatus();
+        info.keys_problem = IsKeyError(status) || !Core::Crypto::KeyManager::Instance().HasKey(
+                                                      Core::Crypto::S256KeyType::Header);
+        info.problem = info.keys_problem ? LibraryContent::Problem::MissingKeys
+                                         : LibraryContent::Problem::Corrupted;
+        return {};
+    }
+    if (!read_details)
+        return {};
 
     info.title_id = nsp->GetProgramTitleID();
     if (info.title_id == 0) {
@@ -386,32 +431,48 @@ std::optional<GameEntry> LoadGame(FileSys::RealVfsFilesystem& vfs, const fs::pat
     if (Lowercase(file.extension().wstring()) == L".nsp" &&
         TruncatedPackage(vfs, file).value_or(false)) {
         game.incomplete = true;
+        game.problem = LibraryContent::Problem::Corrupted;
         game.name = file.stem().wstring() + L" — " + Tr(Text::IncompleteFile);
         Diagnostic("UI library incomplete " + Utf8(file.wstring()));
         return game;
     }
 
     const auto hit = cached.find(file.wstring());
-    if (hit != cached.end() && game.size != 0 && hit->second.size == game.size &&
-        hit->second.mtime == game.mtime && hit->second.icon_language == IconLanguage()) {
-        game.title_id = hit->second.title_id;
-        game.name = hit->second.name;
-        game.nacp_names = hit->second.nacp_names;
-        const fs::path icon = library_dir / (game.title_id + ".control.jpg");
-        std::error_code icon_error;
-        if (fs::file_size(icon, icon_error) > 0 && !icon_error) {
-            game.icon = icon;
-            ++stats.cached;
-            return game;
-        }
+    bool cache_valid = hit != cached.end() && game.size != 0 && hit->second.size == game.size &&
+                       hit->second.mtime == game.mtime &&
+                       hit->second.icon_language == IconLanguage();
+    std::error_code icon_error;
+    if (cache_valid) {
+        const auto icon = library_dir / (hit->second.title_id + ".control.jpg");
+        cache_valid = fs::file_size(icon, icon_error) > 0 && !icon_error;
     }
-
+    // Validate content before accepting old metadata: an update may already have a game cache.
     PackageInfo info;
     std::string reason;
     try {
-        reason = ReadPackage(vfs, file, info);
+        reason = ReadPackage(vfs, file, info, !cache_valid);
     } catch (const std::exception& failure) {
         reason = failure.what();
+    }
+    game.content = info.content;
+    game.problem = info.problem;
+    if (game.problem != LibraryContent::Problem::None) {
+        game.incomplete = true;
+        stats.key_problems += game.problem == LibraryContent::Problem::MissingKeys ? 1 : 0;
+        if (info.title_id)
+            game.title_id = fmt::format("{:016X}", info.title_id);
+        game.name = file.stem().wstring() + L" — " + Tr(LibraryContent::Label(game.problem));
+        Diagnostic("UI library unplayable " + Utf8(file.filename().wstring()) +
+                   " reason=" + std::to_string(static_cast<int>(game.problem)));
+        return game;
+    }
+    if (reason.empty() && cache_valid) {
+        game.title_id = hit->second.title_id;
+        game.name = hit->second.name;
+        game.nacp_names = hit->second.nacp_names;
+        game.icon = library_dir / (game.title_id + ".control.jpg");
+        ++stats.cached;
+        return game;
     }
     if (!reason.empty()) {
         Diagnostic("UI library skip " + Utf8(file.filename().wstring()) + ": " + reason);
@@ -622,6 +683,20 @@ std::string ConvertNsz(FileSys::RealVfsFilesystem& vfs, const fs::path& nsz_path
     return {};
 }
 } // namespace
+
+LibraryContent::Problem LibraryFileProblem(const fs::path& file) {
+    try {
+        FileSys::RealVfsFilesystem vfs;
+        if (Lowercase(file.extension().wstring()) == L".nsp" &&
+            TruncatedPackage(vfs, file).value_or(false))
+            return LibraryContent::Problem::Corrupted;
+        PackageInfo info;
+        ReadPackage(vfs, file, info, false);
+        return info.problem;
+    } catch (...) {
+        return LibraryContent::Problem::None;
+    }
+}
 
 std::int64_t ModifiedSeconds(const fs::path& file) {
     std::error_code error;
@@ -1237,14 +1312,29 @@ std::vector<GameEntry> LibraryScan::Scan() {
         done_.fetch_add(1);
     }
 
-    std::sort(games.begin(), games.end(), [](const GameEntry& left, const GameEntry& right) {
-        // A truncated file sorted first by name took the first tile and the default focus.
-        if (left.incomplete != right.incomplete)
-            return right.incomplete;
-        const int order = _wcsicmp(left.name.c_str(), right.name.c_str());
-        return order != 0 ? order < 0 : left.path < right.path;
+    // External content directories already associate these files with the base at boot.
+    // Hide an accessory tile only when every base named by its metadata is present and playable.
+    std::vector<std::uint64_t> bases;
+    for (const auto& game : games) {
+        if (!game.incomplete) {
+            if (const auto id = LibraryFiles::ParseTitle(game.title_id))
+                bases.push_back(*id);
+        }
+    }
+    std::erase_if(games, [&](const GameEntry& game) {
+        return (game.problem == LibraryContent::Problem::UpdateOnly ||
+                game.problem == LibraryContent::Problem::DlcOnly) &&
+               LibraryContent::Attached(game.content, bases);
     });
-    keys_missing_.store(games.empty() && stats.key_problems > 0);
+
+    std::sort(games.begin(), games.end(), [](const GameEntry& left, const GameEntry& right) {
+        return LibraryContent::Less(left, right, [](const auto& a, const auto& b) {
+            return _wcsicmp(a.c_str(), b.c_str());
+        });
+    });
+    keys_missing_.store(stats.key_problems > 0 &&
+                        std::none_of(games.begin(), games.end(),
+                                     [](const auto& game) { return !game.incomplete; }));
     Diagnostic(fmt::format(
         "UI library scan games={} cached={} parsed={} skipped={} keys={} ms={}", games.size(),
         stats.cached, stats.parsed, stats.skipped, stats.key_problems,

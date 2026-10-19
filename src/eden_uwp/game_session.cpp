@@ -1013,9 +1013,22 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
     const auto result = system.Load(window, path, parameters);
     memory_stage("after_load");
     if (result != Core::SystemResultStatus::Success) {
-        launch_status.missing_exefs.store(
-            result == Core::SystemResultStatus(u32(Core::SystemResultStatus::ErrorLoader) +
-                                               u32(Loader::ResultStatus::ErrorNoExeFS)));
+        auto problem = LibraryContent::Problem::None;
+        const auto status = static_cast<u32>(result);
+        const auto loader_base = static_cast<u32>(Core::SystemResultStatus::ErrorLoader);
+        if (status >= loader_base)
+            problem = LibraryContent::LoadProblem(
+                static_cast<Loader::ResultStatus>(status - loader_base));
+        if (result == Core::SystemResultStatus::ErrorSystemFiles ||
+            result == Core::SystemResultStatus::ErrorSharedFont)
+            problem = LibraryContent::Problem::MissingFirmware;
+        // Refine ambiguous no-ExeFS/no-RomFS results using actual CNMT content, never the filename.
+        if (!boot_firmware_applet && problem != LibraryContent::Problem::MissingKeys) {
+            const auto content_problem = Ui::LibraryFileProblem(std::filesystem::path(path));
+            if (content_problem != LibraryContent::Problem::None)
+                problem = content_problem;
+        }
+        launch_status.failure.store(LibraryContent::Label(problem));
         launch_status.phase.store(Ui::LaunchPhase::Failed);
         if (boot_mii_edit)
             Diagnostic("MII_EDIT_BOOT failed: load status=" +
@@ -1547,6 +1560,10 @@ bool FindLibraryGame(const winrt::Windows::UI::Core::CoreWindow& window,
         if (_stricmp(game.title_id.c_str(), title_id.c_str()) != 0) {
             continue;
         }
+        if (game.incomplete) {
+            status.failure.store(LibraryContent::Label(game.problem));
+            return false;
+        }
         choice.path = winrt::to_string(game.path.wstring());
         choice.title_id = game.title_id;
         choice.sync_name =
@@ -1743,7 +1760,8 @@ static void RunGameViewSession(const winrt::Windows::UI::Core::CoreWindow& windo
                              closed)) {
             if (!closed.load()) {
                 Diagnostic("PROTOCOL_GAME_NOT_FOUND " + protocol_title);
-                show_failure(Ui::Text::LaunchMissing);
+                const auto failure = launch_status.failure.load();
+                show_failure(failure == Ui::Text::LaunchFailed ? Ui::Text::LaunchMissing : failure);
             }
             return;
         }
@@ -1998,10 +2016,10 @@ static void RunGameViewSession(const winrt::Windows::UI::Core::CoreWindow& windo
     // A failed launch says why. From the library it then goes back to the library: it used to
     // close the app with no message, which players reported as a crash.
     const bool failed = launch_status.phase.load() == Ui::LaunchPhase::Failed;
-    return_home = session_ui.return_home.load() && !closed.load() && !(failed && protocol_launch);
+    return_home = session_ui.return_home.load() && !closed.load() && !failed;
     if (failed && !closed.load()) {
-        show_failure(launch_status.missing_exefs.load() ? Ui::Text::LaunchNeedsUpdate
-                                                        : Ui::Text::LaunchFailed);
+        show_failure(launch_status.failure.load());
+        return_home = chosen_in_library && !closed.load();
     }
 }
 

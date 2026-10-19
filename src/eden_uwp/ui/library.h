@@ -9,6 +9,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include "frontend_common/library_content.h"
 #include "frontend_common/library_transfer.h"
 #include "frontend_common/nsz_failure.h"
 
@@ -20,6 +21,9 @@ struct GameEntry {
     std::wstring name;          // from the package's control.nacp
     std::filesystem::path path; // absolute path of the .nsp or .xci
     bool incomplete = false;
+    LibraryContent::Problem problem = LibraryContent::Problem::None;
+    LibraryContent::Classification content;
+
     std::uint64_t size = 0;     // bytes
     std::int64_t mtime = 0;     // last write time, in seconds
     std::filesystem::path icon; // cached JPEG in LocalState\library, empty when there is none
@@ -27,6 +31,9 @@ struct GameEntry {
     // names the cloud folder from the first non-empty one, whatever the UI language is.
     std::vector<std::string> nacp_names;
 };
+
+// Header/content inspection for a failed direct launch; no icon or NACP extraction.
+LibraryContent::Problem LibraryFileProblem(const std::filesystem::path& file);
 
 // The mtime the library cache records for a file; the Shop matches records with the same value.
 std::int64_t ModifiedSeconds(const std::filesystem::path& file);
