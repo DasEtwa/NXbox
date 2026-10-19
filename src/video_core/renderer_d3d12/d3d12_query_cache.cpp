@@ -581,10 +581,21 @@ void QueryCacheRuntime::EndDraw() {
     context.Retain(impl->results);
     if (!impl->synchronous)
         context.Transition(impl->results, D3D12_RESOURCE_STATE_COPY_DEST);
-    // EndQuery/ResolveQueryData do not change graphics bindings, but removing this
-    // invalidation regressed SM3DW terrain (f1adbb814e). Keep the workaround until
-    // the stale recorded state is identified; this is not a D3D12 query requirement.
-    context.InvalidateRecordedState();
+    // Removing this workaround regressed SM3DW terrain (f1adbb814e); no stale
+    // binding has been identified. Keep full invalidation by default. The opt-in
+    // probes isolate root-argument re-emission without changing query commands,
+    // predication or the results-buffer transition. FULL_INVALIDATE overrides both, and
+    // REBIND_ROOT_ARGUMENTS implies KEEP_RECORDED_STATE (alone it would test nothing).
+    static const bool rebind_root_arguments =
+        BisectEnabled("NXBOX_D3D12_QUERY_REBIND_ROOT_ARGUMENTS");
+    static const bool keep_recorded_state =
+        rebind_root_arguments || BisectEnabled("NXBOX_D3D12_QUERY_KEEP_RECORDED_STATE");
+    static const bool full_invalidate = BisectEnabled("NXBOX_D3D12_QUERY_FULL_INVALIDATE");
+    if (!keep_recorded_state || full_invalidate) {
+        context.InvalidateRecordedState();
+    } else if (rebind_root_arguments) {
+        context.DrawState().ClearRootArguments();
+    }
     auto* commands = context.Commands();
     const auto end = [&](ID3D12QueryHeap* heap, D3D12_QUERY_TYPE type, u64 offset) {
         commands->EndQuery(heap, type, slot);
