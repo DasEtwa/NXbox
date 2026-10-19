@@ -538,15 +538,15 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     auto* const cached_framebuffer = texture_cache.GetFramebuffer();
     if (!cached_framebuffer)
         return;
-    Framebuffer framebuffer_snapshot = *cached_framebuffer;
-    Framebuffer* const framebuffer = &framebuffer_snapshot;
+    const auto framebuffer_snapshot = cached_framebuffer->Snapshot();
+    auto* const framebuffer = framebuffer_snapshot.get();
     Pso::FramebufferFormats formats{};
     u32 attachment_samples = 0;
     const auto accept_attachment = [&](const ImageView& view, bool depth) {
         const auto& resource = view.BorrowImageHandle();
         if (!resource)
             return false;
-        const auto desc = resource->handle->GetDesc();
+        const auto& desc = view.ResourceDescription();
         const auto required = depth ? D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL
                                     : D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
         if (!(desc.Flags & required)) {
@@ -577,7 +577,7 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
             // Only overlapping RTV subresources conflict. Distinct mips/layers
             // of one resource remain legal independent color attachments.
             bool duplicate = false;
-            const auto resource_desc = view->BorrowImageHandle()->handle->GetDesc();
+            const auto& resource_desc = view->ResourceDescription();
             for (u32 previous = 0; previous < slot; ++previous) {
                 const auto* prior = color_views[previous];
                 if (!prior || prior->BorrowImageHandle() != view->BorrowImageHandle())
@@ -645,7 +645,7 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     draw_phase.emplace(context.Profile(), FramePhase::AttachmentSetup);
     ++feedback_draw;
     const auto extent = [](const ImageView& view) {
-        const auto desc = view.BorrowImageHandle()->handle->GetDesc();
+        const auto& desc = view.ResourceDescription();
         const u32 mip = desc.SampleDesc.Count > 1 ? 0 : static_cast<u32>(view.range.base.level);
         return AttachmentExtent{static_cast<u32>(std::max<u64>(1, desc.Width >> mip)),
                                 std::max(1u, desc.Height >> mip),
@@ -670,12 +670,11 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     if (!render_area.width || !render_area.height || !render_area.layers)
         return;
     D3D12_RESOURCE_DIMENSION attachment_dimension =
-        has_depth ? depth_view->BorrowImageHandle()->handle->GetDesc().Dimension
-                  : D3D12_RESOURCE_DIMENSION_UNKNOWN;
+        has_depth ? depth_view->ResourceDescription().Dimension : D3D12_RESOURCE_DIMENSION_UNKNOWN;
     for (const auto* color : color_views) {
         if (!color)
             continue;
-        const auto dimension = color->BorrowImageHandle()->handle->GetDesc().Dimension;
+        const auto dimension = color->ResourceDescription().Dimension;
         if (attachment_dimension != D3D12_RESOURCE_DIMENSION_UNKNOWN &&
             dimension != attachment_dimension) {
             SkipDraw("mismatched attachment resource types");
@@ -691,7 +690,8 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         BlitSurface temporary;
         VideoCommon::ImageCopy region;
     };
-    std::vector<ColorCopy> color_copies;
+    std::array<ColorCopy, VideoCommon::NUM_RT> color_copy_storage{};
+    std::span<ColorCopy> color_copies{color_copy_storage.data(), size_t{0}};
     for (u32 slot = 0; slot < num_rts; ++slot) {
         const auto* color = color_views[slot];
         if (!color)
@@ -705,7 +705,7 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         if (no_extent_copy || (original_extent.width == matching_extent.width &&
                                original_extent.height == matching_extent.height))
             continue;
-        auto desc = color_resources[slot]->handle->GetDesc();
+        auto desc = color->ResourceDescription();
         if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D) {
             SkipDraw("mismatched non-2D attachment extents");
             return;
@@ -718,7 +718,7 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         desc.Flags &= ~D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
         ResourcePtr temporary;
         for (auto& entry : attachment_pool) {
-            const auto cached = entry.resource->handle->GetDesc();
+            const auto& cached = entry.resource->Description();
             if (entry.draw != feedback_draw && cached.Width == desc.Width &&
                 cached.Height == desc.Height && cached.DepthOrArraySize == desc.DepthOrArraySize &&
                 cached.Format == desc.Format && cached.Flags == desc.Flags &&
@@ -733,6 +733,7 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         if (!temporary) {
             temporary = context.CreateResource(desc, D3D12_HEAP_TYPE_DEFAULT,
                                                D3D12_RESOURCE_STATE_COPY_DEST);
+            temporary->Description();
             attachment_pool.push_back({temporary, nullptr, feedback_draw, feedback_frame});
         }
         color_resources[slot] = temporary;
@@ -750,7 +751,8 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         // sample-preserving shader copy for MSAA (never an averaging resolve).
         texture_runtime.BlitHelpers().CopyImage(target, original, std::span{&copy, 1});
         context.Profile().Count(FrameCount::ExtentCopies, render_area.layers);
-        color_copies.push_back({original, target, copy});
+        color_copy_storage[color_copies.size()] = {original, target, copy};
+        color_copies = {color_copy_storage.data(), color_copies.size() + 1};
     }
     if (!color_copies.empty() && attachment_extent_diagnostics++ < 16) {
         Diagnostic(fmt::format("D3D12_ATTACHMENT_EXTENTS area={}x{} layers={} matched={}x{} "

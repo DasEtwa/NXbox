@@ -11,13 +11,13 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
 #include "common/gpu_thread_profile.h"
 #include "video_core/renderer_d3d12/d3d12_flush_policy.h"
@@ -392,6 +392,14 @@ struct MemoryBudget {
 };
 struct Resource {
     ComPtr<ID3D12Resource> handle;
+    // Resource handles/descriptions are immutable. The recording thread warms this
+    // inline cache once, including resources obtained outside CreateResource (swapchain).
+    const D3D12_RESOURCE_DESC& Description() const {
+        if (!description)
+            description = handle->GetDesc();
+        return *description;
+    }
+    mutable std::optional<D3D12_RESOURCE_DESC> description;
     D3D12_RESOURCE_STATES state{};
     // Empty means uniform; otherwise state is superseded by per-subresource states.
     std::vector<D3D12_RESOURCE_STATES> sub_states;
@@ -400,6 +408,8 @@ struct Resource {
     std::shared_ptr<MemoryBudget> budget;
     u64 allocation_size{};
     u64 content_version{};
+    // Only the recording thread reads/writes this stamp; batches own the actual lease.
+    u64 retained_generation{};
     // Recording tick of the last copy into this resource; copy hazards span command lists.
     u64 last_copy_tick{};
     ~Resource();
@@ -605,7 +615,9 @@ private:
     std::deque<Batch> batches;
     void CompleteThrough(u64 tick);
     std::vector<ResourcePtr> retained;
-    std::unordered_set<Resource*> retained_ids;
+    // Stamp of the open recording for Retain; unique per recording, unlike recording_generation
+    // (which InvalidateRecordedState bumps many times inside one recording).
+    u64 retention_generation{};
     std::vector<std::function<void()>> completion;
 };
 class StagingRing {

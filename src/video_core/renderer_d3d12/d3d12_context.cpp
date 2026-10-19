@@ -1005,6 +1005,9 @@ ID3D12GraphicsCommandList* Context::Commands() {
         Check(commands->Reset(allocators[allocator_index].handle.Get(), nullptr),
               "command list Reset", device.Get());
         copy_writes.clear();
+        // Globally unique across Context instances; never reuse a resource stamp.
+        static std::atomic<u64> next_retention_generation{1};
+        retention_generation = next_retention_generation.fetch_add(1, std::memory_order_relaxed);
         recording = true;
         InvalidateRecordedState();
         if (gpu_time_heap && profile.Enabled()) {
@@ -1107,7 +1110,6 @@ u64 Context::Submit(FrameCount reason) {
         batches.push_back({tick, std::move(completion), std::move(retained)});
         completion.clear();
         retained.clear();
-        retained_ids.clear();
     }
     Check(queue->Signal(fence.Get(), tick), "Signal", device.Get());
     submitted = tick;
@@ -1129,25 +1131,16 @@ void Context::Finish(FrameCount reason) {
     Wait(Submit(reason), "finish");
 }
 void Context::Retain(const ResourcePtr& resource) {
-    // Opening a recording can retire resources; do it before consulting retained IDs.
+    // Opening a recording can retire resources and run callbacks. Consult the stamp after it.
     if (!recording)
         Commands();
-    if (!resource || (!retained.empty() && retained.back() == resource))
+    if (!resource || resource->retained_generation == retention_generation)
         return;
-    // The same attachment/texture can be referenced by thousands of draws.
-    // Hold each resource once per recording, not once per binding.
-    const auto [entry, inserted] = retained_ids.insert(resource.get());
-    if (inserted) {
-        try {
-            retained.push_back(resource);
-        } catch (...) {
-            retained_ids.erase(entry);
-            throw;
-        }
-    }
+    // Publish only after push_back succeeds, so allocation failure cannot lose the lease.
+    retained.push_back(resource);
+    resource->retained_generation = retention_generation;
 }
 void Context::Transition(const ResourcePtr& resource, D3D12_RESOURCE_STATES state) {
-    const FrameProfile::Scope profile_barrier{profile, FramePhase::Barriers};
     if (!resource)
         throw std::invalid_argument("D3D12 null resource");
     Retain(resource);
@@ -1161,6 +1154,7 @@ void Context::Transition(const ResourcePtr& resource, D3D12_RESOURCE_STATES stat
         ++resource->content_version;
     if (resource->heap != D3D12_HEAP_TYPE_DEFAULT || resource->state == state)
         return;
+    const FrameProfile::Scope profile_barrier{profile, FramePhase::Barriers};
     D3D12_RESOURCE_BARRIER barrier{};
     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
     barrier.Transition.pResource = resource->handle.Get();
@@ -1177,7 +1171,6 @@ void Context::Transition(const ResourcePtr& resource, D3D12_RESOURCE_STATES stat
 }
 void Context::TransitionSubresources(const ResourcePtr& resource, std::span<const u32> subresources,
                                      D3D12_RESOURCE_STATES state) {
-    const FrameProfile::Scope profile_barrier{profile, FramePhase::Barriers};
     if (!resource)
         throw std::invalid_argument("D3D12 null subresource resource");
     Retain(resource);
@@ -1201,6 +1194,10 @@ void Context::TransitionSubresources(const ResourcePtr& resource, std::span<cons
     if (state & (D3D12_RESOURCE_STATE_COPY_DEST | D3D12_RESOURCE_STATE_UNORDERED_ACCESS |
                  D3D12_RESOURCE_STATE_STREAM_OUT))
         ++resource->content_version;
+    if (std::all_of(subresources.begin(), subresources.end(),
+                    [&](u32 index) { return resource->sub_states[index] == state; }))
+        return;
+    const FrameProfile::Scope profile_barrier{profile, FramePhase::Barriers};
     auto& barriers = transition_barriers;
     barriers.clear();
     barriers.reserve(subresources.size());
@@ -1325,7 +1322,6 @@ void Context::GlobalUavBarrier() {
     profile.Count(FrameCount::Barriers);
 }
 void Context::TransitionBatch(std::span<const std::pair<ResourcePtr, D3D12_RESOURCE_STATES>> uses) {
-    const FrameProfile::Scope profile_barrier{profile, FramePhase::Barriers};
     // Start/retire recording before reading tracked states: completion callbacks
     // can themselves record transitions. Keep all intermediate transitions ordered.
     auto* list = Commands();
@@ -1334,6 +1330,26 @@ void Context::TransitionBatch(std::span<const std::pair<ResourcePtr, D3D12_RESOU
             throw std::invalid_argument("D3D12 null batch resource");
         Retain(use.first);
     }
+    const bool needs_barrier = std::any_of(uses.begin(), uses.end(), [](const auto& use) {
+        const auto& [resource, state] = use;
+        if (!resource->sub_states.empty())
+            return std::any_of(resource->sub_states.begin(), resource->sub_states.end(),
+                               [&](auto before) { return before != state; });
+        return resource->heap == D3D12_HEAP_TYPE_DEFAULT && resource->state != state;
+    });
+    if (!needs_barrier) {
+        for (const auto& [resource, state] : uses) {
+            if (state & (D3D12_RESOURCE_STATE_COPY_DEST | D3D12_RESOURCE_STATE_UNORDERED_ACCESS |
+                         D3D12_RESOURCE_STATE_STREAM_OUT))
+                ++resource->content_version;
+            if (!resource->sub_states.empty()) {
+                resource->sub_states.clear();
+                resource->state = state;
+            }
+        }
+        return;
+    }
+    const FrameProfile::Scope profile_barrier{profile, FramePhase::Barriers};
     // Retain can open a list and run callbacks which also transition resources.
     // Acquire the shared scratch only after every resource has been retained.
     auto& barriers = transition_barriers;
