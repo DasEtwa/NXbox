@@ -936,8 +936,74 @@ void GroupedDeclarations() {
     Bindings bindings;
     Contains(f.Emit(bindings), "uint v0 = 0, v1 = 0;\n");
 }
-int main() {
+void PointSpriteCoordinate() {
+  // D3D12 has no gl_PointCoord and never expands points, so the single fragment of a 1px point
+  // reads the sprite centre. Fragment shaders reading PointSpriteS/T used to fail their whole
+  // pipeline with "HLSL attribute PointSpriteT is not implemented".
+  Fixture f{Stage::Fragment};
+  f.program.info.stores_frag_color[0] = true;
+  f.program.info.loads.Set(IR::Attribute::PointSpriteS);
+  f.program.info.loads.Set(IR::Attribute::PointSpriteT);
+  const auto s = f.Add(IR::Opcode::GetAttribute,
+                       {IR::Value{IR::Attribute::PointSpriteS}, IR::Value{0u}});
+  const auto t = f.Add(IR::Opcode::GetAttribute,
+                       {IR::Value{IR::Attribute::PointSpriteT}, IR::Value{0u}});
+  f.Add(IR::Opcode::SetFragColor, {IR::Value{0u}, IR::Value{0u}, s});
+  f.Add(IR::Opcode::SetFragColor, {IR::Value{0u}, IR::Value{1u}, t});
+  Bindings bindings;
+  const auto text = f.Emit(bindings);
+  Contains(text, "output.color0.x = ");
+  Contains(text, "output.color0.y = ");
+  Contains(text, "0.5f");
+  Require(text.find("PointSprite") == text.npos && text.find("pointcoord") == text.npos,
+          "A 1px point has no sprite input to declare");
+  std::ofstream("hlsl_pointsprite.hlsl") << text;
+}
+void UndeclaredDescriptors() {
+  // The IR names resources by index into the lists built from Info. A stale index surfaced as the
+  // bare "invalid vector subscript" of std::vector::at, which hid what was looked up and where.
+  const auto expect = [](Fixture &f, std::initializer_list<std::string_view> tokens) {
+    Bindings bindings{.texture = 5};
+    try {
+      f.Emit(bindings);
+    } catch (const LogicError &error) {
+      for (const auto token : tokens)
+        Contains(error.what(), token);
+      Require(bindings.texture == 5, "Failure advanced bindings");
+      return;
+    }
+    throw std::runtime_error("Undeclared descriptor silently accepted");
+  };
+  {
+    Fixture f{Stage::Fragment};
+    f.program.info.stores_frag_color[0] = true;
+    f.program.info.texture_buffer_descriptors.push_back({.count = 1});
+    IR::TextureInstInfo flags{};
+    flags.type.Assign(TextureType::Buffer);
+    flags.descriptor_index.Assign(3);
+    f.Add(IR::Opcode::ImageFetch,
+          {IR::Value{0u}, IR::Value{1u}, {}, IR::Value{0u}, {}}, flags.raw);
+    expect(f, {"texture buffer descriptor 3", "stage Fragment", "declares 1"});
+  }
+  {
+    // Texture buffers are declared without a sampler; a sampler query for one must not wander
+    // into (or past the end of) the sampled-texture list.
+    Fixture f{Stage::VertexB};
+    f.program.info.texture_buffer_descriptors.push_back({.count = 1});
+    IR::TextureInstInfo flags{};
+    flags.type.Assign(TextureType::Buffer);
+    f.Add(IR::Opcode::ImageQueryLod, {IR::Value{0u}, IR::Value{0.5f}}, flags.raw);
+    expect(f, {"texture sampler descriptor 0", "stage VertexB", "declares 0"});
+  }
+}
+int main(int argc, char **argv) {
   try {
+    // `hlsl-ir-tests point-sprite-descriptors` runs only the point sprite and descriptor checks.
+    if (argc > 1 && std::string_view{argv[1]} == "point-sprite-descriptors") {
+      PointSpriteCoordinate();
+      UndeclaredDescriptors();
+      return 0;
+    }
       GroupedDeclarations();
     SingleUseInlining();
       Vertex();
@@ -963,6 +1029,8 @@ int main() {
       PixelHelperAndAlphaTest();
       UnsupportedRollback();
       NestedReturns();
+      PointSpriteCoordinate();
+      UndeclaredDescriptors();
   } catch (const std::exception &error) {
     std::cerr << error.what() << '\n';
     return 1;

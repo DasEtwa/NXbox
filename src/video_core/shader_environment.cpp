@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -497,8 +498,21 @@ public:
     }
     u64 ReadInstruction(u32 address) override {
         if (address < start_address || (address - start_address) % sizeof(u64))
-            throw std::runtime_error("Unaligned/out-of-range frozen shader instruction");
-        return code.at((address - start_address) / sizeof(u64));
+            throw std::runtime_error(fmt::format(
+                "Unaligned/out-of-range frozen shader instruction {:#x} (code starts at "
+                "{:#x}, stage {})",
+                address, start_address, StageToPrefix(stage)));
+        const size_t word = (address - start_address) / sizeof(u64);
+        // The live environment falls back to guest memory beyond its cached range, which a
+        // snapshot cannot do. Say so instead of surfacing std::vector::at's bare message.
+        if (word >= code.size())
+            throw std::out_of_range(fmt::format(
+                "Frozen shader code window exhausted: instruction {:#x} is word {} of a {}-word "
+                "snapshot taken from {:#x} (stage {}, bindless cbuf slot {}, proprietary driver "
+                "{})",
+                address, word, code.size(), start_address, StageToPrefix(stage), bound,
+                is_proprietary_driver));
+        return code[word];
     }
     u32 ReadCbufValue(u32 bank, u32 offset) override {
         const auto& bytes = cbufs.at(bank);
@@ -511,11 +525,16 @@ public:
         return value;
     }
     Shader::TextureType ReadTextureType(u32 handle) override {
-        return ConvertTextureType(textures->at(Tegra::Texture::TexturePair(handle, linked).first));
+        const auto* entry = Descriptor(handle);
+        // Same fallback ConvertTextureType takes for a descriptor it cannot classify.
+        return entry ? ConvertTextureType(*entry) : Shader::TextureType::Color2D;
     }
     Shader::TexturePixelFormat ReadTexturePixelFormat(u32 handle) override {
-        return ConvertTexturePixelFormat(
-            textures->at(Tegra::Texture::TexturePair(handle, linked).first));
+        const auto* entry = Descriptor(handle);
+        // What the format lookup returns for an all-zero descriptor.
+        return entry ? ConvertTexturePixelFormat(*entry)
+                     : static_cast<Shader::TexturePixelFormat>(
+                           VideoCore::Surface::PixelFormat::A8B8G8R8_UNORM);
     }
     bool IsTexturePixelFormatInteger(u32 handle) override {
         return VideoCore::Surface::IsPixelFormatInteger(
@@ -565,8 +584,27 @@ public:
     std::unordered_map<u64, Shader::ReplaceConstant> replacements;
 
 private:
+    // A handle beyond the pool names no descriptor. The live environment only soft-asserts and
+    // decodes whatever guest memory lies there; throwing here instead failed the whole pipeline
+    // for a lookup the live path survives. Report it (a few times per run) and treat the handle
+    // as an invalid descriptor, as the hardware does.
+    const Tegra::Texture::TICEntry* Descriptor(u32 handle) {
+        const u32 index = Tegra::Texture::TexturePair(handle, linked).first;
+        if (textures && index < textures->size())
+            return &(*textures)[index];
+        static std::atomic<u32> reports{};
+        if (!warned_pool_overflow && reports.fetch_add(1) < 16) {
+            LOG_WARNING(Shader,
+                        "Frozen {} shader reads texture handle {:#x} (descriptor {}) beyond a pool "
+                        "of {} descriptors; treating it as invalid",
+                        StageToPrefix(stage), handle, index, textures ? textures->size() : 0);
+        }
+        warned_pool_overflow = true;
+        return nullptr;
+    }
     std::vector<u64> code;
     std::array<std::vector<u8>, 18> cbufs;
+    bool warned_pool_overflow{};
 
 public:
     std::shared_ptr<std::vector<Tegra::Texture::TICEntry>> textures;
