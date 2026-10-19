@@ -61,6 +61,7 @@
 #include "eden_uwp/ui/library.h"
 #include "eden_uwp/ui/source_catalog.h"
 #include "eden_uwp/ui/strings.h"
+#include "frontend_common/download_drive.h"
 #include "eden_uwp/ui/text_entry.h"
 #include "eden_uwp/ui/theme.h"
 #include "eden_uwp/ui/tinfoil_index.h"
@@ -798,23 +799,22 @@ bool DownloadShopPackage(const Entry& entry, fs::path& destination,
                            Utf8(destination.parent_path().wstring()));
                 return false;
             }
-            if (*free < total - have) {
-                bool relocated = false;
+            if (!DownloadDrive::Fits(free, total - have, OnInternalDrive(destination))) {
+                std::vector<fs::path> candidates;
+                std::vector<DownloadDrive::Candidate> drives;
                 for (const auto& folder : ExternalGameFolders()) {
                     const auto candidate = folder / destination.filename();
                     if (candidate == destination)
                         continue;
-                    const auto size =
-                        Common::FS::IsFile(candidate) ? Common::FS::GetSize(candidate) : 0;
-                    const auto available = FreeSpace(folder);
-                    if (size <= total && available && *available >= total - size) {
-                        destination = candidate;
-                        relocated = true;
-                        break;
-                    }
+                    candidates.push_back(candidate);
+                    drives.push_back(
+                        {Common::FS::IsFile(candidate) ? Common::FS::GetSize(candidate) : 0,
+                         FreeSpace(folder)});
                 }
-                if (relocated)
+                if (const auto pick = DownloadDrive::Pick(drives, total)) {
+                    destination = candidates[*pick];
                     continue; // reopen with the selected drive's Range, not the previous offset
+                }
                 Diagnostic(fmt::format("SOURCES_DOWNLOAD no room: need {} MiB, free {} MiB",
                                        (total - have) >> 20, *free >> 20));
                 return false;
