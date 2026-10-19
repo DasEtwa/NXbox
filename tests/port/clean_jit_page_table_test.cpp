@@ -28,6 +28,17 @@ int main(int argc, char **) {
   PageTable table;
   table.Resize(39, 12);
   assert(table.entries.size() == (1ULL << 27));
+  // Fastmem selection happens after Resize, before any mapping exists.
+  assert(table.jit_entries.size() == 0);
+  table.fastmem_arena = reinterpret_cast<u8 *>(0x1000);
+  table.InitializeJitPageTable();
+  assert(table.jit_entries.size() == 0);
+  assert(!table.UseCleanJitPageTable());
+  table.StorePage(31, false, PageType::Memory, 7, 0x1000);
+  assert(table.jit_entries.size() == 0);
+  table.Resize(39, 12);
+  table.fastmem_arena = nullptr;
+  table.InitializeJitPageTable();
   assert(table.jit_entries.size() == (enabled ? 1ULL << 27 : 0));
   assert(table.UseCleanJitPageTable() == enabled);
   table.fastmem_arena = reinterpret_cast<u8 *>(0x1000);
@@ -44,6 +55,9 @@ int main(int argc, char **) {
   table.StorePage(page, false, PageType::Memory, 40000, pointer);
   assert(table.entries[page].Pointer() == pointer);
   assert(table.entries[page].Block() == 40000);
+  check(pointer);
+  // Selecting the same table again must preserve populated JIT slots.
+  table.InitializeJitPageTable();
   check(pointer);
   table.ClearJitPage(page);
   table.entries.GetUnchecked(page).MarkDebug(pointer, 40000);
@@ -131,6 +145,7 @@ int main(int argc, char **) {
   check(0);
   PageTable other;
   other.Resize(32, 12);
+  other.InitializeJitPageTable();
   assert(other.entries[page].Type() == PageType::Unmapped);
   if (enabled) {
     assert(other.jit_entries[page].Load() == 0);
@@ -138,6 +153,10 @@ int main(int argc, char **) {
     assert(table.jit_entries[page].Load() == 0);
   }
   table.ClearJitRegion(0, 128);
+  table.Resize(32, 12);
+  table.InitializeJitPageTable();
+  assert(table.jit_entries.size() == (enabled ? 1ULL << 20 : 0));
+  check(0);
   std::cout << "clean_table=" << enabled
             << " sequence/reset/process/fastmem/latch/revoke checks passed\n";
 }

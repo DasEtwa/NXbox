@@ -62,6 +62,8 @@ struct Memory::Impl {
             current_page_table->fastmem_arena = nullptr;
         }
 
+        current_page_table->InitializeJitPageTable();
+
 #ifdef __ANDROID__
         heap_tracker.emplace(system.DeviceMemory().buffer);
         host_buffer = std::addressof(*heap_tracker);
