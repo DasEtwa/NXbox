@@ -911,6 +911,19 @@ class NextendoTests(unittest.TestCase):
         self.assertIn("std::string ResolveFqdn(const std::string& fqdn_in) {", nsd)
         self.assertNotIn("static std::string ResolveImpl", nsd)
 
+    def test_ssl_peek_reads_into_the_whole_buffer(self):
+        # ISslConnection::Peek hands the backend a zeroed size; using it as the length peeked 0
+        # bytes and turned every waiting server record into an internal error.
+        backend = (ROOT / "src/core/hle/service/ssl/ssl_backend_openssl.cpp").read_text()
+        self.assertIn("SSL_peek_ex(ssl, data.data(), data.size(), out_size)", backend)
+        self.assertNotIn("SSL_peek(ssl", backend)
+
+    def test_friend_service_answers_mk8d_play_session_calls(self):
+        friend = (ROOT / "src/core/hle/service/friend/friend.cpp").read_text()
+        for name in ("DeclareOpenOnlinePlaySession", "AddPlayHistory"):
+            self.assertIn(f'&IFriendService::{name}, "{name}"', friend)
+            self.assertIn(f"void {name}(HLERequestContext& ctx)", friend)
+
     def test_ssl_connection_keeps_its_socket_after_handing_it_to_the_backend(self):
         # Moving the socket into the backend left ISslConnection::socket empty, so DoHandshake
         # returned ResultNoSocket (0xce7b) for MK8D's TLS connection to its game server.

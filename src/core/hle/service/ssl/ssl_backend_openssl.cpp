@@ -226,10 +226,11 @@ public:
     }
 
     Result Peek(size_t* out_size, std::span<u8> data) override {
-        auto const n = (std::min)(data.size(), *out_size);
-        const int ret = SSL_peek(ssl, data.data(), int(n));
-        *out_size = n;
-        return HandleReturn("SSL_write_ex", out_size, ret);
+        // The caller passes a zeroed out_size. Peeking 0 bytes made SSL_get_error report
+        // SSL_ERROR_SYSCALL whenever a record was waiting, so every server message came back to
+        // the game as an internal error.
+        const int ret = SSL_peek_ex(ssl, data.data(), data.size(), out_size);
+        return HandleReturn("SSL_peek_ex", out_size, ret);
     }
 
     Result Write(size_t* out_size, std::span<const u8> data) override {
