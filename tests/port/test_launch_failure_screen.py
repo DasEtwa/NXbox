@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright 2026 NSPX
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""A failed launch shows why: from the library it returns there instead of closing the app."""
+"""A failed launch shows why, then returns to the library instead of closing the app."""
 
 import unittest
 from pathlib import Path
@@ -11,11 +11,12 @@ SESSION = (ROOT / "src/eden_uwp/game_session.cpp").read_text()
 
 class LaunchFailureScreen(unittest.TestCase):
     def test_every_failed_launch_shows_the_failure(self):
-        tail = SESSION[SESSION.index("worker.join();\n    // A failed launch says why.") :]
+        tail = SESSION[SESSION.index("worker.join();\n    // A failed launch says why,") :]
         tail = tail[: tail.index("\n}\n")]
         self.assertIn("if (failed && !closed.load()) {", tail)
         self.assertIn("show_failure(launch_status.failure.load());", tail)
-        # Only a launch from the library goes back there; a direct boot would retry the same file.
+        # Every in-app launch goes back; the next pass shows the library (allow_official_startup is
+        # cleared), so a direct boot does not retry the same file. A protocol launch ends.
         self.assertIn("return_home = !protocol_launch && !closed.load();", tail)
         self.assertNotIn("if (protocol_launch && !closed.load() &&", tail)
 
