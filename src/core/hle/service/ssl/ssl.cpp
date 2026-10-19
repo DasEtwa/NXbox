@@ -203,7 +203,8 @@ private:
                 return ResultInvalidSocket;
             }
             socket = std::move(*sock);
-            backend->SetSocket(std::move(socket));
+            // Share it: DoHandshake, SetIoMode and GetSocketDescriptor still read `socket`.
+            backend->SetSocket(socket);
             return ResultSuccess;
         }
         LOG_ERROR(Service_SSL, "Failed to duplicate socket with fd {}", in_fd);

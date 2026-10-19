@@ -901,6 +901,13 @@ class NextendoTests(unittest.TestCase):
         self.assertIn('Common::ReplaceAll(fqdn_in, "%", "lp1")', source)
         self.assertIn('host == "g2b309e01-lp1.s.n.srv.nintendo"', policy)
 
+    def test_ssl_connection_keeps_its_socket_after_handing_it_to_the_backend(self):
+        # Moving the socket into the backend left ISslConnection::socket empty, so DoHandshake
+        # returned ResultNoSocket (0xce7b) for MK8D's TLS connection to its game server.
+        ssl = (ROOT / "src/core/hle/service/ssl/ssl.cpp").read_text()
+        self.assertIn("backend->SetSocket(socket);", ssl)
+        self.assertNotIn("backend->SetSocket(std::move(socket));", ssl)
+
 
 if __name__ == "__main__":
     unittest.main()
