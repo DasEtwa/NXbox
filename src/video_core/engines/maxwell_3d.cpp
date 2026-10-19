@@ -18,6 +18,7 @@
 #include "video_core/gpu.h"
 #include "video_core/memory_manager.h"
 #include "video_core/rasterizer_interface.h"
+#include "video_core/shader_discovery.h"
 #include "video_core/submission_trace.h"
 #include "video_core/textures/texture.h"
 
@@ -319,6 +320,11 @@ void Maxwell3D::ProcessDirtyRegisters(u32 method, u32 argument) {
         return;
     }
     regs.reg_array[method] = argument;
+    if ((method == MAXWELL3D_REG_INDEX(program_region.address_high) ||
+         method == MAXWELL3D_REG_INDEX(program_region.address_low)) &&
+        VideoCommon::ShaderDiscovery::Enabled())
+        VideoCommon::ShaderDiscovery::Base(memory_manager.GetID(), regs.program_region.Address(),
+                                           false);
     for (auto const& table : dirty.tables)
         dirty.flags[table[method]] = true;
 }

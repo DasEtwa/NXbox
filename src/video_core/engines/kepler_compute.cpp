@@ -13,6 +13,7 @@
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/memory_manager.h"
 #include "video_core/rasterizer_interface.h"
+#include "video_core/shader_discovery.h"
 #include "video_core/submission_trace.h"
 #include "video_core/textures/decoders.h"
 
@@ -50,6 +51,10 @@ void KeplerCompute::CallMethod(Core::System& system, u32 method, u32 method_argu
     ASSERT_MSG(method < Regs::NUM_REGS, "Invalid KeplerCompute register, increase the size of the Regs structure");
 
     regs.reg_array[method] = method_argument;
+    if ((method == KEPLER_COMPUTE_REG_INDEX(code_loc.address_high) ||
+         method == KEPLER_COMPUTE_REG_INDEX(code_loc.address_low)) &&
+        VideoCommon::ShaderDiscovery::Enabled())
+        VideoCommon::ShaderDiscovery::Base(memory_manager.GetID(), regs.code_loc.Address(), true);
 
     switch (method) {
     case KEPLER_COMPUTE_REG_INDEX(exec_upload): {

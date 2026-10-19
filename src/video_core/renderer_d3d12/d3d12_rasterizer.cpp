@@ -34,6 +34,7 @@
 #include "video_core/renderer_d3d12/d3d12_pipeline_cache.h"
 #include "video_core/renderer_d3d12/d3d12_rasterizer.h"
 #include "video_core/renderer_d3d12/d3d12_render_area.h"
+#include "video_core/shader_discovery.h"
 #include "video_core/submission_trace.h"
 #include "video_core/textures/texture.h"
 
@@ -66,6 +67,7 @@ RasterizerD3D12::RasterizerD3D12(Tegra::GPU& gpu, Tegra::MaxwellDeviceMemoryMana
       query_cache{gpu, *this, memory, query_runtime},
       fence_manager{*this, gpu, texture_cache, buffer_cache, query_cache, context}, m_gpu{gpu} {
     VideoCommon::SubmissionTrace::Reset();
+    VideoCommon::ShaderDiscovery::Reset();
     default_pipeline_cache = std::make_unique<PipelineCache>(context, memory);
     pipeline_cache = default_pipeline_cache.get();
     context.Profile().guest_visibility = [this] {
@@ -84,6 +86,7 @@ RasterizerD3D12::RasterizerD3D12(Tegra::GPU& gpu, Tegra::MaxwellDeviceMemoryMana
     };
 }
 RasterizerD3D12::~RasterizerD3D12() {
+    VideoCommon::ShaderDiscovery::Shutdown();
     context.Profile().guest_visibility = {};
     // Query callbacks capture the cache. Drain while every cache/runtime is alive.
     try {
@@ -3562,6 +3565,8 @@ void RasterizerD3D12::NotifyFencesSubmitted() {
     fence_manager.NotifyDeferredSubmit();
 }
 void RasterizerD3D12::TickFrame() {
+    if (VideoCommon::ShaderDiscovery::Enabled())
+        VideoCommon::ShaderDiscovery::EndFrame(gpu_memory);
     // Bisect toggles: each one skips one cache's per-frame aging.
     if (!BisectEnabled("NXBOX_D3D12_TICK_NO_FENCE"))
         fence_manager.TickFrame();
