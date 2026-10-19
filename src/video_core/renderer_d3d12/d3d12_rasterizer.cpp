@@ -3512,7 +3512,9 @@ void RasterizerD3D12::ProfileGpuThread(bool active) {
         Common::GpuProfile::enabled.store(true);
         context.Profile().BindRecordingThread(true);
         Common::GpuProfile::sink = &context.Profile();
+        Common::GpuProfile::recording_enabled = true;
     } else {
+        Common::GpuProfile::recording_enabled = false;
         Common::GpuProfile::sink = nullptr;
         Common::GpuProfile::enabled.store(false);
     }

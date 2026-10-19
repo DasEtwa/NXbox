@@ -39,6 +39,29 @@ struct Sink {
 };
 inline thread_local Sink* sink{};
 inline std::atomic<bool> enabled{};
+// Recording-thread-only gate. Set alongside sink on that same thread; generic
+// PhaseScope/WaitScope callers on other threads must continue to use the TLS sink.
+inline bool recording_enabled{};
+class RecordingScope {
+public:
+    explicit RecordingScope(Phase phase) {
+        if (recording_enabled) [[unlikely]] {
+            owner = sink;
+            if (owner)
+                previous = owner->Enter(phase);
+        }
+    }
+    ~RecordingScope() {
+        if (owner)
+            owner->Leave(previous);
+    }
+    RecordingScope(const RecordingScope&) = delete;
+    RecordingScope& operator=(const RecordingScope&) = delete;
+
+private:
+    Sink* owner{};
+    std::size_t previous{};
+};
 class PhaseScope {
 public:
     explicit PhaseScope(Phase phase) : owner{sink} {
@@ -80,7 +103,7 @@ inline thread_local std::array<Tick, static_cast<std::size_t>(MethodClass::Count
 class MethodScope {
 public:
     explicit MethodScope(MethodClass category, Tick units = 1) {
-        if (!sink)
+        if (!recording_enabled)
             return;
         const auto index = static_cast<std::size_t>(category);
         sample = &method_window[index];

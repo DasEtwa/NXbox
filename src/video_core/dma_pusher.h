@@ -18,6 +18,7 @@
 #include "common/scratch_buffer.h"
 #include "video_core/engines/engine_interface.h"
 #include "video_core/engines/puller.h"
+#include "video_core/gpu_frontend.h"
 
 namespace Core {
 class System;
@@ -159,6 +160,7 @@ private:
     void SetState(const CommandHeader& command_header);
 
     void CallMethod(u32 argument);
+    const bool frontend_fastpath{GpuFrontendFastPathEnabled()};
     void CallMultiMethod(const u32* base_start, u32 num_methods);
 
 public:

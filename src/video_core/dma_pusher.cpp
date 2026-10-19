@@ -32,7 +32,8 @@ DmaPusher::DmaPusher(Core::System& system_, MemoryManager& memory_manager_, Cont
 DmaPusher::~DmaPusher() = default;
 
 void DmaPusher::DispatchCalls() {
-    const Common::GpuProfile::PhaseScope gpu_profile_scope{Common::GpuProfile::Phase::DmaPusher};
+    const Common::GpuProfile::RecordingScope gpu_profile_scope{
+        Common::GpuProfile::Phase::DmaPusher};
     dma_pushbuffer_subindex = 0;
     dma_state.is_last_call = true;
     while (system.IsPoweredOn()) {
@@ -151,6 +152,30 @@ void DmaPusher::ProcessCommands(std::span<const CommandHeader> commands) {
                 dma_state.is_last_call = dma_state.method_count == 0;
                 index += amount;
                 continue;
+            }
+            if (frontend_fastpath && !dma_increment_once &&
+                subchannel_type[dma_state.subchannel] == Engines::EngineTypes::Maxwell3D &&
+                dma_state.method >= non_puller_methods && dma_state.method < MacroRegistersStart) {
+                auto* engine = static_cast<Engines::Maxwell3D*>(subchannels[dma_state.subchannel]);
+                const auto limit = static_cast<u32>(
+                    (std::min)(commands.size() - index,
+                               static_cast<size_t>(
+                                   (std::min)(dma_state.method_count,
+                                              MacroRegistersStart - dma_state.method))));
+                u32 amount = 0;
+                while (amount < limit && !engine->execution_mask[dma_state.method + amount])
+                    ++amount;
+                if (amount != 0) {
+                    engine->CallMultiMethod(system, dma_state.method, &commands[index].argument,
+                                            amount);
+                    dma_state.dma_word_offset =
+                        static_cast<u32>((index + amount - 1) * sizeof(u32));
+                    dma_state.method += amount;
+                    dma_state.method_count -= amount;
+                    dma_state.is_last_call = dma_state.method_count == 0;
+                    index += amount;
+                    continue;
+                }
             }
             auto const command_header = commands[index]; //can copy
             dma_state.dma_word_offset = u32(index * sizeof(u32));
