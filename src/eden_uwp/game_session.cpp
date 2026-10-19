@@ -2013,13 +2013,15 @@ static void RunGameViewSession(const winrt::Windows::UI::Core::CoreWindow& windo
         Sleep(1);
     }
     worker.join();
-    // A failed launch says why. From the library it then goes back to the library: it used to
-    // close the app with no message, which players reported as a crash.
+    // A failed launch says why, then goes back to the library: it used to close the app with no
+    // message, which players reported as a crash. Home, Mii and the official startup return too;
+    // the next pass shows the library instead of booting them again. Only a protocol launch,
+    // which another app asked for, ends here.
     const bool failed = launch_status.phase.load() == Ui::LaunchPhase::Failed;
     return_home = session_ui.return_home.load() && !closed.load() && !failed;
     if (failed && !closed.load()) {
         show_failure(launch_status.failure.load());
-        return_home = chosen_in_library && !closed.load();
+        return_home = !protocol_launch && !closed.load();
     }
 }
 

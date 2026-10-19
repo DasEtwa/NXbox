@@ -16,7 +16,7 @@ class LaunchFailureScreen(unittest.TestCase):
         self.assertIn("if (failed && !closed.load()) {", tail)
         self.assertIn("show_failure(launch_status.failure.load());", tail)
         # Only a launch from the library goes back there; a direct boot would retry the same file.
-        self.assertIn("return_home = chosen_in_library && !closed.load();", tail)
+        self.assertIn("return_home = !protocol_launch && !closed.load();", tail)
         self.assertNotIn("if (protocol_launch && !closed.load() &&", tail)
 
     def test_failed_load_explains_from_the_file_content(self):
