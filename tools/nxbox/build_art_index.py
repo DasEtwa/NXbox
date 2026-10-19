@@ -14,6 +14,7 @@ import xml.etree.ElementTree as ET
 import zipfile
 
 URL = "https://gamesdb.launchbox-app.com/Metadata.zip"
+USER_AGENT = "NXbox art index (+https://github.com/NspxMiguel/NXbox)"
 SUFFIXES = (
     "definitive edition",
     "deluxe edition",
@@ -108,7 +109,9 @@ def main():
         source = args.metadata
         if source is None:
             source = Path(temporary) / "Metadata.zip"
-            with urllib.request.urlopen(URL, timeout=120) as response, source.open("wb") as out:
+            # The host answers 403 to urllib's default User-Agent.
+            request = urllib.request.Request(URL, headers={"User-Agent": USER_AGENT})
+            with urllib.request.urlopen(request, timeout=120) as response, source.open("wb") as out:
                 shutil.copyfileobj(response, out)
         if zipfile.is_zipfile(source):
             with zipfile.ZipFile(source) as archive:
