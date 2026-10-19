@@ -210,6 +210,9 @@
      L"to exit."},
     {Text::LaunchFailed,
      L"Could not start. Open NXbox to check the game and keys. Press B to exit."},
+    {Text::LaunchNeedsUpdate,
+     L"This file lacks the game's executable and needs the game's update. Put the update in the "
+     L"games folder, or use the full XCI or NSP. Press B to go back."},
     {Text::LaunchAppType,
      L"NXbox is installed as an App, limited to 1 GB of memory. In Dev Home select NXbox, View "
      L"details, and set App type to Game. Press B to exit."},

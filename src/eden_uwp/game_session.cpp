@@ -985,6 +985,9 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
     const auto result = system.Load(window, path, parameters);
     memory_stage("after_load");
     if (result != Core::SystemResultStatus::Success) {
+        launch_status.missing_exefs.store(
+            result == Core::SystemResultStatus(u32(Core::SystemResultStatus::ErrorLoader) +
+                                               u32(Loader::ResultStatus::ErrorNoExeFS)));
         launch_status.phase.store(Ui::LaunchPhase::Failed);
         if (boot_mii_edit)
             Diagnostic("MII_EDIT_BOOT failed: load status=" +
@@ -1964,11 +1967,13 @@ static void RunGameViewSession(const winrt::Windows::UI::Core::CoreWindow& windo
         Sleep(1);
     }
     worker.join();
-    return_home = session_ui.return_home.load() && !closed.load() &&
-                  launch_status.phase.load() != Ui::LaunchPhase::Failed;
-    if (protocol_launch && !closed.load() &&
-        launch_status.phase.load() == Ui::LaunchPhase::Failed) {
-        show_failure(Ui::Text::LaunchFailed);
+    // A failed launch says why. From the library it then goes back to the library: it used to
+    // close the app with no message, which players reported as a crash.
+    const bool failed = launch_status.phase.load() == Ui::LaunchPhase::Failed;
+    return_home = session_ui.return_home.load() && !closed.load() && !(failed && protocol_launch);
+    if (failed && !closed.load()) {
+        show_failure(launch_status.missing_exefs.load() ? Ui::Text::LaunchNeedsUpdate
+                                                        : Ui::Text::LaunchFailed);
     }
 }
 
