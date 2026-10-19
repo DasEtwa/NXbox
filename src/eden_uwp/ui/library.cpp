@@ -1237,6 +1237,9 @@ std::vector<GameEntry> LibraryScan::Scan() {
     }
 
     std::sort(games.begin(), games.end(), [](const GameEntry& left, const GameEntry& right) {
+        // A truncated file sorted first by name took the first tile and the default focus.
+        if (left.incomplete != right.incomplete)
+            return right.incomplete;
         const int order = _wcsicmp(left.name.c_str(), right.name.c_str());
         return order != 0 ? order < 0 : left.path < right.path;
     });
