@@ -147,7 +147,7 @@ DrawParams MakeDrawParams(const Tegra::Engines::Maxwell3D::DrawManager::State& d
 // Keep the submitted draw parameters available when sizing vertex bindings.
 struct DrawCommand {
     DrawParams params;
-    void operator()(ID3D12GraphicsCommandList* commands) const {
+    void operator()(CommandFacade* commands) const {
         if (!params.num_vertices || !params.num_instances)
             return;
         if (params.is_indexed)
@@ -1982,10 +1982,7 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     const auto& stencil = cached_dynamic_state.stencil;
     if (context.RecordState(recorded.stencil.Update(stencil))) {
         if (stencil[0]) {
-            ComPtr<ID3D12GraphicsCommandList8> commands8;
-            Check(commands->QueryInterface(IID_PPV_ARGS(&commands8)),
-                  "D3D12 independent stencil command interface", context.Device());
-            commands8->OMSetFrontAndBackStencilRef(stencil[1], stencil[2]);
+            commands->OMSetFrontAndBackStencilRef(stencil[1], stencil[2]);
         } else {
             commands->OMSetStencilRef(stencil[1]);
         }
@@ -1996,10 +1993,7 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     if (attachment_state.depth_bounds) {
         const auto& depth_bounds = cached_dynamic_state.depth_bounds;
         if (context.RecordState(recorded.depth_bounds.Update(depth_bounds))) {
-            ComPtr<ID3D12GraphicsCommandList1> commands1;
-            Check(commands->QueryInterface(IID_PPV_ARGS(&commands1)),
-                  "D3D12 depth-bounds command interface", context.Device());
-            commands1->OMSetDepthBounds(depth_bounds[0], depth_bounds[1]);
+            commands->OMSetDepthBounds(depth_bounds[0], depth_bounds[1]);
         }
     }
     if (context.RecordState(recorded.root_args.constants[0].Update(words.data(), words.size())))

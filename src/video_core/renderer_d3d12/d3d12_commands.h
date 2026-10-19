@@ -1,0 +1,550 @@
+// SPDX-FileCopyrightText: Copyright 2026 NSPX
+// SPDX-License-Identifier: GPL-3.0-or-later
+#pragma once
+#include "video_core/renderer_d3d12/d3d12_record_args.h"
+
+#include "video_core/renderer_d3d12/d3d12_record_descriptors.h"
+
+namespace D3D12 {
+template <>
+struct RecordLease<D3D12_TEXTURE_COPY_LOCATION> {
+    static void Hold(const D3D12_TEXTURE_COPY_LOCATION& v) {
+        RecordLease<ID3D12Resource*>::Hold(v.pResource);
+    }
+    static void Drop(const D3D12_TEXTURE_COPY_LOCATION& v) {
+        RecordLease<ID3D12Resource*>::Drop(v.pResource);
+    }
+};
+template <>
+struct RecordLease<D3D12_RESOURCE_BARRIER> {
+    template <bool Holding>
+    static void Visit(const D3D12_RESOURCE_BARRIER& v) {
+        auto apply = [](ID3D12Resource* r) {
+            if constexpr (Holding)
+                RecordLease<ID3D12Resource*>::Hold(r);
+            else
+                RecordLease<ID3D12Resource*>::Drop(r);
+        };
+        switch (v.Type) {
+        case D3D12_RESOURCE_BARRIER_TYPE_TRANSITION:
+            apply(v.Transition.pResource);
+            break;
+        case D3D12_RESOURCE_BARRIER_TYPE_ALIASING:
+            apply(v.Aliasing.pResourceBefore);
+            apply(v.Aliasing.pResourceAfter);
+            break;
+        case D3D12_RESOURCE_BARRIER_TYPE_UAV:
+            apply(v.UAV.pResource);
+            break;
+        }
+    }
+    static void Hold(const D3D12_RESOURCE_BARRIER& v) {
+        Visit<true>(v);
+    }
+    static void Drop(const D3D12_RESOURCE_BARRIER& v) {
+        Visit<false>(v);
+    }
+};
+// Extended interfaces are queried once on the recorder, and checked only when used.
+struct RecordingTarget {
+    void* owner{};
+    ID3D12GraphicsCommandList* list{};
+    ID3D12GraphicsCommandList1* list1{};
+    ID3D12GraphicsCommandList8* list8{};
+    void OMSetDepthBounds(FLOAT minimum, FLOAT maximum) {
+        if (!list1)
+            throw std::runtime_error("D3D12 depth-bounds command interface unavailable");
+        list1->OMSetDepthBounds(minimum, maximum);
+    }
+    void OMSetFrontAndBackStencilRef(UINT front, UINT back) {
+        if (!list8)
+            throw std::runtime_error("D3D12 independent stencil command interface unavailable");
+        list8->OMSetFrontAndBackStencilRef(front, back);
+    }
+};
+#if defined(_MSC_VER)
+#define D3D12_FORWARD_INLINE __forceinline
+#else
+#define D3D12_FORWARD_INLINE inline __attribute__((always_inline))
+#endif
+class CommandFacade {
+public:
+    ID3D12Device* device{};
+    int32_t depth_bounds_status{}, independent_stencil_status{};
+    RecordDescriptors* descriptors{};
+    ID3D12GraphicsCommandList* immediate{};
+    RecordStream<>* stream{}; // Latched once; null is the immediate path.
+    D3D12_FORWARD_INLINE void BeginQuery(ID3D12QueryHeap* heap, D3D12_QUERY_TYPE type, UINT index) {
+        if (!stream) {
+            immediate->BeginQuery(heap, type, index);
+            return;
+        }
+        EncodeCall<[](void* target, ID3D12QueryHeap* heap, D3D12_QUERY_TYPE type, UINT index) {
+            static_cast<RecordingTarget*>(target)->list->BeginQuery(heap, type, index);
+        }>(*stream, heap, type, index);
+    }
+    D3D12_FORWARD_INLINE void EndQuery(ID3D12QueryHeap* heap, D3D12_QUERY_TYPE type, UINT index) {
+        if (!stream) {
+            immediate->EndQuery(heap, type, index);
+            return;
+        }
+        EncodeCall<[](void* target, ID3D12QueryHeap* heap, D3D12_QUERY_TYPE type, UINT index) {
+            static_cast<RecordingTarget*>(target)->list->EndQuery(heap, type, index);
+        }>(*stream, heap, type, index);
+    }
+    D3D12_FORWARD_INLINE void ResolveQueryData(ID3D12QueryHeap* heap, D3D12_QUERY_TYPE type,
+                                               UINT start, UINT count, ID3D12Resource* destination,
+                                               UINT64 offset) {
+        if (!stream) {
+            immediate->ResolveQueryData(heap, type, start, count, destination, offset);
+            return;
+        }
+        EncodeCall<[](void* target, ID3D12QueryHeap* heap, D3D12_QUERY_TYPE type, UINT start,
+                      UINT count, ID3D12Resource* destination, UINT64 offset) {
+            static_cast<RecordingTarget*>(target)->list->ResolveQueryData(heap, type, start, count,
+                                                                          destination, offset);
+        }>(*stream, heap, type, start, count, destination, offset);
+    }
+    D3D12_FORWARD_INLINE void ClearDepthStencilView(D3D12_CPU_DESCRIPTOR_HANDLE handle,
+                                                    D3D12_CLEAR_FLAGS flags, FLOAT depth,
+                                                    UINT8 stencil, UINT count,
+                                                    const D3D12_RECT* rects) {
+        if (!stream) {
+            immediate->ClearDepthStencilView(handle, flags, depth, stencil, count, rects);
+            return;
+        }
+        const auto slot = descriptors->Acquire(*stream);
+        const auto copy = descriptors->Dsv(slot);
+        descriptors->Copy(copy, handle, true);
+        EncodeCall<[](void* target, D3D12_CPU_DESCRIPTOR_HANDLE handle, D3D12_CLEAR_FLAGS flags,
+                      FLOAT depth, UINT8 stencil, UINT count, const D3D12_RECT* rects,
+                      DescriptorTicket) {
+            static_cast<RecordingTarget*>(target)->list->ClearDepthStencilView(
+                handle, flags, depth, stencil, count, rects);
+        }>(*stream, copy, flags, depth, stencil, count, Snapshot(rects, count),
+           DescriptorTicket{descriptors, slot});
+    }
+    D3D12_FORWARD_INLINE void ClearRenderTargetView(D3D12_CPU_DESCRIPTOR_HANDLE handle,
+                                                    const FLOAT* color, UINT count,
+                                                    const D3D12_RECT* rects) {
+        if (!stream) {
+            immediate->ClearRenderTargetView(handle, color, count, rects);
+            return;
+        }
+        const auto slot = descriptors->Acquire(*stream);
+        const auto copy = descriptors->Rtv(slot);
+        descriptors->Copy(copy, handle, false);
+        EncodeCall<[](void* target, D3D12_CPU_DESCRIPTOR_HANDLE handle, const FLOAT* color,
+                      UINT count, const D3D12_RECT* rects, DescriptorTicket) {
+            static_cast<RecordingTarget*>(target)->list->ClearRenderTargetView(handle, color, count,
+                                                                               rects);
+        }>(*stream, copy, Snapshot(color, 4), count, Snapshot(rects, count),
+           DescriptorTicket{descriptors, slot});
+    }
+    D3D12_FORWARD_INLINE void CopyBufferRegion(ID3D12Resource* destination,
+                                               UINT64 destination_offset, ID3D12Resource* source,
+                                               UINT64 source_offset, UINT64 size) {
+        if (!stream) {
+            immediate->CopyBufferRegion(destination, destination_offset, source, source_offset,
+                                        size);
+            return;
+        }
+        EncodeCall<[](void* target, ID3D12Resource* destination, UINT64 destination_offset,
+                      ID3D12Resource* source, UINT64 source_offset, UINT64 size) {
+            static_cast<RecordingTarget*>(target)->list->CopyBufferRegion(
+                destination, destination_offset, source, source_offset, size);
+        }>(*stream, destination, destination_offset, source, source_offset, size);
+    }
+    D3D12_FORWARD_INLINE void CopyResource(ID3D12Resource* destination, ID3D12Resource* source) {
+        if (!stream) {
+            immediate->CopyResource(destination, source);
+            return;
+        }
+        EncodeCall<[](void* target, ID3D12Resource* destination, ID3D12Resource* source) {
+            static_cast<RecordingTarget*>(target)->list->CopyResource(destination, source);
+        }>(*stream, destination, source);
+    }
+    D3D12_FORWARD_INLINE void CopyTextureRegion(const D3D12_TEXTURE_COPY_LOCATION* destination,
+                                                UINT x, UINT y, UINT z,
+                                                const D3D12_TEXTURE_COPY_LOCATION* source,
+                                                const D3D12_BOX* box) {
+        if (!stream) {
+            immediate->CopyTextureRegion(destination, x, y, z, source, box);
+            return;
+        }
+        EncodeCall<[](void* target, const D3D12_TEXTURE_COPY_LOCATION* destination, UINT x, UINT y,
+                      UINT z, const D3D12_TEXTURE_COPY_LOCATION* source, const D3D12_BOX* box) {
+            static_cast<RecordingTarget*>(target)->list->CopyTextureRegion(destination, x, y, z,
+                                                                           source, box);
+        }>(*stream, Snapshot(destination, 1), x, y, z, Snapshot(source, 1), Snapshot(box, 1));
+    }
+    D3D12_FORWARD_INLINE void Dispatch(UINT x, UINT y, UINT z) {
+        if (!stream) {
+            immediate->Dispatch(x, y, z);
+            return;
+        }
+        EncodeCall<[](void* target, UINT x, UINT y, UINT z) {
+            static_cast<RecordingTarget*>(target)->list->Dispatch(x, y, z);
+        }>(*stream, x, y, z);
+    }
+    D3D12_FORWARD_INLINE void DrawIndexedInstanced(UINT indices, UINT instances, UINT first_index,
+                                                   INT base_vertex, UINT first_instance) {
+        if (!stream) {
+            immediate->DrawIndexedInstanced(indices, instances, first_index, base_vertex,
+                                            first_instance);
+            return;
+        }
+        EncodeCall<[](void* target, UINT indices, UINT instances, UINT first_index, INT base_vertex,
+                      UINT first_instance) {
+            static_cast<RecordingTarget*>(target)->list->DrawIndexedInstanced(
+                indices, instances, first_index, base_vertex, first_instance);
+        }>(*stream, indices, instances, first_index, base_vertex, first_instance);
+    }
+    D3D12_FORWARD_INLINE void DrawInstanced(UINT vertices, UINT instances, UINT first_vertex,
+                                            UINT first_instance) {
+        if (!stream) {
+            immediate->DrawInstanced(vertices, instances, first_vertex, first_instance);
+            return;
+        }
+        EncodeCall<[](void* target, UINT vertices, UINT instances, UINT first_vertex,
+                      UINT first_instance) {
+            static_cast<RecordingTarget*>(target)->list->DrawInstanced(
+                vertices, instances, first_vertex, first_instance);
+        }>(*stream, vertices, instances, first_vertex, first_instance);
+    }
+    D3D12_FORWARD_INLINE void ExecuteIndirect(ID3D12CommandSignature* signature, UINT count,
+                                              ID3D12Resource* arguments, UINT64 offset,
+                                              ID3D12Resource* count_buffer, UINT64 count_offset) {
+        if (!stream) {
+            immediate->ExecuteIndirect(signature, count, arguments, offset, count_buffer,
+                                       count_offset);
+            return;
+        }
+        EncodeCall<[](void* target, ID3D12CommandSignature* signature, UINT count,
+                      ID3D12Resource* arguments, UINT64 offset, ID3D12Resource* count_buffer,
+                      UINT64 count_offset) {
+            static_cast<RecordingTarget*>(target)->list->ExecuteIndirect(
+                signature, count, arguments, offset, count_buffer, count_offset);
+        }>(*stream, signature, count, arguments, offset, count_buffer, count_offset);
+    }
+    D3D12_FORWARD_INLINE void IASetIndexBuffer(const D3D12_INDEX_BUFFER_VIEW* view) {
+        if (!stream) {
+            immediate->IASetIndexBuffer(view);
+            return;
+        }
+        EncodeCall<[](void* target, const D3D12_INDEX_BUFFER_VIEW* view) {
+            static_cast<RecordingTarget*>(target)->list->IASetIndexBuffer(view);
+        }>(*stream, Snapshot(view, 1));
+    }
+    D3D12_FORWARD_INLINE void IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY topology) {
+        if (!stream) {
+            immediate->IASetPrimitiveTopology(topology);
+            return;
+        }
+        EncodeCall<[](void* target, D3D_PRIMITIVE_TOPOLOGY topology) {
+            static_cast<RecordingTarget*>(target)->list->IASetPrimitiveTopology(topology);
+        }>(*stream, topology);
+    }
+    D3D12_FORWARD_INLINE void IASetVertexBuffers(UINT start, UINT count,
+                                                 const D3D12_VERTEX_BUFFER_VIEW* views) {
+        if (!stream) {
+            immediate->IASetVertexBuffers(start, count, views);
+            return;
+        }
+        EncodeCall<[](void* target, UINT start, UINT count, const D3D12_VERTEX_BUFFER_VIEW* views) {
+            static_cast<RecordingTarget*>(target)->list->IASetVertexBuffers(start, count, views);
+        }>(*stream, start, count, Snapshot(views, count));
+    }
+    D3D12_FORWARD_INLINE void OMSetBlendFactor(const FLOAT* factor) {
+        if (!stream) {
+            immediate->OMSetBlendFactor(factor);
+            return;
+        }
+        EncodeCall<[](void* target, const FLOAT* factor) {
+            static_cast<RecordingTarget*>(target)->list->OMSetBlendFactor(factor);
+        }>(*stream, Snapshot(factor, 4));
+    }
+    D3D12_FORWARD_INLINE void OMSetDepthBounds(FLOAT minimum, FLOAT maximum) {
+        if (!stream) {
+            ComPtr<ID3D12GraphicsCommandList1> extended;
+            Check(immediate->QueryInterface(IID_PPV_ARGS(&extended)),
+                  "D3D12 depth-bounds command interface", device);
+            extended->OMSetDepthBounds(minimum, maximum);
+            return;
+        }
+        Check(depth_bounds_status, "D3D12 depth-bounds command interface", device);
+        EncodeCall<[](void* target, FLOAT minimum, FLOAT maximum) {
+            static_cast<RecordingTarget*>(target)->OMSetDepthBounds(minimum, maximum);
+        }>(*stream, minimum, maximum);
+    }
+    D3D12_FORWARD_INLINE void OMSetFrontAndBackStencilRef(UINT front, UINT back) {
+        if (!stream) {
+            ComPtr<ID3D12GraphicsCommandList8> extended;
+            Check(immediate->QueryInterface(IID_PPV_ARGS(&extended)),
+                  "D3D12 independent stencil command interface", device);
+            extended->OMSetFrontAndBackStencilRef(front, back);
+            return;
+        }
+        Check(independent_stencil_status, "D3D12 independent stencil command interface", device);
+        EncodeCall<[](void* target, UINT front, UINT back) {
+            static_cast<RecordingTarget*>(target)->OMSetFrontAndBackStencilRef(front, back);
+        }>(*stream, front, back);
+    }
+    D3D12_FORWARD_INLINE void OMSetRenderTargets(UINT count,
+                                                 const D3D12_CPU_DESCRIPTOR_HANDLE* handles,
+                                                 BOOL contiguous,
+                                                 const D3D12_CPU_DESCRIPTOR_HANDLE* depth) {
+        if (!stream) {
+            immediate->OMSetRenderTargets(count, handles, contiguous, depth);
+            return;
+        }
+        const auto slot = descriptors->Acquire(*stream);
+        D3D12_CPU_DESCRIPTOR_HANDLE copies[8]{};
+        for (UINT i = 0; i < count; ++i) {
+            copies[i] = descriptors->Rtv(slot, i);
+            const D3D12_CPU_DESCRIPTOR_HANDLE source{
+                handles[contiguous ? 0 : i].ptr + (contiguous ? i * descriptors->RtvStride() : 0)};
+            descriptors->Copy(copies[i], source, false);
+        }
+        const auto depth_copy = descriptors->Dsv(slot);
+        if (depth)
+            descriptors->Copy(depth_copy, *depth, true);
+        EncodeCall<[](void* target, UINT count, const D3D12_CPU_DESCRIPTOR_HANDLE* handles,
+                      BOOL contiguous, const D3D12_CPU_DESCRIPTOR_HANDLE* depth, DescriptorTicket) {
+            static_cast<RecordingTarget*>(target)->list->OMSetRenderTargets(count, handles,
+                                                                            contiguous, depth);
+        }>(*stream, count,
+           Snapshot(handles ? copies : nullptr, contiguous ? (count ? 1 : 0) : count), contiguous,
+           Snapshot(depth ? &depth_copy : nullptr, 1), DescriptorTicket{descriptors, slot});
+    }
+    D3D12_FORWARD_INLINE void OMSetStencilRef(UINT stencil) {
+        if (!stream) {
+            immediate->OMSetStencilRef(stencil);
+            return;
+        }
+        EncodeCall<[](void* target, UINT stencil) {
+            static_cast<RecordingTarget*>(target)->list->OMSetStencilRef(stencil);
+        }>(*stream, stencil);
+    }
+    D3D12_FORWARD_INLINE void RSSetScissorRects(UINT count, const D3D12_RECT* rects) {
+        if (!stream) {
+            immediate->RSSetScissorRects(count, rects);
+            return;
+        }
+        EncodeCall<[](void* target, UINT count, const D3D12_RECT* rects) {
+            static_cast<RecordingTarget*>(target)->list->RSSetScissorRects(count, rects);
+        }>(*stream, count, Snapshot(rects, count));
+    }
+    D3D12_FORWARD_INLINE void RSSetViewports(UINT count, const D3D12_VIEWPORT* views) {
+        if (!stream) {
+            immediate->RSSetViewports(count, views);
+            return;
+        }
+        EncodeCall<[](void* target, UINT count, const D3D12_VIEWPORT* views) {
+            static_cast<RecordingTarget*>(target)->list->RSSetViewports(count, views);
+        }>(*stream, count, Snapshot(views, count));
+    }
+    D3D12_FORWARD_INLINE void ResolveSubresource(ID3D12Resource* destination,
+                                                 UINT destination_subresource,
+                                                 ID3D12Resource* source, UINT source_subresource,
+                                                 DXGI_FORMAT format) {
+        if (!stream) {
+            immediate->ResolveSubresource(destination, destination_subresource, source,
+                                          source_subresource, format);
+            return;
+        }
+        EncodeCall<[](void* target, ID3D12Resource* destination, UINT destination_subresource,
+                      ID3D12Resource* source, UINT source_subresource, DXGI_FORMAT format) {
+            static_cast<RecordingTarget*>(target)->list->ResolveSubresource(
+                destination, destination_subresource, source, source_subresource, format);
+        }>(*stream, destination, destination_subresource, source, source_subresource, format);
+    }
+    D3D12_FORWARD_INLINE void ResourceBarrier(UINT count, const D3D12_RESOURCE_BARRIER* barriers) {
+        if (!stream) {
+            immediate->ResourceBarrier(count, barriers);
+            return;
+        }
+        EncodeCall<[](void* target, UINT count, const D3D12_RESOURCE_BARRIER* barriers) {
+            static_cast<RecordingTarget*>(target)->list->ResourceBarrier(count, barriers);
+        }>(*stream, count, Snapshot(barriers, count));
+    }
+    D3D12_FORWARD_INLINE void SOSetTargets(UINT start, UINT count,
+                                           const D3D12_STREAM_OUTPUT_BUFFER_VIEW* views) {
+        if (!stream) {
+            immediate->SOSetTargets(start, count, views);
+            return;
+        }
+        EncodeCall<[](void* target, UINT start, UINT count,
+                      const D3D12_STREAM_OUTPUT_BUFFER_VIEW* views) {
+            static_cast<RecordingTarget*>(target)->list->SOSetTargets(start, count, views);
+        }>(*stream, start, count, Snapshot(views, count));
+    }
+    D3D12_FORWARD_INLINE void SetComputeRoot32BitConstants(UINT index, UINT count, const void* data,
+                                                           UINT offset) {
+        if (!stream) {
+            immediate->SetComputeRoot32BitConstants(index, count, data, offset);
+            return;
+        }
+        EncodeCall<[](void* target, UINT index, UINT count, const void* data, UINT offset) {
+            static_cast<RecordingTarget*>(target)->list->SetComputeRoot32BitConstants(index, count,
+                                                                                      data, offset);
+        }>(*stream, index, count, Snapshot(static_cast<const UINT*>(data), count), offset);
+    }
+    D3D12_FORWARD_INLINE void SetComputeRootConstantBufferView(UINT index,
+                                                               D3D12_GPU_VIRTUAL_ADDRESS address) {
+        if (!stream) {
+            immediate->SetComputeRootConstantBufferView(index, address);
+            return;
+        }
+        EncodeCall<[](void* target, UINT index, D3D12_GPU_VIRTUAL_ADDRESS address) {
+            static_cast<RecordingTarget*>(target)->list->SetComputeRootConstantBufferView(index,
+                                                                                          address);
+        }>(*stream, index, address);
+    }
+    D3D12_FORWARD_INLINE void SetComputeRootShaderResourceView(UINT index,
+                                                               D3D12_GPU_VIRTUAL_ADDRESS address) {
+        if (!stream) {
+            immediate->SetComputeRootShaderResourceView(index, address);
+            return;
+        }
+        EncodeCall<[](void* target, UINT index, D3D12_GPU_VIRTUAL_ADDRESS address) {
+            static_cast<RecordingTarget*>(target)->list->SetComputeRootShaderResourceView(index,
+                                                                                          address);
+        }>(*stream, index, address);
+    }
+    D3D12_FORWARD_INLINE void SetComputeRootUnorderedAccessView(UINT index,
+                                                                D3D12_GPU_VIRTUAL_ADDRESS address) {
+        if (!stream) {
+            immediate->SetComputeRootUnorderedAccessView(index, address);
+            return;
+        }
+        EncodeCall<[](void* target, UINT index, D3D12_GPU_VIRTUAL_ADDRESS address) {
+            static_cast<RecordingTarget*>(target)->list->SetComputeRootUnorderedAccessView(index,
+                                                                                           address);
+        }>(*stream, index, address);
+    }
+    D3D12_FORWARD_INLINE void SetComputeRootDescriptorTable(UINT index,
+                                                            D3D12_GPU_DESCRIPTOR_HANDLE handle) {
+        if (!stream) {
+            immediate->SetComputeRootDescriptorTable(index, handle);
+            return;
+        }
+        EncodeCall<[](void* target, UINT index, D3D12_GPU_DESCRIPTOR_HANDLE handle) {
+            static_cast<RecordingTarget*>(target)->list->SetComputeRootDescriptorTable(index,
+                                                                                       handle);
+        }>(*stream, index, handle);
+    }
+    D3D12_FORWARD_INLINE void SetComputeRootSignature(ID3D12RootSignature* signature) {
+        if (!stream) {
+            immediate->SetComputeRootSignature(signature);
+            return;
+        }
+        EncodeCall<[](void* target, ID3D12RootSignature* signature) {
+            static_cast<RecordingTarget*>(target)->list->SetComputeRootSignature(signature);
+        }>(*stream, signature);
+    }
+    D3D12_FORWARD_INLINE void SetGraphicsRoot32BitConstants(UINT index, UINT count,
+                                                            const void* data, UINT offset) {
+        if (!stream) {
+            immediate->SetGraphicsRoot32BitConstants(index, count, data, offset);
+            return;
+        }
+        EncodeCall<[](void* target, UINT index, UINT count, const void* data, UINT offset) {
+            static_cast<RecordingTarget*>(target)->list->SetGraphicsRoot32BitConstants(
+                index, count, data, offset);
+        }>(*stream, index, count, Snapshot(static_cast<const UINT*>(data), count), offset);
+    }
+    D3D12_FORWARD_INLINE void SetGraphicsRootConstantBufferView(UINT index,
+                                                                D3D12_GPU_VIRTUAL_ADDRESS address) {
+        if (!stream) {
+            immediate->SetGraphicsRootConstantBufferView(index, address);
+            return;
+        }
+        EncodeCall<[](void* target, UINT index, D3D12_GPU_VIRTUAL_ADDRESS address) {
+            static_cast<RecordingTarget*>(target)->list->SetGraphicsRootConstantBufferView(index,
+                                                                                           address);
+        }>(*stream, index, address);
+    }
+    D3D12_FORWARD_INLINE void SetGraphicsRootShaderResourceView(UINT index,
+                                                                D3D12_GPU_VIRTUAL_ADDRESS address) {
+        if (!stream) {
+            immediate->SetGraphicsRootShaderResourceView(index, address);
+            return;
+        }
+        EncodeCall<[](void* target, UINT index, D3D12_GPU_VIRTUAL_ADDRESS address) {
+            static_cast<RecordingTarget*>(target)->list->SetGraphicsRootShaderResourceView(index,
+                                                                                           address);
+        }>(*stream, index, address);
+    }
+    D3D12_FORWARD_INLINE void SetGraphicsRootUnorderedAccessView(
+        UINT index, D3D12_GPU_VIRTUAL_ADDRESS address) {
+        if (!stream) {
+            immediate->SetGraphicsRootUnorderedAccessView(index, address);
+            return;
+        }
+        EncodeCall<[](void* target, UINT index, D3D12_GPU_VIRTUAL_ADDRESS address) {
+            static_cast<RecordingTarget*>(target)->list->SetGraphicsRootUnorderedAccessView(
+                index, address);
+        }>(*stream, index, address);
+    }
+    D3D12_FORWARD_INLINE void SetGraphicsRootDescriptorTable(UINT index,
+                                                             D3D12_GPU_DESCRIPTOR_HANDLE handle) {
+        if (!stream) {
+            immediate->SetGraphicsRootDescriptorTable(index, handle);
+            return;
+        }
+        EncodeCall<[](void* target, UINT index, D3D12_GPU_DESCRIPTOR_HANDLE handle) {
+            static_cast<RecordingTarget*>(target)->list->SetGraphicsRootDescriptorTable(index,
+                                                                                        handle);
+        }>(*stream, index, handle);
+    }
+    D3D12_FORWARD_INLINE void SetGraphicsRootSignature(ID3D12RootSignature* signature) {
+        if (!stream) {
+            immediate->SetGraphicsRootSignature(signature);
+            return;
+        }
+        EncodeCall<[](void* target, ID3D12RootSignature* signature) {
+            static_cast<RecordingTarget*>(target)->list->SetGraphicsRootSignature(signature);
+        }>(*stream, signature);
+    }
+    D3D12_FORWARD_INLINE void SetDescriptorHeaps(UINT count, ID3D12DescriptorHeap* const* heaps) {
+        if (!stream) {
+            immediate->SetDescriptorHeaps(count, heaps);
+            return;
+        }
+        EncodeCall<[](void* target, UINT count, ID3D12DescriptorHeap* const* heaps) {
+            static_cast<RecordingTarget*>(target)->list->SetDescriptorHeaps(count, heaps);
+        }>(*stream, count, Snapshot(heaps, count));
+    }
+    D3D12_FORWARD_INLINE void SetMarker(UINT metadata, const void* data, UINT size) {
+        if (!stream) {
+            immediate->SetMarker(metadata, data, size);
+            return;
+        }
+        EncodeCall<[](void* target, UINT metadata, const void* data, UINT size) {
+            static_cast<RecordingTarget*>(target)->list->SetMarker(metadata, data, size);
+        }>(*stream, metadata, Snapshot(static_cast<const UINT8*>(data), size), size);
+    }
+    D3D12_FORWARD_INLINE void SetPipelineState(ID3D12PipelineState* state) {
+        if (!stream) {
+            immediate->SetPipelineState(state);
+            return;
+        }
+        EncodeCall<[](void* target, ID3D12PipelineState* state) {
+            static_cast<RecordingTarget*>(target)->list->SetPipelineState(state);
+        }>(*stream, state);
+    }
+    D3D12_FORWARD_INLINE void SetPredication(ID3D12Resource* buffer, UINT64 offset,
+                                             D3D12_PREDICATION_OP operation) {
+        if (!stream) {
+            immediate->SetPredication(buffer, offset, operation);
+            return;
+        }
+        EncodeCall<[](void* target, ID3D12Resource* buffer, UINT64 offset,
+                      D3D12_PREDICATION_OP operation) {
+            static_cast<RecordingTarget*>(target)->list->SetPredication(buffer, offset, operation);
+        }>(*stream, buffer, offset, operation);
+    }
+};
+#undef D3D12_FORWARD_INLINE
+} // namespace D3D12

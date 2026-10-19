@@ -367,6 +367,7 @@ struct RendererD3D12::Impl {
         context.Transition(buffers[index], D3D12_RESOURCE_STATE_PRESENT);
         present_ticks[index] = context.Submit(FrameCount::ForcedSubmitPresent);
         rasterizer.NotifyFencesSubmitted();
+        context.Acknowledge(present_ticks[index]);
         const bool log_present = ++present_sequence <= 8 || present_sequence % 120 == 0;
         if (log_present)
             Diagnostic("D3D12 Present begin");
