@@ -539,7 +539,8 @@ void FillGraphicsState(Tegra::Engines::Maxwell3D& maxwell3d, Pso::GraphicsPsoSta
     const auto cull =
         Pso::CullMode(regs.gl_cull_test_enabled != 0, static_cast<u32>(regs.gl_cull_face));
     s.cull_mode = static_cast<u8>(cull.mode);
-    if (BisectEnabled("NXBOX_D3D12_NO_CULL"))
+    static const bool no_cull = BisectEnabled("NXBOX_D3D12_NO_CULL");
+    if (no_cull)
         s.cull_mode = static_cast<u8>(Pso::CullMode(false, 0).mode);
     s.cull_all = cull.cull_all && (s.topology_type == Pso::kTopologyTypeTriangle ||
                                    s.topology_type == Pso::kTopologyTypePatch);
@@ -556,7 +557,8 @@ void FillGraphicsState(Tegra::Engines::Maxwell3D& maxwell3d, Pso::GraphicsPsoSta
     const auto geometry_clip = regs.viewport_clip_control.geometry_clip;
     s.depth_clip = geometry_clip == Clip::Passthrough || geometry_clip == Clip::FrustumXYZ ||
                    geometry_clip == Clip::FrustumZ;
-    if (BisectEnabled("NXBOX_D3D12_NO_DEPTH_CLIP"))
+    static const bool no_depth_clip = BisectEnabled("NXBOX_D3D12_NO_DEPTH_CLIP");
+    if (no_depth_clip)
         s.depth_clip = 0;
     // Polygon offset is enabled per primitive class (point / line / fill).
     const u32 class_ = Pso::TopologyType(topology);
@@ -596,9 +598,11 @@ void FillGraphicsState(Tegra::Engines::Maxwell3D& maxwell3d, Pso::GraphicsPsoSta
         s.stencil_enable |= 2; // Bit 1 selects native independent face state.
 
     // Diagnostic bisection only: preserve writes while bypassing rejection.
-    if (BisectEnabled("NXBOX_D3D12_NO_DEPTH_TEST"))
+    static const bool no_depth_test = BisectEnabled("NXBOX_D3D12_NO_DEPTH_TEST");
+    static const bool no_stencil_test = BisectEnabled("NXBOX_D3D12_NO_STENCIL_TEST");
+    if (no_depth_test)
         s.depth_func = 8; // D3D12_COMPARISON_FUNC_ALWAYS
-    if (BisectEnabled("NXBOX_D3D12_NO_STENCIL_TEST"))
+    if (no_stencil_test)
         s.stencil_enable = 0;
 
     // Blend (independent per render target).
@@ -608,8 +612,7 @@ void FillGraphicsState(Tegra::Engines::Maxwell3D& maxwell3d, Pso::GraphicsPsoSta
     s.alpha_to_coverage = regs.anti_alias_alpha_control.alpha_to_coverage != 0;
     s.conservative_raster = regs.conservative_raster_enable != 0;
     s.smooth_lines = regs.line_anti_alias_enable != 0;
-    s.depth_bounds =
-        regs.zeta_enable && regs.depth_bounds_enable && !BisectEnabled("NXBOX_D3D12_NO_DEPTH_TEST");
+    s.depth_bounds = regs.zeta_enable && regs.depth_bounds_enable && !no_depth_test;
     for (size_t i = 0; i < Pso::kNumRenderTargets; ++i) {
         auto& out = s.blend[i];
         out = {0, 0xF, Pso::kBlendOne, Pso::kBlendZero, 1, Pso::kBlendOne, Pso::kBlendZero, 1};
@@ -1333,8 +1336,8 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(const Pso::Framebuffer
     const bool positive_y = viewport.scale_y > 0;
     specialization = Pso::HashBytes(&positive_y, sizeof(positive_y), specialization);
     specialization = Pso::HashBytes(&viewport.swizzle, sizeof(viewport.swizzle), specialization);
-    specialization = Pso::HashBytes(regs.vertex_attrib_format.data(),
-                                    sizeof(regs.vertex_attrib_format), specialization);
+    specialization = vertex_specialization_hash.Get(
+        regs.vertex_attrib_format.data(), sizeof(regs.vertex_attrib_format), specialization);
     specialization = Pso::HashBytes(&topology.topology, sizeof(topology.topology), specialization);
     specialization =
         Pso::HashBytes(&regs.provoking_vertex, sizeof(regs.provoking_vertex), specialization);

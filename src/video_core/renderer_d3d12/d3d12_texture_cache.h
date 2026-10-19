@@ -196,6 +196,10 @@ public:
     ResourcePtr ImageHandle() const {
         return resource;
     }
+    // Borrow only while the view is alive; callers retaining work still copy the lease.
+    const ResourcePtr& BorrowImageHandle() const& {
+        return resource;
+    }
     FormatInfo HostFormat() const {
         auto result = host_format;
         if (resource && !host_format.depth)

@@ -182,9 +182,8 @@ void LogDeviceInfoQueue(ID3D12Device* device) noexcept {
     try {
         if (!device)
             return;
-        char debug[2]{};
-        if (GetEnvironmentVariableA("NXBOX_D3D12_DEBUG", debug, sizeof(debug)) != 1 ||
-            debug[0] != '1')
+        static const bool debug = BisectEnabled("NXBOX_D3D12_DEBUG");
+        if (!debug)
             return;
         ComPtr<ID3D12InfoQueue> info;
         if (FAILED(device->QueryInterface(IID_PPV_ARGS(&info))))
@@ -965,7 +964,8 @@ void Context::Collect() {
 }
 ID3D12GraphicsCommandList* Context::Commands() {
     profile.BindRecordingThread();
-    {
+    static const bool debug_recorder = BisectEnabled("NXBOX_D3D12_DEBUG");
+    if (debug_recorder) {
         // Diagnostic: the command list and copy hazard state are single-threaded.
         static std::atomic<DWORD> recorder{};
         static std::atomic<u32> foreign{};
@@ -1129,7 +1129,9 @@ void Context::Finish(FrameCount reason) {
     Wait(Submit(reason), "finish");
 }
 void Context::Retain(const ResourcePtr& resource) {
-    Commands();
+    // Opening a recording can retire resources; do it before consulting retained IDs.
+    if (!recording)
+        Commands();
     if (!resource || (!retained.empty() && retained.back() == resource))
         return;
     // The same attachment/texture can be referenced by thousands of draws.
@@ -1492,6 +1494,14 @@ struct BufferHeapPool {
 std::shared_ptr<BufferHeapPool> BufferPool(const std::shared_ptr<MemoryBudget>& budget) {
     static std::mutex mutex;
     static std::unordered_map<MemoryBudget*, std::weak_ptr<BufferHeapPool>> pools;
+    // Repeated allocations on one device need neither the registry lock nor its sweep.
+    // Compare ownership too: a new budget may reuse an expired budget's address.
+    thread_local std::weak_ptr<MemoryBudget> last_budget;
+    thread_local std::weak_ptr<BufferHeapPool> last_pool;
+    if (!last_budget.owner_before(budget) && !budget.owner_before(last_budget)) {
+        if (auto pool = last_pool.lock())
+            return pool;
+    }
     const std::scoped_lock lock{mutex};
     std::erase_if(pools, [](const auto& entry) { return entry.second.expired(); });
     auto& entry = pools[budget.get()];
@@ -1500,6 +1510,8 @@ std::shared_ptr<BufferHeapPool> BufferPool(const std::shared_ptr<MemoryBudget>& 
         pool = std::make_shared<BufferHeapPool>();
         entry = pool;
     }
+    last_budget = budget;
+    last_pool = pool;
     return pool;
 }
 } // namespace

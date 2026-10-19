@@ -542,7 +542,7 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     Pso::FramebufferFormats formats{};
     u32 attachment_samples = 0;
     const auto accept_attachment = [&](const ImageView& view, bool depth) {
-        const auto resource = view.ImageHandle();
+        const auto& resource = view.BorrowImageHandle();
         if (!resource)
             return false;
         const auto desc = resource->handle->GetDesc();
@@ -572,14 +572,14 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
             SkipDraw("unsupported attachment or mismatched sample counts");
             return;
         }
-        if (view && view->ImageHandle()) {
+        if (view && view->BorrowImageHandle()) {
             // Only overlapping RTV subresources conflict. Distinct mips/layers
             // of one resource remain legal independent color attachments.
             bool duplicate = false;
-            const auto resource_desc = view->ImageHandle()->handle->GetDesc();
+            const auto resource_desc = view->BorrowImageHandle()->handle->GetDesc();
             for (u32 previous = 0; previous < slot; ++previous) {
                 const auto* prior = color_views[previous];
-                if (!prior || prior->ImageHandle() != view->ImageHandle())
+                if (!prior || prior->BorrowImageHandle() != view->BorrowImageHandle())
                     continue;
                 const bool same_mip = resource_desc.SampleDesc.Count > 1 ||
                                       prior->range.base.level == view->range.base.level;
@@ -602,7 +602,7 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         SkipDraw("unsupported depth attachment or mismatched sample counts");
         return;
     }
-    const bool has_depth = depth_view && depth_view->ImageHandle();
+    const bool has_depth = depth_view && depth_view->BorrowImageHandle();
     if (has_depth)
         formats.depth = static_cast<u32>(DsvFormat(depth_view->Description().Format));
     Pso::GraphicsPsoState attachment_state{};
@@ -644,7 +644,7 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     draw_phase.emplace(context.Profile(), FramePhase::AttachmentSetup);
     ++feedback_draw;
     const auto extent = [](const ImageView& view) {
-        const auto desc = view.ImageHandle()->handle->GetDesc();
+        const auto desc = view.BorrowImageHandle()->handle->GetDesc();
         const u32 mip = desc.SampleDesc.Count > 1 ? 0 : static_cast<u32>(view.range.base.level);
         return AttachmentExtent{static_cast<u32>(std::max<u64>(1, desc.Width >> mip)),
                                 std::max(1u, desc.Height >> mip),
@@ -669,12 +669,12 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     if (!render_area.width || !render_area.height || !render_area.layers)
         return;
     D3D12_RESOURCE_DIMENSION attachment_dimension =
-        has_depth ? depth_view->ImageHandle()->handle->GetDesc().Dimension
+        has_depth ? depth_view->BorrowImageHandle()->handle->GetDesc().Dimension
                   : D3D12_RESOURCE_DIMENSION_UNKNOWN;
     for (const auto* color : color_views) {
         if (!color)
             continue;
-        const auto dimension = color->ImageHandle()->handle->GetDesc().Dimension;
+        const auto dimension = color->BorrowImageHandle()->handle->GetDesc().Dimension;
         if (attachment_dimension != D3D12_RESOURCE_DIMENSION_UNKNOWN &&
             dimension != attachment_dimension) {
             SkipDraw("mismatched attachment resource types");
@@ -695,7 +695,7 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         const auto* color = color_views[slot];
         if (!color)
             continue;
-        color_resources[slot] = color->ImageHandle();
+        color_resources[slot] = color->BorrowImageHandle();
         const FrameProfile::Scope profile_extent{context.Profile(), FramePhase::ExtentCopies};
         const auto original_extent = extent(*color);
         // Bind mismatched extents directly; hardware renders the intersection. The copy-in/out
@@ -743,7 +743,7 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
             .dst_offset = {0, 0, 0},
             .extent = {render_area.width, render_area.height, 1},
         };
-        const BlitSurface original{color->ImageHandle(), color->HostFormat()};
+        const BlitSurface original{color->BorrowImageHandle(), color->HostFormat()};
         const BlitSurface target{temporary, color->HostFormat()};
         // CopyImage uses a bitwise region copy for single-sample color and a
         // sample-preserving shader copy for MSAA (never an averaging resolve).
@@ -1699,7 +1699,8 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     if (context.CurrentTick() != table_tick)
         descriptors.Reserve(view_block.count, sampler_size);
 
-    if (!injected_draw_skip && BisectEnabled("NXBOX_D3D12_INJECT_DRAW_SKIP")) {
+    static const bool inject_draw_skip = BisectEnabled("NXBOX_D3D12_INJECT_DRAW_SKIP");
+    if (!injected_draw_skip && inject_draw_skip) {
         injected_draw_skip = true;
         SkipDraw("injected descriptor recording failure");
         return;
@@ -1850,7 +1851,8 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         if (i == 0)
             y_flip = result.y_flip;
     }
-    if (has_depth && BisectEnabled("NXBOX_D3D12_DEPTH_TRACE") && depth_trace_draws++ < 4) {
+    static const bool depth_trace = BisectEnabled("NXBOX_D3D12_DEPTH_TRACE");
+    if (has_depth && depth_trace && depth_trace_draws++ < 4) {
         const auto& viewport = viewports[0];
         Diagnostic(fmt::format(
             "D3D12_DEPTH_DRAW frame={} area={}x{} dsv={} depth_test={} "
@@ -2383,8 +2385,8 @@ bool RasterizerD3D12::PrepareDrawIndices(bool is_indexed, DrawParams& params,
                                             restart.enabled};
         // Storage/stream-output buffers can share the guest index resource after cache
         // merging. Keep the independent converted snapshot when a write state may alias it.
-        bool allow_native = regs.transform_feedback_enabled == 0 &&
-                            !BisectEnabled("NXBOX_D3D12_NO_NATIVE_INDEX");
+        static const bool no_native_index = BisectEnabled("NXBOX_D3D12_NO_NATIVE_INDEX");
+        bool allow_native = regs.transform_feedback_enabled == 0 && !no_native_index;
         for (size_t stage = 0; stage < NUM_GRAPHICS_STAGES && allow_native; ++stage) {
             if (const auto* info = pipeline.StageInfo(stage))
                 allow_native = info->storage_buffers_descriptors.empty() &&
@@ -2545,7 +2547,8 @@ bool RasterizerD3D12::PrepareDrawIndices(bool is_indexed, DrawParams& params,
 
 void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) try {
     const FrameProfile::Scope profile_dispatch{context.Profile(), FramePhase::DrawDispatch};
-    if (BisectEnabled("NXBOX_D3D12_NO_DRAWS")) {
+    static const bool no_draws = BisectEnabled("NXBOX_D3D12_NO_DRAWS");
+    if (no_draws) {
         m_gpu.TickWork();
         return;
     }
@@ -2587,7 +2590,8 @@ ID3D12CommandSignature* RasterizerD3D12::IndirectSignature(bool indexed) {
 
 void RasterizerD3D12::DrawIndirect() try {
     const FrameProfile::Scope profile_dispatch{context.Profile(), FramePhase::DrawDispatch};
-    if (BisectEnabled("NXBOX_D3D12_NO_DRAWS")) {
+    static const bool no_draws = BisectEnabled("NXBOX_D3D12_NO_DRAWS");
+    if (no_draws) {
         m_gpu.TickWork();
         return;
     }
