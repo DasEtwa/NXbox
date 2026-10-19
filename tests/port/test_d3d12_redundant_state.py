@@ -105,6 +105,16 @@ class RedundantStateTests(unittest.TestCase):
                     "context.InvalidateRecordedState();", (BACKEND / filename).read_text()
                 )
 
+    def test_query_end_draw_invalidates_by_default(self):
+        # f1adbb814e: SM3DW terrain needs this until the stale binding is found.
+        source = (BACKEND / "d3d12_query_cache.cpp").read_text()
+        start = source.index("void QueryCacheRuntime::EndDraw()")
+        end_draw = source[start : source.index("\n}\n", start)]
+        self.assertIn(
+            "if (!keep_recorded_state || full_invalidate) {\n        context.InvalidateRecordedState();",
+            end_draw,
+        )
+
     def test_skips_have_a_frame_counter(self):
         self.assertIn("RedundantStateSkips,", self.header)
         self.assertIn("profile.Count(FrameCount::RedundantStateSkips);", self.header)
