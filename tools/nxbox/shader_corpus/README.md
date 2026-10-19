@@ -152,3 +152,8 @@ A glslang success and an optimizable SPIR-V module are counted separately: a mod
 can compile but fail SPIR-V validation. Cached compiler results track HLSL content;
 use fresh cache directories after changing compiler versions. These checks do not
 replace DXC/DXIL validation or rendering tests on the console.
+
+They missed one real failure. glslang has no C++ type-id rule, but DXC has. In
+`(float(float(v1)))*2.0f` the parentheses can hold the function type `float(float)`, so
+DXC reads `*2.0f` as the operand of a cast. 77 corpus shaders failed only in DXC, so
+run every candidate through the renderer's DXC flags as well.

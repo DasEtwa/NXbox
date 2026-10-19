@@ -582,6 +582,23 @@ level-load hitch fell from about 1.6 s to 0.8-0.9 s, the later bursts from about
 0.06-0.17 s, and no window reached 1 s. Median fps (27.0 against 26.8), p10, peak memory and the 96
 screenshots compared were the same.
 
+## Smaller HLSL for DXC (19/10/2026)
+
+DXC time on the console grows with the HLSL text. Since 1.0.5 the emitter makes its output
+smaller in five ways:
+- it drops helpers that nothing calls;
+- it reads aligned constant-buffer words directly;
+- it spells floats as decimal literals when they round-trip;
+- it inlines single-use values within a block;
+- it groups the zero-initialized declarations.
+
+None of these passes uses std::regex: the regex version cost about 15 ms per shader.
+
+Corpus result (1559 distinct shaders from the console caches): HLSL is 31.7 MB before and
+19.2 MB after (-39%), and DXIL is the same size (99.6%). DXC 1.9.2609.5 compiles all of
+them. With the renderer's flags, 70 sampled shaders compiled 2.06x faster on the PC, and
+2.6x faster for those of 50-100 KB.
+
 ## Persona 5 Royal is playable on Xbox Series X (28/09/2026)
 
 Measured on the console with remote input:
