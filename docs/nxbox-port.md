@@ -532,8 +532,8 @@ other: the 57.4 ms frame is their sum.
 
 `NXBOX_D3D12_FLUSH_DRAWS=N` in `LocalState\nxbox_env.txt` submits the open command list through
 `Context::Submit` every N recorded draws, between draws, so the GPU starts on the first part of a
-frame while the rest is still being recorded. Unset means N = 32, the default since the Series X
-A/B below; `0` or anything that is not a positive number leaves every submission point as it was. A cut takes the path a guest fence already takes (the new
+frame while the rest is still being recorded. Unset means N = 128, the default since the second
+Series X A/B below; `0` or anything that is not a positive number leaves every submission point as it was. A cut takes the path a guest fence already takes (the new
 list rebinds all state), and wakes the fencing thread like `FlushCommands` does. The startup log
 records `D3D12 flush_draws=N`, and `D3D12_FRAME_PROFILE` counts the extra submissions in
 `forced_submits_flush_draws` and `ExecuteCommandLists`.
@@ -547,6 +547,18 @@ pooled): N = 32 cut the fence wait of the recording thread from 1.5 s to 0.42 s 
 (-73%), raised its CPU use from 61% to 79% and steady fps from 27.9 to 29.1 (+4%); the prologue walk,
 where the GPU had slack, went from 26.9 to 29.8 fps (+11%). Scenes where the GPU is already 95-98%
 busy gain nothing. That made 32 the default.
+
+Second Series X A/B (package #747, warm cache, two runs per arm on Wonder and one on the others,
+every arm with the knob set explicitly). Median fps, and the change against no flush:
+
+| Game | N = 0 | N = 32 | N = 128 |
+| --- | --- | --- | --- |
+| Super Mario Odyssey | base | +2.7% | +10.4% |
+| Super Mario Bros. Wonder (E route, 215 s) | 27.0 / 27.1 | 28.2 / 28.5 (+4.8%) | 28.9 / 29.1 (+7.2%) |
+| Mario Kart 8 Deluxe (race, 125 s slice) | 23.8 | 24.7 (+3.8%) | 29.4 (+23.5%) |
+
+At 32 the recording thread of Mario Kart was 91% busy rebinding state; at 128 it had slack. Both
+removed Wonder's 19-20 fps stretch and its 0.54 s hitches. That made 128 the default.
 
 Desktop result (Wine and vkd3d-proton on an RTX 3050, Odyssey opening cutscene, 576 draws a frame,
 cumulative frames 2700 to 4800, three runs per N in rotating order, same build and same TAS).
