@@ -49,6 +49,36 @@ class CleanJitPageTableTests(unittest.TestCase):
                     )
                     print(f"{sanitizer}: {result.stdout.strip()}")
 
+    def test_allocation_waits_for_fastmem_selection(self):
+        page_table = (ROOT / "src/common/page_table.cpp").read_text()
+        resize = page_table.split("void PageTable::Resize(", 1)[1]
+        self.assertNotIn("jit_entries.ResizeAndClear", resize)
+        memory = (ROOT / "src/core/memory.cpp").read_text()
+        selection = memory.split("void SetCurrentPageTable(", 1)[1].split("#ifdef __ANDROID__", 1)[
+            0
+        ]
+        self.assertGreater(
+            selection.index("current_page_table->InitializeJitPageTable();"),
+            selection.index("current_page_table->fastmem_arena = nullptr;"),
+        )
+
+    def test_memory_log_captures_shutdown_before_teardown(self):
+        core = (ROOT / "src/core/core.cpp").read_text()
+        run = core.split("    void Run() {", 1)[1].split("    void Pause()", 1)[0]
+        self.assertNotIn("LogJitPageTableMemoryOnce", run)
+        shutdown = core.split("    void ShutdownMainProcess() {", 1)[1].split(
+            "    bool IsShuttingDown()", 1
+        )[0]
+        log = shutdown.index("LogJitPageTableMemoryOnce();")
+        self.assertLess(shutdown.index("kernel.SuspendEmulation(true);"), log)
+        self.assertLess(log, shutdown.index("kernel.CloseServices();"))
+        self.assertLess(log, shutdown.index("kernel.ShutdownCores();"))
+        self.assertLess(log, shutdown.index("services.reset();"))
+        self.assertLess(log, shutdown.index("kernel.Shutdown();"))
+        self.assertEqual(core.count("LogJitPageTableMemoryOnce();"), 1)
+        page_table = (ROOT / "src/common/page_table.cpp").read_text()
+        self.assertIn("NXBOX clean page table at shutdown:", page_table)
+
     def test_jit_configuration_and_writer_wiring(self):
         for bits in (32, 64):
             source = (ROOT / f"src/core/arm/dynarmic/arm_dynarmic_{bits}.cpp").read_text()

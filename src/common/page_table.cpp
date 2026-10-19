@@ -24,6 +24,12 @@ bool PageTable::CleanJitPageTableEnabled() {
     return enabled;
 }
 
+void PageTable::InitializeJitPageTable() {
+    if (UseCleanJitPageTable()) {
+        jit_entries.ResizeAndClear(entries.size());
+    }
+}
+
 void PageTable::LogJitPageTable() {
     static std::once_flag flag;
     std::call_once(flag, [this] {
@@ -41,7 +47,7 @@ void PageTable::LogJitPageTableMemoryOnce() {
 #if defined(_WIN32) && defined(YUZU_UWP_APPCONTAINER)
     LOG_INFO(
         Core_ARM,
-        "NXBOX clean page table after boot: reserved_bytes={} "
+        "NXBOX clean page table at shutdown: reserved_bytes={} "
         "committed_bytes={} bitmap_bytes={}",
         jit_entries.size() * sizeof(JitPageEntry),
         SparseMemory::CommittedBytes(jit_entries.data(), jit_entries.size() * sizeof(JitPageEntry)),
@@ -59,16 +65,14 @@ void PageTable::Resize(std::size_t address_space_width_in_bits, std::size_t page
     auto const num_page_table_entries = 1ULL << (address_space_width_in_bits - page_bits);
     // Resize/reset is only legal with readers stopped. ResizeAndClear alone does not
     // clear an existing reservation when its size stays the same.
+    if (jit_entries.size()) {
+        jit_entries.ZeroRegion(0, jit_entries.size());
+    }
     if (entries.size() == num_page_table_entries) {
-        if (jit_entries.size()) {
-            jit_entries.ZeroRegion(0, jit_entries.size());
-        }
         entries.ZeroRegion(0, entries.size());
     }
     entries.ResizeAndClear(num_page_table_entries);
-    if (CleanJitPageTableEnabled()) {
-        jit_entries.ResizeAndClear(num_page_table_entries);
-    }
+    // JIT storage is allocated after SetCurrentPageTable selects fastmem.
     jit_memory_logged.store(false, std::memory_order_relaxed);
     current_address_space_width_in_bits = address_space_width_in_bits;
     current_page_bits = page_bits;

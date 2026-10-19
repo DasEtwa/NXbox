@@ -222,9 +222,6 @@ struct System::Impl {
     void Run() {
         std::unique_lock<std::mutex> lk(suspend_guard);
 
-        if (auto* process = kernel.ApplicationProcess()) {
-            process->GetPageTable().GetImpl().LogJitPageTableMemoryOnce();
-        }
         kernel.SuspendEmulation(false);
         core_timing.SyncPause(false);
         is_paused.store(false, std::memory_order_relaxed);
@@ -435,6 +432,11 @@ struct System::Impl {
         core_timing.SyncPause(false);
         Network::CancelPendingSocketOperations();
         kernel.SuspendEmulation(true);
+        // JIT chunks stay committed through unmapping; sample after guest execution
+        // stops and before teardown releases the process and its page tables.
+        if (auto* process = kernel.ApplicationProcess()) {
+            process->GetPageTable().GetImpl().LogJitPageTableMemoryOnce();
+        }
         kernel.CloseServices();
         kernel.ShutdownCores();
         services.reset();

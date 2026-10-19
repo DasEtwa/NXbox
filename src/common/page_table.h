@@ -146,6 +146,8 @@ struct PageTable {
     bool UseCleanJitPageTable() const {
         return CleanJitPageTableEnabled() && !fastmem_arena;
     }
+    // Called after fastmem selection and before the first mapping, with readers stopped.
+    void InitializeJitPageTable();
     void LogJitPageTable();
     void LogJitPageTableMemoryOnce();
 
