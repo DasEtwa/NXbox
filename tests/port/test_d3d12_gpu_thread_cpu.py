@@ -158,23 +158,22 @@ int main() {
 """.replace("__POOL__", pool)
         )
 
-    def test_retention_opens_recording_before_testing_ids(self):
+    def test_retention_opens_recording_before_testing_stamp(self):
         source = (NATIVE / "d3d12_context.cpp").read_text()
         retain = function(source, "void Context::Retain(")
         self.compile_run(
             r"""
 #include <cassert>
 #include <memory>
-#include <unordered_set>
 #include <vector>
-struct Resource {};
+struct Resource { unsigned retained_generation{}; };
 using ResourcePtr = std::shared_ptr<Resource>;
 struct Context {
     bool recording{};
+    unsigned retention_generation{};
     unsigned opened{};
     std::vector<ResourcePtr> retained;
-    std::unordered_set<Resource*> retained_ids;
-    void Commands() { ++opened; recording = true; retained.clear(); retained_ids.clear(); }
+    void Commands() { ++opened; ++retention_generation; recording = true; retained.clear(); }
     void Retain(const ResourcePtr&);
 };
 __RETAIN__

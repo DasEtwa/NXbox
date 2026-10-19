@@ -821,6 +821,7 @@ ImageView::ImageView(TextureCacheRuntime&, const VideoCommon::ImageViewInfo& inf
       image_type{image.info.type}, host_format{image.HostFormat()}, resource{image.Handle()} {
     if (!resource)
         return;
+    resource->Description();
     auto view_info = MaxwellFormat(info.format);
     const bool decoded_bcn = VideoCore::Surface::IsPixelFormatBCn(image.info.format) &&
                              image.HostFormat().block_width == 1;

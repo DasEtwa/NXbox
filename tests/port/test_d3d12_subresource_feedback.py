@@ -22,6 +22,7 @@ def function(source, signature):
 
 
 MOCK = r"""
+#include <algorithm>
 #include <cassert>
 #include <cstdint>
 #include <functional>
