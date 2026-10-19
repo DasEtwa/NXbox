@@ -195,6 +195,17 @@ void ArmDynarmic32::MakeJit(Common::PageTable* page_table) {
         }
     }
 
+    if (page_table) {
+        page_table->LogJitPageTable();
+        if (page_table->UseCleanJitPageTable()) {
+            config.page_table = reinterpret_cast<std::array<std::uint8_t*, 1 << (32 - 12)>*>(
+                const_cast<Common::PageTable::JitPageEntry*>(page_table->jit_entries.data()));
+            config.page_table_pointer_mask = 0;
+            config.page_table_marked_bit = std::nullopt;
+            config.page_table_sign_extension = std::nullopt;
+        }
+    }
+
     // Multi-process state
     config.processor_id = std::uint8_t(m_core_index);
     config.global_monitor = &m_exclusive_monitor.monitor;
