@@ -75,9 +75,10 @@ class FinishingADownloadOnRemovableStorage(unittest.TestCase):
 
     def test_a_complete_partial_on_the_other_drive_is_reused_not_downloaded_again(self):
         download = body(DOWNLOAD, "bool DownloadFile(")
-        self.assertIn("const auto candidate_size = DownloadedSize(candidate);", download)
-        self.assertIn("have = candidate_size;", download)
-        self.assertTrue(in_order(download, "have = candidate_size;", "if (have == total)", "Transfer(client"))
+        self.assertIn("drives.push_back({DownloadedSize(candidate), FreeSpace(folder)});", download)
+        self.assertIn("have = drives[*pick].have;", download)
+        self.assertTrue(
+            in_order(download, "have = drives[*pick].have;", "if (have == total)", "Transfer(client"))
         # DownloadedSize goes through Common::FS, which has the broker fallback (std::filesystem
         # does not see files on the drive).
         size = body(DOWNLOAD, "std::uint64_t DownloadedSize(")
