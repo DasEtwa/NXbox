@@ -101,6 +101,41 @@ class GpuFrontendHotPathTests(unittest.TestCase):
         cases = r"case (MAXWELL3D_REG_INDEX\([^)]+\)(?: \+ \d+)?):"
         self.assertLessEqual(set(re.findall(cases, handlers)), set(re.findall(cases, mask)))
 
+    def test_jit_zero_register_skip_preserves_result_and_live_carry(self):
+        source = method(
+            (ROOT / "src/video_core/macro.cpp").read_text(), "MacroJITx64Impl::Compile_ALU"
+        )
+        predicate = re.search(r"    const bool zero_reg_skip =.*?;", source, re.DOTALL).group()
+        # Each ALU emitter must use the restricted decision, never the raw optimizer flag.
+        self.assertEqual(source.count("optimizer.zero_reg_skip"), 1)
+        enum = re.search(
+            r"enum class ALUOperation : u32 \{.*?\};",
+            (ROOT / "src/video_core/macro.h").read_text(),
+            re.DOTALL,
+        ).group()
+        self.compile_and_run(
+            (FIXTURES / "gpu_frontend_jit.cpp")
+            .read_text()
+            .replace("// ALU_ENUM", enum)
+            .replace("// PREDICATE", predicate)
+        )
+
+    def test_jit_alu_emission_matches_interpreter(self):
+        source = (ROOT / "src/video_core/macro.cpp").read_text()
+        production = "\n".join(
+            method(source, name)
+            for name in (
+                "MacroJITx64Impl::Compile_GetRegister",
+                "MacroJITx64Impl::Compile_ALU",
+                "MacroInterpreterImpl::GetALUResult",
+            )
+        )
+        self.compile_and_run(
+            (FIXTURES / "gpu_frontend_jit_exec.cpp")
+            .read_text()
+            .replace("// PRODUCTION", production)
+        )
+
     def test_jit_immediate_emission_preserves_two(self):
         source = (ROOT / "src/video_core/macro.cpp").read_text()
         production = "\n".join(
