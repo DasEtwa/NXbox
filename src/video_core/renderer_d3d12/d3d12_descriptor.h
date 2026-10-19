@@ -197,7 +197,7 @@ public:
     // Reserve only missing tables, then recheck after Reserve (it may change the tick).
     bool CanReuseDrawTable(const DescriptorPlan& plan, bool sampler = false) const;
     DescriptorTable FinishDrawTable(DescriptorPlan& plan, bool sampler = false);
-    void SetHeaps(ID3D12GraphicsCommandList* commands, bool cache_draw_state = false);
+    void SetHeaps(CommandFacade* commands, bool cache_draw_state = false);
     DescriptorTable AllocateViews(u32 count);
     DescriptorTable AllocateSamplers(u32 count);
     D3D12_CPU_DESCRIPTOR_HANDLE AllocateRtv(u32 count);

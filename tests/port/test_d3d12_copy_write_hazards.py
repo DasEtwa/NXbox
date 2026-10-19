@@ -62,7 +62,7 @@ class CopyWriteHazards(unittest.TestCase):
     def test_tracking_is_scoped_to_recording(self):
         submit = function_body(self.context, "u64 Context::Submit(")
         self.assertRegex(submit, r"work\.clear\(\);\s*copy_writes\.clear\(\);")
-        commands = function_body(self.context, "ID3D12GraphicsCommandList* Context::Commands(")
+        commands = function_body(self.context, "CommandFacade* Context::Commands(")
         self.assertLess(commands.index("commands->Reset("), commands.index("copy_writes.clear();"))
         self.assertLess(commands.index("copy_writes.clear();"), commands.index("recording = true;"))
 

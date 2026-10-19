@@ -217,6 +217,8 @@ struct FrameProfile {
     std::array<u64,static_cast<size_t>(FrameCount::Count)> counts{};
     u64 frames=0,fence_wall=0,start_wall=0,initial_cpu=0;
     std::atomic<u64> gpu_busy{};
+    u64 TakeRecorderCpu() { return 0; }
+    u64 recorder_waits{}, recorder_wait_ns{};
     std::unordered_map<u64,u64> transitions;
     std::unordered_map<std::string_view,std::pair<u64,u64>> waits;
     std::function<std::string()> guest_visibility;

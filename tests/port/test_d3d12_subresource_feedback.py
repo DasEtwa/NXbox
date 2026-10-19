@@ -100,6 +100,7 @@ struct Context {
     FrameProfile profile;
     CommandsMock recording;
     CommandsMock* commands = &recording;
+    CommandsMock& facade = recording;
     std::unordered_map<ID3D12Resource*, unsigned> copy_writes;
     std::vector<D3D12_RESOURCE_BARRIER> transition_barriers;
     CommandsMock* Commands() { return commands; }

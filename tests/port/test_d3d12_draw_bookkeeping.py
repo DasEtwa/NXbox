@@ -61,6 +61,9 @@ using ResourcePtr = std::shared_ptr<Resource>;
 namespace EdenXbox { struct UnknownRendererException { const char* message; }; }
 struct Context {
     bool recording{};
+    bool deferred{};
+    u64 acknowledged{};
+    u64 LastSubmittedTick() const { return acknowledged; }
     u64 retention_generation{};
     struct Batch {
         u64 tick;
@@ -106,10 +109,14 @@ int main() {
     assert(context.retained.size() == 1 && resource.use_count() == 3);
     context.Submit(20, [&] { assert(!lifetime.expired()); ++callbacks; });
     resource.reset();
-    context.CompleteThrough(9);
+    context.deferred = true;
+    context.acknowledged = 9;
+    context.CompleteThrough(20);
     assert(callbacks == 0 && !lifetime.expired());
-    context.CompleteThrough(10);
+    context.acknowledged = 10;
+    context.CompleteThrough(20);
     assert(callbacks == 1 && !lifetime.expired());
+    context.acknowledged = 20;
     context.CompleteThrough(20);
     assert(callbacks == 2 && lifetime.expired());
     assert(other.use_count() == 1);

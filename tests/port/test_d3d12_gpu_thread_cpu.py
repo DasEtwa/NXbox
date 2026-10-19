@@ -225,7 +225,7 @@ int main() {
 
     def test_diagnostics_and_specialization_cache_are_wired(self):
         source = (NATIVE / "d3d12_context.cpp").read_text()
-        commands = function(source, "ID3D12GraphicsCommandList* Context::Commands()")
+        commands = function(source, "CommandFacade* Context::Commands()")
         self.assertLess(
             commands.index("if (debug_recorder)"), commands.index("GetCurrentThreadId()")
         )

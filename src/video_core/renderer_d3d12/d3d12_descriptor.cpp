@@ -501,8 +501,7 @@ void D3D12DescriptorAllocator::Reserve(u32 view_count, u32 sampler_count, u32 rt
     }
 }
 
-void D3D12DescriptorAllocator::SetHeaps(ID3D12GraphicsCommandList* commands,
-                                        bool cache_draw_state) {
+void D3D12DescriptorAllocator::SetHeaps(CommandFacade* commands, bool cache_draw_state) {
     const std::array heaps{views.heap.Get(), samplers.heap.Get()};
     if (cache_draw_state) {
         auto& state = context.DrawState();
