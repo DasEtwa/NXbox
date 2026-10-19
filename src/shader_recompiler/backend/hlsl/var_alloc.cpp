@@ -1,10 +1,12 @@
 // SPDX-FileCopyrightText: Copyright 2026 NSPX
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include <cstdlib>
 #include <bit>
+#include <cstdlib>
 #include <fmt/format.h>
-#include "shader_recompiler/backend/hlsl/var_alloc.h"
 #include "shader_recompiler/backend/hlsl/hlsl_source.h"
+#include "shader_recompiler/backend/hlsl/var_alloc.h"
+#include "shader_recompiler/frontend/ir/basic_block.h"
+#include "shader_recompiler/frontend/ir/program.h"
 #include "shader_recompiler/frontend/ir/value.h"
 
 namespace Shader::Backend::HLSL {
@@ -145,10 +147,96 @@ std::string VarAlloc::GetHlslType(HlslVarType type) const {
         throw NotImplementedException("HLSL variable type {}", static_cast<u32>(type));
     }
 }
+void VarAlloc::PrepareUses(const IR::Program& program) {
+    single_use_blocks.clear();
+    const auto record = [&](const IR::Value& value, const IR::Block* block) {
+        if (value.IsEmpty() || value.IsImmediate())
+            return;
+        const auto* producer = value.InstRecursive();
+        const auto [found, inserted] = single_use_blocks.emplace(producer, block);
+        if (!inserted)
+            found->second = nullptr;
+    };
+    // Identity aliases can have several downstream readers despite UseCount()==1
+    // on their producer. Count actual recursive consumers across the entire program.
+    for (const auto* block : program.blocks)
+        for (const auto& inst : block->Instructions()) {
+            if (inst.GetOpcode() == IR::Opcode::Identity ||
+                inst.GetOpcode() == IR::Opcode::Reference)
+                continue;
+            // Retain texture-expression boundaries: glslang's propagation of
+            // NoContraction through sampling arguments depends on these assignments.
+            const bool image = IR::NameOf(inst.GetOpcode()).find("Image") != std::string_view::npos;
+            for (size_t index = 0; index < inst.NumArgs(); ++index)
+                record(inst.Arg(index), image ? nullptr : block);
+        }
+    using Node = IR::AbstractSyntaxNode;
+    for (const auto& node : program.syntax_list)
+        switch (node.type) {
+        case Node::Type::If:
+            record(node.data.if_node.cond, nullptr);
+            break;
+        case Node::Type::Repeat:
+            record(node.data.repeat.cond, nullptr);
+            break;
+        case Node::Type::Break:
+            record(node.data.break_node.cond, nullptr);
+            break;
+        default:
+            break;
+        }
+}
+void VarAlloc::InlineBlock(std::string& code, size_t begin, const IR::Block& block) {
+    std::vector<InlineCandidate> candidates;
+    for (const auto& inst : block.Instructions()) {
+        const auto found = names.find(const_cast<IR::Inst*>(&inst));
+        const auto use = single_use_blocks.find(&inst);
+        if (found == names.end() || use == single_use_blocks.end() || use->second != &block ||
+            inst.MayHaveSideEffects() || inst.HasAssociatedPseudoOperation() ||
+            inst.IsPseudoInstruction() || IR::IsPhi(inst))
+            continue;
+        const auto& variable = variables[found->second];
+        if (variable.type == HlslVarType::PrecF32 || variable.type == HlslVarType::PrecF64)
+            continue;
+        // Fragment PositionW contains a reciprocal. Keeping its assignment
+        // preserves glslang's sharing and transitive NoContraction decoration.
+        if ((inst.GetOpcode() == IR::Opcode::GetAttribute ||
+             inst.GetOpcode() == IR::Opcode::GetAttributeU32) &&
+            inst.Arg(0).Attribute() == IR::Attribute::PositionW)
+            continue;
+        const auto opcode = IR::NameOf(inst.GetOpcode());
+        // Reads of mutable memory/state and lane operations must keep their position.
+        // Keep texture precision boundaries and immutable-read conversion rules intact.
+        if (opcode.find("Image") != opcode.npos || opcode.find("Load") != opcode.npos || opcode.find("Read") != opcode.npos ||
+            opcode.find("Atomic") != opcode.npos || opcode.find("Shuffle") != opcode.npos ||
+            opcode.find("Subgroup") != opcode.npos || opcode.find("Vote") != opcode.npos ||
+            opcode.find("Quad") != opcode.npos || opcode.find("Swizzle") != opcode.npos ||
+            opcode.starts_with("DPd") || opcode == "IsHelperInvocation" ||
+            (opcode.starts_with("Get") && !opcode.starts_with("GetCbuf") &&
+             opcode != "GetAttribute" && opcode != "GetAttributeU32"))
+            continue;
+        // These emitters already produce the exact IR result type. Other forms
+        // retain an explicit cast to preserve the assignment's implicit conversion.
+        const bool exact_type = opcode.starts_with("FP") || opcode.starts_with("Composite") ||
+                                opcode.starts_with("BitCast") || opcode == "IAdd32" ||
+                                opcode == "IMul32" || opcode.starts_with("Bitwise") ||
+                                opcode == "GetCbufU32" || opcode == "GetCbufF32";
+        candidates.push_back({variable.name, GetHlslType(variable.type), exact_type});
+    }
+    const auto inlined = InlineSingleUseBlock(std::string_view{code}.substr(begin), candidates);
+    code.replace(begin, code.size() - begin, inlined.source);
+    for (const auto& name : inlined.eliminated) {
+        size_t index{};
+        const auto parsed = std::from_chars(name.data() + 1, name.data() + name.size(), index);
+        if (parsed.ec == std::errc{} && index < variables.size())
+            variables[index].eliminated = true;
+    }
+}
 std::string VarAlloc::Declarations() const {
     std::string result;
     for (const auto& variable : variables)
-        result += fmt::format("{} {} = 0;\n", GetHlslType(variable.type), variable.name);
+        if (!variable.eliminated)
+            result += fmt::format("{} {} = 0;\n", GetHlslType(variable.type), variable.name);
     return result;
 }
 } // namespace Shader::Backend::HLSL

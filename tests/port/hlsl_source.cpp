@@ -4,6 +4,27 @@
 #include "shader_recompiler/backend/hlsl/hlsl_source.h"
 using namespace Shader::Backend::HLSL;
 int main() {
+    {
+        const std::vector<InlineCandidate> candidates{{"v0", "uint"}, {"v1", "uint"}};
+        const auto inlined =
+            InlineSingleUseBlock("v0 = 1u;\nv1 = v0 + 2u;\noutput.x = v1;\n", candidates);
+        assert(inlined.eliminated.size() == 2);
+        assert(inlined.source == "output.x = (uint((uint(1u)) + 2u));\n");
+        for (const auto& text :
+             {"v0 = 1u;\noutput.x = v0 + v0;\n", "v0 = 1u;\nv0 = 2u;\noutput.x = v0;\n",
+              "v0 = 1u;\n{\noutput.x = v0;\n}\n", "v0 = 1u;\noutput.x = true ? v0 : 0u;\n",
+              "output.x = v0;\nv0 = 1u;\n", "v0 = 1u;\nInterlockedAdd(buffer, v0);\n"})
+            assert(InlineSingleUseBlock(text, candidates).eliminated.empty());
+        assert(InlineSingleUseBlock("v0 = 1u;\noutput.x = v0;\n", {{"v0", "precise float"}})
+                   .eliminated.empty());
+        assert(
+            InlineSingleUseBlock("v0 = 1u;\noutput.x = v0;\n", candidates, 1).eliminated.empty());
+        assert(InlineSingleUseBlock("v0 = 1u;\noutput.x = v0;\n", candidates, 600, 10)
+                   .eliminated.empty());
+        assert(InlineSingleUseBlock("v0 = 1u;\noutput.x = v10;\n", candidates).eliminated.empty());
+    }
+    assert(InlineSingleUseBlock("v0 = nx_cbuf_load(0u, v2);\noutput.x = v0;\n", {{"v0", "uint"}})
+               .eliminated.empty());
     assert(FormatFloatImmediate(0u) == "0.0f");
     assert(FormatFloatImmediate(0x3f800000u) == "1.0f");
     assert(FormatFloatImmediate(0xbf000000u) == "(-0.5f)");

@@ -11,6 +11,7 @@
 #include <regex>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -53,6 +54,126 @@ inline constexpr bool IsDirectCbufferAddress(std::optional<std::uint32_t> bindin
                                              std::optional<std::uint32_t> offset, bool declared,
                                              std::uint32_t vectors = 4096) {
     return binding && offset && declared && (*offset & 3u) == 0 && (*offset / 16u) < vectors;
+}
+
+struct InlineCandidate {
+    std::string name;
+    std::string type;
+    bool exact_type{};
+};
+struct InlineBlockResult {
+    std::string source;
+    std::vector<std::string> eliminated;
+};
+
+// Candidates are SSA results with a single IR consumer in this block. The source
+// checks also reject multiple HLSL writes, scopes, out parameters and lazy uses.
+inline InlineBlockResult InlineSingleUseBlock(std::string_view source,
+                                              const std::vector<InlineCandidate>& candidates,
+                                              size_t max_expression = 600, size_t max_line = 3000) {
+    std::vector<std::string> lines;
+    for (size_t pos = 0; pos < source.size();) {
+        const auto end = source.find('\n', pos);
+        lines.emplace_back(
+            source.substr(pos, end == source.npos ? source.size() - pos : end - pos));
+        pos = end == source.npos ? source.size() : end + 1;
+    }
+    const auto occurrences = [](std::string_view line) {
+        std::vector<std::pair<std::string, size_t>> result;
+        for (size_t pos = 0; pos < line.size();) {
+            const auto start = pos;
+            const auto is_identifier = [](char ch) {
+                return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+                       (ch >= '0' && ch <= '9') || ch == '_';
+            };
+            if (!is_identifier(line[pos])) {
+                ++pos;
+                continue;
+            }
+            while (pos < line.size() && is_identifier(line[pos]))
+                ++pos;
+            const auto token = line.substr(start, pos - start);
+            if (token.size() > 1 && token[0] == 'v' &&
+                token.find_first_not_of("0123456789", 1) == token.npos)
+                result.emplace_back(token, start);
+        }
+        return result;
+    };
+    std::unordered_map<std::string, std::vector<size_t>> sites;
+    std::unordered_map<std::string, InlineCandidate> types;
+    for (const auto& candidate : candidates)
+        types.emplace(candidate.name, candidate);
+    std::vector<size_t> segments(lines.size());
+    size_t segment = 0;
+    for (size_t index = 0; index < lines.size(); ++index) {
+        const bool scope = lines[index].find_first_of("{}") != std::string::npos;
+        if (scope)
+            ++segment;
+        segments[index] = segment;
+        if (scope)
+            ++segment;
+        for (const auto& [name, offset] : occurrences(lines[index])) {
+            (void)offset;
+            sites[name].push_back(index);
+        }
+    }
+    static const std::regex assignment{R"(^(v\d+)\s*=\s*(?!=)([^;{}]+);$)"};
+    InlineBlockResult result;
+    for (size_t index = 0; index < lines.size(); ++index) {
+        std::smatch match;
+        if (!std::regex_match(lines[index], match, assignment))
+            continue;
+        const std::string name = match[1];
+        const auto type = types.find(name);
+        if (type == types.end() || type->second.type.starts_with("precise "))
+            continue;
+        const auto found = sites.find(name);
+        if (found == sites.end() || found->second.size() != 2 || found->second[0] != index)
+            continue;
+        const size_t use = found->second[1];
+        if (use <= index || segments[index] != segments[use])
+            continue;
+        const auto& consumer = lines[use];
+        if (consumer.find('?') != consumer.npos || consumer.find("&&") != consumer.npos ||
+            consumer.find("||") != consumer.npos || consumer.find("Interlocked") != consumer.npos ||
+            consumer.find("GetDimensions") != consumer.npos ||
+            consumer.find("uaddCarry") != consumer.npos || consumer.find("sincos") != consumer.npos)
+            continue;
+        const std::string expression = match[2];
+        // The dynamic cbuffer helper contains a switch. Keep the evaluation order
+        // of separate lookups instead of moving those control-flow regions into operands.
+        if (expression.size() > max_expression ||
+            expression.find("nx_cbuf_load(") != expression.npos)
+            continue;
+        // Preserve the conversion performed by the original assignment, including
+        // signed-to-unsigned conversion and scalar/vector truncation.
+        const std::string replacement = type->second.exact_type
+                                            ? "(" + expression + ")"
+                                            : "(" + type->second.type + "(" + expression + "))";
+        const auto tokens = occurrences(consumer);
+        const auto token = std::find_if(tokens.begin(), tokens.end(),
+                                        [&](const auto& item) { return item.first == name; });
+        if (token == tokens.end() || consumer.size() - name.size() + replacement.size() > max_line)
+            continue;
+        std::string rewritten = consumer;
+        rewritten.replace(token->second, name.size(), replacement);
+        // Redirect the expression's dependencies before deleting its assignment.
+        for (const auto& [operand, offset] : occurrences(expression)) {
+            (void)offset;
+            auto& references = sites[operand];
+            const auto reference = std::find(references.begin(), references.end(), index);
+            if (reference != references.end())
+                *reference = use;
+            std::sort(references.begin(), references.end());
+        }
+        lines[use] = std::move(rewritten);
+        lines[index].clear();
+        result.eliminated.push_back(name);
+    }
+    for (const auto& line : lines)
+        if (!line.empty())
+            result.source += line + '\n';
+    return result;
 }
 
 // This scans the emitter's regular top-level declarations, not arbitrary user HLSL.

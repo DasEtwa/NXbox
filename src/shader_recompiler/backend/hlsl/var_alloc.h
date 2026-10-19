@@ -10,6 +10,8 @@
 #include "shader_recompiler/frontend/ir/type.h"
 
 namespace Shader::IR {
+class Block;
+struct Program;
 class Inst;
 class Value;
 } // namespace Shader::IR
@@ -52,6 +54,8 @@ public:
     std::string GetHlslType(HlslVarType type) const;
     std::string GetHlslType(IR::Type type) const;
     std::string Declarations() const;
+    void PrepareUses(const IR::Program& program);
+    void InlineBlock(std::string& code, size_t begin, const IR::Block& block);
 
     /// Compute shaders drop `precise`: the Xbox driver stalls for minutes on BotW's large
     /// compute shaders with it, and nothing there needs cross-pass position invariance.
@@ -61,8 +65,10 @@ private:
     struct Variable {
         HlslVarType type;
         std::string name;
+        bool eliminated{};
     };
     std::unordered_map<IR::Inst*, size_t> names;
     std::vector<Variable> variables;
+    std::unordered_map<const IR::Inst*, const IR::Block*> single_use_blocks;
 };
 } // namespace Shader::Backend::HLSL

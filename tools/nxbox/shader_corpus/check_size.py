@@ -21,8 +21,63 @@ STAGES = {"vb": "vert", "fs": "frag", "cs": "comp", "gs": "geom"}
 
 
 def canonical_ids(text):
-    identifiers = {}
-    return re.sub(r"%\d+", lambda m: identifiers.setdefault(m[0], f"%{len(identifiers)}"), text)
+    """Normalize IDs and declaration order; retain every instruction and decoration.
+
+    Local results keep their execution order. Global IDs derive from their defining
+    types/constants and resource decorations, so moving an unchanged declaration
+    cannot create a false difference. Signed and unsigned constants remain distinct.
+    """
+    lines = text.splitlines()
+    defs = {}
+    decorations = {}
+    locals = {}
+    inside = False
+    function_count = 0
+    for line in lines:
+        if line.startswith(("OpDecorate ", "OpMemberDecorate ")):
+            m = re.match(r"\w+ (%\d+) (.*)", line)
+            decorations.setdefault(m[1], []).append(m[2])
+        m = re.match(r"(%\d+) = (.*)", line)
+        if not m:
+            continue
+        key, expr = m.groups()
+        if expr.startswith("OpFunction "):
+            inside = True
+            locals[key] = f"%function{function_count}"
+            function_count += 1
+        elif inside:
+            locals[key] = f"%local{len(locals)}"
+        else:
+            defs[key] = expr
+    memo = dict(locals)
+
+    def resolve(key):
+        if key in memo:
+            return memo[key]
+        expr = defs[key]
+        expr = re.sub(r"%\d+", lambda m: resolve(m[0]), expr)
+        if expr.startswith("OpVariable"):
+            expr += " " + str(sorted(decorations.get(key, [])))
+        memo[key] = "%g" + hashlib.sha256(expr.encode()).hexdigest()
+        return memo[key]
+
+    out = []
+    global_lines = []
+    annotation_lines = []
+    inside = False
+    for line in lines:
+        line = re.sub(r"%\d+", lambda m: resolve(m[0]), line)
+        if " = OpFunction " in line:
+            inside = True
+        if inside:
+            out.append(line)
+        elif line.startswith(("OpDecorate ", "OpMemberDecorate ")):
+            annotation_lines.append(line)
+        elif re.match(r"%\w+ = ", line):
+            global_lines.append(line)
+        else:
+            out.append(line)
+    return "\n".join(sorted(annotation_lines) + sorted(global_lines) + out) + "\n"
 
 
 def compile_shader(source, stage, directory):
@@ -30,7 +85,26 @@ def compile_shader(source, stage, directory):
     assembly = directory / "optimized.txt"
     status = directory / "status.json"
     if status.exists():
-        return json.loads(status.read_text())
+        cached = json.loads(status.read_text())
+        if not cached["ok"] or cached.get("canonical_version") == 2:
+            return cached
+        process = subprocess.run(
+            [
+                "spirv-dis",
+                "--no-header",
+                "--raw-id",
+                "--no-indent",
+                str(directory / "optimized.spv"),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=120,
+        )
+        assembly.write_text(canonical_ids(process.stdout))
+        cached["canonical_version"] = 2
+        status.write_text(json.dumps(cached))
+        return cached
     commands = [
         [
             "glslangValidator",
@@ -63,7 +137,7 @@ def compile_shader(source, stage, directory):
             break
         if index == 2:
             assembly.write_text(canonical_ids(process.stdout))
-            result = {"ok": True}
+            result = {"ok": True, "canonical_version": 2}
     status.write_text(json.dumps(result))
     return result
 
