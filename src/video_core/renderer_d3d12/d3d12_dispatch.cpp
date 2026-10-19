@@ -3,6 +3,9 @@
 #include "video_core/renderer_d3d12/d3d12_dispatch.h"
 
 #include <algorithm>
+#include <atomic>
+
+#include <fmt/format.h>
 
 #include "video_core/renderer_d3d12/d3d12_feedback.h"
 #include "video_core/renderer_d3d12/d3d12_root_signature.h"
@@ -87,8 +90,21 @@ void ComputeDispatch::Bind(const ComputeBindings& bindings) {
         for (const auto& other : bindings.resources)
             if (other.resource == use.resource && other.state != use.state &&
                 !(MergesIntoBufferUav(other.state, use.state) &&
-                  use.resource->handle->GetDesc().Dimension == D3D12_RESOURCE_DIMENSION_BUFFER))
+                  use.resource->handle->GetDesc().Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)) {
+                // Name the first conflicts so the skipped dispatch can be traced to its bindings.
+                static std::atomic<std::uint32_t> logged{};
+                if (logged.fetch_add(1, std::memory_order_relaxed) < 16) {
+                    const auto desc = use.resource->handle->GetDesc();
+                    Diagnostic(fmt::format(
+                        "D3D12_COMPUTE_STATE_CONFLICT have={:#x} want={:#x} dim={} size={}x{}x{} "
+                        "mips={} format={} flags={:#x} uses={}",
+                        static_cast<std::uint32_t>(other.state), static_cast<std::uint32_t>(use.state),
+                        static_cast<int>(desc.Dimension), desc.Width, desc.Height,
+                        desc.DepthOrArraySize, desc.MipLevels, static_cast<int>(desc.Format),
+                        static_cast<std::uint32_t>(desc.Flags), bindings.resources.size()));
+                }
                 throw std::invalid_argument("D3D12 conflicting compute resource states");
+            }
     }
     context.InvalidateRecordedState();
     auto* commands = context.Commands();
