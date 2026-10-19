@@ -65,7 +65,7 @@ NSD::NSD(Core::System& system_, const char* name) : ServiceFramework{system_, na
 
 std::string ResolveFqdn(const std::string& fqdn_in) {
     // nsd swaps '%' for the environment identifier (GetEnvironmentIdentifier): game servers are
-    // requested as g<id>-%.s.n.srv.nintendo.net and only resolve as g<id>-lp1.s.n.srv.nintendo.net.
+    // requested as g<id>-%.s.n.srv.<domain> and only resolve as g<id>-lp1.s.n.srv.<domain>.
     auto fqdn_out = Common::ReplaceAll(fqdn_in, "%", "lp1");
     LOG_DEBUG(Service, "fqdn_in={} fqdn_out={}", fqdn_in, fqdn_out);
     return fqdn_out;
