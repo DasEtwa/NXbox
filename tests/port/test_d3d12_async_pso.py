@@ -189,9 +189,10 @@ class AsyncPsoTests(unittest.TestCase):
             "Count(FrameCount::DrawsSkippedPendingPso)", 1
         )[0]
         self.assertIn('GetEnvironmentVariableA("NXBOX_D3D12_ASYNC_SHADERS"', graphics)
-        # The other count is stale from an earlier draw, so only the drawn one decides.
+        # Both counts must exceed six (1.0.4 rule): the drawn count alone let MK8D skip draws
+        # its race needs once, and the race drew only the HUD.
         self.assertIn(
-            "draw_count = is_indexed ? draw.index_buffer.count : draw.vertex_buffer.count", graphics
+            "draw_count = (std::min)(draw.index_buffer.count, draw.vertex_buffer.count)", graphics
         )
         self.assertIn("CanSkipPendingGraphicsPso(\n                skip_pending, draw_count,", graphics)
         self.assertIn("maxwell3d->regs.transform_feedback_enabled != 0", graphics)

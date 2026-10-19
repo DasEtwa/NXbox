@@ -1465,7 +1465,11 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(const Pso::Framebuffer
                                         sizeof(async_shaders_value)) == 1 &&
                 async_shaders_value[0] == '1';
             const auto& draw = maxwell3d->draw_manager.draw_state;
-            const u32 draw_count = is_indexed ? draw.index_buffer.count : draw.vertex_buffer.count;
+            // Both counts must exceed six, as in 1.0.4. One of them is left over from an earlier draw
+            // of the other kind, so after a small draw the next meshes wait for their PSO too.
+            // Deciding from the drawn count alone (489238e37c) skipped draws that Mario Kart 8
+            // Deluxe needs once per race: on a cold cache the race showed only its HUD in most runs.
+            const u32 draw_count = (std::min)(draw.index_buffer.count, draw.vertex_buffer.count);
             const bool may_skip = CanSkipPendingGraphicsPso(
                 skip_pending, draw_count, maxwell3d->regs.transform_feedback_enabled != 0);
             if (!may_skip && pso_waited.insert(request_hash).second) {
