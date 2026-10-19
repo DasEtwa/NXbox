@@ -3524,7 +3524,11 @@ void RasterizerD3D12::SignalReference() {
     fence_manager.SignalReference();
 }
 void RasterizerD3D12::ReleaseFences(bool force) {
+    // Every blocking drain (puller semaphores/syncpoints, queries) goes through here. Recorded
+    // without a SyncWait phase so sync_wait stays comparable; overlaps puller_acquire.
+    const auto start = force ? Common::GpuProfile::Start() : Common::GpuProfile::Tick{};
     fence_manager.WaitPendingFences(force);
+    Common::GpuProfile::Record(Common::GpuProfile::Wait::ForcedDrain, start);
 }
 void RasterizerD3D12::FlushAndInvalidateRegion(DAddr addr, u64 size, VideoCommon::CacheType which) {
     FlushRegion(addr, size, which);

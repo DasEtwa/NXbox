@@ -57,6 +57,15 @@ bool StateFastpathEnabled() noexcept {
     }();
     return enabled;
 }
+// NXBOX_D3D12_WAIT_SPIN=0 blocks on the fence event at once, as before the bounded spin.
+static bool WaitSpinEnabled() noexcept {
+    static const bool enabled = [] {
+        char value[2]{};
+        return !(GetEnvironmentVariableA("NXBOX_D3D12_WAIT_SPIN", value, sizeof(value)) == 1 &&
+                 value[0] == '0');
+    }();
+    return enabled;
+}
 bool StateVerifyEnabled() noexcept {
     static const bool enabled = BisectEnabled("NXBOX_D3D12_STATE_VERIFY");
     return enabled;
@@ -692,17 +701,28 @@ void FrameProfile::EndFrame(bool presented) {
         for (const auto& [site, entry] : waits)
             line += fmt::format("{}:{}:{:.3f},", site, entry.first,
                                 static_cast<double>(entry.second) / 10000.0);
+        for (const auto& [site, entry] : waits)
+            line +=
+                fmt::format(" wait_{}_per_frame={:.2f} wait_{}_ms_per_frame={:.3f}", site,
+                            frames ? static_cast<double>(entry.first) / frames : 0.0, site,
+                            frames ? static_cast<double>(entry.second) / (10000.0 * frames) : 0.0);
         if (guest_visibility)
             line += guest_visibility();
         Diagnostic(line);
         const auto guest = Common::GpuProfile::TakeWindow();
         std::string guest_line = "D3D12_GUEST_WAITS";
+        guest_line += fmt::format(" frames={}", frames);
         for (size_t i = 0; i < guest.waits.size(); ++i) {
             const auto& sample = guest.waits[i];
             guest_line += fmt::format(" {}_count={} {}_total_ms={:.3f} {}_max_ms={:.3f}",
                                       Common::GpuProfile::WaitNames[i], sample.count,
                                       Common::GpuProfile::WaitNames[i], sample.total_ns / 1.0e6,
                                       Common::GpuProfile::WaitNames[i], sample.max_ns / 1.0e6);
+            guest_line += fmt::format(" {}_per_frame={:.2f} {}_ms_per_frame={:.3f}",
+                                      Common::GpuProfile::WaitNames[i],
+                                      frames ? static_cast<double>(sample.count) / frames : 0.0,
+                                      Common::GpuProfile::WaitNames[i],
+                                      frames ? sample.total_ns / (1.0e6 * frames) : 0.0);
         }
         guest_line += fmt::format(
             " fence_samples={} fence_queued_avg_ms={:.3f} fence_gpu_execution_avg_ms={:.3f}"
@@ -751,6 +771,7 @@ void FrameProfile::EndFrame(bool presented) {
 Context::Context() {
     Diagnostic(fmt::format("D3D12 state fastpath={} verify={}", StateFastpathEnabled() ? 1 : 0,
                            StateVerifyEnabled() ? 1 : 0));
+    Diagnostic(fmt::format("D3D12 wait spin={}", WaitSpinEnabled() ? 1 : 0));
     SetEnvironmentVariableA("NXBOX_D3D12_COMMAND_FAILURE", nullptr);
     SetEnvironmentVariableA("NXBOX_D3D12_FIRST_FAILURE", nullptr);
     ComPtr<ID3D12DeviceRemovedExtendedDataSettings1> dred;
@@ -932,34 +953,47 @@ void Context::Wait(u64 tick, std::string_view site) {
 }
 void Context::WaitSubmitted(u64 tick, std::string_view site) {
     if (!IsFree(tick)) {
-        const u64 wait_start = ProfileWallTime();
+        const u64 wait_start = profile.Enabled() ? ProfileWallTime() : 0;
         const FrameProfile::Scope frame_wait{profile, FramePhase::FenceWait};
-        // Each waiter owns its event; GPU and fencing threads may wait concurrently.
-        const HANDLE wait_event = CreateEventExW(nullptr, nullptr, 0, EVENT_ALL_ACCESS);
-        if (!wait_event)
-            Check(HRESULT_FROM_WIN32(GetLastError()), "CreateEventExW", device.Get());
-        const auto result = fence->SetEventOnCompletion(tick, wait_event);
-        if (FAILED(result)) {
+        const bool spun_ready =
+            WaitSpinEnabled() &&
+            SpinUntilReady([this, tick] { return IsFree(tick); },
+                           [] { return std::chrono::steady_clock::now(); },
+                           [] { YieldProcessor(); }, std::chrono::microseconds{50});
+        if (!spun_ready) {
+            // Each waiter owns its event; GPU and fencing threads may wait concurrently.
+            const HANDLE wait_event = CreateEventExW(nullptr, nullptr, 0, EVENT_ALL_ACCESS);
+            if (!wait_event)
+                Check(HRESULT_FROM_WIN32(GetLastError()), "CreateEventExW", device.Get());
+            const auto result = fence->SetEventOnCompletion(tick, wait_event);
+            if (FAILED(result)) {
+                CloseHandle(wait_event);
+                Check(result, "SetEventOnCompletion", device.Get());
+            }
+            DWORD wait;
+            DWORD wait_error;
+            {
+                const EdenXbox::ThreadProfile::Scope wait_scope{
+                    EdenXbox::ThreadProfile::Wait::Fence};
+                wait = WaitForSingleObjectEx(wait_event, 10000, FALSE);
+                wait_error = GetLastError();
+            }
             CloseHandle(wait_event);
-            Check(result, "SetEventOnCompletion", device.Get());
+            if (wait != WAIT_OBJECT_0) {
+                Diagnostic(fmt::format("D3D12 wait tick={} result={:#x}", tick, wait));
+                Check(device->GetDeviceRemovedReason(), "device removed while waiting",
+                      device.Get());
+                Check(wait == WAIT_FAILED ? HRESULT_FROM_WIN32(wait_error)
+                                          : HRESULT_FROM_WIN32(ERROR_TIMEOUT),
+                      "WaitForSingleObjectEx", device.Get());
+                throw std::runtime_error("D3D12 fence wait failed/timed out");
+            }
         }
-        DWORD wait;
-        DWORD wait_error;
-        {
-            const EdenXbox::ThreadProfile::Scope wait_scope{EdenXbox::ThreadProfile::Wait::Fence};
-            wait = WaitForSingleObjectEx(wait_event, 10000, FALSE);
-            wait_error = GetLastError();
+        if (profile.Enabled()) {
+            const auto wall = ProfileWallTime() - wait_start;
+            profile.NoteWait(site, wall);
+            profile.NoteWait(spun_ready ? "spin_ready" : "event_block", wall);
         }
-        CloseHandle(wait_event);
-        if (wait != WAIT_OBJECT_0) {
-            Diagnostic(fmt::format("D3D12 wait tick={} result={:#x}", tick, wait));
-            Check(device->GetDeviceRemovedReason(), "device removed while waiting", device.Get());
-            Check(wait == WAIT_FAILED ? HRESULT_FROM_WIN32(wait_error)
-                                      : HRESULT_FROM_WIN32(ERROR_TIMEOUT),
-                  "WaitForSingleObjectEx", device.Get());
-            throw std::runtime_error("D3D12 fence wait failed/timed out");
-        }
-        profile.NoteWait(site, ProfileWallTime() - wait_start);
     }
     Check(device->GetDeviceRemovedReason(), "device removed after waiting", device.Get());
     CompleteThrough(tick);

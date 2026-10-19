@@ -127,12 +127,17 @@ enum class Wait : std::size_t {
     TickGPU,
     GpuThreadCommand,
     GpuQueueIdle,
+    DmaMemorySync,
+    PullerAcquire,
+    GuestFenceCompletion,
+    ForcedDrain,
     Count
 };
 inline constexpr std::array WaitNames{
-    "syncpoint_host", "syncpoint_guest", "nvdrv_event", "request_sync_operation",
-    "request_flush",  "wait_idle",       "tick_gpu",    "gpu_thread_command",
-    "gpu_queue_idle"};
+    "syncpoint_host", "syncpoint_guest", "nvdrv_event",    "request_sync_operation",
+    "request_flush",  "wait_idle",       "tick_gpu",       "gpu_thread_command",
+    "gpu_queue_idle", "dma_memory_sync", "puller_acquire", "guest_fence_completion",
+    "forced_drain"};
 static_assert(WaitNames.size() == static_cast<std::size_t>(Wait::Count));
 struct Sample {
     Tick count{}, total_ns{}, max_ns{};
