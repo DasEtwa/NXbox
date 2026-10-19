@@ -240,8 +240,9 @@ bool RunNextendoScreen(Renderer& renderer, const winrt::Windows::UI::Core::CoreW
         }
         if (phone && !busy) {
             if (auto code = phone->TakeCode()) {
-                // Complete validates the public redirect URI; the LAN hop only transports the code.
-                complete(std::string(nx::PhoneCallbackUri) + "?code=" + nx::UrlEncode(*code) +
+                // Nextendo accepts only loopback redirects for emulator clients: the device that
+                // signs in forwards its 127.0.0.1:17822 callback to this LAN listener.
+                complete(std::string(nx::CallbackUri) + "?code=" + nx::UrlEncode(*code) +
                          "&state=" + nx::UrlEncode(phone_state));
                 busy = true;
             } else if (nx::Authorization::Clock::now() >= phone_deadline) {
@@ -307,15 +308,15 @@ bool RunNextendoScreen(Renderer& renderer, const winrt::Windows::UI::Core::CoreW
                             }
                             authorization = std::make_unique<nx::Authorization>(
                                 config.client_id, verifier, nx::PkceChallenge(verifier),
-                                phone_state, nx::Authorization::Clock::now(),
-                                browser ? nx::CallbackUri : nx::PhoneCallbackUri);
+                                phone_state, nx::Authorization::Clock::now(), nx::CallbackUri);
                             const auto url = authorization->AuthorizeUrl();
                             if (!browser) {
                                 qr = qrcodegen::QrCode::encodeText(url.c_str(),
                                                                    qrcodegen::QrCode::Ecc::MEDIUM);
                                 phone = std::make_shared<PhoneCallback>(phone_state);
+                                // A loopback authorization expires after five minutes.
                                 phone_deadline =
-                                    nx::Authorization::Clock::now() + std::chrono::minutes(10);
+                                    nx::Authorization::Clock::now() + std::chrono::minutes(5);
                                 run([receiver = phone] {
                                     const auto started =
                                         AwaitBounded(receiver->Start(), std::chrono::seconds(15));
