@@ -23,7 +23,6 @@ struct LaunchStatus {
     std::atomic<bool> shader_preload{false};
     std::atomic<std::size_t> built{0};
     std::atomic<std::size_t> total{0};
-    // The program NCA has no ExeFS of its own (a sparse base): it needs the game's update.
 };
 
 class LaunchScreen {

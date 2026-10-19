@@ -51,13 +51,19 @@ int main() {
     assert(Label(Problem::MissingFirmware) == Text::FirmwareMissing);
     assert(Label(Problem::None) == Text::LaunchFailed);
     for (auto status : {ResultStatus::ErrorNoExeFS, ResultStatus::ErrorNoRomFS,
-                        ResultStatus::ErrorBadNCAHeader, ResultStatus::ErrorIncorrectPFSFileSize})
+                        ResultStatus::ErrorBadNCAHeader, ResultStatus::ErrorIncorrectPFSFileSize,
+                        ResultStatus::ErrorBadXCIHeader, ResultStatus::ErrorXCIMissingPartition,
+                        ResultStatus::ErrorXCIMissingProgramNCA})
         assert(LoadProblem(status) == Problem::Corrupted);
     for (auto status : {ResultStatus::ErrorMissingHeaderKey, ResultStatus::ErrorMissingTitlekey,
                         ResultStatus::ErrorMissingKeyAreaKey, ResultStatus::ErrorIncorrectTitlekeyOrTitlekek})
         assert(LoadProblem(status) == Problem::MissingKeys);
     assert(LoadProblem(ResultStatus::ErrorMissingBKTRBaseRomFS) == Problem::UpdateOnly);
     assert(LoadProblem(ResultStatus::ErrorNotImplemented) == Problem::None);
+    for (const auto* name : {"game.nsp", "game.NSZ", "game.xci", "game.XCZ", "game.nca"})
+        assert(IsPackage(name));
+    for (const auto* name : {"game.nro", "game.nso", "game.elf", "game.nsp.partial", "plain"})
+        assert(!IsPackage(name));
     std::array<unsigned char, 16> zero{};
     assert(FileSys::ZeroNcaSectionHeader(zero));
     zero[15] = 1;
@@ -113,7 +119,7 @@ class LibraryContent(unittest.TestCase):
         library = (ROOT / "src/eden_uwp/ui/library.cpp").read_text()
         load = library[library.index("std::optional<GameEntry> LoadGame") :]
         self.assertLess(
-            load.index("ReadPackage(vfs"), load.index("if (reason.empty() && cache_valid)")
+            load.index("if (cache_valid)"), load.index("ReadPackage(vfs")
         )
         self.assertIn("LibraryContent::Attached(game.content, bases)", library)
         self.assertIn("/*program_headers_only=*/true", library)

@@ -389,6 +389,7 @@
     {Text::AsyncShadersHint, L"O jogo não para quando aparece um efeito novo; o efeito pode surgir "
                              L"uma fração de segundo depois."},
     {Text::LaunchShaderPreload, L"Compilando shaders para uma melhor experiência"},
+    {Text::LaunchBackHint, L"Pressione B para voltar"},
     {Text::LaunchShaderSkip, L"A Pular (efeitos novos ainda podem engasgar)"},
 
     {Text::ButtonLayoutTitle, L"Botão de confirmar"}, {Text::ButtonLayoutName, L"Confirmar com A"},

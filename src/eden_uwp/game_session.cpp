@@ -1024,7 +1024,7 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
             problem = LibraryContent::Problem::MissingFirmware;
         // Refine ambiguous no-ExeFS/no-RomFS results using actual CNMT content, never the filename.
         if (!boot_firmware_applet && problem != LibraryContent::Problem::MissingKeys) {
-            const auto content_problem = Ui::LibraryFileProblem(std::filesystem::path(path));
+            const auto content_problem = Ui::LibraryFileProblem(std::filesystem::u8path(path));
             if (content_problem != LibraryContent::Problem::None)
                 problem = content_problem;
         }

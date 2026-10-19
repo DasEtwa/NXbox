@@ -4,12 +4,21 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cwctype>
+#include <filesystem>
 #include <span>
 #include <vector>
 #include "eden_uwp/ui/strings.h"
 
 namespace LibraryContent {
 enum class Kind { Unknown, Application, Patch, AddOnContent };
+inline bool IsPackage(const std::filesystem::path& path) {
+    auto extension = path.extension().wstring();
+    std::transform(extension.begin(), extension.end(), extension.begin(),
+                   [](wchar_t letter) { return static_cast<wchar_t>(std::towlower(letter)); });
+    return extension == L".nsp" || extension == L".nsz" || extension == L".xci" ||
+           extension == L".xcz" || extension == L".nca";
+}
 enum class Problem { None, UpdateOnly, DlcOnly, Corrupted, MissingKeys, MissingFirmware };
 struct Meta {
     std::uint64_t title_id;
@@ -69,6 +78,9 @@ Problem LoadProblem(Status status) {
         return Problem::MissingKeys;
     case Status::ErrorMissingBKTRBaseRomFS:
         return Problem::UpdateOnly;
+    case Status::ErrorBadXCIHeader:
+    case Status::ErrorXCIMissingPartition:
+    case Status::ErrorXCIMissingProgramNCA:
     case Status::ErrorBadPFSHeader:
     case Status::ErrorIncorrectPFSFileSize:
     case Status::ErrorBadNCAHeader:
