@@ -67,9 +67,10 @@ LibraryTransfer::Result MoveLibraryGame(const GameEntry& game,
 // that. A failed or cancelled conversion leaves the .nsz alone and removes the partial file.
 //
 // Each game's title ID, name and icon are cached in LocalState\library\<TITLEID16>.json and
-// .control.jpg (name, nacp_names, path, size, mtime, icon_language). The cache is reused while
-// path, size, mtime and system icon language match and an icon exists. Unreadable packages are
-// logged and skipped.
+// .control.jpg, with content classification and problem stored in the JSON. Problem entries
+// use problem-<PATHHASH>.json, even without a title ID. The cache is reused while path, size, mtime
+// and system icon language match; a previously cached icon must still exist. Unreadable
+// packages are logged and skipped.
 class LibraryScan {
 public:
     // The .nsz being converted at the moment; `active` is false the rest of the time.

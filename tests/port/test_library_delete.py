@@ -123,7 +123,7 @@ class LibraryDeletion(unittest.TestCase):
         self.assertIn("NSZ_CONVERT replaced_truncated=", convert)
         self.assertIn("TruncatedPackage(probe, existing) != std::optional<bool>{true}", LIBRARY)
         load = LIBRARY.split("std::optional<GameEntry> LoadGame(")[1].split("std::string ConvertNsz(")[0]
-        self.assertLess(load.index("game.incomplete = true"), load.index("cached.find"))
+        self.assertLess(load.index("if (cache_valid)"), load.index("TruncatedPackage(vfs, file)"))
         launch = SCREEN.split("void Launch(Clock::time_point now)")[1].split("void OpenResolution()")[0]
         self.assertLess(launch.index("game.incomplete"), launch.index("launching_ = true"))
 
