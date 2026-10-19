@@ -25,7 +25,7 @@ int main() {
                 assert(SkipGlobalFallbackCompute(enabled, compute, global) ==
                        (enabled && compute && global));
     unsetenv("NXBOX_D3D12_SKIP_GLOBAL_FALLBACK_COMPUTE");
-    assert(SkipGlobalFallbackComputeEnabled() == XboxCompilePolicy);
+    assert(!SkipGlobalFallbackComputeEnabled());
     setenv("NXBOX_D3D12_SKIP_GLOBAL_FALLBACK_COMPUTE", "0", 1);
     assert(!SkipGlobalFallbackComputeEnabled());
     setenv("NXBOX_D3D12_SKIP_GLOBAL_FALLBACK_COMPUTE", "1", 1);

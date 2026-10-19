@@ -44,9 +44,11 @@ inline constexpr bool XboxCompilePolicy = false;
 constexpr bool SkipGlobalFallbackCompute(bool enabled, bool compute, bool uses_global_memory) {
     return enabled && compute && uses_global_memory;
 }
+// Off by default since the HLSL backend searches global memory windows in one loop: the unrolled
+// windows were what hung the Xbox driver compiler (Wonder's two compute shaders now take 0.7 s).
 inline bool SkipGlobalFallbackComputeEnabled() {
     const char* value = std::getenv("NXBOX_D3D12_SKIP_GLOBAL_FALLBACK_COMPUTE");
-    return value ? std::string_view{value} != "0" : XboxCompilePolicy;
+    return value && std::string_view{value} != "0";
 }
 inline std::uint64_t CompileHeadroomBytes() {
     const char* value = std::getenv("NXBOX_D3D12_COMPILE_HEADROOM_MB");
