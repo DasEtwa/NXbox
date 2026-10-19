@@ -415,3 +415,6 @@
     {Text::DlcWithoutBase, L"DLC without the base game"},
     {Text::LaunchMissingKeys,
      L"Game keys are missing or incorrect. Import your prod.keys and title.keys in Settings."},
+
+    {Text::ErrorTitle, L"An error occurred"}, {Text::ErrorDismiss, L"Dismiss"},
+    {Text::ErrorScroll, L"Scroll"},

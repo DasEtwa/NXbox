@@ -66,6 +66,7 @@
 #include "eden_uwp/crash_logger.h"
 #include "eden_uwp/diagnostic.h"
 #include "eden_uwp/diagnostic_report.h"
+#include "eden_uwp/error_applet.h"
 #include "eden_uwp/game_download.h"
 #include "eden_uwp/gamepad.h"
 #include "eden_uwp/home_ui_settings.h"
@@ -76,6 +77,7 @@
 #include "eden_uwp/setup_ui.h"
 #include "eden_uwp/title_settings.h"
 #include "eden_uwp/ui/accounts_screen.h"
+#include "eden_uwp/ui/error_overlay.h"
 #include "eden_uwp/ui/input.h"
 #include "eden_uwp/ui/launch_screen.h"
 #include "eden_uwp/ui/library.h"
@@ -104,6 +106,7 @@ void FlushDeviceApiRing() {
 
 // Host UI requests are exchanged between the dispatcher and the session worker.
 struct SessionUi {
+    std::shared_ptr<ErrorDisplay> errors = std::make_shared<ErrorDisplay>();
     std::atomic<bool> overlay_open{false};
     std::atomic<bool> guest_home_request{false};
     std::atomic<bool> return_home{false};
@@ -865,6 +868,11 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
     std::atomic<bool> guest_exited{false};
     Core::System system{};
     system.Initialize();
+    Service::AM::Frontend::FrontendAppletSet frontend_applets;
+    frontend_applets.error = std::make_unique<ErrorApplet>(session_ui.errors);
+    system.GetFrontendAppletHolder().SetFrontendAppletSet(std::move(frontend_applets));
+    // Discard callbacks while the system and its guest applets are still alive.
+    SCOPE_EXIT { session_ui.errors->Clear(); };
     memory_stage("initialized");
     system.ApplySettings();
     system.RegisterExitCallback([&] { guest_exited.store(true, std::memory_order_release); });
@@ -1054,6 +1062,7 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
     SCOPE_EXIT {
         FlushDeviceApiRing();
         void(system.Pause());
+        session_ui.errors->Clear();
         system.ShutdownMainProcess();
         Diagnostic("GAME_STOPPED");
     };
@@ -1273,8 +1282,10 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
             std::this_thread::sleep_for(std::chrono::milliseconds(8));
             continue;
         }
+        session_ui.errors->CompleteDismissed();
         gamepad->Poll(*controller, system.HIDCore().GetSupportedStyleTag(),
-                      session_ui.overlay_open.load(std::memory_order_acquire));
+                      session_ui.overlay_open.load(std::memory_order_acquire) ||
+                          session_ui.errors->Pending());
         switch (gamepad->HomeCombo()) {
         case HomeComboAction::Prompt:
             Diagnostic("HOME_COMBO action=Prompt");
@@ -1982,6 +1993,18 @@ static void RunGameViewSession(const winrt::Windows::UI::Core::CoreWindow& windo
         window.Dispatcher().ProcessEvents(CoreProcessEventsOption::ProcessAllIfPresent);
         if (closed.load())
             SaveSync::CancelSync();
+        if (session_ui.errors->Current().has_value() &&
+            !session_ui.return_home.load(std::memory_order_acquire) && !closed.load()) {
+            try {
+                Ui::RunErrorOverlay(window, *session_ui.errors, closed, session_ui.return_home);
+            } catch (const winrt::hresult_error& error) {
+                Diagnostic("ERROR_OVERLAY_FAILED " + winrt::to_string(error.message()));
+                session_ui.errors->Close();
+            } catch (const std::exception& error) {
+                Diagnostic(std::string("ERROR_OVERLAY_FAILED ") + error.what());
+                session_ui.errors->Close();
+            }
+        }
         if (session_ui.overlay_open.load(std::memory_order_acquire) &&
             !session_ui.return_home.load(std::memory_order_acquire) && !closed.load()) {
             try {

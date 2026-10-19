@@ -12,6 +12,9 @@ enum class Language {
 
 // Every text the UI shows. English must define every key; other languages may omit keys.
 enum class Text {
+    ErrorTitle,
+    ErrorDismiss,
+    ErrorScroll,
     SettingsGraphics,
     SettingsOnline,
     SettingsSystem,
