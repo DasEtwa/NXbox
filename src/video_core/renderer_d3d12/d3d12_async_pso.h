@@ -37,6 +37,67 @@ constexpr bool CanSkipPendingGraphicsPso(bool enabled, std::uint32_t min_count,
     return enabled && !transform_feedback && (depth ? drawn_count : min_count) > 6;
 }
 
+// Only earlier frames establish recurrence: several draws into a texture during its first
+// frame may still be a one-time bake. The existing async-shader opt-in and XFB protection apply.
+constexpr bool CanSkipPendingGraphicsPsoFromRtHistory(
+    bool enabled, bool history_enabled, bool transform_feedback, std::uint64_t frame,
+    std::optional<std::uint64_t> last_draw_frame) {
+    return enabled && history_enabled && !transform_feedback && last_draw_frame &&
+           *last_draw_frame < frame && frame - *last_draw_frame <= 3;
+}
+
+// GPU-thread only. Keep the previous distinct frame too, so a draw recorded this frame
+// does not hide evidence from an earlier frame. Addresses refer to guest RT0 storage.
+class RenderTargetDrawHistory {
+public:
+    static constexpr size_t Capacity = 256;
+    static constexpr std::uint64_t MaxAge = 120;
+
+    std::optional<std::uint64_t> LastDrawFrame(std::uint64_t address, std::uint64_t frame) const {
+        const auto found = entries.find(address);
+        if (found == entries.end())
+            return std::nullopt;
+        const auto& frames = found->second;
+        return frames.latest < frame ? std::optional{frames.latest} : frames.previous;
+    }
+
+    void Record(std::uint64_t address, std::uint64_t frame) {
+        if (pruned_frame != frame) {
+            std::erase_if(entries, [frame](const auto& item) {
+                return item.second.latest > frame || frame - item.second.latest > MaxAge;
+            });
+            pruned_frame = frame;
+        }
+        if (const auto found = entries.find(address); found != entries.end()) {
+            if (found->second.latest != frame) {
+                found->second.previous = found->second.latest;
+                found->second.latest = frame;
+            }
+            return;
+        }
+        if (entries.size() >= Capacity) {
+            const auto oldest = std::min_element(
+                entries.begin(), entries.end(), [](const auto& left, const auto& right) {
+                    return left.second.latest < right.second.latest;
+                });
+            entries.erase(oldest);
+        }
+        entries.emplace(address, Frames{frame, std::nullopt});
+    }
+
+    size_t Size() const {
+        return entries.size();
+    }
+
+private:
+    struct Frames {
+        std::uint64_t latest;
+        std::optional<std::uint64_t> previous;
+    };
+    std::unordered_map<std::uint64_t, Frames> entries;
+    std::optional<std::uint64_t> pruned_frame;
+};
+
 // Jobs own immutable inputs. Only this map is shared with the requesting thread;
 // expensive compilation never runs with its mutex held. One pool serves both stages.
 //

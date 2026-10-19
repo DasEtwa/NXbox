@@ -42,6 +42,68 @@ int main() {
     assert(CanSkipPendingGraphicsPso(true, 3, 36, true, false));
     assert(!CanSkipPendingGraphicsPso(true, 3, 3, true, false));
     assert(!CanSkipPendingGraphicsPso(true, 3, 36, true, true));
+    // Recurrence must come from one of the previous three frames, never this frame.
+    using D3D12::CanSkipPendingGraphicsPsoFromRtHistory;
+    using D3D12::RenderTargetDrawHistory;
+    assert(!CanSkipPendingGraphicsPsoFromRtHistory(true, true, false, 10, std::nullopt));
+    assert(!CanSkipPendingGraphicsPsoFromRtHistory(true, true, false, 10, 10));
+    assert(!CanSkipPendingGraphicsPsoFromRtHistory(true, true, false, 10, 11));
+    assert(!CanSkipPendingGraphicsPsoFromRtHistory(true, true, false, 10, 6));
+    for (std::uint64_t age = 1; age <= 3; ++age) {
+        assert(CanSkipPendingGraphicsPsoFromRtHistory(true, true, false, 10, 10 - age));
+        assert(!CanSkipPendingGraphicsPsoFromRtHistory(true, true, true, 10, 10 - age));
+        assert(!CanSkipPendingGraphicsPsoFromRtHistory(false, true, false, 10, 10 - age));
+    }
+    // Exhaustive small grid: disabling the flag exactly preserves the original policy.
+    for (bool enabled : {false, true})
+        for (bool depth : {false, true})
+            for (bool xfb : {false, true})
+                for (std::uint32_t minimum = 0; minimum <= 10; ++minimum)
+                    for (std::uint32_t drawn = 0; drawn <= 10; ++drawn)
+                        for (std::uint64_t age = 0; age <= 5; ++age) {
+                            const bool original = CanSkipPendingGraphicsPso(
+                                enabled, minimum, drawn, depth, xfb);
+                            const bool history = CanSkipPendingGraphicsPsoFromRtHistory(
+                                enabled, false, xfb, 10, 10 - age);
+                            assert((original || history) == original);
+                            const bool with_history = original ||
+                                CanSkipPendingGraphicsPsoFromRtHistory(
+                                    enabled, true, xfb, 10, 10 - age);
+                            assert(with_history == (original ||
+                                (enabled && !xfb && age >= 1 && age <= 3)));
+                        }
+    {
+        RenderTargetDrawHistory history;
+        assert(!history.LastDrawFrame(100, 1));
+        history.Record(100, 1);
+        history.Record(100, 1);
+        assert(!history.LastDrawFrame(100, 1)); // A one-time bake is still protected.
+        assert(history.LastDrawFrame(100, 2) == 1);
+        history.Record(100, 2);
+        assert(history.LastDrawFrame(100, 2) == 1); // Preserve recurrence within a frame.
+        assert(CanSkipPendingGraphicsPsoFromRtHistory(
+            true, true, false, 2, history.LastDrawFrame(100, 2)));
+        assert(!CanSkipPendingGraphicsPsoFromRtHistory(
+            true, true, false, 6, history.LastDrawFrame(100, 6)));
+        assert(!history.LastDrawFrame(200, 2)); // Independent target.
+        history.Record(200, 122); // Entries exactly 120 frames old remain.
+        assert(history.LastDrawFrame(100, 122) == 2);
+        history.Record(300, 123);
+        assert(!history.LastDrawFrame(100, 123)); // Older entries are evicted.
+    }
+    {
+        RenderTargetDrawHistory history;
+        for (std::uint64_t address = 1; address <= RenderTargetDrawHistory::Capacity; ++address)
+            history.Record(address, 1);
+        assert(history.Size() <= RenderTargetDrawHistory::Capacity);
+        // Fill within one frame so age eviction cannot conceal a broken size cap.
+        for (std::uint64_t address = 1000; address < 1300; ++address) {
+            history.Record(address, 2);
+            assert(history.Size() <= RenderTargetDrawHistory::Capacity);
+        }
+        assert(!history.LastDrawFrame(1, 3)); // Oldest entry evicted at the cap.
+        assert(history.LastDrawFrame(1299, 3) == 2);
+    }
     {
         Cache pending{1, 1};
         std::promise<void> entered, release;
@@ -218,6 +280,9 @@ class AsyncPsoTests(unittest.TestCase):
             "depth_tested = regs.zeta_enable != 0 && regs.depth_test_enable != 0", source
         )
         self.assertIn("if (!may_skip && pso_waited.insert(request_hash).second)", graphics)
+        self.assertIn('BisectEnabled("NXBOX_D3D12_PSO_WAIT_RT_HISTORY")', graphics)
+        self.assertIn("const bool may_skip = old_may_skip || history_skip;", graphics)
+        self.assertIn('history_skip ? "rt_history"', source)
         # Only Ready results enter the guest cache; pending/missing remain retryable.
         after_wait = graphics.split("if (settled.status == AsyncCache::Status::Ready)", 1)[1]
         self.assertNotIn("StoreGuestGraphics", after_wait.split("return settled.result", 1)[1])

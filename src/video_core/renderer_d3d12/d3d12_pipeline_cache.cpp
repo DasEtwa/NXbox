@@ -1305,8 +1305,16 @@ IGraphicsPipeline* PipelineCache::RememberGraphicsPipeline(const GraphicsPipelin
     return pipeline;
 }
 
+void PipelineCache::RecordGraphicsDraw(u64 frame) {
+    static const bool enabled = BisectEnabled("NXBOX_D3D12_PSO_WAIT_RT_HISTORY");
+    if (!enabled || !maxwell3d || maxwell3d->regs.rt_control.count == 0)
+        return;
+    const auto& rt0 = maxwell3d->regs.rt[maxwell3d->regs.rt_control.Map(0)];
+    rt_draw_history.Record(rt0.Address(), frame);
+}
+
 IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(const Pso::FramebufferFormats& formats,
-                                                          bool is_indexed) try {
+                                                          bool is_indexed, u64 frame) try {
     const FrameProfile::Scope profile_lookup{context.Profile(), FramePhase::PipelineLookup};
     if (!maxwell3d)
         return nullptr;
@@ -1484,7 +1492,11 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(const Pso::Framebuffer
     const auto trace_skip = [&](std::string_view why, u64 request_hash) {
         static const bool enabled = BisectEnabled("NXBOX_D3D12_PSO_SKIP_TRACE");
         static std::unordered_set<u64> traced; // GPU thread only
-        if (!enabled || !traced.insert(request_hash).second)
+        static const bool pso_trace = BisectEnabled("NXBOX_D3D12_PSO_TRACE");
+        static std::unordered_set<u64> traced_rt_history;
+        const bool history_reason = why == "rt_history";
+        if (!(enabled || (history_reason && pso_trace)) ||
+            !(history_reason ? traced_rt_history : traced).insert(request_hash).second)
             return;
         const auto& draw = maxwell3d->draw_manager.draw_state;
         const auto& rt0 = regs.rt[regs.rt_control.Map(0)];
@@ -1561,9 +1573,19 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(const Pso::Framebuffer
             const bool depth_tested = regs.zeta_enable != 0 && regs.depth_test_enable != 0;
             // NXBOX_D3D12_PSO_WAIT_DEPTH=1 restores the 1.0.5 rule for depth-tested draws.
             static const bool wait_depth = BisectEnabled("NXBOX_D3D12_PSO_WAIT_DEPTH");
-            const bool may_skip = CanSkipPendingGraphicsPso(
+            const bool old_may_skip = CanSkipPendingGraphicsPso(
                 skip_pending, draw_count, drawn_count, !wait_depth && depth_tested,
                 maxwell3d->regs.transform_feedback_enabled != 0);
+            static const bool rt_history_enabled = BisectEnabled("NXBOX_D3D12_PSO_WAIT_RT_HISTORY");
+            const auto last_rt_draw = rt_history_enabled && formats.colors[0] != 0
+                                          ? rt_draw_history.LastDrawFrame(
+                                                regs.rt[regs.rt_control.Map(0)].Address(), frame)
+                                          : std::nullopt;
+            const bool history_skip =
+                !old_may_skip && CanSkipPendingGraphicsPsoFromRtHistory(
+                                     skip_pending, rt_history_enabled,
+                                     regs.transform_feedback_enabled != 0, frame, last_rt_draw);
+            const bool may_skip = old_may_skip || history_skip;
             if (entry.status == AsyncCache::Status::Missing && async->CanSubmit(!may_skip)) {
                 if (disk)
                     disk->RememberFirstUse(RequestBytes(request));
@@ -1624,7 +1646,10 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(const Pso::Framebuffer
                 }
             }
             context.Profile().Count(FrameCount::DrawsSkippedPendingPso);
-            trace_skip(may_skip ? "pending" : "wait_timeout", request_hash);
+            trace_skip(history_skip ? "rt_history"
+                       : may_skip   ? "pending"
+                                    : "wait_timeout",
+                       request_hash);
             return nullptr;
         } catch (const std::exception& error) {
             Diagnostic(fmt::format("D3D12 async graphics snapshot={:016x} failed={}",
@@ -2058,6 +2083,7 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
     InvalidateLastGraphicsPipeline();
     async.reset();
     guest_graphics.clear();
+    rt_draw_history = {};
     prewarmed_graphics.clear();
     prewarmed_compute.clear();
     pso_waited.clear();
