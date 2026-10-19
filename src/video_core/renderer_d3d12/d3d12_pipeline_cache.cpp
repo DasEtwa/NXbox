@@ -1353,6 +1353,23 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(const Pso::Framebuffer
         static_cast<u32>(maxwell3d->draw_manager.draw_state.topology), state.patch_vertices);
     GraphicsPipelineKey request{guest_hashes, state};
     const auto& regs = maxwell3d->regs;
+    // Diagnostic (NXBOX_D3D12_PSO_SKIP_TRACE=1): one line per pipeline request the first time a
+    // draw is dropped for it, to see which draws a skip rule drops.
+    const auto trace_skip = [&](std::string_view why, u64 request_hash) {
+        static const bool enabled = BisectEnabled("NXBOX_D3D12_PSO_SKIP_TRACE");
+        static std::unordered_set<u64> traced; // GPU thread only
+        if (!enabled || !traced.insert(request_hash).second)
+            return;
+        const auto& draw = maxwell3d->draw_manager.draw_state;
+        const auto& rt0 = regs.rt[regs.rt_control.Map(0)];
+        Diagnostic(fmt::format(
+            "PSO_SKIP why={} request={:016x} indexed={} index_count={} vertex_count={} "
+            "instances={} topology={} rts={} rt0={}x{} rt0_format={:x} rt0_addr={:x} depth={}",
+            why, request_hash, is_indexed, draw.index_buffer.count, draw.vertex_buffer.count,
+            draw.instance_count, static_cast<u32>(draw.topology),
+            static_cast<u32>(regs.rt_control.count), rt0.width, rt0.height,
+            static_cast<u32>(rt0.format), rt0.Address(), regs.zeta_enable != 0));
+    };
     u64 specialization = Pso::HashBytes(&regs.depth_mode, sizeof(regs.depth_mode));
     specialization =
         Pso::HashBytes(&regs.window_origin, sizeof(regs.window_origin), specialization);
@@ -1426,6 +1443,7 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(const Pso::Framebuffer
             if (entry.status == AsyncCache::Status::Missing &&
                 !CompileHeadroomAvailable(async->Idle())) {
                 context.Profile().Count(FrameCount::DrawsSkippedPendingPso);
+                trace_skip("headroom", request_hash);
                 return nullptr;
             }
             if (entry.status == AsyncCache::Status::Missing && async->CanSubmit()) {
@@ -1469,7 +1487,12 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(const Pso::Framebuffer
             // of the other kind, so after a small draw the next meshes wait for their PSO too.
             // Deciding from the drawn count alone (489238e37c) skipped draws that Mario Kart 8
             // Deluxe needs once per race: on a cold cache the race showed only its HUD in most runs.
-            const u32 draw_count = (std::min)(draw.index_buffer.count, draw.vertex_buffer.count);
+            // Diagnostic: NXBOX_D3D12_PSO_SKIP_RULE_DRAWN=1 decides from the drawn count alone, as
+            // 489238e37c did, to compare what each rule drops (NXBOX_D3D12_PSO_SKIP_TRACE).
+            static const bool drawn_rule = BisectEnabled("NXBOX_D3D12_PSO_SKIP_RULE_DRAWN");
+            const u32 draw_count =
+                drawn_rule ? (is_indexed ? draw.index_buffer.count : draw.vertex_buffer.count)
+                           : (std::min)(draw.index_buffer.count, draw.vertex_buffer.count);
             const bool may_skip = CanSkipPendingGraphicsPso(
                 skip_pending, draw_count, maxwell3d->regs.transform_feedback_enabled != 0);
             if (!may_skip && pso_waited.insert(request_hash).second) {
@@ -1500,6 +1523,7 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(const Pso::Framebuffer
                 }
             }
             context.Profile().Count(FrameCount::DrawsSkippedPendingPso);
+            trace_skip(may_skip ? "pending" : "wait_timeout", request_hash);
             return nullptr;
         } catch (const std::exception& error) {
             Diagnostic(fmt::format("D3D12 async graphics snapshot={:016x} failed={}",
