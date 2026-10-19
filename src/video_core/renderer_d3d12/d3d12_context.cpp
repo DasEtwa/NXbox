@@ -52,8 +52,10 @@ bool BisectEnabled(const char* name) noexcept {
 std::uint32_t FlushDrawsKnob() noexcept {
     char value[16]{};
     const auto length = GetEnvironmentVariableA("NXBOX_D3D12_FLUSH_DRAWS", value, sizeof(value));
-    // 0 is unset; a return that does not fit means too many characters for a 32-bit number.
-    return length > 0 && length < sizeof(value) ? ParseFlushDraws(value) : 0;
+    if (length == 0)
+        return DefaultFlushDraws;
+    // A return that does not fit means too many characters for a 32-bit number.
+    return length < sizeof(value) ? ParseFlushDraws(value) : 0;
 }
 bool DxcStrictEnabled() noexcept {
     static const bool enabled = BisectEnabled("NXBOX_D3D12_DXC_STRICT");
@@ -112,7 +114,7 @@ bool FirstInfoWarning(D3D12_MESSAGE_SEVERITY severity, D3D12_MESSAGE_ID id) {
 u64 ProfileCpuTime() {
     FILETIME creation{}, exit{}, kernel{}, user{};
     if (!GetThreadTimes(GetCurrentThread(), &creation, &exit, &kernel, &user))
-        return 0;
+        return DefaultFlushDraws;
     const auto value = [](FILETIME time) {
         return (static_cast<u64>(time.dwHighDateTime) << 32) | time.dwLowDateTime;
     };

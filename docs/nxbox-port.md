@@ -532,8 +532,8 @@ other: the 57.4 ms frame is their sum.
 
 `NXBOX_D3D12_FLUSH_DRAWS=N` in `LocalState\nxbox_env.txt` submits the open command list through
 `Context::Submit` every N recorded draws, between draws, so the GPU starts on the first part of a
-frame while the rest is still being recorded. Unset, `0` or anything that is not a positive number
-leaves every submission point as it was. A cut takes the path a guest fence already takes (the new
+frame while the rest is still being recorded. Unset means N = 32, the default since the Series X
+A/B below; `0` or anything that is not a positive number leaves every submission point as it was. A cut takes the path a guest fence already takes (the new
 list rebinds all state), and wakes the fencing thread like `FlushCommands` does. The startup log
 records `D3D12 flush_draws=N`, and `D3D12_FRAME_PROFILE` counts the extra submissions in
 `forced_submits_flush_draws` and `ExecuteCommandLists`.
@@ -541,6 +541,12 @@ records `D3D12 flush_draws=N`, and `D3D12_FRAME_PROFILE` counts the extra submis
 Every extra list rebinds state on the recording thread, so a small N gives back part of what it
 gains. Compare N = 0, 32, 128 and 512 on the same warmed scene and record the frame time,
 `gpu_thread_cpu_pct`, `gpu_busy_ms` and `ExecuteCommandLists_per_frame`.
+
+Series X result (Super Mario Bros. Wonder, package 0.3.744, 400 s route, two passes, steady windows
+pooled): N = 32 cut the fence wait of the recording thread from 1.5 s to 0.42 s per 5 s window
+(-73%), raised its CPU use from 61% to 79% and steady fps from 27.9 to 29.1 (+4%); the prologue walk,
+where the GPU had slack, went from 26.9 to 29.8 fps (+11%). Scenes where the GPU is already 95-98%
+busy gain nothing. That made 32 the default.
 
 Desktop result (Wine and vkd3d-proton on an RTX 3050, Odyssey opening cutscene, 576 draws a frame,
 cumulative frames 2700 to 4800, three runs per N in rotating order, same build and same TAS).
