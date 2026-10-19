@@ -590,6 +590,46 @@ struct GraphicsPsoState {
     std::array<BlendTargetState, kNumRenderTargets> blend;
     std::array<VertexAttributeState, kNumVertexAttributes> attributes;
 };
+// Normalize fixed-function don't-cares and unused instance/patch rates. Preserve
+// attribute binding metadata and topology consumed by the rasterizer.
+constexpr void NormalizeGraphicsState(GraphicsPsoState& state) {
+    if (!state.depth_enable) {
+        state.depth_write = 0;
+        state.depth_func = 8; // ALWAYS
+    }
+    if (!state.stencil_enable) {
+        state.stencil_read_mask = state.stencil_write_mask = 0;
+        state.stencil_back_read_mask = state.stencil_back_write_mask = 0;
+        state.front = state.back = {1, 1, 1, 8}; // KEEP / ALWAYS
+    }
+    if (!(state.stencil_enable & 2))
+        state.stencil_back_read_mask = state.stencil_back_write_mask = 0;
+    if (state.topology_type != kTopologyTypePatch)
+        state.patch_vertices = 0;
+    for (auto& attribute : state.attributes)
+        if (!attribute.instanced)
+            attribute.divisor = 0;
+    if (!state.logic_enable)
+        state.logic_op = 4; // NOOP
+    for (std::size_t i = 0; i < state.blend.size(); ++i) {
+        auto& blend = state.blend[i];
+        // With independent blending disabled, target zero controls every bound RTV.
+        const bool used = (state.independent_blend || i == 0) && i < state.num_render_targets &&
+                          state.rtv_formats[i];
+        if (used) {
+            if (!blend.enable) {
+                blend.src = blend.src_alpha = kBlendOne;
+                blend.dst = blend.dst_alpha = kBlendZero;
+                blend.op = blend.op_alpha = 1;
+            }
+        } else if (!state.independent_blend && i != 0) {
+            blend = state.blend[0];
+        } else if (state.independent_blend) {
+            blend = {0, 0, kBlendOne, kBlendZero, 1, kBlendOne, kBlendZero, 1};
+        }
+    }
+}
+
 // Only bound, blending attachments consume the dynamic constant. Bit 0 means
 // RGB constant color; bit 1 means RGB constant alpha. Alpha equations always
 // use the A component and are unaffected by replicating A across RGB.
@@ -660,6 +700,20 @@ constexpr std::uint64_t HashBytes(const void* data, std::size_t size,
         h *= 0x100000001b3ull;
     }
     return h;
+}
+
+// Recipe v4 stores IA topology at bytes 8..11. It is dynamic command-list
+// state, never part of the native PSO. Shader specialization remains in HLSL.
+inline std::array<std::uint64_t, 2> NativeGraphicsRecipeIdentity(
+    std::span<const std::uint8_t> recipe) {
+    std::array<std::uint64_t, 2> hashes{0xcbf29ce484222325ull, 0x9e3779b97f4a7c15ull};
+    for (std::size_t i = 0; i < recipe.size(); ++i) {
+        if (i >= 8 && i < 12)
+            continue;
+        for (auto& hash : hashes)
+            hash = (hash ^ recipe[i]) * 0x100000001b3ull;
+    }
+    return hashes;
 }
 
 // The seed is part of the input. Exact byte comparison avoids stale specialization hashes

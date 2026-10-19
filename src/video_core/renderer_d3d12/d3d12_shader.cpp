@@ -5,6 +5,7 @@
 #include <windows.h>
 #include <wrl/client.h>
 #include "common/logging.h"
+#include "video_core/renderer_d3d12/d3d12_compile_policy.h"
 #include "video_core/renderer_d3d12/d3d12_context.h"
 #include "video_core/renderer_d3d12/d3d12_pso_tables.h"
 #include "video_core/renderer_d3d12/d3d12_shader.h"
@@ -103,6 +104,8 @@ std::vector<u8> ShaderCompiler::Compile(std::string_view source, const wchar_t* 
         DxcBuffer buffer{source.data(), source.size(), CP_UTF8};
         std::vector<LPCWSTR> arguments{L"-E",  entry,   L"-T",   target,
                                        L"-HV", L"2021", L"-Ges", L"-O3"};
+        constexpr LPCWSTR optimization_flags[]{L"-O0", L"-O1", L"-O2", L"-O3"};
+        arguments.back() = optimization_flags[DxcOptimization()];
         if (DxcStrictEnabled())
             arguments.push_back(L"-Gis");
         ComPtr<DxcOperationResult> result;

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
 #include <chrono>
 #include <cmath>
@@ -17,6 +18,7 @@
 #include <tuple>
 #include <vector>
 #include <fmt/format.h>
+#include "video_core/renderer_d3d12/d3d12_build_stats.h"
 #ifdef NXBOX_UWP
 #include <winrt/Windows.System.h>
 #endif
@@ -666,11 +668,14 @@ std::string PipelineCache::ProfileSummary() {
         compute.size(), dxc.Size());
 }
 
-GraphicsPipeline& PipelineCache::GetGraphics(const Pso::GraphicsPsoState& state, u32 d3d_topology,
-                                             std::span<const StageInput> stages,
+GraphicsPipeline& PipelineCache::GetGraphics(const Pso::GraphicsPsoState& input_state,
+                                             u32 d3d_topology, std::span<const StageInput> stages,
                                              const GraphicsPipelineKey* request,
                                              std::span<const u8> runtime_data) {
     std::scoped_lock lock{pipeline_mutex};
+    auto state = input_state;
+    if (PsoNormalizeEnabled())
+        Pso::NormalizeGraphicsState(state);
     GraphicsPipelineKey key{};
     key.state = state;
     DescriptorCounts total;
@@ -694,6 +699,8 @@ GraphicsPipeline& PipelineCache::GetGraphics(const Pso::GraphicsPsoState& state,
     // Fragment occupies slot 5: folding topology after stage hashes prevents
     // its shader hash from overwriting the wrapper's IA topology identity.
     key.stage_hashes[5] = Pso::HashBytes(&d3d_topology, sizeof(d3d_topology), key.stage_hashes[5]);
+    if (disk && request)
+        disk->RememberFirstUse(RequestBytes(*request));
     if (const auto it = graphics.find(key); it != graphics.end()) {
         return *it->second;
     }
@@ -997,6 +1004,10 @@ std::shared_ptr<GraphicsPipeline> BuildAsyncGraphics(
     const u64 request_hash = Pso::HashBytes(&request, sizeof(request));
     // Async jobs that never return jam the worker pool; this shows the phase each one is stuck in.
     static const bool trace = BisectEnabled("NXBOX_D3D12_PSO_TRACE");
+    PsoBuildStats trace_stats;
+    std::optional<ScopedPsoBuildStats> collect;
+    if (trace)
+        collect.emplace(trace_stats);
     const auto compile_start =
         trace ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     const auto mark = [&](std::string_view phase) {
@@ -1118,6 +1129,8 @@ std::shared_ptr<GraphicsPipeline> BuildAsyncGraphics(
         }
     }
     Pso::ApplyVertexReads(state, vertex_reads);
+    if (PsoNormalizeEnabled())
+        Pso::NormalizeGraphicsState(state);
 
     thread_local DxcCache compiler;
     std::vector<StageProgram> compiled;
@@ -1147,6 +1160,11 @@ std::shared_ptr<GraphicsPipeline> BuildAsyncGraphics(
                                            native_key, recipe, stream_output.Description(state));
     pipeline->SetRootCbvs(UseRootCbvs(total.cbv));
     mark("done");
+    if (trace)
+        Diagnostic(fmt::format("PSO_BUILD_COST request={:016x} driver_builds={} dxc_ms={:.3f} "
+                               "root_signature_ms={:.3f} driver_ms={:.3f}",
+                               request_hash, trace_stats.driver_builds, trace_stats.dxc_us / 1000.0,
+                               trace_stats.root_us / 1000.0, trace_stats.driver_us / 1000.0));
     ReportSlowPso(native_key, native_start, signature.Get(), total, stages, compiled);
     if (feedback)
         pipeline->SetTransformFeedback(*feedback);
@@ -1170,10 +1188,28 @@ std::shared_ptr<GraphicsPipeline> BuildAsyncGraphics(
     return pipeline;
 }
 
+struct PrewarmPhases {
+    std::atomic<u64> dxil_disk_hits{}, dxil_disk_misses{}, dxil_memory_hits{};
+    std::atomic<u64> dxc_us{}, root_us{}, driver_us{}, driver_builds{}, built{}, failed{};
+};
+
 void BuildPrewarmedPipeline(ID3D12Device* device, DiskPipelineCache* disk,
                             const DiskPipelineRecord& record,
                             std::shared_ptr<GraphicsPipeline>& graphics,
-                            std::shared_ptr<ComputePipeline>& compute) {
+                            std::shared_ptr<ComputePipeline>& compute, PrewarmPhases& phases) {
+    PsoBuildStats dxc_stats;
+    const ScopedPsoBuildStats collect{dxc_stats};
+    bool success = false;
+    SCOPE_EXIT {
+        phases.dxil_disk_hits.fetch_add(dxc_stats.disk_hits, std::memory_order_relaxed);
+        phases.dxil_disk_misses.fetch_add(dxc_stats.disk_misses, std::memory_order_relaxed);
+        phases.dxil_memory_hits.fetch_add(dxc_stats.memory_hits, std::memory_order_relaxed);
+        phases.dxc_us.fetch_add(dxc_stats.dxc_us, std::memory_order_relaxed);
+        phases.root_us.fetch_add(dxc_stats.root_us, std::memory_order_relaxed);
+        phases.driver_us.fetch_add(dxc_stats.driver_us, std::memory_order_relaxed);
+        phases.driver_builds.fetch_add(dxc_stats.driver_builds, std::memory_order_relaxed);
+        (success ? phases.built : phases.failed).fetch_add(1, std::memory_order_relaxed);
+    };
     const auto decoded = ReadRecipe(record);
     const auto& stages = decoded.stages;
     const auto& state = decoded.state;
@@ -1237,6 +1273,7 @@ void BuildPrewarmedPipeline(ID3D12Device* device, DiskPipelineCache* disk,
     }
     // Native LoadOrCreate writes the recipe too; preserve its guest identity after replay.
     disk->RememberPipeline(record);
+    success = true;
 }
 } // namespace
 
@@ -1367,6 +1404,8 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(const Pso::Framebuffer
         }
         topology = Pso::PrimitiveTopology(
             static_cast<u32>(maxwell3d->draw_manager.draw_state.topology), state.patch_vertices);
+        if (PsoNormalizeEnabled())
+            Pso::NormalizeGraphicsState(state);
         request = GraphicsPipelineKey{guest_hashes, state};
         u64 specialization = Pso::HashBytes(&regs.depth_mode, sizeof(regs.depth_mode));
         specialization =
@@ -1470,6 +1509,8 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(const Pso::Framebuffer
                 entry = async->Lookup(request);
             if (entry.status == AsyncCache::Status::Ready) {
                 if (entry.prewarmed) {
+                    if (disk)
+                        disk->RememberFirstUse(RequestBytes(request));
                     prewarmed_graphics.insert(request);
                     context.Profile().Count(FrameCount::PrewarmedPsoHits);
                 }
@@ -1492,6 +1533,8 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(const Pso::Framebuffer
                 return nullptr;
             }
             if (entry.status == AsyncCache::Status::Missing && async->CanSubmit()) {
+                if (disk)
+                    disk->RememberFirstUse(RequestBytes(request));
                 GraphicsEnvironments live;
                 GetGraphicsEnvironments(live, guest_hashes);
                 auto snapshots =
@@ -1560,6 +1603,8 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(const Pso::Framebuffer
                         rt0.width, rt0.height, drawn_count, depth_tested));
                 }
                 if (settled.status == AsyncCache::Status::Ready) {
+                    if (settled.prewarmed && disk)
+                        disk->RememberFirstUse(RequestBytes(request));
                     StoreGuestGraphics(request, settled.result->graphics.get());
                     context.Profile().Count(FrameCount::PsoCompiles);
                     return settled.result->graphics.get();
@@ -1757,6 +1802,8 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() try {
                 entry = async->Lookup(async_key);
             if (entry.status == AsyncCache::Status::Ready) {
                 if (entry.prewarmed) {
+                    if (disk)
+                        disk->RememberFirstUse(RequestBytes(async_key));
                     prewarmed_compute.insert(request);
                     context.Profile().Count(FrameCount::PrewarmedPsoHits);
                 }
@@ -1805,6 +1852,8 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() try {
                         return nullptr;
                     }
                 }
+                if (disk)
+                    disk->RememberFirstUse(RequestBytes(async_key));
                 async->Submit(async_key, [device, disk_cache = disk.get(), snapshot, prepared,
                                           shader_hash = shader->unique_hash, request] {
                     SetThreadDescription(GetCurrentThread(), L"D3D12 PSO compiler");
@@ -1893,6 +1942,8 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() try {
                         request, elapsed, static_cast<int>(settled.status), GetCurrentThreadId()));
                 }
                 if (settled.status == AsyncCache::Status::Ready) {
+                    if (settled.prewarmed && disk)
+                        disk->RememberFirstUse(RequestBytes(async_key));
                     guest_compute.emplace(request, settled.result->compute.get());
                     context.Profile().Count(FrameCount::PsoCompiles);
                     return settled.result->compute.get();
@@ -1907,6 +1958,11 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() try {
             guest_compute.emplace(request, nullptr);
             return nullptr;
         }
+    }
+    if (disk) {
+        GraphicsPipelineKey first_use_key{};
+        first_use_key.stage_hashes[0] = request;
+        disk->RememberFirstUse(RequestBytes(first_use_key));
     }
     context.Profile().Count(FrameCount::GuestPipelineMisses);
     try {
@@ -1987,7 +2043,8 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
     guest_compute.clear();
     graphics.clear();
     compute.clear();
-    const auto identity = DiskPipelineCache::QueryIdentity(context.Device(), {4, 2, 6});
+    const auto identity =
+        DiskPipelineCache::QueryIdentity(context.Device(), {4, 2, PsoNormalizeEnabled() ? 7u : 6u});
     if (!identity) {
         LOG_WARNING(Render, "D3D12 adapter identity unavailable; disk PSO reuse disabled");
         disk.reset();
@@ -1999,14 +2056,24 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
     disk = std::make_unique<DiskPipelineCache>(
         Common::FS::GetEdenPath(Common::FS::EdenPath::ShaderDir), title_id, *identity,
         context.Device());
-    stalled_path = Common::FS::GetEdenPath(Common::FS::EdenPath::ShaderDir) /
-                   fmt::format("{:016x}_d3d12_stalled_pso_v2.txt", title_id);
+    stalled_path =
+        Common::FS::GetEdenPath(Common::FS::EdenPath::ShaderDir) /
+        fmt::format("{:016x}_d3d12_stalled_pso_v{}.txt", title_id, PsoNormalizeEnabled() ? 3 : 2);
     {
         std::ifstream file{stalled_path};
         std::string line;
         while (std::getline(file, line))
             if (!line.empty())
                 stalled_requests.insert(std::strtoull(line.c_str(), nullptr, 16));
+    }
+    auto legacy_stalled = std::make_shared<std::unordered_set<u64>>();
+    if (PsoNormalizeEnabled()) {
+        const auto old_path = Common::FS::GetEdenPath(Common::FS::EdenPath::ShaderDir) /
+                              fmt::format("{:016x}_d3d12_stalled_pso_v2.txt", title_id);
+        std::ifstream file{old_path};
+        u64 hash{};
+        while (file >> std::hex >> hash)
+            legacy_stalled->insert(hash);
     }
     if (!stalled_requests.empty())
         Diagnostic(fmt::format("D3D12 skipping {} PSOs that stalled the driver before",
@@ -2031,9 +2098,25 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
         async_warmup && wait_for_warmup ? std::make_shared<PreloadProgress>() : nullptr;
     struct WarmupStats {
         std::chrono::steady_clock::time_point start{std::chrono::steady_clock::now()};
-        size_t skipped{};
+        std::atomic<size_t> skipped{};
+        PrewarmPhases phases;
     };
     const auto stats = std::make_shared<WarmupStats>();
+    const size_t warmup_threads = async_warmup ? (preload ? PrewarmThreads() : 2) : 1;
+    const auto report = [stats, warmup_threads](std::string_view status) {
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - stats->start)
+                            .count();
+        const auto& p = stats->phases;
+        Diagnostic(fmt::format(
+            "D3D12_PSO_PREWARM status={} built={} skipped={} failed={} ms={} threads={} "
+            "dxil_disk_hits={} dxil_disk_misses={} dxil_memory_hits={} "
+            "dxc_ms={:.3f} root_signature_ms={:.3f} driver_ms={:.3f} driver_builds={}",
+            status, p.built.load(), stats->skipped.load(), p.failed.load(), ms, warmup_threads,
+            p.dxil_disk_hits.load(), p.dxil_disk_misses.load(), p.dxil_memory_hits.load(),
+            p.dxc_us.load() / 1000.0, p.root_us.load() / 1000.0, p.driver_us.load() / 1000.0,
+            p.driver_builds.load()));
+    };
     // Keep the raised target until submitted jobs settle, not just until disk enumeration ends.
     // Scope exit also restores it on cancellation, skip-wait and callback/startup exceptions.
     SCOPE_EXIT {
@@ -2046,8 +2129,8 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
         async->SetWorkerTarget(threads);
     }
     disk->StartWarmup(
-        [this, async_warmup, stats, preload](const DiskPipelineRecord& record,
-                                             std::stop_token stop) {
+        [this, async_warmup, stats, preload, legacy_stalled](const DiskPipelineRecord& record,
+                                                             std::stop_token stop) {
             if (stop.stop_requested())
                 return false;
             try {
@@ -2064,6 +2147,15 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
                                          : request.stage_hashes[0];
                     {
                         std::scoped_lock guard{pipeline_mutex};
+                        const auto old_hash = record.kind == DiskRecordKind::Graphics
+                                                  ? record.legacy_request_hash
+                                                  : hash;
+                        if (legacy_stalled->contains(old_hash) &&
+                            (record.legacy || record.kind == DiskRecordKind::Compute) &&
+                            stalled_requests.insert(hash).second) {
+                            std::ofstream{stalled_path, std::ios::app}
+                                << fmt::format("{:016x}\n", hash);
+                        }
                         if (stalled_requests.contains(hash)) {
                             ++stats->skipped;
                             return true;
@@ -2091,6 +2183,8 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
                             return false;
                         const auto entry = async->Lookup(request);
                         if (entry.status != AsyncCache::Status::Missing) {
+                            if (record.legacy)
+                                disk->DiscardLegacyDuplicate(record);
                             if (preload) {
                                 std::scoped_lock guard{preload->mutex};
                                 preload->requests.push_back(request);
@@ -2106,13 +2200,14 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
                         Microsoft::WRL::ComPtr<ID3D12Device> device{context.Device()};
                         if (async->Submit(
                                 request,
-                                [device, disk_cache = disk.get(), record, stop] {
+                                [device, disk_cache = disk.get(), record, stop, stats] {
                                     SetThreadDescription(GetCurrentThread(), L"D3D12 PSO compiler");
                                     if (stop.stop_requested())
                                         return std::shared_ptr<AsyncResult>{};
                                     auto result = std::make_shared<AsyncResult>();
                                     BuildPrewarmedPipeline(device.Get(), disk_cache, record,
-                                                           result->graphics, result->compute);
+                                                           result->graphics, result->compute,
+                                                           stats->phases);
                                     return result;
                                 },
                                 true))
@@ -2128,6 +2223,20 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
                     // busy in parallel, and runtime lookups pick each PSO up when it is ready.
                     return true;
                 }
+                PsoBuildStats build_stats;
+                const ScopedPsoBuildStats collect{build_stats};
+                bool success = false;
+                SCOPE_EXIT {
+                    auto& p = stats->phases;
+                    p.dxil_disk_hits += build_stats.disk_hits;
+                    p.dxil_disk_misses += build_stats.disk_misses;
+                    p.dxil_memory_hits += build_stats.memory_hits;
+                    p.dxc_us += build_stats.dxc_us;
+                    p.root_us += build_stats.root_us;
+                    p.driver_us += build_stats.driver_us;
+                    p.driver_builds += build_stats.driver_builds;
+                    (success ? p.built : p.failed).fetch_add(1);
+                };
                 const auto decoded = ReadRecipe(record);
                 const auto& stages = decoded.stages;
                 if (SkipGlobalFallbackCompute(
@@ -2149,6 +2258,7 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
                 else
                     return false;
                 disk->RememberPipeline(record);
+                success = true;
                 return true;
             } catch (const std::exception& error) {
                 LOG_WARNING(Render, "D3D12 disk PSO warmup rejected: {}", error.what());
@@ -2156,6 +2266,7 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
             }
         },
         [callback = async_warmup ? VideoCore::DiskResourceLoadCallback{} : callback, stats, preload,
+         report,
          warmup_pool = preload ? async.get() : nullptr](const DiskWarmupProgress& progress) {
             if (warmup_pool && (progress.stage == DiskWarmupStage::Cancelled ||
                                 progress.stage == DiskWarmupStage::Failed))
@@ -2170,12 +2281,9 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
             if (progress.stage == DiskWarmupStage::Begin) {
                 Diagnostic(fmt::format("D3D12_PSO_PREWARM start records={}", progress.total));
             } else if (progress.stage != DiskWarmupStage::Build) {
-                const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                    std::chrono::steady_clock::now() - stats->start)
-                                    .count();
-                Diagnostic(fmt::format("D3D12_PSO_PREWARM built={} skipped={} failed={} ms={}",
-                                       progress.completed - progress.failed - stats->skipped,
-                                       stats->skipped, progress.failed, ms));
+                // Enumeration completion is not async worker completion.
+                if (!preload)
+                    report("enumerated");
             }
             if (callback)
                 callback(progress.stage == DiskWarmupStage::Complete
@@ -2189,8 +2297,10 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
         for (;;) {
             // Poll independently of job completions, including slow or stuck driver calls.
             // B releases only the loading thread; closing still cancels the coordinator.
-            if (stop_loading.stop_requested() || (skip_wait && skip_wait()))
+            if (stop_loading.stop_requested() || (skip_wait && skip_wait())) {
+                report("interrupted");
                 return;
+            }
             DiskWarmupProgress progress;
             std::vector<GraphicsPipelineKey> requests;
             bool finished;
@@ -2211,6 +2321,7 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
                 callback(VideoCore::LoadCallbackStage::Build, built, progress.total);
             if (finished && pending == 0) {
                 disk->WaitWarmup();
+                report("complete");
                 async->SetWorkerTarget(2);
                 if (callback)
                     callback(VideoCore::LoadCallbackStage::Complete, built, progress.total);
