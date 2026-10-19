@@ -40,6 +40,35 @@ std::string TextureClass(TextureType type, bool writable, bool multisample = fal
     }
     throw NotImplementedException("HLSL resource type {}", static_cast<u32>(type));
 }
+const char* StageName(Stage stage) {
+    switch (stage) {
+    case Stage::VertexA:
+        return "VertexA";
+    case Stage::VertexB:
+        return "VertexB";
+    case Stage::TessellationControl:
+        return "TessellationControl";
+    case Stage::TessellationEval:
+        return "TessellationEval";
+    case Stage::Geometry:
+        return "Geometry";
+    case Stage::Fragment:
+        return "Fragment";
+    case Stage::Compute:
+        return "Compute";
+    }
+    return "Unknown";
+}
+// The IR names resources by index into the lists built from Info. An index outside its list is
+// an IR/Info mismatch; at() reported it as a bare "invalid vector subscript" with no context.
+const EmitContext::ResourceDefinition& Declared(
+    const std::vector<EmitContext::ResourceDefinition>& definitions, u32 descriptor,
+    std::string_view kind, Stage stage) {
+    if (descriptor >= definitions.size())
+        throw LogicError("HLSL {} descriptor {} is not declared: stage {} declares {} of them",
+                         kind, descriptor, StageName(stage), definitions.size());
+    return definitions[descriptor];
+}
 std::string VectorType(AttributeType type) {
     switch (type) {
     case AttributeType::SignedInt:
@@ -401,7 +430,10 @@ std::string EmitContext::Attribute(IR::Attribute attribute, bool output) {
 std::string EmitContext::Resource(const IR::Value& index, u32 descriptor, bool image, bool buffer) {
     const auto& definitions =
         image ? (buffer ? image_buffers : images) : (buffer ? texture_buffers : textures);
-    const auto def = definitions.at(descriptor);
+    const auto def = Declared(definitions, descriptor,
+                              image ? (buffer ? "image buffer" : "image")
+                                    : (buffer ? "texture buffer" : "texture"),
+                              stage);
     return fmt::format("{}{}{}", image ? "img" : "tex", def.binding,
                        def.count > 1
                            ? fmt::format("[NonUniformResourceIndex({})]", var_alloc.Consume(index))
@@ -434,7 +466,8 @@ bool EmitContext::GlobalMemoryAccess(std::string_view address, u32 bytes) {
     return true;
 }
 std::string EmitContext::Sampler(const IR::Value& index, u32 descriptor) {
-    const auto def = textures.at(descriptor);
+    // Samplers are declared next to textures only; a texture buffer has none.
+    const auto def = Declared(textures, descriptor, "texture sampler", stage);
     return fmt::format("samp{}{}", def.binding,
                        def.count > 1
                            ? fmt::format("[NonUniformResourceIndex({})]", var_alloc.Consume(index))

@@ -121,9 +121,12 @@ be supplied by the pipeline track.
   Depth bias, LOD clamps, dynamic sampled offsets and cube texel
   fetch reject. Sparse residency returns always-resident for committed resources. Integer filtered sampling rejects and requires texel fetch.
 - Narrow signed image atomics, cube UAVs, constant/storage descriptor arrays,
-  point size/point sprite coordinates, viewport masks,
-  legacy varyings and multiple geometry streams
+  viewport masks, legacy varyings and multiple geometry streams
   reject. Vertex layer/viewport outputs require the device capability in Profile.
+- Points are always one pixel: the vertex `PointSize` store is dropped, `PointSize` loads
+  read 1.0 and `PointSpriteS`/`PointSpriteT` loads read 0.5, the sprite coordinate of the
+  single fragment a 1px point produces. A renderer that expands points into quads must
+  supply the real coordinate instead.
 - W-scale-factor system registers `SR_WScaleFactorXY` and `SR_WScaleFactorZ`
   reject: neither reference backend supplies a defined register mapping.
   Helper queries use SM 6.6. Demote retains HLSL discard, matching GLSL's
@@ -189,8 +192,8 @@ Notes for pipeline/robustness integration:
   renderer-owned files in this track.
 - Stream-output declarations must map output semantics to xfb buffer/stream/
   stride/offset metadata; dual-source blending requires the native RTV/PSO
-  configuration. Unsupported point rasterization and viewport masks need
-  pipeline-side emulation before their shader attributes can be implemented.
+  configuration. Wide-point rasterization and viewport masks need pipeline-side
+  emulation before their shader attributes can be implemented; points stay 1px (above).
 - Renderer exception containment and log-once fallback belong to T4. Emission
   remains transactional for descriptor counters; exceptions carry the specific
   opcode, resource, capability, or stage-linkage reason.

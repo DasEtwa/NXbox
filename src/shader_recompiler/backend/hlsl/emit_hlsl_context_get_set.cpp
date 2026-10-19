@@ -18,6 +18,13 @@ void EmitGetAttribute(EmitContext& ctx, IR::Inst& inst, IR::Attribute attr,
         ctx.AddF32("{} = 1.0f;", inst);
         return;
     }
+    // D3D12 has no gl_PointCoord either, and the renderer never expands points into quads
+    // (point_size != 1 is rejected by UnsupportedState). The single fragment of a 1px point sits
+    // on the centre of its sprite, so (0.5, 0.5) is the coordinate it would read.
+    if (attr == IR::Attribute::PointSpriteS || attr == IR::Attribute::PointSpriteT) {
+        ctx.AddF32("{} = 0.5f;", inst);
+        return;
+    }
     auto value = ctx.Attribute(attr, false);
     if (ctx.stage == Stage::Geometry && value.starts_with("input."))
         value.replace(0, 6, fmt::format("inputs[{}].", vertex.empty() ? "0u" : vertex));

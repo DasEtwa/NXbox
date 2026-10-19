@@ -1011,18 +1011,42 @@ std::shared_ptr<GraphicsPipeline> BuildAsyncGraphics(
     std::array<std::string, 6> sources;
     std::array<Shader::RuntimeInfo, 6> runtimes;
     std::vector<StageInput> stages;
+    // The async cache keeps only what() of a failed job and the console log prints just
+    // "request=<hash> failed=<what>". Name the step, stage and guest shader so a terse message
+    // such as std::vector::at's "invalid vector subscript" says where it came from.
+    const auto tagged = [&](std::string_view phase, size_t index, auto&& step) {
+        static constexpr std::array<std::string_view, 6> kGuestStages{
+            "VertexA",          "VertexB",  "TessellationControl",
+            "TessellationEval", "Geometry", "Fragment"};
+        const auto where = [&] {
+            return fmt::format("[{} {} guest={:016x}] ", phase, kGuestStages[index],
+                               guest_hashes[index]);
+        };
+        try {
+            step();
+        } catch (Shader::Exception& error) {
+            error.Prepend(where());
+            throw;
+        } catch (const std::exception& error) {
+            throw std::runtime_error(where() + error.what());
+        }
+    };
     for (size_t index = 0; index < programs.size(); ++index) {
         if (!guest_hashes[index])
             continue;
         auto& env = *environments[index];
-        Shader::Maxwell::Flow::CFG cfg{
-            env, translation.flow,
-            static_cast<u32>(env.StartAddress() + sizeof(Shader::ProgramHeader)), index == 0};
-        programs[index] = Shader::Maxwell::TranslateProgram(translation.inst, translation.block,
-                                                            env, cfg, translation.host);
+        tagged("translate", index, [&] {
+            Shader::Maxwell::Flow::CFG cfg{
+                env, translation.flow,
+                static_cast<u32>(env.StartAddress() + sizeof(Shader::ProgramHeader)), index == 0};
+            programs[index] = Shader::Maxwell::TranslateProgram(translation.inst, translation.block,
+                                                                env, cfg, translation.host);
+        });
         if (index == 1 && guest_hashes[0]) {
-            programs[index] =
-                Shader::Maxwell::MergeDualVertexPrograms(programs[0], programs[1], env);
+            tagged("merge-dual-vertex", index, [&] {
+                programs[index] =
+                    Shader::Maxwell::MergeDualVertexPrograms(programs[0], programs[1], env);
+            });
         }
     }
     mark("translated");
@@ -1055,8 +1079,10 @@ std::shared_ptr<GraphicsPipeline> BuildAsyncGraphics(
                 }
             }
         }
-        sources[index] =
-            Shader::Backend::HLSL::EmitHLSL(translation.profile, runtime, program, bindings);
+        tagged("emit", index, [&] {
+            sources[index] =
+                Shader::Backend::HLSL::EmitHLSL(translation.profile, runtime, program, bindings);
+        });
         ApplyTextureProbe(program.stage, sources[index]);
         DumpGraphicsHlsl(guest_hashes[index], program.stage, sources[index]);
         const auto counts = CountStageTables(program.info);
