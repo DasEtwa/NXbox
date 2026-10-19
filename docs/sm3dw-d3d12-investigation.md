@@ -44,14 +44,16 @@ creation, or time an individual animation's hitch.
 
 `NXBOX_D3D12_ASYNC_SHADERS=1` with `NXBOX_D3D12_ASYNC_PSO=1` bypasses that wait
 for pending graphics draws unless transform feedback is enabled or the draw looks
-small. A draw with a depth buffer bound looks small when its drawn count (indices
-for an indexed draw, vertices otherwise) is six or less; any other draw when the
+small. A draw that tests depth looks small when its drawn count (indices for an
+indexed draw, vertices otherwise) is six or less; any other draw when the
 index or the vertex count is, as in `renderer_vulkan/vk_pipeline_cache.cpp::BuiltPipeline`.
 One of those two counts is left over from an earlier draw, so after a 3-vertex
 fullscreen pass later meshes look small too (Wonder: 123 waits, 69 s of a 380 s
 run; Mario Kart 8 Deluxe: 295 depth-tested waits, 17.6 s of a 19 s race-start
 freeze). Deciding every draw from the drawn count skipped draws MK8D needs once
-per race, so draws without depth keep both counts. It preserves the bounded wait
+per race, so draws without a depth test keep both counts (deciding from a bound
+depth buffer alone left Super Mario Odyssey's coin counter undrawn for the rest
+of the run). It preserves the bounded wait
 for likely one-shot texture-generation quads. `NXBOX_D3D12_PSO_WAIT_DEPTH=1`
 restores the wait for depth-tested draws. `PSO_WAIT` lines record `indexed`, `count`, `depth`
 and the first render target size of each waited draw. Compute retains its

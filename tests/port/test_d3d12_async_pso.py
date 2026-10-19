@@ -195,17 +195,21 @@ class AsyncPsoTests(unittest.TestCase):
             "Count(FrameCount::DrawsSkippedPendingPso)", 1
         )[0]
         self.assertIn('GetEnvironmentVariableA("NXBOX_D3D12_ASYNC_SHADERS"', graphics)
-        # Both counts must exceed six (1.0.4 rule) unless a depth buffer is bound: the drawn count
-        # alone let MK8D skip draws its race needs once, and the race drew only the HUD.
+        # Both counts must exceed six (1.0.4 rule) unless the draw tests depth: the drawn count
+        # alone let MK8D skip draws its race needs once, and the race drew only the HUD. A bound
+        # depth buffer alone does not count: Odyssey's coin counter stayed undrawn with it.
         self.assertIn(
             "draw_count = (std::min)(draw.index_buffer.count, draw.vertex_buffer.count)", graphics
         )
         self.assertIn(
             "CanSkipPendingGraphicsPso(\n                skip_pending, draw_count, drawn_count, "
-            "!wait_depth && regs.zeta_enable != 0,",
+            "!wait_depth && depth_tested,",
             graphics,
         )
         self.assertIn("maxwell3d->regs.transform_feedback_enabled != 0", graphics)
+        self.assertIn(
+            "depth_tested = regs.zeta_enable != 0 && regs.depth_test_enable != 0", source
+        )
         self.assertIn("if (!may_skip && pso_waited.insert(request_hash).second)", graphics)
         # Only Ready results enter the guest cache; pending/missing remain retryable.
         after_wait = graphics.split("if (settled.status == AsyncCache::Status::Ready)", 1)[1]

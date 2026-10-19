@@ -1485,10 +1485,13 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(const Pso::Framebuffer
             const auto& draw = maxwell3d->draw_manager.draw_state;
             const u32 draw_count = (std::min)(draw.index_buffer.count, draw.vertex_buffer.count);
             const u32 drawn_count = is_indexed ? draw.index_buffer.count : draw.vertex_buffer.count;
+            // Only draws that test depth: deciding from a bound depth buffer alone left Super Mario
+            // Odyssey's coin counter undrawn for the rest of the run.
+            const bool depth_tested = regs.zeta_enable != 0 && regs.depth_test_enable != 0;
             // NXBOX_D3D12_PSO_WAIT_DEPTH=1 restores the 1.0.5 rule for depth-tested draws.
             static const bool wait_depth = BisectEnabled("NXBOX_D3D12_PSO_WAIT_DEPTH");
             const bool may_skip = CanSkipPendingGraphicsPso(
-                skip_pending, draw_count, drawn_count, !wait_depth && regs.zeta_enable != 0,
+                skip_pending, draw_count, drawn_count, !wait_depth && depth_tested,
                 maxwell3d->regs.transform_feedback_enabled != 0);
             if (!may_skip && pso_waited.insert(request_hash).second) {
                 static const bool trace_wait = BisectEnabled("NXBOX_D3D12_PSO_TRACE");
@@ -1506,10 +1509,10 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(const Pso::Framebuffer
                     const auto& rt0 = regs.rt[regs.rt_control.Map(0)];
                     Diagnostic(fmt::format(
                         "PSO_WAIT request={:016x} kind=graphics wall_ms={:.3f} status={} thread={} "
-                        "indexed={} count={} depth={} rt0={}x{} drawn={}",
+                        "indexed={} count={} depth={} rt0={}x{} drawn={} depth_test={}",
                         request_hash, elapsed, static_cast<int>(settled.status),
                         GetCurrentThreadId(), is_indexed, draw_count, regs.zeta_enable != 0,
-                        rt0.width, rt0.height, drawn_count));
+                        rt0.width, rt0.height, drawn_count, depth_tested));
                 }
                 if (settled.status == AsyncCache::Status::Ready) {
                     StoreGuestGraphics(request, settled.result->graphics.get());

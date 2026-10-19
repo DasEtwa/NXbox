@@ -28,9 +28,9 @@ namespace D3D12 {
 // and vertex counts, as in 1.0.4. One of them is left over from an earlier draw, so after a
 // 3-vertex fullscreen pass later meshes look small and wait too; deciding every draw from the
 // drawn count instead skipped draws Mario Kart 8 Deluxe needs once per race (only its HUD showed).
-// A draw with a depth buffer bound decides from `drawn_count`: one-time textures are built
-// without depth, and on a cold cache the left-over count made 295 depth-tested MK8D draws wait
-// 17.6 s of the 19 s race-start freeze.
+// A draw that tests depth decides from `drawn_count`: one-time textures are built without a
+// depth test, and on a cold cache the left-over count made 295 MK8D draws with a depth buffer
+// wait 17.6 s of the 19 s race-start freeze.
 constexpr bool CanSkipPendingGraphicsPso(bool enabled, std::uint32_t min_count,
                                          std::uint32_t drawn_count, bool depth,
                                          bool transform_feedback) {
