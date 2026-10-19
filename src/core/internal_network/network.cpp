@@ -158,6 +158,8 @@ Errno TranslateNativeError(int e, CallType call_type = CallType::Other) {
         return Errno::INPROGRESS;
     case WSAEISCONN:
         return Errno::ISCONN;
+    case WSAEADDRINUSE:
+        return Errno::ADDRINUSE;
     default:
         UNIMPLEMENTED_MSG("Unimplemented errno={}", e);
         return Errno::OTHER;
@@ -299,6 +301,8 @@ Errno TranslateNativeError(int e, CallType call_type = CallType::Other) {
         return Errno::INPROGRESS;
     case EISCONN:
         return Errno::ISCONN;
+    case EADDRINUSE:
+        return Errno::ADDRINUSE;
     default:
         UNIMPLEMENTED_MSG("Unimplemented errno={} ({})", e, strerror(e));
         return Errno::OTHER;

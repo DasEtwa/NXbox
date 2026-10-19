@@ -719,9 +719,14 @@ Errno BSD_USA::BindImpl(s32 fd, std::span<const u8> addr) {
         return Errno::BADF;
     }
 
-    auto addr_in = GetValue<SockAddrIn>(addr);
-
-    return Translate(file_descriptors[fd]->socket->Bind(Translate(addr_in)));
+    const auto host_addr = Translate(GetValue<SockAddrIn>(addr));
+    const Errno result = Translate(file_descriptors[fd]->socket->Bind(host_addr));
+    if (result != Errno::SUCCESS) {
+        LOG_WARNING(Service, "fd={} bind to {}:{} failed errno={}", fd,
+                    Network::IPv4AddressToString(host_addr.ip), host_addr.portno,
+                    static_cast<u32>(result));
+    }
+    return result;
 }
 
 Errno BSD_USA::ConnectImpl(s32 fd, std::span<const u8> addr) {

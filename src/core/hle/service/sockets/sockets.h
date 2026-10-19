@@ -30,6 +30,7 @@ enum class Errno : u32 {
     CONNREFUSED = 111,
     INPROGRESS = 115,
     ISCONN = 106,
+    ADDRINUSE = 98,
 };
 
 enum class GetAddrInfoError : s32 {
