@@ -117,11 +117,17 @@ std::optional<DiskPipelineRecord> DeserializeDiskRecord(std::span<const std::uin
         if (Get(bytes, offset, 4) != expected)
             return {};
     }
-    if (Get(bytes, offset, 8) != identity.adapter_luid ||
-        Get(bytes, offset, 8) != identity.driver_version)
-        return {};
+    // The adapter LUID is assigned per boot, so it never invalidates a record: comparing it
+    // discarded every game's cache whenever the console restarted.
+    offset += 8;
+    const bool same_driver = Get(bytes, offset, 8) == identity.driver_version;
     DiskPipelineRecord record;
     record.kind = static_cast<DiskRecordKind>(Get(bytes, offset, 4));
+    // DXIL and pipeline recipes come from the emitter and DXC for this GPU; only native driver
+    // blobs are tied to the driver that built them, so a system update keeps the rest.
+    if (!same_driver && record.kind != DiskRecordKind::Dxil &&
+        record.kind != DiskRecordKind::Graphics && record.kind != DiskRecordKind::Compute)
+        return {};
     record.key = Get(bytes, offset, 8);
     const auto size = Get(bytes, offset, 8);
     const auto request_size = Get(bytes, offset, 8);

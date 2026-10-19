@@ -64,20 +64,32 @@ int main(int argc, char** argv) {
     assert(!DeserializeDiskRecord(bad_library, identity));
     auto trailing = encoded; trailing.push_back(0);
     assert(!DeserializeDiskRecord(trailing, identity));
-    for (unsigned n = 0; n < 9; ++n) {
-        auto stale = identity;
-        switch (n) {
-        case 0: ++stale.emitter_version; break;
-        case 1: ++stale.dxc_version; break;
-        case 2: ++stale.schema_version; break;
-        case 3: ++stale.vendor_id; break;
-        case 4: ++stale.device_id; break;
-        case 5: ++stale.subsystem_id; break;
-        case 6: ++stale.revision; break;
-        case 7: ++stale.adapter_luid; break;
-        case 8: ++stale.driver_version; break;
+    // The adapter LUID is assigned per boot: a console restart must not discard any record.
+    // DXIL and pipeline recipes depend on the emitter, DXC, schema and GPU that produced them;
+    // native driver blobs also depend on the driver.
+    for (auto kind : {DiskRecordKind::Dxil, DiskRecordKind::Graphics,
+                      DiskRecordKind::Compute, DiskRecordKind::Library,
+                      DiskRecordKind::NativeGraphics, DiskRecordKind::NativeCompute}) {
+        auto item = record; item.kind = kind; if (kind == DiskRecordKind::Library) item.key = 0;
+        const auto bytes = SerializeDiskRecord(identity, item);
+        const bool portable = kind == DiskRecordKind::Dxil || kind == DiskRecordKind::Graphics ||
+                              kind == DiskRecordKind::Compute;
+        for (unsigned n = 0; n < 9; ++n) {
+            auto stale = identity;
+            switch (n) {
+            case 0: ++stale.emitter_version; break;
+            case 1: ++stale.dxc_version; break;
+            case 2: ++stale.schema_version; break;
+            case 3: ++stale.vendor_id; break;
+            case 4: ++stale.device_id; break;
+            case 5: ++stale.subsystem_id; break;
+            case 6: ++stale.revision; break;
+            case 7: ++stale.adapter_luid; break;
+            case 8: ++stale.driver_version; break;
+            }
+            const bool kept = n == 7 || (portable && n == 8);
+            assert(DeserializeDiskRecord(bytes, stale).has_value() == kept);
         }
-        assert(!DeserializeDiskRecord(encoded, stale));
     }
     for (auto invalid : {DiskPipelineRecord{DiskRecordKind::Dxil, 0, {}},
                          DiskPipelineRecord{static_cast<DiskRecordKind>(99), 0, {1}},
