@@ -1483,18 +1483,13 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(const Pso::Framebuffer
                                         sizeof(async_shaders_value)) == 1 &&
                 async_shaders_value[0] == '1';
             const auto& draw = maxwell3d->draw_manager.draw_state;
-            // Both counts must exceed six, as in 1.0.4. One of them is left over from an earlier draw
-            // of the other kind, so after a small draw the next meshes wait for their PSO too.
-            // Deciding from the drawn count alone (489238e37c) skipped draws that Mario Kart 8
-            // Deluxe needs once per race: on a cold cache the race showed only its HUD in most runs.
-            // Diagnostic: NXBOX_D3D12_PSO_SKIP_RULE_DRAWN=1 decides from the drawn count alone, as
-            // 489238e37c did, to compare what each rule drops (NXBOX_D3D12_PSO_SKIP_TRACE).
-            static const bool drawn_rule = BisectEnabled("NXBOX_D3D12_PSO_SKIP_RULE_DRAWN");
-            const u32 draw_count =
-                drawn_rule ? (is_indexed ? draw.index_buffer.count : draw.vertex_buffer.count)
-                           : (std::min)(draw.index_buffer.count, draw.vertex_buffer.count);
+            const u32 draw_count = (std::min)(draw.index_buffer.count, draw.vertex_buffer.count);
+            const u32 drawn_count = is_indexed ? draw.index_buffer.count : draw.vertex_buffer.count;
+            // NXBOX_D3D12_PSO_WAIT_DEPTH=1 restores the 1.0.5 rule for depth-tested draws.
+            static const bool wait_depth = BisectEnabled("NXBOX_D3D12_PSO_WAIT_DEPTH");
             const bool may_skip = CanSkipPendingGraphicsPso(
-                skip_pending, draw_count, maxwell3d->regs.transform_feedback_enabled != 0);
+                skip_pending, draw_count, drawn_count, !wait_depth && regs.zeta_enable != 0,
+                maxwell3d->regs.transform_feedback_enabled != 0);
             if (!may_skip && pso_waited.insert(request_hash).second) {
                 static const bool trace_wait = BisectEnabled("NXBOX_D3D12_PSO_TRACE");
                 const auto wait_start = trace_wait ? std::chrono::steady_clock::now()
@@ -1511,10 +1506,10 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(const Pso::Framebuffer
                     const auto& rt0 = regs.rt[regs.rt_control.Map(0)];
                     Diagnostic(fmt::format(
                         "PSO_WAIT request={:016x} kind=graphics wall_ms={:.3f} status={} thread={} "
-                        "indexed={} count={} depth={} rt0={}x{}",
+                        "indexed={} count={} depth={} rt0={}x{} drawn={}",
                         request_hash, elapsed, static_cast<int>(settled.status),
                         GetCurrentThreadId(), is_indexed, draw_count, regs.zeta_enable != 0,
-                        rt0.width, rt0.height));
+                        rt0.width, rt0.height, drawn_count));
                 }
                 if (settled.status == AsyncCache::Status::Ready) {
                     StoreGuestGraphics(request, settled.result->graphics.get());

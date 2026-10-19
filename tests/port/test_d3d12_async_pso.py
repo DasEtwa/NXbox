@@ -29,13 +29,19 @@ int main() {
         "  switch i32 %1, label %end [\n    i32 1, label %end\n  ]\n"
         "  ret void\n}\n!0 = !{i32 1}\n") == 5);
 
-    // Small draws and stream output wait; the count is the drawn one only.
+    // Small draws and stream output wait. A depth-tested draw decides from the drawn count,
+    // any other from the smaller of the index and vertex counts.
     using D3D12::CanSkipPendingGraphicsPso;
-    assert(!CanSkipPendingGraphicsPso(false, 100, false));
-    assert(!CanSkipPendingGraphicsPso(true, 6, false));
-    assert(!CanSkipPendingGraphicsPso(true, 0, false));
-    assert(!CanSkipPendingGraphicsPso(true, 100, true));
-    assert(CanSkipPendingGraphicsPso(true, 7, false));
+    assert(!CanSkipPendingGraphicsPso(false, 100, 100, false, false));
+    assert(!CanSkipPendingGraphicsPso(true, 6, 6, false, false));
+    assert(!CanSkipPendingGraphicsPso(true, 0, 0, false, false));
+    assert(!CanSkipPendingGraphicsPso(true, 100, 100, false, true));
+    assert(CanSkipPendingGraphicsPso(true, 7, 7, false, false));
+    // A mesh after a 3-vertex fullscreen pass, whose vertex count is left over.
+    assert(!CanSkipPendingGraphicsPso(true, 3, 36, false, false));
+    assert(CanSkipPendingGraphicsPso(true, 3, 36, true, false));
+    assert(!CanSkipPendingGraphicsPso(true, 3, 3, true, false));
+    assert(!CanSkipPendingGraphicsPso(true, 3, 36, true, true));
     {
         Cache pending{1, 1};
         std::promise<void> entered, release;
@@ -47,14 +53,14 @@ int main() {
         }));
         entered.get_future().wait();
         // A pending draw can return without waiting for the blocked compiler.
-        assert(CanSkipPendingGraphicsPso(true, 100, false));
+        assert(CanSkipPendingGraphicsPso(true, 100, 100, false, false));
         assert(pending.Lookup(1).status == Cache::Status::Pending);
         assert(!pending.CanSubmit());
         assert(!pending.Submit(2, [] { return std::make_shared<int>(7); }));
         assert(pending.Lookup(2).status == Cache::Status::Missing);
         // Skipping must not poison the request: protected draws using the same key
         // can still wait, and later draws consume the published result.
-        assert(!CanSkipPendingGraphicsPso(true, 3, false));
+        assert(!CanSkipPendingGraphicsPso(true, 3, 3, false, false));
         release.set_value();
         auto ready = pending.WaitFor(1, std::chrono::seconds{2});
         assert(ready.status == Cache::Status::Ready && *ready.result == 42);
@@ -189,12 +195,16 @@ class AsyncPsoTests(unittest.TestCase):
             "Count(FrameCount::DrawsSkippedPendingPso)", 1
         )[0]
         self.assertIn('GetEnvironmentVariableA("NXBOX_D3D12_ASYNC_SHADERS"', graphics)
-        # Both counts must exceed six (1.0.4 rule): the drawn count alone let MK8D skip draws
-        # its race needs once, and the race drew only the HUD.
+        # Both counts must exceed six (1.0.4 rule) unless a depth buffer is bound: the drawn count
+        # alone let MK8D skip draws its race needs once, and the race drew only the HUD.
         self.assertIn(
             "draw_count = (std::min)(draw.index_buffer.count, draw.vertex_buffer.count)", graphics
         )
-        self.assertIn("CanSkipPendingGraphicsPso(\n                skip_pending, draw_count,", graphics)
+        self.assertIn(
+            "CanSkipPendingGraphicsPso(\n                skip_pending, draw_count, drawn_count, "
+            "!wait_depth && regs.zeta_enable != 0,",
+            graphics,
+        )
         self.assertIn("maxwell3d->regs.transform_feedback_enabled != 0", graphics)
         self.assertIn("if (!may_skip && pso_waited.insert(request_hash).second)", graphics)
         # Only Ready results enter the guest cache; pending/missing remain retryable.

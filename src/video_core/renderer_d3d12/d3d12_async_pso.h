@@ -24,12 +24,17 @@
 
 namespace D3D12 {
 // Small draws can build persistent textures only once, so they wait for their PSO. Stream
-// output also has side effects that cannot be dropped. Only the count of the draw being made
-// decides: the other one is left over from an earlier draw (a 3-vertex fullscreen pass made every
-// later indexed mesh look small, so Wonder waited on them for 69 s of a 380 s run).
-constexpr bool CanSkipPendingGraphicsPso(bool enabled, std::uint32_t draw_count,
+// output also has side effects that cannot be dropped. `min_count` is the smaller of the index
+// and vertex counts, as in 1.0.4. One of them is left over from an earlier draw, so after a
+// 3-vertex fullscreen pass later meshes look small and wait too; deciding every draw from the
+// drawn count instead skipped draws Mario Kart 8 Deluxe needs once per race (only its HUD showed).
+// A draw with a depth buffer bound decides from `drawn_count`: one-time textures are built
+// without depth, and on a cold cache the left-over count made 295 depth-tested MK8D draws wait
+// 17.6 s of the 19 s race-start freeze.
+constexpr bool CanSkipPendingGraphicsPso(bool enabled, std::uint32_t min_count,
+                                         std::uint32_t drawn_count, bool depth,
                                          bool transform_feedback) {
-    return enabled && draw_count > 6 && !transform_feedback;
+    return enabled && !transform_feedback && (depth ? drawn_count : min_count) > 6;
 }
 
 // Jobs own immutable inputs. Only this map is shared with the requesting thread;
