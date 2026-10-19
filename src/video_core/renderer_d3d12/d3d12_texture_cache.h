@@ -56,8 +56,9 @@ public:
     }
 #ifdef NXBOX_UWP
     void ApplyMemoryBudgetOverride(u64& expected, u64& critical) {
-        expected = 320ULL << 20;
-        critical = 448ULL << 20;
+        const auto thresholds = NativeTextureMemoryBudget(context.MemoryUsage());
+        expected = thresholds.expected;
+        critical = thresholds.critical;
     }
 #endif
     bool CanDownloadImage(const Image& image) const;

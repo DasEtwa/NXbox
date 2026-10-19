@@ -1704,6 +1704,20 @@ void Context::AfterCompletion(std::function<void()> callback) {
     Commands();
     completion.push_back(std::move(callback));
 }
+TextureMemoryBudget NativeTextureMemoryBudget(u64 cache) noexcept {
+#ifdef NXBOX_UWP
+    try {
+        using winrt::Windows::System::MemoryManager;
+        return TextureMemoryThresholds(MemoryManager::AppMemoryUsageLimit(),
+                                       MemoryManager::AppMemoryUsage(), cache);
+    } catch (...) {
+        // Retain the ordinary watermarks if platform telemetry is unavailable.
+    }
+#else
+    static_cast<void>(cache);
+#endif
+    return {};
+}
 u64 NativeBufferMemoryTarget(u64 cache) noexcept {
 #ifdef NXBOX_UWP
     try {
@@ -1921,10 +1935,17 @@ ResourcePtr Context::CreateBuffer(u64 size, D3D12_HEAP_TYPE heap) {
     }
     return CreateResource(desc, heap, state);
 }
-void StagingRing::Collect() {
+void StagingRing::Collect(bool trim) {
     const FrameProfile::Scope profile_collect{context.Profile(), FramePhase::StagingCollect};
     context.Profile().Count(FrameCount::StagingCollections);
     context.Collect();
+    if (trim) {
+        // Fence completion alone is insufficient: mapped spans and uniform caches
+        // may still own a CPU lease. Only the ring's last reference can be dropped.
+        std::erase_if(pages, [this](const Page& page) {
+            return context.IsFree(page.tick) && page.resource.use_count() == 1;
+        });
+    }
     for (auto& page : pages) {
         if (context.IsFree(page.tick) && page.resource.use_count() == 1)
             page.cursor = 0;
