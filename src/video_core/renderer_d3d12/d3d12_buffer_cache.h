@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include <cstdlib>
+
 #include "video_core/buffer_cache/buffer_cache_base.h"
 #include "video_core/buffer_cache/memory_tracker_base.h"
 #include "video_core/buffer_cache/usage_tracker.h"
@@ -49,6 +51,9 @@ public:
           readback{context, D3D12_HEAP_TYPE_READBACK},
           uniform_snapshots{context, D3D12_HEAP_TYPE_DEFAULT, [this] { uniform_copies.Clear(); }} {}
     bool synchronizing_indices{};
+    bool BufferFastpathEnabled() const {
+        return buffer_fastpath;
+    }
     bool PreferCachedUniformBuffers() const {
         return true;
     }
@@ -131,6 +136,10 @@ public:
     Context& context;
 
 private:
+    const bool buffer_fastpath = [] {
+        const char* value = std::getenv("NXBOX_D3D12_BUFFER_FASTPATH");
+        return !value || value[0] != '0' || value[1] != '\0';
+    }();
     UniformCopyCache<Resource> uniform_copies;
     FrameCount upload_source{FrameCount::OtherUploadBytes};
     BindingState& bindings;
