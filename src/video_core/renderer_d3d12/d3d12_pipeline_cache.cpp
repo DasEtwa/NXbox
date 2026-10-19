@@ -1446,7 +1446,27 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(const Pso::Framebuffer
                 trace_skip("headroom", request_hash);
                 return nullptr;
             }
-            if (entry.status == AsyncCache::Status::Missing && async->CanSubmit()) {
+            // Opt in to transient missing geometry instead of first-use stalls. Retain
+            // the bounded wait for small draws (SM3DW bakes ambient light at level load)
+            // and stream output. Compute dispatches retain their existing wait too.
+            // Read without BisectEnabled's process cache so the next game sees setting changes.
+            char async_shaders_value[2]{};
+            const bool skip_pending =
+                GetEnvironmentVariableA("NXBOX_D3D12_ASYNC_SHADERS", async_shaders_value,
+                                        sizeof(async_shaders_value)) == 1 &&
+                async_shaders_value[0] == '1';
+            const auto& draw = maxwell3d->draw_manager.draw_state;
+            const u32 draw_count = (std::min)(draw.index_buffer.count, draw.vertex_buffer.count);
+            const u32 drawn_count = is_indexed ? draw.index_buffer.count : draw.vertex_buffer.count;
+            // Only draws that test depth: deciding from a bound depth buffer alone left Super Mario
+            // Odyssey's coin counter undrawn for the rest of the run.
+            const bool depth_tested = regs.zeta_enable != 0 && regs.depth_test_enable != 0;
+            // NXBOX_D3D12_PSO_WAIT_DEPTH=1 restores the 1.0.5 rule for depth-tested draws.
+            static const bool wait_depth = BisectEnabled("NXBOX_D3D12_PSO_WAIT_DEPTH");
+            const bool may_skip = CanSkipPendingGraphicsPso(
+                skip_pending, draw_count, drawn_count, !wait_depth && depth_tested,
+                maxwell3d->regs.transform_feedback_enabled != 0);
+            if (entry.status == AsyncCache::Status::Missing && async->CanSubmit(!may_skip)) {
                 GraphicsEnvironments live;
                 GetGraphicsEnvironments(live, guest_hashes);
                 auto snapshots =
@@ -1470,29 +1490,10 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(const Pso::Framebuffer
                                                               d3d_topology, guest_topology, regs,
                                                               formats, hashes, *snapshots, request);
                         return result;
-                    });
+                    },
+                    false, !may_skip);
                 context.Profile().Count(FrameCount::GuestPipelineMisses);
             }
-            // Opt in to transient missing geometry instead of first-use stalls. Retain
-            // the bounded wait for small draws (SM3DW bakes ambient light at level load)
-            // and stream output. Compute dispatches retain their existing wait too.
-            // Read without BisectEnabled's process cache so the next game sees setting changes.
-            char async_shaders_value[2]{};
-            const bool skip_pending =
-                GetEnvironmentVariableA("NXBOX_D3D12_ASYNC_SHADERS", async_shaders_value,
-                                        sizeof(async_shaders_value)) == 1 &&
-                async_shaders_value[0] == '1';
-            const auto& draw = maxwell3d->draw_manager.draw_state;
-            const u32 draw_count = (std::min)(draw.index_buffer.count, draw.vertex_buffer.count);
-            const u32 drawn_count = is_indexed ? draw.index_buffer.count : draw.vertex_buffer.count;
-            // Only draws that test depth: deciding from a bound depth buffer alone left Super Mario
-            // Odyssey's coin counter undrawn for the rest of the run.
-            const bool depth_tested = regs.zeta_enable != 0 && regs.depth_test_enable != 0;
-            // NXBOX_D3D12_PSO_WAIT_DEPTH=1 restores the 1.0.5 rule for depth-tested draws.
-            static const bool wait_depth = BisectEnabled("NXBOX_D3D12_PSO_WAIT_DEPTH");
-            const bool may_skip = CanSkipPendingGraphicsPso(
-                skip_pending, draw_count, drawn_count, !wait_depth && depth_tested,
-                maxwell3d->regs.transform_feedback_enabled != 0);
             if (!may_skip && pso_waited.insert(request_hash).second) {
                 static const bool trace_wait = BisectEnabled("NXBOX_D3D12_PSO_TRACE");
                 const auto wait_start = trace_wait ? std::chrono::steady_clock::now()
@@ -1734,7 +1735,7 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() try {
                 context.Profile().Count(FrameCount::DispatchesSkippedPendingPso);
                 return nullptr;
             }
-            if (entry.status == AsyncCache::Status::Missing && async->CanSubmit()) {
+            if (entry.status == AsyncCache::Status::Missing && async->CanSubmit(true)) {
                 VideoCommon::ComputeEnvironment live{*kepler_compute, *gpu_memory,
                                                      kepler_compute->regs.code_loc.Address(),
                                                      launch.program_start};
@@ -1760,8 +1761,8 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() try {
                         return nullptr;
                     }
                 }
-                async->Submit(async_key, [device, disk_cache = disk.get(), snapshot, prepared,
-                                          shader_hash = shader->unique_hash, request] {
+                auto job = [device, disk_cache = disk.get(), snapshot, prepared,
+                            shader_hash = shader->unique_hash, request] {
                     SetThreadDescription(GetCurrentThread(), L"D3D12 PSO compiler");
                     static const bool trace = BisectEnabled("NXBOX_D3D12_PSO_TRACE");
                     const auto trace_start = trace ? std::chrono::steady_clock::now()
@@ -1827,7 +1828,9 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() try {
                     }
                     mark("done");
                     return result;
-                });
+                };
+                // Dispatches always get their one wait, so they are always queued.
+                async->Submit(async_key, std::move(job), false, true);
                 context.Profile().Count(FrameCount::GuestPipelineMisses);
             }
             if (pso_waited.insert(request).second) {

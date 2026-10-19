@@ -114,13 +114,16 @@ public:
         const auto it = state->entries.find(key);
         return it == state->entries.end() ? Entry{Status::Missing, {}, {}} : it->second;
     }
-    bool CanSubmit() {
+    /// `urgent` admits past the queue capacity. A request whose draw cannot be skipped must be
+    /// queued: skipping a draw the game renders once loses it for good (Odyssey's coin counter
+    /// is drawn into its texture once, while a cold cache keeps the queue full).
+    bool CanSubmit(bool urgent = false) {
         std::scoped_lock lock{state->mutex};
-        return !state->stopping && Admittable();
+        return !state->stopping && Admittable(urgent);
     }
-    bool Submit(const Key& key, Job job, bool prewarmed = false) {
+    bool Submit(const Key& key, Job job, bool prewarmed = false, bool urgent = false) {
         std::scoped_lock lock{state->mutex};
-        if (state->stopping || !Admittable() || state->entries.contains(key))
+        if (state->stopping || !Admittable(urgent) || state->entries.contains(key))
             return false;
         Entry entry;
         entry.prewarmed = prewarmed;
@@ -269,12 +272,12 @@ private:
         return std::max(thread_limit, state->target + thread_limit - base_threads);
     }
     // Caller holds the mutex. Replaces stalled workers before deciding on admission.
-    bool Admittable() {
+    bool Admittable(bool urgent = false) {
         const size_t stalled = CountStalled();
         while (state->active - stalled < state->target && state->active < WorkerLimit())
             Spawn();
         // With every worker stuck, an admitted job would stay Pending forever.
-        return state->active > stalled && state->pending - stalled < state->capacity;
+        return state->active > stalled && (urgent || state->pending - stalled < state->capacity);
     }
     // Caller holds the mutex.
     void Spawn() {

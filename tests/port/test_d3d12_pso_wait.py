@@ -33,6 +33,23 @@ class PsoWait(unittest.TestCase):
             self.assertIn("if (settled.status == AsyncCache::Status::Missing)", before[wait:])
             self.assertIn("pso_waited.erase(", before[wait:])
 
+    def test_waiting_requests_are_always_queued(self):
+        # Odyssey (cold cache): the full pool refused the coin counter's PSO, its wait returned in
+        # microseconds and the counter, drawn into its texture once, never showed.
+        source = CACHE.read_text()
+        graphics = source.split("CurrentGraphicsPipeline(", 1)[1].split(
+            "Count(FrameCount::DrawsSkippedPendingPso);\n            trace_skip(may_skip", 1
+        )[0]
+        self.assertLess(
+            graphics.index("const bool may_skip"), graphics.index("async->CanSubmit(!may_skip)")
+        )
+        self.assertIn("false, !may_skip);", graphics)
+        compute = source.split("CurrentComputePipeline()", 1)[1]
+        self.assertIn("async->CanSubmit(true)", compute)
+        self.assertIn("async->Submit(async_key, std::move(job), false, true);", compute)
+        pool = POOL.read_text()
+        self.assertIn("(urgent || state->pending - stalled < state->capacity)", pool)
+
     def test_workers_wake_waiters(self):
         pool = POOL.read_text()
         self.assertIn("Entry WaitFor(", pool)

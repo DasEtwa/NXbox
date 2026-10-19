@@ -58,6 +58,11 @@ int main() {
         assert(!pending.CanSubmit());
         assert(!pending.Submit(2, [] { return std::make_shared<int>(7); }));
         assert(pending.Lookup(2).status == Cache::Status::Missing);
+        // A request whose draw cannot be skipped is queued past the capacity: refusing it made
+        // its only wait return at once and the draw was lost (Odyssey's coin counter).
+        assert(pending.CanSubmit(true));
+        assert(pending.Submit(3, [] { return std::make_shared<int>(9); }, false, true));
+        assert(pending.Lookup(3).status == Cache::Status::Pending);
         // Skipping must not poison the request: protected draws using the same key
         // can still wait, and later draws consume the published result.
         assert(!CanSkipPendingGraphicsPso(true, 3, 3, false, false));
@@ -65,6 +70,8 @@ int main() {
         auto ready = pending.WaitFor(1, std::chrono::seconds{2});
         assert(ready.status == Cache::Status::Ready && *ready.result == 42);
         assert(pending.Lookup(1).result == ready.result);
+        auto urgent = pending.WaitFor(3, std::chrono::seconds{2});
+        assert(urgent.status == Cache::Status::Ready && *urgent.result == 9);
     }
 
     Cache cache{2, 2};
