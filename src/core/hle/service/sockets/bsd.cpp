@@ -5,6 +5,11 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <array>
+#include <chrono>
+#include <cstdlib>
+#include <map>
+#include <mutex>
+#include <string>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -27,6 +32,46 @@
 namespace Service::Sockets {
 
 namespace {
+
+// NXBOX_SOCKET_TRACE=1: per-peer UDP packet and byte counts, logged every 5 s, plus the first packet
+// to or from each peer. Tells a direct peer-to-peer link apart from a relay when online play drops.
+class UdpPeerTrace {
+public:
+    static bool Enabled() {
+        static const bool enabled = [] {
+            const char* value = std::getenv("NXBOX_SOCKET_TRACE");
+            return value && value[0] == '1';
+        }();
+        return enabled;
+    }
+    static void Record(s32 fd, const Network::SockAddrIn& peer, bool sent, size_t bytes) {
+        static std::mutex mutex;
+        static std::map<std::string, std::array<u64, 4>> peers; // sent, sent bytes, recv, recv bytes
+        static auto last = std::chrono::steady_clock::now();
+        const auto key = fmt::format("fd={} {}:{}", fd, Network::IPv4AddressToString(peer.ip),
+                                     peer.portno);
+        std::scoped_lock lock{mutex};
+        auto [it, fresh] = peers.try_emplace(key);
+        if (fresh) {
+            LOG_INFO(Service, "NXBOX_UDP new peer {} first={} bytes={}", key, sent ? "send" : "recv",
+                     bytes);
+        }
+        auto& c = it->second;
+        c[sent ? 0 : 2] += 1;
+        c[sent ? 1 : 3] += bytes;
+        const auto now = std::chrono::steady_clock::now();
+        if (now - last < std::chrono::seconds{5}) {
+            return;
+        }
+        last = now;
+        for (auto& [name, n] : peers) {
+            if (n[0] || n[2]) {
+                LOG_INFO(Service, "NXBOX_UDP {} sent={}/{}B recv={}/{}B", name, n[0], n[1], n[2], n[3]);
+            }
+            n = {};
+        }
+    }
+};
 
 bool IsConnectionBased(Type type) {
     switch (type) {
@@ -955,6 +1000,9 @@ std::pair<s32, Errno> BSD_USA::RecvFromImpl(s32 fd, u32 flags, std::vector<u8>& 
             ASSERT(addr.size() >= 16);
             const SockAddrIn result = Translate(addr_in);
             PutValue(addr, result);
+            if (UdpPeerTrace::Enabled()) {
+                UdpPeerTrace::Record(fd, addr_in, false, static_cast<size_t>(ret));
+            }
         }
     }
 
@@ -991,7 +1039,11 @@ std::pair<s32, Errno> BSD_USA::SendToImpl(s32 fd, u32 flags, std::span<const u8>
         p_addr_in = &addr_in;
     }
 
-    return Translate(file_descriptors[fd]->socket->SendTo(flags, message, p_addr_in));
+    const auto result = Translate(file_descriptors[fd]->socket->SendTo(flags, message, p_addr_in));
+    if (p_addr_in && UdpPeerTrace::Enabled()) {
+        UdpPeerTrace::Record(fd, addr_in, true, result.first > 0 ? static_cast<size_t>(result.first) : 0);
+    }
+    return result;
 }
 
 Errno BSD_USA::CloseImpl(s32 fd) {
