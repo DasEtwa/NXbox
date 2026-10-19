@@ -7,6 +7,7 @@
 #pragma once
 
 #include <atomic>
+#include <mutex>
 
 #include "common/common_types.h"
 #include "common/sparse_large_vector.h"
@@ -163,6 +164,10 @@ struct PageTable {
             }
         }
     }
+    // Serializes writers (kernel map/unmap, debug marks, rasterizer marks) so the canonical
+    // entry and the JIT slot, written in separate steps, always end up agreeing. Readers never lock.
+    std::mutex writer_mutex;
+
     void StorePage(std::size_t index, bool marked, PageType type, u16 block, uintptr_t pointer) {
         // Invalidate an old mapping before replacing its canonical metadata.
         ClearJitPage(index);
