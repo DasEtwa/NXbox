@@ -16,19 +16,22 @@ DEVICE_MEMORY = ROOT / "src/core/device_memory_manager.inc"
 FIXTURES = ROOT / "tests/port/fixtures"
 
 
-def method(source, name):
-    match = re.search(
-        rf"^[^\n]*\b{re.escape(name)}\([^\n]*\)[^\n]*\{{.*?^\}}",
-        source,
-        re.MULTILINE | re.DOTALL,
+def method(source, name, occurrence=0):
+    matches = list(
+        re.finditer(
+            rf"^[^\n]*\b{re.escape(name)}\([^\n]*\)[^\n]*\{{.*?^\}}",
+            source,
+            re.MULTILINE | re.DOTALL,
+        )
     )
+    match = matches[occurrence] if len(matches) > occurrence else None
     if match is None:
         raise AssertionError(f"Missing production method: {name}")
     return match.group()
 
 
 class GpuFrontendHotPathTests(unittest.TestCase):
-    def compile_and_run(self, source):
+    def compile_and_run(self, source, environments=None):
         with tempfile.TemporaryDirectory(prefix="nxbox-frontend-") as directory:
             cpp = Path(directory) / "check.cpp"
             binary = Path(directory) / "check"
@@ -49,7 +52,8 @@ class GpuFrontendHotPathTests(unittest.TestCase):
                 ],
                 check=True,
             )
-            subprocess.run([str(binary)], check=True, timeout=30)
+            for environment in environments or [None]:
+                subprocess.run([str(binary)], check=True, timeout=30, env=environment)
 
     def test_registers_macros_and_assertions(self):
         source = MAXWELL.read_text()
@@ -59,6 +63,8 @@ class GpuFrontendHotPathTests(unittest.TestCase):
                 "IsMethodExecutable",
                 "ProcessShadowRam",
                 "ProcessDirtyRegisters",
+                "ProcessDirtyRegistersImpl",
+                "ConsumeSinkImpl",
                 "CallMethod",
                 "CallMultiMethod",
                 "CallCBDataIncrementing",
@@ -68,6 +74,7 @@ class GpuFrontendHotPathTests(unittest.TestCase):
                 "GetRegisterValue",
             )
         )
+        methods += "\n" + method(source, "Maxwell3D::CallMultiMethod", 1)
         # Synthetic register offsets keep the full production dispatch switches intact.
         # Leave room for const_buffer.buffer's sixteen adjacent method registers.
         fields = sorted(set(re.findall(r"MAXWELL3D_REG_INDEX\(([^)]+)\)", methods)))
@@ -89,7 +96,12 @@ class GpuFrontendHotPathTests(unittest.TestCase):
             "DmaPusher::ProcessCommands", "ReferencePusher::ProcessCommands"
         )
         fixture = (FIXTURES / "gpu_frontend_dma.cpp").read_text()
-        self.compile_and_run(fixture.replace("// METHODS", parser + "\n" + reference))
+        dispatch = "\n".join(
+            method(source, f"DmaPusher::{name}") for name in ("CallMethod", "CallMultiMethod")
+        )
+        self.compile_and_run(
+            fixture.replace("// METHODS", dispatch + "\n" + parser + "\n" + reference)
+        )
 
     def test_execution_mask_covers_method_side_effects(self):
         source = MAXWELL.read_text()
@@ -100,6 +112,22 @@ class GpuFrontendHotPathTests(unittest.TestCase):
         )
         cases = r"case (MAXWELL3D_REG_INDEX\([^)]+\)(?: \+ \d+)?):"
         self.assertLessEqual(set(re.findall(cases, handlers)), set(re.findall(cases, mask)))
+
+    def test_fastpath_environment_is_latched(self):
+        self.compile_and_run(
+            r"""
+#include <cassert>
+#include <cstdlib>
+#include "video_core/gpu_frontend.h"
+int main() {
+    const bool expected = std::getenv("NXBOX_GPU_FRONTEND_FASTPATH")[0] == '1';
+    assert(Tegra::GpuFrontendFastPathEnabled() == expected);
+    setenv("NXBOX_GPU_FRONTEND_FASTPATH", expected ? "0" : "1", 1);
+    assert(Tegra::GpuFrontendFastPathEnabled() == expected);
+}
+""",
+            [dict(os.environ, NXBOX_GPU_FRONTEND_FASTPATH=value) for value in ("0", "1")],
+        )
 
     def test_jit_zero_register_skip_preserves_result_and_live_carry(self):
         source = method(
@@ -118,6 +146,21 @@ class GpuFrontendHotPathTests(unittest.TestCase):
             .read_text()
             .replace("// ALU_ENUM", enum)
             .replace("// PREDICATE", predicate)
+        )
+
+    def test_sink_matches_independent_legacy_oracle(self):
+        source = MAXWELL.read_text()
+        methods = "\n".join(
+            method(source, f"Maxwell3D::{name}").replace("Maxwell3D::", "NewM3D::")
+            for name in (
+                "ProcessShadowRam",
+                "ConsumeSinkImpl",
+                "ProcessDirtyRegisters",
+                "ProcessDirtyRegistersImpl",
+            )
+        )
+        self.compile_and_run(
+            (FIXTURES / "gpu_frontend_sink_oracle.cpp").read_text().replace("// METHODS", methods)
         )
 
     def test_jit_alu_emission_matches_interpreter(self):

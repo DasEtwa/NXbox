@@ -289,62 +289,90 @@ u32 Maxwell3D::ProcessShadowRam(u32 method, u32 argument) {
     return argument;
 }
 
-void Maxwell3D::ConsumeSinkImpl(Core::System& system) {
-    const Common::GpuProfile::PhaseScope gpu_profile_scope{
+void Maxwell3D::ConsumeSinkImpl(Core::System&) {
+    const Common::GpuProfile::RecordingScope gpu_profile_scope{
         Common::GpuProfile::Phase::Maxwell3DMethods};
     const Common::GpuProfile::MethodScope state_profile{Common::GpuProfile::MethodClass::DrawState,
                                                         method_sink.size()};
-    const auto control = shadow_state.shadow_ram_control;
-    if (control == Regs::ShadowRamControl::Track || control == Regs::ShadowRamControl::TrackWithFilter) {
-        for (auto [method, value] : method_sink) {
-            shadow_state.reg_array[method] = value;
-            ProcessDirtyRegisters(method, value);
+    // Select instrumentation once for the whole sink, rather than once per write.
+    const auto consume = [&](auto process) {
+        const auto control = shadow_state.shadow_ram_control;
+        if (control == Regs::ShadowRamControl::Track ||
+            control == Regs::ShadowRamControl::TrackWithFilter) {
+            for (auto [method, value] : method_sink) {
+                shadow_state.reg_array[method] = value;
+                process(method, value);
+            }
+        } else if (control == Regs::ShadowRamControl::Replay) {
+            for (auto [method, value] : method_sink)
+                process(method, shadow_state.reg_array[method]);
+        } else {
+            for (auto [method, value] : method_sink)
+                process(method, value);
         }
-    } else if (control == Regs::ShadowRamControl::Replay) {
-        for (auto [method, value] : method_sink)
-            ProcessDirtyRegisters(method, shadow_state.reg_array[method]);
+    };
+    if (!frontend_fastpath || Common::GpuProfile::recording_enabled) {
+        consume([&](u32 method, u32 value) { ProcessDirtyRegisters(method, value); });
     } else {
-        for (auto [method, value] : method_sink)
-            ProcessDirtyRegisters(method, value);
+        consume([&](u32 method, u32 value) { ProcessDirtyRegistersImpl(method, value); });
     }
     method_sink.clear();
 }
 
 void Maxwell3D::ProcessDirtyRegisters(u32 method, u32 argument) {
-    Common::GpuProfile::MethodScope method_profile{Common::GpuProfile::MethodClass::DirtyFlags};
-    // Method side effects still run in ProcessMethodCall. Unchanged register
-    // state needs no table lookups or dirty-bit writes.
-    if (regs.reg_array[method] == argument) {
-        method_profile.Skip();
+    if (Common::GpuProfile::recording_enabled) [[unlikely]] {
+        Common::GpuProfile::MethodScope method_profile{Common::GpuProfile::MethodClass::DirtyFlags};
+        if (regs.reg_array[method] == argument)
+            method_profile.Skip();
+        ProcessDirtyRegistersImpl(method, argument);
         return;
     }
+    ProcessDirtyRegistersImpl(method, argument);
+}
+
+void Maxwell3D::ProcessDirtyRegistersImpl(u32 method, u32 argument) {
+    // Side effects still run in ProcessMethodCall. The common unchanged path
+    // performs just one register compare and never loads either dirty table.
+    if (regs.reg_array[method] == argument)
+        return;
     regs.reg_array[method] = argument;
-    for (auto const& table : dirty.tables)
-        dirty.flags[table[method]] = true;
+    if (!frontend_fastpath) {
+        for (auto const& table : dirty.tables)
+            dirty.flags[table[method]] = true;
+        return;
+    }
+    const auto flag0 = dirty.tables[0][method];
+    const auto flag1 = dirty.tables[1][method];
+    if (!dirty.flags[flag0])
+        dirty.flags[flag0] = true;
+    if (flag1 != flag0 && !dirty.flags[flag1])
+        dirty.flags[flag1] = true;
 }
 
 void Maxwell3D::ProcessMethodCall(u32 method, u32 argument, u32 nonshadow_argument, bool is_last_call) {
-    const Common::GpuProfile::PhaseScope gpu_profile_scope{
+    const Common::GpuProfile::RecordingScope gpu_profile_scope{
         Common::GpuProfile::Phase::Maxwell3DMethods};
     using MethodClass = Common::GpuProfile::MethodClass;
-    const auto category = [method] {
-        switch (method) {
-        case MAXWELL3D_REG_INDEX(report_semaphore.query):
-        case MAXWELL3D_REG_INDEX(render_enable.mode):
-        case MAXWELL3D_REG_INDEX(clear_report_value):
-        case MAXWELL3D_REG_INDEX(sync_info):
-            return MethodClass::QueryReport;
-        case MAXWELL3D_REG_INDEX(load_mme.instruction_ptr):
-        case MAXWELL3D_REG_INDEX(load_mme.instruction):
-        case MAXWELL3D_REG_INDEX(load_mme.start_address):
-            return MethodClass::MacroUpload;
-        default:
-            return MethodClass::DrawDispatch;
-        }
-    }();
     std::optional<Common::GpuProfile::MethodScope> method_profile;
-    if (Common::GpuProfile::sink && category != MethodClass::DrawDispatch)
-        method_profile.emplace(category);
+    if (Common::GpuProfile::recording_enabled) [[unlikely]] {
+        const auto category = [method] {
+            switch (method) {
+            case MAXWELL3D_REG_INDEX(report_semaphore.query):
+            case MAXWELL3D_REG_INDEX(render_enable.mode):
+            case MAXWELL3D_REG_INDEX(clear_report_value):
+            case MAXWELL3D_REG_INDEX(sync_info):
+                return MethodClass::QueryReport;
+            case MAXWELL3D_REG_INDEX(load_mme.instruction_ptr):
+            case MAXWELL3D_REG_INDEX(load_mme.instruction):
+            case MAXWELL3D_REG_INDEX(load_mme.start_address):
+                return MethodClass::MacroUpload;
+            default:
+                return MethodClass::DrawDispatch;
+            }
+        }();
+        if (category != MethodClass::DrawDispatch)
+            method_profile.emplace(category);
+    }
     switch (method) {
     case MAXWELL3D_REG_INDEX(wait_for_idle):
         return rasterizer->WaitForIdle();
@@ -428,7 +456,7 @@ void Maxwell3D::CallMacroMethod(Core::System& system, u32 method, const std::vec
 }
 
 void Maxwell3D::CallMethod(Core::System& system, u32 method, u32 method_argument, bool is_last_call) {
-    const Common::GpuProfile::PhaseScope gpu_profile_scope{
+    const Common::GpuProfile::RecordingScope gpu_profile_scope{
         Common::GpuProfile::Phase::Maxwell3DMethods};
     // It is an error to write to a register other than the current macro's ARG register before
     // it has finished execution.
@@ -453,7 +481,7 @@ void Maxwell3D::CallMethod(Core::System& system, u32 method, u32 method_argument
 }
 
 void Maxwell3D::CallMultiMethod(Core::System& system, u32 method, const u32* base_start, u32 amount, u32 methods_pending) {
-    const Common::GpuProfile::PhaseScope gpu_profile_scope{
+    const Common::GpuProfile::RecordingScope gpu_profile_scope{
         Common::GpuProfile::Phase::Maxwell3DMethods};
     // Methods after 0xE00 are special, they're actually triggers for some microcode that was
     // uploaded to the GPU during initialization.
@@ -508,8 +536,15 @@ void Maxwell3D::CallMultiMethod(Core::System& system, u32 method, const u32* bas
     }
 }
 
+void Maxwell3D::CallMultiMethod(Core::System&, u32 method, const u32* values, u32 amount) {
+    // The DMA parser checks the complete range against execution_mask. Preserve
+    // every intermediate write: dirty bits and shadow RAM are consumed in order.
+    for (u32 i = 0; i < amount; ++i)
+        method_sink.emplace_back(method + i, values[i]);
+}
+
 void Maxwell3D::CallCBDataIncrementing(u32 method, const u32* values, u32 amount) {
-    const Common::GpuProfile::PhaseScope gpu_profile_scope{
+    const Common::GpuProfile::RecordingScope gpu_profile_scope{
         Common::GpuProfile::Phase::Maxwell3DMethods};
     ASSERT(executing_macro == 0);
     ASSERT(method >= MAXWELL3D_REG_INDEX(const_buffer.buffer));

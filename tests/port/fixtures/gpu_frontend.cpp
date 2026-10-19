@@ -7,9 +7,11 @@
 #include <cstdint>
 #include <cstring>
 #include <numeric>
+#include <random>
 #include <string_view>
 #include <utility>
 #include <vector>
+#include "video_core/gpu_frontend.h"
 
 #include "common/gpu_thread_profile.h"
 
@@ -92,9 +94,14 @@ struct Maxwell3D {
 
     bool IsMethodExecutable(u32);
     u32 ProcessShadowRam(u32, u32);
+    const bool frontend_fastpath;
+    std::vector<std::pair<u32, u32>> method_sink;
+    void ConsumeSinkImpl(Core::System&);
     void ProcessDirtyRegisters(u32, u32);
+    void ProcessDirtyRegistersImpl(u32, u32);
     void CallMethod(Core::System&, u32, u32, bool);
     void CallMultiMethod(Core::System&, u32, const u32*, u32, u32);
+    void CallMultiMethod(Core::System&, u32, const u32*, u32);
     void ProcessMacro(Core::System&, u32, const u32*, u32, bool);
     void RefreshParametersImpl();
     u32 GetRegisterValue(u32) const;
@@ -118,7 +125,7 @@ struct Maxwell3D {
     void ProcessInlineIndexMultiData(u32, const u32*, u32) {
         ++bulk_calls;
     }
-    Maxwell3D() {
+    explicit Maxwell3D(bool fast = Tegra::GpuFrontendFastPathEnabled()) : frontend_fastpath{fast} {
         for (u32 i = 0; i < Regs::NUM_REGS; ++i) {
             execution_mask[i] = IsMethodExecutable(i);
             regs.reg_array[i] = i;
@@ -131,8 +138,70 @@ struct Maxwell3D {
 
 // METHODS
 
+struct TestSink : Common::GpuProfile::Sink {
+    unsigned enters{}, leaves{};
+    std::size_t Enter(Common::GpuProfile::Phase) override {
+        return enters++;
+    }
+    void Leave(std::size_t) override {
+        ++leaves;
+    }
+};
+
 int main() {
     Core::System system;
+    std::mt19937 random{0x12345678};
+    TestSink owner;
+    Common::GpuProfile::sink = &owner;
+    for (bool profiling : {false, true}) {
+        Common::GpuProfile::recording_enabled = profiling;
+        for (u32 mode = 0; mode < 4; ++mode) {
+            Maxwell3D scalar{false}, batch{true};
+            scalar.shadow_state.shadow_ram_control = batch.shadow_state.shadow_ram_control =
+                static_cast<Maxwell3D::Regs::ShadowRamControl>(mode);
+            for (u32 step = 0; step < 20000; ++step) {
+                const u32 first = random() % (MacroRegistersStart - 32);
+                const u32 amount = 1 + random() % 32;
+                // Exercise shared dirty flags, repeated values and changed-then-restored writes.
+                std::array<u32, 32> values{};
+                for (u32 i = 0; i < amount; ++i) {
+                    const u32 reg = first + i;
+                    const u32 value = random() % 4 ? scalar.regs.reg_array[reg] : random();
+                    scalar.dirty.tables[1][reg] = batch.dirty.tables[1][reg] =
+                        static_cast<unsigned char>(random() % 2 ? reg : reg + 1);
+                    scalar.method_sink.emplace_back(reg, value);
+                    values[i] = value;
+                }
+                batch.CallMultiMethod(system, first, values.data(), amount);
+                scalar.ConsumeSinkImpl(system);
+                batch.ConsumeSinkImpl(system);
+                const u32 reg = random() % MacroRegistersStart;
+                const u32 value = random() % 2 ? scalar.regs.reg_array[reg] : random();
+                // Macro sends use CallMethod: effects must execute even for repeated values.
+                scalar.CallMethod(system, reg, value, true);
+                batch.CallMethod(system, reg, value, true);
+                assert(scalar.regs.reg_array == batch.regs.reg_array);
+                assert(scalar.shadow_state.reg_array == batch.shadow_state.reg_array);
+                assert(scalar.dirty.flags == batch.dirty.flags);
+                assert(scalar.effects == batch.effects);
+                if (random() % 8 == 0) {
+                    scalar.dirty.flags.reset();
+                    batch.dirty.flags.reset();
+                }
+            }
+        }
+
+        if (!profiling) {
+            assert(owner.enters == 0 && owner.leaves == 0);
+            assert(Common::GpuProfile::TakeMethodWindow()[0].count == 0);
+        } else {
+            assert(owner.enters > 0 && owner.enters == owner.leaves);
+            const auto dirty = Common::GpuProfile::TakeMethodWindow()[0];
+            assert(dirty.count > 0 && dirty.skipped > 0 && dirty.timed_calls > 0);
+        }
+    }
+    Common::GpuProfile::recording_enabled = false;
+    Common::GpuProfile::sink = nullptr;
     const u32 values[]{0x1234, 0x5678, 0x9ABC, 0xDEF0};
     // Compare batched writes against the scalar path for every non-executable register,
     // all shadow modes, empty/single/multiple writes, and partial DMA submissions.
