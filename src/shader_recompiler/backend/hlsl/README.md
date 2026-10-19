@@ -32,8 +32,10 @@ checks. HLSL sources are compiled into `shader_recompiler` independently of
   images and image buffers. Those two counters count resources, not two separate
   D3D12 namespaces. Consecutive calls append their UAV spans. The descriptor
   allocator must use that same per-stage append order when sharing counters
-  across stages. `ssboN` uses the local IR descriptor index; its register includes
-  the binding offset. Dynamic texture/image arrays use `NonUniformResourceIndex`.
+  across stages. The storage buffers are one array, `ssbo[N]`, indexed by the
+  local IR descriptor index; its first register includes the binding offset. Global
+  memory searches its windows in one loop (`nx_global_find`) and indexes that array,
+  like dynamic texture/image arrays, with `NonUniformResourceIndex`.
 - Sampler registers use `bindings.hlsl_sampler`, independently of the SRV counter:
   texel buffers consume SRVs but no sampler slots. Sampler variable names retain
   the corresponding texture's SRV number. Each sampled descriptor advances the

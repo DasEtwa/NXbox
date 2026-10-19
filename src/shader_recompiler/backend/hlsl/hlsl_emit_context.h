@@ -142,7 +142,8 @@ public:
     std::string CbufferLoad(u32 binding, u32 offset);
     std::string Attribute(IR::Attribute attribute, bool output);
     std::string Resource(const IR::Value& index, u32 descriptor, bool image, bool buffer = false);
-    void GlobalMemoryAccess(size_t index, std::string_view address, u32 bytes);
+    // Opens "{ if (found) {" with nx_global_index and nx_global_offset; false without windows.
+    bool GlobalMemoryAccess(std::string_view address, u32 bytes);
     std::string Sampler(const IR::Value& index, u32 descriptor);
     struct ResourceDefinition {
         u32 binding;

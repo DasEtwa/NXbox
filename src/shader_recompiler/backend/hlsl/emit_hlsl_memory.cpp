@@ -203,7 +203,7 @@ void EmitWriteSharedU128(EmitContext& ctx, std::string_view offset, std::string_
 void EmitLoadStorageU8(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding,
                        const IR::Value& offset) {
     const auto o = ctx.var_alloc.Consume(offset);
-    const auto resource = fmt::format("ssbo{}", binding.U32());
+    const auto resource = fmt::format("ssbo[{}]", binding.U32());
     ctx.AddU32("{} = bitfieldExtract(uint({}.Load({} & ~3u)), int(({} & 3u) * 8u), 8);", inst,
                resource, o, o);
 }
@@ -211,7 +211,7 @@ void EmitLoadStorageU8(EmitContext& ctx, IR::Inst& inst, const IR::Value& bindin
 void EmitLoadStorageS8(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding,
                        const IR::Value& offset) {
     const auto o = ctx.var_alloc.Consume(offset);
-    const auto resource = fmt::format("ssbo{}", binding.U32());
+    const auto resource = fmt::format("ssbo[{}]", binding.U32());
     ctx.AddU32("{} = bitfieldExtract(int({}.Load({} & ~3u)), int(({} & 3u) * 8u), 8);", inst,
                resource, o, o);
 }
@@ -219,7 +219,7 @@ void EmitLoadStorageS8(EmitContext& ctx, IR::Inst& inst, const IR::Value& bindin
 void EmitLoadStorageU16(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding,
                         const IR::Value& offset) {
     const auto o = ctx.var_alloc.Consume(offset);
-    const auto resource = fmt::format("ssbo{}", binding.U32());
+    const auto resource = fmt::format("ssbo[{}]", binding.U32());
     ctx.AddU32("{} = bitfieldExtract(uint({}.Load({} & ~3u)), int(({} & 2u) * 8u), 16);", inst,
                resource, o, o);
 }
@@ -227,7 +227,7 @@ void EmitLoadStorageU16(EmitContext& ctx, IR::Inst& inst, const IR::Value& bindi
 void EmitLoadStorageS16(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding,
                         const IR::Value& offset) {
     const auto o = ctx.var_alloc.Consume(offset);
-    const auto resource = fmt::format("ssbo{}", binding.U32());
+    const auto resource = fmt::format("ssbo[{}]", binding.U32());
     ctx.AddU32("{} = bitfieldExtract(int({}.Load({} & ~3u)), int(({} & 2u) * 8u), 16);", inst,
                resource, o, o);
 }
@@ -235,28 +235,28 @@ void EmitLoadStorageS16(EmitContext& ctx, IR::Inst& inst, const IR::Value& bindi
 void EmitLoadStorage32(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding,
                        const IR::Value& offset) {
     const auto o = ctx.var_alloc.Consume(offset);
-    const auto resource = fmt::format("ssbo{}", binding.U32());
+    const auto resource = fmt::format("ssbo[{}]", binding.U32());
     ctx.AddU32("{} = {}.Load({} & ~3u);", inst, resource, o);
 }
 
 void EmitLoadStorage64(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding,
                        const IR::Value& offset) {
     const auto o = ctx.var_alloc.Consume(offset);
-    const auto resource = fmt::format("ssbo{}", binding.U32());
+    const auto resource = fmt::format("ssbo[{}]", binding.U32());
     ctx.AddU32x2("{} = {}.Load2({});", inst, resource, o);
 }
 
 void EmitLoadStorage128(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding,
                         const IR::Value& offset) {
     const auto o = ctx.var_alloc.Consume(offset);
-    const auto resource = fmt::format("ssbo{}", binding.U32());
+    const auto resource = fmt::format("ssbo[{}]", binding.U32());
     ctx.AddU32x4("{} = {}.Load4({});", inst, resource, o);
 }
 
 void EmitWriteStorageU8(EmitContext& ctx, const IR::Value& binding, const IR::Value& offset,
                         std::string_view value) {
     const auto o = ctx.var_alloc.Consume(offset);
-    const auto resource = fmt::format("ssbo{}", binding.U32());
+    const auto resource = fmt::format("ssbo[{}]", binding.U32());
     ctx.Add("{{ uint old_value = {}.Load({} & ~3u); uint previous; do {{ uint new_value = "
             "bitfieldInsert(old_value, {}, int(({} & 3u) * 8u), 8); "
             "{}.InterlockedCompareExchange({} & ~3u, old_value, new_value, previous); if (previous "
@@ -267,7 +267,7 @@ void EmitWriteStorageU8(EmitContext& ctx, const IR::Value& binding, const IR::Va
 void EmitWriteStorageS8(EmitContext& ctx, const IR::Value& binding, const IR::Value& offset,
                         std::string_view value) {
     const auto o = ctx.var_alloc.Consume(offset);
-    const auto resource = fmt::format("ssbo{}", binding.U32());
+    const auto resource = fmt::format("ssbo[{}]", binding.U32());
     ctx.Add("{{ uint old_value = {}.Load({} & ~3u); uint previous; do {{ uint new_value = "
             "bitfieldInsert(old_value, {}, int(({} & 3u) * 8u), 8); "
             "{}.InterlockedCompareExchange({} & ~3u, old_value, new_value, previous); if (previous "
@@ -278,7 +278,7 @@ void EmitWriteStorageS8(EmitContext& ctx, const IR::Value& binding, const IR::Va
 void EmitWriteStorageU16(EmitContext& ctx, const IR::Value& binding, const IR::Value& offset,
                          std::string_view value) {
     const auto o = ctx.var_alloc.Consume(offset);
-    const auto resource = fmt::format("ssbo{}", binding.U32());
+    const auto resource = fmt::format("ssbo[{}]", binding.U32());
     ctx.Add("{{ uint old_value = {}.Load({} & ~3u); uint previous; do {{ uint new_value = "
             "bitfieldInsert(old_value, {}, int(({} & 2u) * 8u), 16); "
             "{}.InterlockedCompareExchange({} & ~3u, old_value, new_value, previous); if (previous "
@@ -289,7 +289,7 @@ void EmitWriteStorageU16(EmitContext& ctx, const IR::Value& binding, const IR::V
 void EmitWriteStorageS16(EmitContext& ctx, const IR::Value& binding, const IR::Value& offset,
                          std::string_view value) {
     const auto o = ctx.var_alloc.Consume(offset);
-    const auto resource = fmt::format("ssbo{}", binding.U32());
+    const auto resource = fmt::format("ssbo[{}]", binding.U32());
     ctx.Add("{{ uint old_value = {}.Load({} & ~3u); uint previous; do {{ uint new_value = "
             "bitfieldInsert(old_value, {}, int(({} & 2u) * 8u), 16); "
             "{}.InterlockedCompareExchange({} & ~3u, old_value, new_value, previous); if (previous "
@@ -300,21 +300,21 @@ void EmitWriteStorageS16(EmitContext& ctx, const IR::Value& binding, const IR::V
 void EmitWriteStorage32(EmitContext& ctx, const IR::Value& binding, const IR::Value& offset,
                         std::string_view value) {
     const auto o = ctx.var_alloc.Consume(offset);
-    const auto resource = fmt::format("ssbo{}", binding.U32());
+    const auto resource = fmt::format("ssbo[{}]", binding.U32());
     ctx.Add("{}.Store({}, {});", resource, o, value);
 }
 
 void EmitWriteStorage64(EmitContext& ctx, const IR::Value& binding, const IR::Value& offset,
                         std::string_view value) {
     const auto o = ctx.var_alloc.Consume(offset);
-    const auto resource = fmt::format("ssbo{}", binding.U32());
+    const auto resource = fmt::format("ssbo[{}]", binding.U32());
     ctx.Add("{}.Store2({}, {});", resource, o, value);
 }
 
 void EmitWriteStorage128(EmitContext& ctx, const IR::Value& binding, const IR::Value& offset,
                          std::string_view value) {
     const auto o = ctx.var_alloc.Consume(offset);
-    const auto resource = fmt::format("ssbo{}", binding.U32());
+    const auto resource = fmt::format("ssbo[{}]", binding.U32());
     ctx.Add("{}.Store4({}, {});", resource, o, value);
 }
 void EmitLoadGlobal32(EmitContext& ctx, IR::Inst& inst, std::string_view address) {

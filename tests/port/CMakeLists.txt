@@ -91,9 +91,12 @@ endif()
 
 find_program(HLSL_DXC_EXECUTABLE dxc)
 if(TARGET hlsl-ir-tests AND HLSL_DXC_EXECUTABLE)
-  foreach(fixture vertex fragment compute waves resources arithmetic msaa msaa_array msaa_depth msaa_array_depth clip intsample intsample_array)
+  foreach(fixture vertex fragment compute waves resources arithmetic msaa msaa_array msaa_depth msaa_array_depth clip intsample intsample_array global global_windows)
     if(fixture STREQUAL "vertex" OR fixture STREQUAL "clip")
       set(hlsl_target vs_6_0)
+    elseif(fixture STREQUAL "global")
+      # Global int64 atomics need SM 6.6.
+      set(hlsl_target cs_6_6)
     elseif(fixture STREQUAL "fragment" OR fixture STREQUAL "resources" OR fixture MATCHES "^msaa" OR
            fixture MATCHES "^intsample")
       set(hlsl_target ps_6_0)

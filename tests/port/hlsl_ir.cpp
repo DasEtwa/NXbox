@@ -218,7 +218,7 @@ void Compute() {
   const auto text = f.Emit(bindings);
   Contains(text, "register(b0, space1)");
   Contains(text, "nx_cbuf3 : register(b0, space0)");
-  Contains(text, "RWByteAddressBuffer ssbo0 : register(u0, space0)");
+  Contains(text, "RWByteAddressBuffer ssbo[1] : register(u0, space0)");
   Contains(text, ".InterlockedAdd(");
   Contains(text, "groupshared uint smem[32]");
   Contains(text, "GroupMemoryBarrierWithGroupSync");
@@ -332,7 +332,7 @@ void ResourceOrderAndCompare() {
   const auto text = f.Emit(bindings);
   Contains(text, "tex4 : register(t4, space0)");
   Contains(text, "tex5 : register(t5, space0)");
-  Contains(text, "ssbo0 : register(u5, space0)");
+  Contains(text, "ssbo[1] : register(u5, space0)");
   Contains(text, "img6 : register(u6, space0)");
   Contains(text, "SamplerComparisonState samp4");
   Contains(text, ".SampleCmpLevelZero(");
@@ -488,7 +488,7 @@ void ChainedResourceBindings() {
   Bindings bindings;
   const auto first = vertex.Emit(bindings);
   Contains(first, "samp0 : register(s0, space0)");
-  Contains(first, "ssbo0 : register(u0, space0)");
+  Contains(first, "ssbo[1] : register(u0, space0)");
   Contains(first, "img1 : register(u1, space0)");
   Contains(first, "img2 : register(u2, space0)");
   Fixture fragment{Stage::Fragment};
@@ -498,7 +498,7 @@ void ChainedResourceBindings() {
   const auto second = fragment.Emit(bindings);
   Contains(second, "tex2 : register(t2, space0)");
   Contains(second, "samp2 : register(s1, space0)");
-  Contains(second, "ssbo0 : register(u3, space0)");
+  Contains(second, "ssbo[1] : register(u3, space0)");
   Require(bindings.texture == 3 && bindings.hlsl_sampler == 2 &&
               bindings.storage_buffer + bindings.image == 4,
           "Stage append order must match native descriptor tables");
@@ -629,12 +629,50 @@ void GlobalAndRegisterState() {
   profile.support_int64_atomics = true;
   const auto text = f.Emit(bindings, profile);
   Contains(text, "nx_global_load_subword(");
-  Contains(text, "nx_global_size - (address - nx_global_base) >= bits / 8u");
+  Contains(text, "nx_global_find(address, bits / 8u, index, offset)");
   Contains(text, "nx_global_write_subword(");
-  Contains(text, "nx_global_matched");
+  // One window search per access, not one block per window.
+  Contains(text, "[loop] for (uint i = 0u; i < 1u; ++i)");
+  Contains(text, "uint2(cbuf0[o >> 4].x & 4294967295u, cbuf0[o >> 4].y)");
+  Contains(text, "ssbo[NonUniformResourceIndex(nx_global_index)].InterlockedAdd(");
+  Require(text.find("nx_global_matched") == text.npos, "unrolled global windows");
   Contains(text, "nx_regs[0]");
   Contains(text, "nx_goto_17");
   std::ofstream("hlsl_global.hlsl") << text;
+}
+void GlobalWindowLayouts() {
+  // Windows in two constant buffers, one at an 8-byte offset, read through nx_cbuf_load.
+  Fixture mixed{Stage::Compute};
+  mixed.program.info.uses_global_memory = true;
+  mixed.program.info.uses_int64 = true;
+  for (u32 index : {0u, 1u})
+    mixed.program.info.constant_buffer_descriptors.push_back(
+        {.index = index, .count = 1});
+  mixed.program.info.storage_buffers_descriptors.push_back(
+      {.cbuf_index = 0, .cbuf_offset = 0x110, .count = 1, .is_written = true});
+  mixed.program.info.storage_buffers_descriptors.push_back(
+      {.cbuf_index = 1, .cbuf_offset = 0x8, .count = 1, .is_written = true});
+  const auto address = IR::Value{u64{0x1000}};
+  mixed.Add(IR::Opcode::WriteGlobal32,
+            {address, mixed.Add(IR::Opcode::LoadGlobal32, {address})});
+  Bindings bindings;
+  const auto text = mixed.Emit(bindings);
+  Contains(text, "RWByteAddressBuffer ssbo[2] : register(u0, space0)");
+  Contains(text, "static const uint nx_global_offsets[2] = {272u, 8u};");
+  Contains(text, "static const uint nx_global_cbufs[2] = {0u, 1u};");
+  Contains(text, "nx_cbuf_load(nx_global_cbufs[i], o + 12u)");
+  std::ofstream("hlsl_global_windows.hlsl") << text;
+  // Without a window, global memory reads zero and declares no buffer.
+  Fixture none{Stage::Compute};
+  none.program.info.uses_global_memory = true;
+  none.program.info.uses_int64 = true;
+  none.Add(IR::Opcode::WriteGlobal32,
+           {address, none.Add(IR::Opcode::LoadGlobal32, {address})});
+  none.Add(IR::Opcode::GlobalAtomicIAdd32, {address, IR::Value{1u}});
+  Bindings empty;
+  const auto stub = none.Emit(empty);
+  Contains(stub, "uint nx_global_load32(uint64_t address) { return (uint)0; }");
+  Require(stub.find("ssbo") == stub.npos, "a buffer declared without windows");
 }
 void SparseResidency() {
   Fixture f{Stage::Fragment};
@@ -917,6 +955,7 @@ int main() {
       ChainedResourceBindings();
       NumericCoverage();
       GlobalAndRegisterState();
+      GlobalWindowLayouts();
       SparseResidency();
       Geometry();
       NativeWideAtomics();

@@ -54,6 +54,83 @@ std::string VectorType(AttributeType type) {
         return "float4";
     }
 }
+// Global memory is searched window by window, the first window holding the access wins. The
+// search is a loop: with the windows unrolled into every access, the Series X driver compiled
+// Wonder shaders with 13 windows for more than 45 s while one window took 1 s.
+std::string GlobalMemoryHelpers(const Info& info, const Profile& profile) {
+    const auto& windows = info.storage_buffers_descriptors;
+    std::string text;
+    if (windows.empty()) {
+        // Without a window, loads read zero and stores are dropped.
+        for (const auto& [type, bits] : {std::pair{"uint", 32}, {"uint2", 64}, {"uint4", 128}})
+            text += fmt::format("{0} nx_global_load{1}(uint64_t address) {{ return ({0})0; }}\n"
+                                "void nx_global_write{1}(uint64_t address, {0} value) {{}}\n",
+                                type, bits);
+        return text + "uint nx_global_load_subword(uint64_t address, uint bits) { return 0u; }\n"
+                      "void nx_global_write_subword(uint64_t address, uint value, uint bits) {}\n";
+    }
+    const u32 cbuf = windows.front().cbuf_index;
+    const bool rows =
+        std::ranges::all_of(windows,
+                            [&](const auto& desc) {
+                                return desc.cbuf_index == cbuf && desc.cbuf_offset % 16 == 0;
+                            }) &&
+        std::ranges::any_of(info.constant_buffer_descriptors,
+                            [&](const auto& desc) { return desc.index == cbuf; });
+    std::string offsets, cbufs;
+    for (const auto& desc : windows) {
+        offsets += fmt::format("{}{}u", offsets.empty() ? "" : ", ", desc.cbuf_offset);
+        cbufs += fmt::format("{}{}u", cbufs.empty() ? "" : ", ", desc.cbuf_index);
+    }
+    const auto word = [&](u32 index) {
+        return rows ? fmt::format("cbuf{}[o >> 4].{}", cbuf, "xyzw"[index])
+                    : fmt::format("nx_cbuf_load(nx_global_cbufs[i], o + {}u)", index * 4);
+    };
+    const auto alignment = std::max(static_cast<u32>(profile.min_ssbo_alignment), 1u);
+    text =
+        fmt::format("static const uint nx_global_offsets[{}] = {{{}}};\n", windows.size(), offsets);
+    if (!rows)
+        text +=
+            fmt::format("static const uint nx_global_cbufs[{}] = {{{}}};\n", windows.size(), cbufs);
+    text += fmt::format(
+        "bool nx_global_find(uint64_t address, uint bytes, out uint index, out uint offset) {{\n"
+        "index = 0u; offset = 0u;\n"
+        "[loop] for (uint i = 0u; i < {}u; ++i) {{ uint o = nx_global_offsets[i];\n"
+        "uint64_t base = packUint2x32(uint2({} & {}u, {})); "
+        "uint64_t size = packUint2x32(uint2({}, {}));\n"
+        "if (address >= base && address - base <= size && size - (address - base) >= bytes) {{ "
+        "index = i; offset = uint(address - base); return true; }} }}\n"
+        "return false; }}\n",
+        windows.size(), word(0), ~(alignment - 1u), word(1), word(2), word(3));
+    constexpr std::string_view buffer = "ssbo[NonUniformResourceIndex(index)]";
+    for (u32 bits : {32u, 64u, 128u}) {
+        const auto type = bits == 32 ? "uint" : bits == 64 ? "uint2" : "uint4";
+        const auto suffix = bits == 32 ? "" : bits == 64 ? "2" : "4";
+        text += fmt::format(
+            "{0} nx_global_load{1}(uint64_t address) {{ uint index, offset; if "
+            "(nx_global_find(address, {2}u, index, offset)) return {3}.Load{4}(offset); "
+            "return ({0})0; }}\n"
+            "void nx_global_write{1}(uint64_t address, {0} value) {{ uint index, offset; if "
+            "(nx_global_find(address, {2}u, index, offset)) {3}.Store{4}(offset, value); }}\n",
+            type, bits, bits / 8, buffer, suffix);
+    }
+    return text +
+           fmt::format("uint nx_global_load_subword(uint64_t address, uint bits) {{\n"
+                       "address &= ~uint64_t(bits == 16u ? 1u : 0u); uint index, offset;\n"
+                       "if (!nx_global_find(address, bits / 8u, index, offset)) return 0u;\n"
+                       "return bitfieldExtract({0}.Load(offset & ~3u), int((offset & 3u) * 8u), "
+                       "int(bits)); }}\n"
+                       "void nx_global_write_subword(uint64_t address, uint value, uint bits) {{\n"
+                       "address &= ~uint64_t(bits == 16u ? 1u : 0u); uint index, offset;\n"
+                       "if (!nx_global_find(address, bits / 8u, index, offset)) return;\n"
+                       "uint aligned = offset & ~3u; uint shift = (offset & (bits == 8u ? 3u : "
+                       "2u)) * 8u; uint old_value = {0}.Load(aligned); uint previous;\n"
+                       "do {{ uint new_value = bitfieldInsert(old_value, value, int(shift), "
+                       "int(bits)); {0}.InterlockedCompareExchange(aligned, old_value, new_value, "
+                       "previous); if (previous == old_value) break; old_value = previous; }} "
+                       "while (true); }}\n",
+                       buffer);
+}
 } // namespace
 EmitContext::EmitContext(IR::Program& program, Bindings& bindings, const Profile& profile_,
                          const RuntimeInfo& runtime_info_)
@@ -119,84 +196,18 @@ EmitContext::EmitContext(IR::Program& program, Bindings& bindings, const Profile
                                       desc.count);
         bindings.texture += desc.count;
     }
+    const u32 first_storage_register = bindings.storage_buffer + bindings.image;
     for (const auto& desc : info.storage_buffers_descriptors) {
         if (desc.count != 1)
             throw NotImplementedException("HLSL storage-buffer descriptor arrays");
-        storage_bindings.push_back(bindings.storage_buffer);
-        header += RegisterDeclaration("RWByteAddressBuffer",
-                                      fmt::format("ssbo{}", storage_bindings.size() - 1), 'u',
-                                      bindings.storage_buffer++ + bindings.image);
+        storage_bindings.push_back(bindings.storage_buffer++);
     }
-    if (info.uses_global_memory) {
-        for (u32 bits : {32u, 64u, 128u}) {
-            const auto type = bits == 32 ? "uint" : bits == 64 ? "uint2" : "uint4";
-            const auto suffix = bits == 32 ? "" : bits == 64 ? "2" : "4";
-            for (bool write : {false, true}) {
-                header += fmt::format("{} nx_global_{}{}(uint64_t address{}) {{\n",
-                                      write ? "void" : type, write ? "write" : "load", bits,
-                                      write ? fmt::format(", {} value", type) : "");
-                for (size_t i = 0; i < info.storage_buffers_descriptors.size(); ++i) {
-                    const auto& desc = info.storage_buffers_descriptors[i];
-                    const auto alignment =
-                        std::max(static_cast<u32>(profile.min_ssbo_alignment), 1u);
-                    header += fmt::format(
-                        "{{ uint64_t base = packUint2x32(uint2({} & {}u, {})); uint64_t size = "
-                        "packUint2x32(uint2({}, {})); "
-                        "if (address >= base && address - base <= size && size - (address - base) "
-                        ">= {}u) {{ ",
-                        CbufferLoad(desc.cbuf_index, desc.cbuf_offset), ~(alignment - 1u),
-                        CbufferLoad(desc.cbuf_index, desc.cbuf_offset + 4),
-                        CbufferLoad(desc.cbuf_index, desc.cbuf_offset + 8),
-                        CbufferLoad(desc.cbuf_index, desc.cbuf_offset + 12), bits / 8);
-                    if (write)
-                        header += fmt::format(
-                            "ssbo{}.Store{}(uint(address - base), value); return; }} }}\n", i,
-                            suffix);
-                    else
-                        header += fmt::format("return ssbo{}.Load{}(uint(address - base)); }} }}\n",
-                                              i, suffix);
-                }
-                header += write ? "}\n" : fmt::format("return ({})0; }}\n", type);
-            }
-        }
-    }
-    if (info.uses_global_memory) {
-        header += "uint nx_global_load_subword(uint64_t address, uint bits) {\n"
-                  "address &= ~uint64_t(bits == 16u ? 1u : 0u);\n";
-        for (size_t i = 0; i < info.storage_buffers_descriptors.size(); ++i) {
-            const auto code_start = code.size();
-            GlobalMemoryAccess(i, "address", 1);
-            header += code.substr(code_start);
-            code.resize(code_start);
-            header +=
-                fmt::format("if (nx_global_size - (address - nx_global_base) >= bits / 8u) {{ "
-                            "uint offset = uint(address - nx_global_base); "
-                            "return bitfieldExtract(ssbo{}.Load(offset & ~3u), int((offset & 3u) * "
-                            "8u), int(bits)); "
-                            "}} }} }}\n",
-                            i);
-        }
-        header += "return 0u; }\n";
-        header += "void nx_global_write_subword(uint64_t address, uint value, uint bits) {\n"
-                  "address &= ~uint64_t(bits == 16u ? 1u : 0u);\n";
-        for (size_t i = 0; i < info.storage_buffers_descriptors.size(); ++i) {
-            const auto code_start = code.size();
-            GlobalMemoryAccess(i, "address", 1);
-            header += code.substr(code_start);
-            code.resize(code_start);
-            header += fmt::format(
-                "if (nx_global_size - (address - nx_global_base) >= bits / 8u) {{ "
-                "uint offset = uint(address - nx_global_base); uint aligned = offset & ~3u; "
-                "uint shift = (offset & (bits == 8u ? 3u : 2u)) * 8u; "
-                "uint old_value = ssbo{0}.Load(aligned); uint previous; "
-                "do {{ uint new_value = bitfieldInsert(old_value, value, int(shift), int(bits)); "
-                "ssbo{0}.InterlockedCompareExchange(aligned, old_value, new_value, previous); "
-                "if (previous == old_value) break; old_value = previous; }} while (true); "
-                "return; }} }} }}\n",
-                i);
-        }
-        header += "}\n";
-    }
+    // One array, so a global memory access can pick its window with a dynamic index.
+    if (!storage_bindings.empty())
+        header += fmt::format("RWByteAddressBuffer ssbo[{}] : register(u{}, space0);\n",
+                              storage_bindings.size(), first_storage_register);
+    if (info.uses_global_memory)
+        header += GlobalMemoryHelpers(info, profile);
     // Image register numbers share the UAV namespace with storage buffers.
     u32 image_binding = bindings.storage_buffer + bindings.image;
     for (const auto& desc : info.image_descriptors) {
@@ -414,17 +425,13 @@ std::string EmitContext::CbufferLoad(const IR::Value& binding, const IR::Value& 
                                    : var_alloc.Consume(offset);
     return fmt::format("nx_cbuf_load({}, {})", var_alloc.Consume(binding), byte_offset);
 }
-void EmitContext::GlobalMemoryAccess(size_t index, std::string_view address, u32 bytes) {
-    const auto& desc = info.storage_buffers_descriptors.at(index);
-    const auto alignment = std::max(static_cast<u32>(profile.min_ssbo_alignment), 1u);
-    Add("{{ uint64_t nx_global_base = packUint2x32(uint2({0} & {1}u, {2})); "
-        "uint64_t nx_global_size = packUint2x32(uint2({3}, {4})); "
-        "if ({5} >= nx_global_base && {5} - nx_global_base <= nx_global_size && "
-        "nx_global_size - ({5} - nx_global_base) >= {6}u) {{",
-        CbufferLoad(desc.cbuf_index, desc.cbuf_offset), ~(alignment - 1u),
-        CbufferLoad(desc.cbuf_index, desc.cbuf_offset + 4),
-        CbufferLoad(desc.cbuf_index, desc.cbuf_offset + 8),
-        CbufferLoad(desc.cbuf_index, desc.cbuf_offset + 12), address, bytes);
+bool EmitContext::GlobalMemoryAccess(std::string_view address, u32 bytes) {
+    if (storage_bindings.empty())
+        return false;
+    Add("{{ uint nx_global_index, nx_global_offset; "
+        "if (nx_global_find({}, {}u, nx_global_index, nx_global_offset)) {{",
+        address, bytes);
+    return true;
 }
 std::string EmitContext::Sampler(const IR::Value& index, u32 descriptor) {
     const auto def = textures.at(descriptor);
