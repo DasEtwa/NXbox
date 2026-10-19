@@ -927,7 +927,7 @@ void MacroJITx64Impl::Compile_AddImmediate(Core::System& system, Macro::Opcode o
         }
     } else {
         auto result = Compile_GetRegister(opcode.src_a, RESULT);
-        if (opcode.immediate > 2) {
+        if (opcode.immediate >= 2) {
             add(result, opcode.immediate);
         } else if (opcode.immediate == 1) {
             inc(result);
@@ -983,7 +983,7 @@ void MacroJITx64Impl::Compile_Read(Core::System& system, Macro::Opcode opcode) {
         }
     } else {
         auto result = Compile_GetRegister(opcode.src_a, RESULT);
-        if (opcode.immediate > 2) {
+        if (opcode.immediate >= 2) {
             add(result, opcode.immediate);
         } else if (opcode.immediate == 1) {
             inc(result);

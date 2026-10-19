@@ -101,6 +101,22 @@ class GpuFrontendHotPathTests(unittest.TestCase):
         cases = r"case (MAXWELL3D_REG_INDEX\([^)]+\)(?: \+ \d+)?):"
         self.assertLessEqual(set(re.findall(cases, handlers)), set(re.findall(cases, mask)))
 
+    def test_jit_immediate_emission_preserves_two(self):
+        source = (ROOT / "src/video_core/macro.cpp").read_text()
+        production = "\n".join(
+            method(source, f"MacroJITx64Impl::{name}")
+            for name in (
+                "Compile_GetRegister",
+                "Compile_AddImmediate",
+                "Compile_Read",
+            )
+        )
+        self.compile_and_run(
+            (FIXTURES / "gpu_frontend_jit_immediate.cpp")
+            .read_text()
+            .replace("// PRODUCTION", production)
+        )
+
     def test_memory_spans_and_walks(self):
         source = DEVICE_MEMORY.read_text()
         spans = re.findall(
