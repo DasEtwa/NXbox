@@ -6,6 +6,8 @@
 
 #pragma once
 
+#include <string>
+
 #include "core/hle/service/service.h"
 
 namespace Core {
@@ -13,6 +15,10 @@ class System;
 }
 
 namespace Service::Sockets {
+
+// The name nsd hands back for a server FQDN: '%' becomes the environment identifier (lp1).
+// sfdnsres runs names through it when the caller sets use_nsd_resolve.
+std::string ResolveFqdn(const std::string& fqdn_in);
 
 class NSD final : public ServiceFramework<NSD> {
 public:

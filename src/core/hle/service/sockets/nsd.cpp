@@ -63,7 +63,7 @@ NSD::NSD(Core::System& system_, const char* name) : ServiceFramework{system_, na
     RegisterHandlers(functions);
 }
 
-static std::string ResolveImpl(const std::string& fqdn_in) {
+std::string ResolveFqdn(const std::string& fqdn_in) {
     // nsd swaps '%' for the environment identifier (GetEnvironmentIdentifier): game servers are
     // requested as g<id>-%.s.n.srv.nintendo.net and only resolve as g<id>-lp1.s.n.srv.nintendo.net.
     auto fqdn_out = Common::ReplaceAll(fqdn_in, "%", "lp1");
@@ -72,7 +72,7 @@ static std::string ResolveImpl(const std::string& fqdn_in) {
 }
 
 static Result ResolveCommon(const std::string& fqdn_in, std::array<char, 0x100>& fqdn_out) {
-    const auto res = ResolveImpl(fqdn_in);
+    const auto res = ResolveFqdn(fqdn_in);
     if (res.size() >= fqdn_out.size()) {
         return ResultOverflow;
     }

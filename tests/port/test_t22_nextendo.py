@@ -901,6 +901,16 @@ class NextendoTests(unittest.TestCase):
         self.assertIn('Common::ReplaceAll(fqdn_in, "%", "lp1")', source)
         self.assertIn('host == "g2b309e01-lp1.s.n.srv.nintendo"', policy)
 
+    def test_sfdnsres_runs_nsd_resolve_names_through_nsd(self):
+        sfdnsres = (ROOT / "src/core/hle/service/sockets/sfdnsres.cpp").read_text()
+        nsd = (ROOT / "src/core/hle/service/sockets/nsd.cpp").read_text()
+        # GetHostByName and GetAddrInfo both resolve nncs1-%.n.n.srv.nintendo.net as nncs1-lp1.
+        self.assertEqual(
+            sfdnsres.count("parameters.use_nsd_resolve ? ResolveFqdn(requested) : requested"), 2
+        )
+        self.assertIn("std::string ResolveFqdn(const std::string& fqdn_in) {", nsd)
+        self.assertNotIn("static std::string ResolveImpl", nsd)
+
     def test_ssl_connection_keeps_its_socket_after_handing_it_to_the_backend(self):
         # Moving the socket into the backend left ISslConnection::socket empty, so DoHandshake
         # returned ResultNoSocket (0xce7b) for MK8D's TLS connection to its game server.

@@ -13,6 +13,7 @@
 #include "core/core.h"
 #include "core/hle/service/ipc_helpers.h"
 #include "core/hle/service/nextendo/runtime.h"
+#include "core/hle/service/sockets/nsd.h"
 #include "core/hle/service/sockets/sfdnsres.h"
 #include "core/hle/service/sockets/sockets.h"
 #include "core/hle/service/sockets/sockets_translate.h"
@@ -198,11 +199,12 @@ static std::pair<u32, GetAddrInfoError> GetHostByNameRequestImpl(HLERequestConte
 
     LOG_WARNING(
         Service,
-        "called with ignored parameters: use_nsd_resolve={}, cancel_handle={}, process_id={}",
+        "called: use_nsd_resolve={}, ignored cancel_handle={}, process_id={}",
         parameters.use_nsd_resolve, parameters.cancel_handle, parameters.process_id);
 
     const auto host_buffer = ctx.ReadBuffer(0);
-    const std::string host = Common::StringFromBuffer(host_buffer);
+    const std::string requested = Common::StringFromBuffer(host_buffer);
+    const std::string host = parameters.use_nsd_resolve ? ResolveFqdn(requested) : requested;
     // For now, ignore options, which are in input buffer 1 for GetHostByNameRequestWithOptions.
 
     // Prevent resolution of Nintendo servers
@@ -314,14 +316,14 @@ static std::pair<u32, GetAddrInfoError> GetAddrInfoRequestImpl(HLERequestContext
 
     LOG_WARNING(
         Service,
-        "called with ignored parameters: use_nsd_resolve={}, cancel_handle={}, process_id={}",
+        "called: use_nsd_resolve={}, ignored cancel_handle={}, process_id={}",
         parameters.use_nsd_resolve, parameters.cancel_handle, parameters.process_id);
 
-    // TODO: If use_nsd_resolve is true, pass the name through NSD::Resolve
-    // before looking up.
-
+    // MK8D asks for its NAT test server as nncs1-%.n.n.srv.nintendo.net with use_nsd_resolve=1;
+    // the '%' only resolves after nsd fills in the environment.
     const auto host_buffer = ctx.ReadBuffer(0);
-    const std::string host = Common::StringFromBuffer(host_buffer);
+    const std::string requested = Common::StringFromBuffer(host_buffer);
+    const std::string host = parameters.use_nsd_resolve ? ResolveFqdn(requested) : requested;
 
     // Prevent resolution of Nintendo servers
     const auto route = Nextendo::RouteHost(host);
