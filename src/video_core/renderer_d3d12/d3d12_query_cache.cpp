@@ -39,10 +39,12 @@ constexpr u64 CounterBytes = TypeCount * 4 * sizeof(u64);
 // Not tied to GPU accuracy: the default (High) would keep every report on the per-report
 // submit-and-wait path, as Persona 5 Royal showed (641 forced submits per frame).
 bool SynchronousQueries() {
-    return BisectEnabled("NXBOX_D3D12_SYNC_QUERIES");
+    static const bool enabled = BisectEnabled("NXBOX_D3D12_SYNC_QUERIES");
+    return enabled;
 }
 ComPtr<ID3D12QueryHeap> CreateHeap(Context& context, D3D12_QUERY_HEAP_TYPE type, u32 count) {
-    if (BisectEnabled("NXBOX_D3D12_NO_QUERIES"))
+    static const bool no_queries = BisectEnabled("NXBOX_D3D12_NO_QUERIES");
+    if (no_queries)
         return {};
     D3D12_QUERY_HEAP_DESC desc{};
     desc.Type = type;
@@ -523,7 +525,8 @@ std::string QueryCacheRuntime::VisibilityDiagnostics() const {
            " pending_native_queries=" + std::to_string(impl->count);
 }
 void QueryCacheRuntime::PrepareDraw() {
-    if (BisectEnabled("NXBOX_D3D12_NO_QUERIES"))
+    static const bool no_queries = BisectEnabled("NXBOX_D3D12_NO_QUERIES");
+    if (no_queries)
         return;
     impl->RequireClosed();
     if (impl->count == BankSize) {
@@ -531,7 +534,8 @@ void QueryCacheRuntime::PrepareDraw() {
     }
 }
 void QueryCacheRuntime::BeginDraw(bool geometry) {
-    if (BisectEnabled("NXBOX_D3D12_NO_QUERIES"))
+    static const bool no_queries = BisectEnabled("NXBOX_D3D12_NO_QUERIES");
+    if (no_queries)
         return;
     impl->RequireClosed();
     if (impl->count == BankSize) {
@@ -561,7 +565,8 @@ void QueryCacheRuntime::BeginDraw(bool geometry) {
     }
 }
 void QueryCacheRuntime::EndDraw() {
-    if (BisectEnabled("NXBOX_D3D12_NO_QUERIES"))
+    static const bool no_queries = BisectEnabled("NXBOX_D3D12_NO_QUERIES");
+    if (no_queries)
         return;
     if (!impl->drawing) {
         throw std::logic_error("D3D12 EndDraw without BeginDraw");
@@ -576,6 +581,9 @@ void QueryCacheRuntime::EndDraw() {
     context.Retain(impl->results);
     if (!impl->synchronous)
         context.Transition(impl->results, D3D12_RESOURCE_STATE_COPY_DEST);
+    // EndQuery/ResolveQueryData do not change graphics bindings, but removing this
+    // invalidation regressed SM3DW terrain (f1adbb814e). Keep the workaround until
+    // the stale recorded state is identified; this is not a D3D12 query requirement.
     context.InvalidateRecordedState();
     auto* commands = context.Commands();
     const auto end = [&](ID3D12QueryHeap* heap, D3D12_QUERY_TYPE type, u64 offset) {
@@ -605,7 +613,8 @@ void QueryCacheRuntime::CancelDraw() {
     PauseHostConditionalRendering();
 }
 QueryCacheRuntime::CounterResult QueryCacheRuntime::ReadCounter(QueryType type, u32 stream) {
-    if (BisectEnabled("NXBOX_D3D12_NO_QUERIES"))
+    static const bool no_queries = BisectEnabled("NXBOX_D3D12_NO_QUERIES");
+    if (no_queries)
         return {};
     impl->RequireClosed();
     if (stream >= 4 || static_cast<size_t>(type) >= TypeCount) {
@@ -639,7 +648,8 @@ QueryCacheRuntime::CounterResult QueryCacheRuntime::ReadCounter(QueryType type, 
     return {0, result};
 }
 void QueryCacheRuntime::ResetCounter(QueryType type) {
-    if (BisectEnabled("NXBOX_D3D12_NO_QUERIES"))
+    static const bool no_queries = BisectEnabled("NXBOX_D3D12_NO_QUERIES");
+    if (no_queries)
         return;
     impl->RequireClosed();
     const auto index = static_cast<size_t>(type);
@@ -701,7 +711,8 @@ void QueryCacheRuntime::Barriers(bool) {
     impl->RequireClosed(); // Explicit resource transitions order every resolve/copy.
 }
 void QueryCacheRuntime::PauseHostConditionalRendering() {
-    if (BisectEnabled("NXBOX_D3D12_NO_QUERIES"))
+    static const bool no_queries = BisectEnabled("NXBOX_D3D12_NO_QUERIES");
+    if (no_queries)
         return;
     // Predication is always recorded and does not alter any cached draw state.
     impl->context.Commands()->SetPredication(nullptr, 0, D3D12_PREDICATION_OP_EQUAL_ZERO);
@@ -712,7 +723,8 @@ void QueryCacheRuntime::EndHostConditionalRendering() {
     impl->predicate.reset();
 }
 void QueryCacheRuntime::ResumeHostConditionalRendering() {
-    if (BisectEnabled("NXBOX_D3D12_NO_QUERIES"))
+    static const bool no_queries = BisectEnabled("NXBOX_D3D12_NO_QUERIES");
+    if (no_queries)
         return;
     if (impl->predicate_set) {
         impl->context.Transition(impl->predicate, D3D12_RESOURCE_STATE_PREDICATION);
@@ -735,7 +747,8 @@ bool QueryCacheRuntime::HostConditionalRenderingCompareValues(VideoCommon::Looku
 }
 bool QueryCacheRuntime::CompareConditional(VideoCommon::LookupData first,
                                            VideoCommon::LookupData second, bool equal) {
-    if (BisectEnabled("NXBOX_D3D12_NO_QUERIES"))
+    static const bool no_queries = BisectEnabled("NXBOX_D3D12_NO_QUERIES");
+    if (no_queries)
         return false;
     VideoCommon::SubmissionTrace::Log("predicate_compare first_cpu={:x} second_cpu={:x} equal={}",
                                       first.address, second.address, equal);
@@ -763,7 +776,8 @@ bool QueryCacheRuntime::CompareConditional(VideoCommon::LookupData first,
             streamer->SyncWrites();
         }
     }
-    if (!BisectEnabled("NXBOX_D3D12_CPU_PREDICATE")) {
+    static const bool cpu_predicate = BisectEnabled("NXBOX_D3D12_CPU_PREDICATE");
+    if (!cpu_predicate) {
         if (!second.address) {
             // "Render when the value is non-zero" is exactly EQUAL_ZERO predication. Reading it
             // back on the CPU forced a submit and a fence wait per conditional draw.
@@ -887,7 +901,8 @@ void QueryCacheRuntime::TracePredicate(u64 frame, u64 pass, u64 draw,
 }
 
 QueryCacheRuntime::Timestamp QueryCacheRuntime::CaptureTimestamp() {
-    if (BisectEnabled("NXBOX_D3D12_NO_QUERIES"))
+    static const bool no_queries = BisectEnabled("NXBOX_D3D12_NO_QUERIES");
+    if (no_queries)
         return {};
     impl->context.MarkWork("timestamp query");
     impl->RequireClosed();
@@ -904,7 +919,8 @@ QueryCacheRuntime::Timestamp QueryCacheRuntime::CaptureTimestamp() {
     return timestamp;
 }
 u64 QueryCacheRuntime::ReadTimestamp(const Timestamp& timestamp) {
-    if (BisectEnabled("NXBOX_D3D12_NO_QUERIES"))
+    static const bool no_queries = BisectEnabled("NXBOX_D3D12_NO_QUERIES");
+    if (no_queries)
         return 0;
     impl->RequireClosed();
     if (!timestamp.result.buffer || timestamp.result.mapped_span.size() < 8) {
