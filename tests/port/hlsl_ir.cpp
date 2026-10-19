@@ -888,9 +888,20 @@ void SingleUseInlining() {
                 "Precise producers and recursively shared aliases must remain named");
     }
 }
+void GroupedDeclarations() {
+    Fixture f{Stage::Compute};
+    f.program.local_memory_size = 16;
+    const auto first = f.Add(IR::Opcode::LoadLocal, {IR::Value{0u}});
+    const auto second = f.Add(IR::Opcode::LoadLocal, {IR::Value{4u}});
+    f.Add(IR::Opcode::WriteLocal, {IR::Value{8u}, first});
+    f.Add(IR::Opcode::WriteLocal, {IR::Value{12u}, second});
+    Bindings bindings;
+    Contains(f.Emit(bindings), "uint v0 = 0, v1 = 0;\n");
+}
 int main() {
   try {
-      SingleUseInlining();
+      GroupedDeclarations();
+    SingleUseInlining();
       Vertex();
       DirectClipDistances();
       IntegerTextureSample();

@@ -117,3 +117,38 @@ The optional user-corpus test skips if absent and checks accounting/continuation
 not that the evolving HLSL backend can already emit every captured program. Use the
 CLI's nonzero exit status and JSON failure rows to gate backend coverage work.
 Keep caches, shader dumps, emitted HLSL, keys, and reports outside the repository.
+
+## HLSL size and SPIR-V differential checks
+
+Keep a baseline replay report and its `--output` files, then replay the candidate
+into a separate output directory. `check_size.py` pairs jobs by name, reports both
+all-job and distinct-baseline-shader size distributions, and lists the 20 largest
+baseline shaders. It checks every distinct baseline shader through glslang's HLSL
+front end, `spirv-opt -O --strip-debug --strip-reflect`, and disassembly:
+
+```sh
+python3 tools/nxbox/shader_corpus/check_size.py \
+  --baseline /tmp/baseline/report.json --report /tmp/candidate/report.json \
+  --output /tmp/candidate/check --baseline-cache /tmp/baseline/check \
+  --require-identical
+```
+
+`--previous-check /tmp/previous/check` also compares against an already completed
+preceding step. With that option, the differential exit status gates the incremental
+change; the baseline comparison remains in the report. `--require-identical`
+rejects every incremental difference (or every baseline difference when no preceding
+step is provided). Compilation regressions always fail. Without this flag, an
+unexplained value-graph change also fails, while classified differences remain
+explicitly recorded for review.
+
+Identity normalizes numeric IDs and the ordering of global declarations/decorations;
+it retains instruction order, types, constants, precision decorations and control
+flow. A separate structural audit classifies value numbering, commutative operands,
+phi numbering and positive access-chain index signedness. Those classifications
+are not counted as identical SPIR-V. Raw disassembly, canonical disassembly, binary
+modules, per-shader diffs and diagnostics remain alongside `results.json`.
+
+A glslang success and an optimizable SPIR-V module are counted separately: a module
+can compile but fail SPIR-V validation. Cached compiler results track HLSL content;
+use fresh cache directories after changing compiler versions. These checks do not
+replace DXC/DXIL validation or rendering tests on the console.

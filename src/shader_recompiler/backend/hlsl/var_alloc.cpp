@@ -233,10 +233,21 @@ void VarAlloc::InlineBlock(std::string& code, size_t begin, const IR::Block& blo
     }
 }
 std::string VarAlloc::Declarations() const {
+    std::vector<std::pair<std::string, std::string>> groups;
+    for (const auto& variable : variables) {
+        if (variable.eliminated)
+            continue;
+        const auto type = GetHlslType(variable.type);
+        const auto found = std::find_if(groups.begin(), groups.end(),
+                                        [&](const auto& group) { return group.first == type; });
+        if (found == groups.end())
+            groups.emplace_back(type, variable.name + " = 0");
+        else
+            found->second += ", " + variable.name + " = 0";
+    }
     std::string result;
-    for (const auto& variable : variables)
-        if (!variable.eliminated)
-            result += fmt::format("{} {} = 0;\n", GetHlslType(variable.type), variable.name);
+    for (const auto& [type, initializers] : groups)
+        result += type + " " + initializers + ";\n";
     return result;
 }
 } // namespace Shader::Backend::HLSL
