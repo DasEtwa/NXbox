@@ -182,6 +182,8 @@ Reported by testers on Xbox Series S:
 | --- | --- | --- |
 | Sonic Mania | [@rubiosofiaisabel57-oss](https://github.com/rubiosofiaisabel57-oss) (GitHub) | NXbox 1.0.3 on D3D12: runs perfectly ([#12](https://github.com/NspxMiguel/NXbox/issues/12)) |
 | Mainframes | @marceloasyl (Discord) | 60 FPS for 1 h 10 min without hitches |
+| Freedom Planet | @marceloasyl (Discord) | NXbox 1.0.4: fully playable at a steady 60 FPS |
+| Freedom Planet 2 | @marceloasyl (Discord) | NXbox 1.0.4: holds 60 FPS but skips frames |
 | Metroid Dread | @marceloasyl (Discord) | NXbox 1.0.3: 60 FPS in gameplay and about 30 in cutscenes; stutters while shaders compile, and a chase QTE runs too fast to press in time |
 | Super Mario 3D World + Bowser's Fury | @nickollas1235 (Discord) | 3D World runs smoothly; Bowser's Fury at 30–40 FPS |
 | Cuphead | @nickollas1235 (Discord) | Runs fine |
