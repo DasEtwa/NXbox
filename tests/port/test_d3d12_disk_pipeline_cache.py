@@ -249,6 +249,27 @@ int main(int argc, char** argv) {
         cache.WaitWarmup();
         assert((order == std::vector<std::uint64_t>{99, 1}));
     }
+    // Switching NXBOX_D3D12_PSO_NORMALIZE (schema 7 <-> 6) keeps the other setting's recipes.
+    {
+        auto normalized = identity, other = identity;
+        normalized.schema_version = 7;
+        other.schema_version = 6;
+        {
+            DiskPipelineCache cache(root, 0x5151, normalized);
+            assert(cache.RememberPipeline({DiskRecordKind::Graphics, 42, {1}, {7}}));
+        }
+        {
+            DiskPipelineCache cache(root, 0x5151, other);
+            unsigned seen{};
+            cache.StartWarmup([&](const auto&, auto) { return ++seen, true; }, {});
+            cache.WaitWarmup();
+            assert(seen == 0);
+        }
+        unsigned kept{};
+        for (const auto& entry : std::filesystem::directory_iterator(root / "d3d12_cache/0000000000005151"))
+            kept += entry.path().extension() == ".graphics";
+        assert(kept == 1);
+    }
     const auto title = root / "d3d12_cache" / "0000000000001234";
     {
         DiskPipelineCache cache(root, 0x1234, identity);

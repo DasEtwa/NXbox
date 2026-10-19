@@ -372,6 +372,14 @@ struct DiskPipelineCache::Impl {
         file.close();
         if (record && path.filename() == Filename(record->kind, record->key))
             return record;
+        // Schemas 6 and 7 are the two NXBOX_D3D12_PSO_NORMALIZE settings: keep the other
+        // setting's records for when it is switched back instead of deleting them.
+        if (!record && bytes.size() >= HeaderSize) {
+            std::size_t offset = 20;
+            const auto schema = Get(bytes, offset, 4);
+            if ((schema == 6 || schema == 7) && schema != identity.schema_version)
+                return {};
+        }
         std::error_code error;
         std::filesystem::remove(path, error);
         return {};
