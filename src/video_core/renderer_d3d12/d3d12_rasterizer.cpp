@@ -3132,6 +3132,23 @@ void RasterizerD3D12::DispatchCompute() try {
         if (resource)
             resources.push_back({resource, state});
     };
+    // Texture reads and image writes keep their subresources: a pass that reads one mip of a
+    // texture and writes another (a mip chain or a depth pyramid) reads its mips through
+    // per-subresource transitions instead of being skipped as a whole-resource conflict.
+    using Subresources = std::pair<ResourcePtr, std::vector<u32>>;
+    std::vector<Subresources> image_reads, image_writes, split_reads;
+    const auto subresources_of = [](const ResourcePtr& resource, const auto& view) {
+        Subresources out{resource, {}};
+        const auto desc = resource->handle->GetDesc();
+        const bool volume = desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D;
+        const u32 first_layer = volume ? 0u : static_cast<u32>(view.range.base.layer);
+        const u32 layers = volume ? 1u : static_cast<u32>(view.range.extent.layers);
+        for (u32 layer = first_layer; layer < first_layer + layers; ++layer)
+            for (s32 mip = view.range.base.level;
+                 mip < view.range.base.level + view.range.extent.levels; ++mip)
+                out.second.push_back(static_cast<u32>(mip) + layer * desc.MipLevels);
+        return out;
+    };
     const auto& bound = bindings.stages[0];
     for (u32 i = 0; i < (root_cbvs ? counts.cbv : cbv_size); ++i) {
         BoundBuffer buffer;
@@ -3155,7 +3172,8 @@ void RasterizerD3D12::DispatchCompute() try {
             auto& view = texture_cache.GetImageView(view_scratch[view_index++].id);
             descriptors.WriteImageSrv(srv, srv_index++, view,
                                       SrvDimension(desc.type, desc.is_multisample));
-            use(view.ImageHandle(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            if (const auto& image = view.ImageHandle())
+                image_reads.push_back(subresources_of(image, view));
             descriptors.WriteSampler(sampler, sampler_index,
                                      texture_cache.GetSampler(sampler_scratch[sampler_index]),
                                      desc.is_depth);
@@ -3203,8 +3221,25 @@ void RasterizerD3D12::DispatchCompute() try {
                 return;
             }
             use(view.ImageHandle(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            if (const auto& image = view.ImageHandle())
+                image_writes.push_back(subresources_of(image, view));
         }
     uav_index = uav_end;
+    for (auto& read : image_reads) {
+        bool written = false, overlaps = false;
+        for (const auto& write : image_writes) {
+            if (write.first != read.first)
+                continue;
+            written = true;
+            for (const u32 sub : read.second)
+                overlaps |= std::ranges::find(write.second, sub) != write.second.end();
+        }
+        const auto flags = read.first->handle->GetDesc().Flags;
+        if (written && !overlaps && !(flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL))
+            split_reads.push_back(std::move(read));
+        else
+            use(read.first, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    }
     for (; uav_index < uav_size; ++uav_index)
         descriptors.WriteNullUav(uav, uav_index);
     ComputeBindings dispatch;
@@ -3218,6 +3253,7 @@ void RasterizerD3D12::DispatchCompute() try {
     Shader::Backend::HLSL::RootConstants constants;
     std::memcpy(dispatch.constants.data(), &constants, sizeof(constants));
     dispatch.resources = resources;
+    dispatch.split_reads = split_reads;
     profile_descriptors.reset();
     context.MarkWork("guest compute");
     VideoCommon::SubmissionTrace::Log("host_compute_submit program={:x} grid={},{},{}",

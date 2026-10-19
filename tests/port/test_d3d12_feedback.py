@@ -74,6 +74,22 @@ class D3D12FeedbackTests(unittest.TestCase):
             merge = source.index("MergesIntoBufferUav(")
             self.assertIn("D3D12_RESOURCE_DIMENSION_BUFFER", source[merge : merge + 400])
 
+    def test_compute_reads_beside_writes_split_by_subresource(self):
+        native = ROOT / "src/video_core/renderer_d3d12"
+        rasterizer = (native / "d3d12_rasterizer.cpp").read_text()
+        compute = rasterizer[rasterizer.index("void RasterizerD3D12::DispatchCompute()") :]
+        compute = compute[: compute.index("dispatch.split_reads = split_reads;")]
+        # Texture reads wait for the image writes, then split only when no subresource overlaps.
+        self.assertLess(compute.index("image_reads.push_back"), compute.index("for (auto& read : image_reads)"))
+        decision = compute[compute.index("for (auto& read : image_reads)") :]
+        self.assertIn("written && !overlaps && !(flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL)", decision)
+        self.assertIn("use(read.first, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE)", decision)
+        # The split reads move after the whole-resource batch put the written texture in UAV.
+        bind = (native / "d3d12_dispatch.cpp").read_text()
+        batch = bind.index("context.TransitionBatch(transitions);")
+        self.assertLess(batch, bind.index("bindings.split_reads", batch))
+        self.assertIn("TransitionSubresources(resource, subresources,", bind[batch : batch + 300])
+
     def test_feedback_and_draw_validation(self):
         with tempfile.TemporaryDirectory(prefix="nxbox-d3d12-feedback-") as temp:
             source = Path(temp) / "feedback.cpp"

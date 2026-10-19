@@ -11,6 +11,8 @@
 #include <cstdint>
 #include <span>
 #include <stdexcept>
+#include <utility>
+#include <vector>
 
 namespace D3D12 {
 inline constexpr std::uint32_t ComputeRootDwords = 16;
@@ -63,6 +65,9 @@ struct ComputeBindings {
     std::span<const D3D12_GPU_VIRTUAL_ADDRESS> root_cbv_addresses;
     ComputeConstants constants{};
     std::span<const ComputeResourceUse> resources;
+    // Texture subresources read while other subresources of the same texture are written (UAV in
+    // `resources`): moved to NON_PIXEL_SHADER_RESOURCE one by one after the whole-resource batch.
+    std::span<const std::pair<ResourcePtr, std::vector<std::uint32_t>>> split_reads;
 };
 // Heap slots must stay immutable through Context::CurrentTick(). COM objects and
 // resources are retained here; the descriptor allocator owns slot retirement.

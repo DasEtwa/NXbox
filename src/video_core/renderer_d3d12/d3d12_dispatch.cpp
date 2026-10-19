@@ -108,6 +108,9 @@ void ComputeDispatch::Bind(const ComputeBindings& bindings) {
         transitions.emplace_back(use.resource, state);
     }
     context.TransitionBatch(transitions);
+    for (const auto& [resource, subresources] : bindings.split_reads)
+        context.TransitionSubresources(resource, subresources,
+                                       D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     ID3D12DescriptorHeap* heaps[]{bindings.resource_heap.Get(), bindings.sampler_heap.Get()};
     commands->SetDescriptorHeaps(2, heaps);
     commands->SetComputeRootSignature(bindings.root_signature.Get());
