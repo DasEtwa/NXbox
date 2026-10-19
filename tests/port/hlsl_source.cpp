@@ -25,6 +25,25 @@ int main() {
     }
     assert(InlineSingleUseBlock("v0 = nx_cbuf_load(0u, v2);\noutput.x = v0;\n", {{"v0", "uint"}})
                .eliminated.empty());
+    // "(float(float(v2)))*2.0f" reads as a cast of "*2.0f" to the function type float(float):
+    // DXC rejects it, so a nested cast stays a variable when an operand could follow it.
+    {
+        const std::vector<InlineCandidate> casts{{"v0", "float"}, {"v1", "float", true}};
+        for (const auto& text :
+             {"v0 = float(v2);\noutput.x = v0*2.0f;\n", "v0 = float(v2);\noutput.x = v0 + 1.0f;\n",
+              "v0 = float(v2);\noutput.x = v0-v3;\n", "v1 = float(int((cb[0][1])));\noutput.x = v1*v3;\n"})
+            assert(InlineSingleUseBlock(text, casts).eliminated.empty());
+        assert(InlineSingleUseBlock("v0 = float(v2);\noutput.x = 1.0f-(v0);\n", casts).source ==
+               "output.x = 1.0f-((float(float(v2))));\n");
+        assert(InlineSingleUseBlock("v1 = float(v2);\noutput.x = v1/v3;\n", casts).source ==
+               "output.x = (float(v2))/v3;\n");
+        assert(InlineSingleUseBlock("v0 = v2 + 1.0f;\noutput.x = v0*2.0f;\n", casts).source ==
+               "output.x = (float(v2 + 1.0f))*2.0f;\n");
+    }
+    static_assert(IsHlslTypeName("float") && IsHlslTypeName("uint4") && IsHlslTypeName("float3x4"));
+    static_assert(!IsHlslTypeName("floatx") && !IsHlslTypeName("v12") && !IsHlslTypeName("float5"));
+    assert(StartsWithNestedCast("float( (uint(v1)))") && !StartsWithNestedCast("float(v1)"));
+    assert(!StartsWithNestedCast("asfloat(uint(v1))") && !StartsWithNestedCast("(float(uint(v1)))"));
     assert(FormatFloatImmediate(0u) == "0.0f");
     assert(FormatFloatImmediate(0x3f800000u) == "1.0f");
     assert(FormatFloatImmediate(0xbf000000u) == "(-0.5f)");

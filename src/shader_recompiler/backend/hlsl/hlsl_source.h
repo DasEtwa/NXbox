@@ -168,6 +168,48 @@ inline constexpr bool IsDirectCbufferAddress(std::optional<std::uint32_t> bindin
     return binding && offset && declared && (*offset & 3u) == 0 && (*offset / 16u) < vectors;
 }
 
+inline constexpr bool IsHlslTypeName(std::string_view word) {
+    constexpr std::array<std::string_view, 21> scalars{
+        "bool",     "int",       "uint",       "dword",     "half",     "float",    "double",
+        "min16float", "min10float", "min16int", "min12int", "min16uint", "int16_t",  "uint16_t",
+        "int32_t",  "uint32_t",  "int64_t",    "uint64_t",  "float16_t", "float32_t", "float64_t"};
+    const auto dimension = [](char c) { return c >= '1' && c <= '4'; };
+    return std::ranges::any_of(scalars, [&](std::string_view scalar) {
+        if (!word.starts_with(scalar))
+            return false;
+        const auto rest = word.substr(scalar.size());
+        return rest.empty() || (rest.size() == 1 && dimension(rest[0])) ||
+               (rest.size() == 3 && dimension(rest[0]) && rest[1] == 'x' && dimension(rest[2]));
+    });
+}
+
+// HLSL parses like C++: in "(float(float(v1)))" the parentheses can hold the function type
+// float(float), and DXC reads the group as a cast when a unary operator follows, so
+// "(float(float(v1)))+v2" stops compiling. glslang accepts it, which is why the SPIR-V check
+// missed it. True for text that starts with a cast whose argument starts with another type name.
+inline bool StartsWithNestedCast(std::string_view text) {
+    size_t i = 0;
+    const auto skip = [&](bool parentheses) {
+        while (i < text.size() && (IsHlslSpace(text[i]) || (parentheses && text[i] == '(')))
+            ++i;
+    };
+    const auto word = [&] {
+        const size_t start = i;
+        while (i < text.size() && IsHlslWord(text[i]))
+            ++i;
+        return text.substr(start, i - start);
+    };
+    skip(false);
+    if (!IsHlslTypeName(word()))
+        return false;
+    skip(false);
+    if (i == text.size() || text[i] != '(')
+        return false;
+    ++i;
+    skip(true);
+    return IsHlslTypeName(word());
+}
+
 struct InlineCandidate {
     std::string name;
     std::string type;
@@ -259,13 +301,20 @@ inline InlineBlockResult InlineSingleUseBlock(std::string_view source,
             continue;
         // Preserve the conversion performed by the original assignment, including
         // signed-to-unsigned conversion and scalar/vector truncation.
-        const std::string replacement = type->second.exact_type
-                                            ? "(" + expression + ")"
-                                            : "(" + type->second.type + "(" + expression + "))";
+        const std::string inner = type->second.exact_type
+                                      ? expression
+                                      : type->second.type + "(" + expression + ")";
+        const std::string replacement = "(" + inner + ")";
         const auto tokens = occurrences(consumer);
         const auto token = std::find_if(tokens.begin(), tokens.end(),
                                         [&](const auto& item) { return item.first == name; });
         if (token == tokens.end() || consumer.size() - name.size() + replacement.size() > max_line)
+            continue;
+        // DXC only takes the group as a cast when what follows can start an operand.
+        const auto follower = consumer.find_first_not_of(" \t", token->second + name.size());
+        if (StartsWithNestedCast(inner) && follower != consumer.npos &&
+            (IsHlslWord(consumer[follower]) ||
+             std::string_view{"+-*&!~(.["}.find(consumer[follower]) != std::string_view::npos))
             continue;
         std::string rewritten = consumer;
         rewritten.replace(token->second, name.size(), replacement);
