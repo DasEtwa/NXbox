@@ -13,9 +13,10 @@
 
 namespace EdenXbox::TitleSettings {
 
-// The numeric values of Eden's ResolutionSetup, not the multipliers themselves.
-inline constexpr std::array<int, 4> kResolutionValues{3, 5, 6, 7};
-inline constexpr int kDefaultResolution = kResolutionValues[0];
+// The numeric values of Eden's ResolutionSetup, not the multipliers themselves: 0.5x, 0.75x, 1x,
+// 1.5x, 2x and 3x. The two below 1x are for the Series S, whose GPU limits Mario Kart and Odyssey.
+inline constexpr std::array<int, 6> kResolutionValues{1, 2, 3, 5, 6, 7};
+inline constexpr int kDefaultResolution = 3;
 
 struct Entry {
     std::string label;
