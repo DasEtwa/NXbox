@@ -585,7 +585,14 @@ std::string ConvertNsz(FileSys::RealVfsFilesystem& vfs, const fs::path& nsz_path
             return "cannot open the file";
         }
         if (!FileSys::IsNsz(source)) {
-            return "not an NSZ package";
+            // An unfinished download leaves zeros where the container header goes: that copy is
+            // damaged, while a real PFS0/HFS0 without compressed entries is only another format.
+            const auto magic = source->ReadBytes(4, 0);
+            const auto is = [&](std::string_view expected) {
+                return magic.size() == 4 && std::equal(magic.begin(), magic.end(), expected.begin());
+            };
+            return is("PFS0") || is("HFS0") ? "not an NSZ package"
+                                            : "corrupt header: not a PFS0 container";
         }
         const FileSys::VirtualFile output =
             vfs.CreateFile(Common::FS::PathToUTF8String(partial), FileSys::OpenMode::ReadWrite);
