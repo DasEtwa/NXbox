@@ -319,7 +319,7 @@ static std::pair<u32, GetAddrInfoError> GetAddrInfoRequestImpl(HLERequestContext
         "called: use_nsd_resolve={}, ignored cancel_handle={}, process_id={}",
         parameters.use_nsd_resolve, parameters.cancel_handle, parameters.process_id);
 
-    // MK8D asks for its NAT test server as nncs1-%.n.n.srv.nintendo.net with use_nsd_resolve=1;
+    // MK8D asks for its NAT test server as nncs1-%.n.n.srv.<domain> with use_nsd_resolve=1;
     // the '%' only resolves after nsd fills in the environment.
     const auto host_buffer = ctx.ReadBuffer(0);
     const std::string requested = Common::StringFromBuffer(host_buffer);
