@@ -225,7 +225,19 @@ int main(int argc, char** argv) {
         cache.RememberFirstUse(DiskBytes{9});
         assert(cache.RememberPipeline({DiskRecordKind::Graphics, 1, {1}, {3}}));
         assert(cache.RememberPipeline({DiskRecordKind::Graphics, 99, {2}, {9}}));
+        // Flush runs at every guest submission: it must not rewrite the order file.
+        const auto stamps = [&] {
+            std::vector<std::pair<std::filesystem::path, std::filesystem::file_time_type>> out;
+            for (const auto& entry :
+                 std::filesystem::directory_iterator(root / "d3d12_cache/0000000000009876"))
+                out.emplace_back(entry.path(), entry.last_write_time());
+            std::sort(out.begin(), out.end());
+            return out;
+        };
+        const auto before = stamps();
+        cache.RememberFirstUse(DiskBytes{5});
         assert(cache.Flush());
+        assert(stamps() == before);
     }
     {
         DiskPipelineCache cache(root, 0x9876, identity);
