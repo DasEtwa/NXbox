@@ -4,6 +4,29 @@
 #include "shader_recompiler/backend/hlsl/hlsl_source.h"
 using namespace Shader::Backend::HLSL;
 int main() {
+    assert(FormatFloatImmediate(0u) == "0.0f");
+    assert(FormatFloatImmediate(0x3f800000u) == "1.0f");
+    assert(FormatFloatImmediate(0xbf000000u) == "(-0.5f)");
+    for (const auto bits : {0x80000000u, 0x7f800000u, 0xff800000u, 0x7fc00001u, 0xffa12345u, 1u,
+                            0x007fffffu, 0x80000001u}) {
+        const auto literal = FormatFloatImmediate(bits);
+        assert(literal.starts_with("asfloat(0x") && literal.ends_with("u)"));
+    }
+    // Cover rounding boundaries and both signs without depending on locale or fmt.
+    std::uint32_t random = 12345;
+    for (size_t i = 0; i < 100000; ++i) {
+        random = random * 1664525u + 1013904223u;
+        auto literal = FormatFloatImmediate(random);
+        if (literal.starts_with("asfloat"))
+            continue;
+        if (literal.front() == '(')
+            literal = literal.substr(1, literal.size() - 2);
+        literal.pop_back();
+        float value{};
+        const auto parsed = std::from_chars(literal.data(), literal.data() + literal.size(), value);
+        assert(parsed.ec == std::errc{} && parsed.ptr == literal.data() + literal.size());
+        assert(std::bit_cast<std::uint32_t>(value) == random);
+    }
     static_assert(IsDirectCbufferAddress(0u, 0u, true));
     static_assert(IsDirectCbufferAddress(17u, 65532u, true));
     static_assert(!IsDirectCbufferAddress(0u, 65536u, true));

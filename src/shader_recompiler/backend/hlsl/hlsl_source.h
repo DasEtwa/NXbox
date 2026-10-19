@@ -3,6 +3,9 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
+#include <bit>
+#include <charconv>
 #include <cstdint>
 #include <optional>
 #include <regex>
@@ -12,6 +15,38 @@
 #include <vector>
 
 namespace Shader::Backend::HLSL {
+// Decimal spelling is allowed only when parsing it reproduces the original float.
+// Preserve exceptional values, signed zero and subnormals as explicit bit patterns.
+inline std::string FormatFloatImmediate(std::uint32_t bits) {
+    const auto bit_literal = [bits] {
+        std::array<char, 8> digits{};
+        const auto converted =
+            std::to_chars(digits.data(), digits.data() + digits.size(), bits, 16);
+        return "asfloat(0x" +
+               std::string(8 - static_cast<size_t>(converted.ptr - digits.data()), '0') +
+               std::string(digits.data(), converted.ptr) + "u)";
+    };
+    const auto magnitude = bits & 0x7fffffffu;
+    if (magnitude >= 0x7f800000u || bits == 0x80000000u ||
+        (magnitude != 0 && magnitude < 0x00800000u))
+        return bit_literal();
+    std::array<char, 64> buffer{};
+    const auto converted =
+        std::to_chars(buffer.data(), buffer.data() + buffer.size(), std::bit_cast<float>(bits));
+    if (converted.ec != std::errc{})
+        return bit_literal();
+    float roundtrip{};
+    const auto parsed = std::from_chars(buffer.data(), converted.ptr, roundtrip);
+    if (parsed.ec != std::errc{} || parsed.ptr != converted.ptr ||
+        std::bit_cast<std::uint32_t>(roundtrip) != bits)
+        return bit_literal();
+    std::string literal(buffer.data(), converted.ptr);
+    if (literal.find_first_of(".eE") == literal.npos)
+        literal += ".0";
+    literal += 'f';
+    return bits >> 31 ? "(" + literal + ")" : literal;
+}
+
 // A cbuffer is an array of uint4s. Preserve the helper for unaligned, dynamic,
 // undeclared and out-of-range accesses, including unsigned offset wraparound.
 inline constexpr bool IsDirectCbufferAddress(std::optional<std::uint32_t> binding,

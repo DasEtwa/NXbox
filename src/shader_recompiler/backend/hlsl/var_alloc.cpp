@@ -4,6 +4,7 @@
 #include <bit>
 #include <fmt/format.h>
 #include "shader_recompiler/backend/hlsl/var_alloc.h"
+#include "shader_recompiler/backend/hlsl/hlsl_source.h"
 #include "shader_recompiler/frontend/ir/value.h"
 
 namespace Shader::Backend::HLSL {
@@ -82,7 +83,7 @@ std::string VarAlloc::Consume(const IR::Value& value) {
         return fmt::format("(uint64_t({}u) | (uint64_t({}u) << 32))", u32(value.U64()),
                            u32(value.U64() >> 32));
     case IR::Type::F32:
-        return fmt::format("asfloat(0x{:08x}u)", std::bit_cast<u32>(value.F32()));
+        return FormatFloatImmediate(std::bit_cast<u32>(value.F32()));
     case IR::Type::F64: {
         const auto bits = std::bit_cast<u64>(value.F64());
         return fmt::format("asdouble(0x{:08x}u, 0x{:08x}u)", u32(bits), u32(bits >> 32));
