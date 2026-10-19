@@ -58,6 +58,10 @@ class NszFailure(unittest.TestCase):
         self.assertIn("source_size,", scan)
         self.assertIn("source_mtime, failure", scan)
         self.assertIn("fs::remove(FailureRecordPath(local_state_, nsz), ec)", scan)
+        convert = library.split("std::string ConvertNsz(", 1)[1].split("\n}\n", 1)[0]
+        not_nsz = convert[convert.index("if (!FileSys::IsNsz(source))") :]
+        self.assertIn('is("PFS0") || is("HFS0")', not_nsz)
+        self.assertIn('"corrupt header: not a PFS0 container"', not_nsz)
         converter = (ROOT / "src/core/file_sys/nsz.cpp").read_text()
         self.assertIn('Fail("cancelled")', converter)
 

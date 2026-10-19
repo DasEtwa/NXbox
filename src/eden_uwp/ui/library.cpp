@@ -571,7 +571,14 @@ std::string ConvertNsz(FileSys::RealVfsFilesystem& vfs, const fs::path& nsz_path
             return "cannot open the file";
         }
         if (!FileSys::IsNsz(source)) {
-            return "not an NSZ package";
+            // An unfinished download leaves zeros where the container header goes: that copy is
+            // damaged, while a real PFS0/HFS0 without compressed entries is only another format.
+            const auto magic = source->ReadBytes(4, 0);
+            const auto is = [&](std::string_view expected) {
+                return magic.size() == 4 && std::equal(magic.begin(), magic.end(), expected.begin());
+            };
+            return is("PFS0") || is("HFS0") ? "not an NSZ package"
+                                            : "corrupt header: not a PFS0 container";
         }
         const FileSys::VirtualFile output =
             vfs.CreateFile(Common::FS::PathToUTF8String(partial), FileSys::OpenMode::ReadWrite);
@@ -825,7 +832,17 @@ LibraryTransfer::Result MoveLibraryGame(const GameEntry& game, const fs::path& l
     const auto folders = ExternalGameFolders();
     if (folders.empty())
         return Result::NoDrive;
-    const auto destination = folders.front();
+    // The drive with the most room: enumeration order put a nearly full stick ahead of an empty
+    // HD, and every bigger game then failed with no space.
+    fs::path destination;
+    std::uint64_t most_free = 0;
+    for (const auto& folder : folders) {
+        const auto free = FreeSpace(folder).value_or(0);
+        if (destination.empty() || free > most_free) {
+            destination = folder;
+            most_free = free;
+        }
+    }
     std::vector<LibraryTransfer::File> files;
     std::map<fs::path, std::int64_t> modified;
     std::set<std::wstring> names;
