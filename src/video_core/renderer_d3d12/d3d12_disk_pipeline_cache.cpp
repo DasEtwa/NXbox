@@ -441,6 +441,8 @@ DiskPipelineCache::DiskPipelineCache(const std::filesystem::path& local_state,
         impl->previous_order = Impl::MergeOrder(session, impl->previous_order);
         if (!PsoFirstUseOrderEnabled())
             return;
+        // A session that ended in _Exit never compacted; fold its log in once, here.
+        impl->CompactOrder();
         // Prewarmed hits may never compile another PSO. Persist their first use off-thread too.
         impl->order_worker = std::jthread([this](std::stop_token stop) {
             while (!stop.stop_requested()) {
@@ -472,6 +474,11 @@ DiskPipelineCache::~DiskPipelineCache() {
         impl->order_worker.join();
     }
     try {
+        {
+            std::scoped_lock lock{impl->mutex};
+            impl->AppendOrder();
+            impl->CompactOrder();
+        }
         Flush();
     } catch (...) {
         // Optional cache persistence must not throw during teardown.
@@ -873,10 +880,10 @@ Microsoft::WRL::ComPtr<ID3D12PipelineState> DiskPipelineCache::LoadOrCreateCompu
     return pso;
 }
 #endif
+// Runs on the GPU thread at every guest submission: no order-file I/O here. The order
+// worker appends new first uses; the constructor and destructor compact the file.
 bool DiskPipelineCache::Flush() {
     std::scoped_lock lock{impl->mutex};
-    if (!impl->AppendOrder() || !impl->CompactOrder())
-        return false;
 #ifdef _WIN32
     if (impl->library && impl->library_dirty) {
         const auto size = impl->library->GetSerializedSize();
