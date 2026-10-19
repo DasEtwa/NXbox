@@ -8,7 +8,6 @@
 #include <charconv>
 #include <cstdint>
 #include <optional>
-#include <regex>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -16,6 +15,119 @@
 #include <vector>
 
 namespace Shader::Backend::HLSL {
+// These passes run on every pipeline the console builds. std::regex took about 15 ms per shader on
+// the corpus for the helper strip alone; the hand scanners below give the same matches.
+inline constexpr bool IsHlslWord(char c) {
+    return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_';
+}
+inline constexpr bool IsHlslSpace(char c) {
+    return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' || c == '\f';
+}
+
+// Matches `^(v\d+)\s*=\s*(?!=)([^;{}]+);$` with std::regex_match's backtracking: a blank before
+// `=` or before the final `;` is handed to the expression, as the regex did.
+inline bool ParseAssignment(std::string_view line, std::string_view& name,
+                            std::string_view& expression) {
+    const size_t n = line.size();
+    if (n == 0 || line[0] != 'v' || line[n - 1] != ';')
+        return false;
+    size_t digits = 1;
+    while (digits < n && line[digits] >= '0' && line[digits] <= '9')
+        ++digits;
+    if (digits == 1)
+        return false;
+    size_t equal = digits;
+    while (equal < n && IsHlslSpace(line[equal]))
+        ++equal;
+    if (equal >= n || line[equal] != '=')
+        return false;
+    const size_t after = equal + 1;
+    size_t start = after;
+    while (start < n && IsHlslSpace(line[start]))
+        ++start;
+    if ((start < n && line[start] == '=') || start >= n - 1) {
+        if (start == after)
+            return false;
+        --start;
+    }
+    const auto body = line.substr(start, n - 1 - start);
+    if (body.find_first_of(";{}") != body.npos)
+        return false;
+    name = line.substr(0, digits);
+    expression = body;
+    return true;
+}
+
+// The name in a `[attribute]* [precise] type name(` function head, or empty for anything else.
+inline std::string_view FunctionName(std::string_view head) {
+    size_t i = 0;
+    const auto skip_space = [&] {
+        while (i < head.size() && IsHlslSpace(head[i]))
+            ++i;
+    };
+    skip_space();
+    while (i < head.size() && head[i] == '[') {
+        const size_t close = head.find(']', i + 1);
+        if (close == head.npos)
+            return {};
+        i = close + 1;
+        skip_space();
+    }
+    const auto parse = [&](size_t at) -> std::string_view {
+        size_t type_end = at;
+        while (type_end < head.size() &&
+               (IsHlslWord(head[type_end]) || head[type_end] == '<' || head[type_end] == '>'))
+            ++type_end;
+        if (type_end == at || type_end == head.size() || !IsHlslSpace(head[type_end]))
+            return {};
+        size_t name = type_end;
+        while (name < head.size() && IsHlslSpace(head[name]))
+            ++name;
+        size_t name_end = name;
+        while (name_end < head.size() && IsHlslWord(head[name_end]))
+            ++name_end;
+        size_t paren = name_end;
+        while (paren < head.size() && IsHlslSpace(head[paren]))
+            ++paren;
+        if (name_end == name || paren == head.size() || head[paren] != '(')
+            return {};
+        return head.substr(name, name_end - name);
+    };
+    constexpr std::string_view precise = "precise";
+    if (head.substr(i, precise.size()) == precise && i + precise.size() < head.size() &&
+        IsHlslSpace(head[i + precise.size()])) {
+        size_t after = i + precise.size();
+        while (after < head.size() && IsHlslSpace(head[after]))
+            ++after;
+        if (const auto name = parse(after); !name.empty())
+            return name;
+    }
+    return parse(i);
+}
+
+// Calls `visit(name)` for every `identifier(` in `text`, identifiers starting with a letter or `_`.
+template <typename Visit>
+void ForEachCall(std::string_view text, Visit&& visit) {
+    for (size_t i = 0; i < text.size();) {
+        if (!IsHlslWord(text[i]) || (i > 0 && IsHlslWord(text[i - 1]))) {
+            ++i;
+            continue;
+        }
+        size_t end = i;
+        while (end < text.size() && IsHlslWord(text[end]))
+            ++end;
+        size_t paren = end;
+        while (paren < text.size() && IsHlslSpace(text[paren]))
+            ++paren;
+        if (!(text[i] >= '0' && text[i] <= '9') && paren < text.size() && text[paren] == '(') {
+            visit(text.substr(i, end - i));
+            i = paren + 1;
+        } else {
+            i = end;
+        }
+    }
+}
+
 // Decimal spelling is allowed only when parsing it reproduces the original float.
 // Preserve exceptional values, signed zero and subnormals as explicit bit patterns.
 inline std::string FormatFloatImmediate(std::uint32_t bits) {
@@ -117,13 +229,13 @@ inline InlineBlockResult InlineSingleUseBlock(std::string_view source,
             sites[name].push_back(index);
         }
     }
-    static const std::regex assignment{R"(^(v\d+)\s*=\s*(?!=)([^;{}]+);$)"};
     InlineBlockResult result;
     for (size_t index = 0; index < lines.size(); ++index) {
-        std::smatch match;
-        if (!std::regex_match(lines[index], match, assignment))
+        std::string_view assigned;
+        std::string_view assigned_expression;
+        if (!ParseAssignment(lines[index], assigned, assigned_expression))
             continue;
-        const std::string name = match[1];
+        const std::string name{assigned};
         const auto type = types.find(name);
         if (type == types.end() || type->second.type.starts_with("precise "))
             continue;
@@ -139,7 +251,7 @@ inline InlineBlockResult InlineSingleUseBlock(std::string_view source,
             consumer.find("GetDimensions") != consumer.npos ||
             consumer.find("uaddCarry") != consumer.npos || consumer.find("sincos") != consumer.npos)
             continue;
-        const std::string expression = match[2];
+        const std::string expression{assigned_expression};
         // The dynamic cbuffer helper contains a switch. Keep the evaluation order
         // of separate lookups instead of moving those control-flow regions into operands.
         if (expression.size() > max_expression ||
@@ -183,11 +295,8 @@ inline std::string StripUncalledHelpers(std::string_view source) {
         size_t gap;
         size_t begin;
         size_t end;
-        std::string name;
+        std::string_view name;
     };
-    static const std::regex signature{
-        R"(^\s*(?:\[[^\]]*\]\s*)*(?:precise\s+)?[\w<>]+\s+(\w+)\s*\()"};
-    static const std::regex call{R"(\b([A-Za-z_]\w*)\s*\()"};
     std::vector<Function> functions;
     size_t gap = 0;
     size_t begin = 0;
@@ -201,11 +310,10 @@ inline std::string StripUncalledHelpers(std::string_view source) {
         } else if ((ch == '}' && depth && --depth == 0) || (ch == ';' && depth == 0)) {
             size_t end = pos + 1;
             if (brace != source.npos) {
-                const std::string head{source.substr(begin, brace - begin)};
-                std::smatch match;
-                if (std::regex_search(head, match, signature))
-                    functions.push_back({gap, begin, end, match[1].str()});
-                size_t next = source.find_first_not_of(" \t\r\n", end);
+                if (const auto name = FunctionName(source.substr(begin, brace - begin));
+                    !name.empty())
+                    functions.push_back({gap, begin, end, name});
+                const size_t next = source.find_first_not_of(" \t\r\n", end);
                 if (next != source.npos && source[next] == ';')
                     end = next + 1;
             }
@@ -217,19 +325,26 @@ inline std::string StripUncalledHelpers(std::string_view source) {
             brace = source.npos;
         }
     }
-    std::unordered_set<std::string> reachable{"main"};
-    if (std::none_of(functions.begin(), functions.end(),
-                     [](const auto& fn) { return fn.name == "main"; }))
+    std::unordered_map<std::string_view, std::vector<size_t>> overloads;
+    for (size_t index = 0; index < functions.size(); ++index)
+        overloads[functions[index].name].push_back(index);
+    if (!overloads.contains("main"))
         return std::string{source};
-    bool changed = true;
-    while (changed) {
-        changed = false;
-        for (const auto& fn : functions) {
-            if (!reachable.contains(fn.name))
-                continue;
-            const std::string body{source.substr(fn.begin, fn.end - fn.begin)};
-            for (std::sregex_iterator it{body.begin(), body.end(), call}, end; it != end; ++it)
-                changed |= reachable.emplace((*it)[1].str()).second;
+    // Each reachable function is scanned once, all overloads of a reachable name included.
+    std::unordered_set<std::string_view> reachable{"main"};
+    std::vector<std::string_view> pending{"main"};
+    while (!pending.empty()) {
+        const auto name = pending.back();
+        pending.pop_back();
+        const auto found = overloads.find(name);
+        if (found == overloads.end())
+            continue;
+        for (const size_t index : found->second) {
+            const auto& fn = functions[index];
+            ForEachCall(source.substr(fn.begin, fn.end - fn.begin), [&](std::string_view callee) {
+                if (reachable.insert(callee).second)
+                    pending.push_back(callee);
+            });
         }
     }
     std::string result;
