@@ -7,55 +7,46 @@
 namespace Shader::Backend::HLSL {
 void EmitGetCbufU8(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding,
                    const IR::Value& offset) {
-    const auto b = ctx.var_alloc.Consume(binding);
     const auto o = ctx.var_alloc.Consume(offset);
-    ctx.AddU32("{} = bitfieldExtract(uint(nx_cbuf_load({}, {})), int(({} & 3u) * 8u), 8);", inst, b,
-               o, o);
+    ctx.AddU32("{} = bitfieldExtract(uint({}), int(({} & 3u) * 8u), 8);", inst,
+               ctx.CbufferLoad(binding, offset), o);
 }
 
 void EmitGetCbufS8(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding,
                    const IR::Value& offset) {
-    const auto b = ctx.var_alloc.Consume(binding);
     const auto o = ctx.var_alloc.Consume(offset);
-    ctx.AddU32("{} = bitfieldExtract(int(nx_cbuf_load({}, {})), int(({} & 3u) * 8u), 8);", inst, b,
-               o, o);
+    ctx.AddU32("{} = bitfieldExtract(int({}), int(({} & 3u) * 8u), 8);", inst,
+               ctx.CbufferLoad(binding, offset), o);
 }
 
 void EmitGetCbufU16(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding,
                     const IR::Value& offset) {
-    const auto b = ctx.var_alloc.Consume(binding);
     const auto o = ctx.var_alloc.Consume(offset);
-    ctx.AddU32("{} = bitfieldExtract(uint(nx_cbuf_load({}, {})), int(({} & 2u) * 8u), 16);", inst,
-               b, o, o);
+    ctx.AddU32("{} = bitfieldExtract(uint({}), int(({} & 2u) * 8u), 16);", inst,
+               ctx.CbufferLoad(binding, offset), o);
 }
 
 void EmitGetCbufS16(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding,
                     const IR::Value& offset) {
-    const auto b = ctx.var_alloc.Consume(binding);
     const auto o = ctx.var_alloc.Consume(offset);
-    ctx.AddU32("{} = bitfieldExtract(int(nx_cbuf_load({}, {})), int(({} & 2u) * 8u), 16);", inst, b,
-               o, o);
+    ctx.AddU32("{} = bitfieldExtract(int({}), int(({} & 2u) * 8u), 16);", inst,
+               ctx.CbufferLoad(binding, offset), o);
 }
 
 void EmitGetCbufU32(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding,
                     const IR::Value& offset) {
-    const auto b = ctx.var_alloc.Consume(binding);
-    const auto o = ctx.var_alloc.Consume(offset);
-    ctx.AddU32("{} = nx_cbuf_load({}, {});", inst, b, o);
+    ctx.AddU32("{} = {};", inst, ctx.CbufferLoad(binding, offset));
 }
 
 void EmitGetCbufF32(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding,
                     const IR::Value& offset) {
-    const auto b = ctx.var_alloc.Consume(binding);
-    const auto o = ctx.var_alloc.Consume(offset);
-    ctx.AddF32("{} = asfloat(nx_cbuf_load({}, {}));", inst, b, o);
+    ctx.AddF32("{} = asfloat({});", inst, ctx.CbufferLoad(binding, offset));
 }
 
 void EmitGetCbufU32x2(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding,
                       const IR::Value& offset) {
-    const auto b = ctx.var_alloc.Consume(binding);
-    const auto o = ctx.var_alloc.Consume(offset);
-    ctx.AddU32x2("{} = uint2(nx_cbuf_load({}, {}), nx_cbuf_load({}, {} + 4u));", inst, b, o, b, o);
+    ctx.AddU32x2("{} = uint2({}, {});", inst, ctx.CbufferLoad(binding, offset),
+                 ctx.CbufferLoad(binding, offset, 4));
 }
 
 void EmitLoadSharedU8(EmitContext& ctx, IR::Inst& inst, std::string_view offset) {

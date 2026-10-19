@@ -1,12 +1,12 @@
 // SPDX-FileCopyrightText: Copyright 2026 NSPX
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "shader_recompiler/backend/hlsl/emit_hlsl.h"
 #include <array>
 #include <fstream>
 #include <iostream>
 #include <stdexcept>
 #include <string_view>
 #include <vector>
+#include "shader_recompiler/backend/hlsl/emit_hlsl.h"
 
 #include "shader_recompiler/frontend/ir/modifiers.h"
 
@@ -851,30 +851,79 @@ void NestedReturns() {
   Require(plain.Emit(plain_bindings).find("nx_returned") == std::string::npos,
           "Top-level returns must not use the flag");
 }
+void SingleUseInlining() {
+    {
+        Fixture f{Stage::Compute};
+        f.program.local_memory_size = 16;
+        const auto loaded = f.Add(IR::Opcode::LoadLocal, {IR::Value{0u}});
+        f.Add(IR::Opcode::WriteLocal, {IR::Value{0u}, IR::Value{42u}});
+        const auto sum = f.Add(IR::Opcode::IAdd32, {loaded, IR::Value{1u}});
+        f.Add(IR::Opcode::WriteLocal, {IR::Value{4u}, sum});
+        Bindings bindings;
+        const auto text = f.Emit(bindings);
+        Contains(text, "uint v0 = 0;");
+        Contains(text, "v0 = lmem[0u];");
+        Require(text.find("v1 =") == text.npos,
+                "Single-use arithmetic should be emitted at its consumer");
+        Require(text.find("uint v1") == text.npos, "Eliminated temporaries must not be declared");
+    }
+    {
+        Fixture f{Stage::VertexB};
+        f.program.info.loads.Set(IR::Attribute::Generic0X);
+        f.program.info.stores.Set(IR::Attribute::PositionX);
+        const auto input =
+            f.Add(IR::Opcode::GetAttribute, {IR::Value{IR::Attribute::Generic0X}, IR::Value{0u}});
+        const auto alias = f.Add(IR::Opcode::Identity, {input});
+        const auto sum = f.Add(IR::Opcode::FPAdd32, {alias, IR::Value{2.0f}});
+        sum.InstRecursive()->SetFlags(IR::FpControl{.no_contraction = true});
+        f.Add(IR::Opcode::SetAttribute, {IR::Value{IR::Attribute::PositionX}, sum, IR::Value{0u}});
+        f.Add(IR::Opcode::SetAttribute,
+              {IR::Value{IR::Attribute::PositionY}, alias, IR::Value{0u}});
+        Bindings bindings;
+        const auto text = f.Emit(bindings);
+        Contains(text, "float v0 = 0;");
+        Contains(text, "precise float v1 = 0;");
+        Contains(text, "v0 = input.attr0.x;");
+        Require(text.find("v1=") != text.npos,
+                "Precise producers and recursively shared aliases must remain named");
+    }
+}
+void GroupedDeclarations() {
+    Fixture f{Stage::Compute};
+    f.program.local_memory_size = 16;
+    const auto first = f.Add(IR::Opcode::LoadLocal, {IR::Value{0u}});
+    const auto second = f.Add(IR::Opcode::LoadLocal, {IR::Value{4u}});
+    f.Add(IR::Opcode::WriteLocal, {IR::Value{8u}, first});
+    f.Add(IR::Opcode::WriteLocal, {IR::Value{12u}, second});
+    Bindings bindings;
+    Contains(f.Emit(bindings), "uint v0 = 0, v1 = 0;\n");
+}
 int main() {
   try {
-    Vertex();
-    DirectClipDistances();
-    IntegerTextureSample();
-    PackedSignedAttributes();
-    Fragment();
-    MultisampleFetch();
-    Compute();
-    ControlFlowAndWaves();
-    ResourceOrderAndCompare();
-    StorageImageFormats();
-    IntegerTypelessImage();
-    ArithmeticAndPseudoResults();
-    ChainedResourceBindings();
-    NumericCoverage();
-    GlobalAndRegisterState();
-    SparseResidency();
-    Geometry();
-    NativeWideAtomics();
-    MixedSharedMemory();
-    PixelHelperAndAlphaTest();
-    UnsupportedRollback();
-    NestedReturns();
+      GroupedDeclarations();
+    SingleUseInlining();
+      Vertex();
+      DirectClipDistances();
+      IntegerTextureSample();
+      PackedSignedAttributes();
+      Fragment();
+      MultisampleFetch();
+      Compute();
+      ControlFlowAndWaves();
+      ResourceOrderAndCompare();
+      StorageImageFormats();
+      IntegerTypelessImage();
+      ArithmeticAndPseudoResults();
+      ChainedResourceBindings();
+      NumericCoverage();
+      GlobalAndRegisterState();
+      SparseResidency();
+      Geometry();
+      NativeWideAtomics();
+      MixedSharedMemory();
+      PixelHelperAndAlphaTest();
+      UnsupportedRollback();
+      NestedReturns();
   } catch (const std::exception &error) {
     std::cerr << error.what() << '\n';
     return 1;

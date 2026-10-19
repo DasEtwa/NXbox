@@ -8,6 +8,7 @@
 #include "shader_recompiler/backend/hlsl/emit_hlsl.h"
 #include "shader_recompiler/backend/hlsl/emit_hlsl_instructions.h"
 #include "shader_recompiler/backend/hlsl/hlsl_emit_context.h"
+#include "shader_recompiler/backend/hlsl/hlsl_source.h"
 namespace Shader::Backend::HLSL {
 namespace {
 template <class Func>
@@ -169,13 +170,16 @@ void EmitCode(EmitContext& ctx, const IR::Program& program) {
     for (size_t i = 0; i < program.syntax_list.size(); ++i) {
         const auto& node = program.syntax_list[i];
         switch (node.type) {
-        case Node::Type::Block:
+        case Node::Type::Block: {
             ctx.Add("{{");
+            const auto block_begin = ctx.code.size();
             for (auto& inst : node.data.block->Instructions())
                 EmitInst(ctx, &inst);
+            ctx.var_alloc.InlineBlock(ctx.code, block_begin, *node.data.block);
             EmitPhiCopies(ctx, program, node.data.block);
             ctx.Add("}}");
             break;
+        }
         case Node::Type::If:
             ctx.Add("if ({}) {{", ctx.var_alloc.Consume(node.data.if_node.cond));
             regions.emplace_back();
@@ -243,6 +247,7 @@ std::string EmitHLSL(const Profile& profile, const RuntimeInfo& runtime_info, IR
     // Do not publish partially advanced descriptor counters if emission fails.
     Bindings pending = bindings;
     EmitContext ctx{program, pending, profile, runtime_info};
+    ctx.var_alloc.PrepareUses(program);
     EmitCode(ctx, program);
     if (program.stage == Stage::Compute) {
         const auto& size = program.workgroup_size;
@@ -308,6 +313,6 @@ std::string EmitHLSL(const Profile& profile, const RuntimeInfo& runtime_info, IR
         ctx.FinishOutput();
     ctx.Add("{}", ctx.ReturnStatement());
     bindings = pending;
-    return ctx.header + ctx.code + "}\n";
+    return StripUncalledHelpers(ctx.header + ctx.code + "}\n");
 }
 } // namespace Shader::Backend::HLSL
