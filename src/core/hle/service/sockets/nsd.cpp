@@ -64,11 +64,11 @@ NSD::NSD(Core::System& system_, const char* name) : ServiceFramework{system_, na
 }
 
 static std::string ResolveImpl(const std::string& fqdn_in) {
-    // The real implementation makes various substitutions.
-    // For now we just return the string as-is, which is good enough when not
-    // connecting to real Nintendo servers.
-    LOG_WARNING(Service, "(STUBBED) called, fqdn_in={}", fqdn_in);
-    return fqdn_in;
+    // nsd swaps '%' for the environment identifier (GetEnvironmentIdentifier): game servers are
+    // requested as g<id>-%.s.n.srv.nintendo.net and only resolve as g<id>-lp1.s.n.srv.nintendo.net.
+    auto fqdn_out = Common::ReplaceAll(fqdn_in, "%", "lp1");
+    LOG_DEBUG(Service, "fqdn_in={} fqdn_out={}", fqdn_in, fqdn_out);
+    return fqdn_out;
 }
 
 static Result ResolveCommon(const std::string& fqdn_in, std::array<char, 0x100>& fqdn_out) {

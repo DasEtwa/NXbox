@@ -893,6 +893,14 @@ class NextendoTests(unittest.TestCase):
         self.assertIn("Nextendo::GetIdentity(user_id.RawString()).pid ? 1 : 0", account)
         self.assertIn("rb.Push<u32>(license_kind);", account)
 
+    def test_nsd_fills_the_environment_placeholder(self):
+        # MK8D asks nsd for g2b309e01-%.s.n.srv.nintendo.net. Returned unchanged, the name failed
+        # DNS (EAI_AGAIN) and the game showed 0056-2306 before reaching the Nextendo NAT route.
+        source = (ROOT / "src/core/hle/service/sockets/nsd.cpp").read_text()
+        policy = (ROOT / "src/core/hle/service/nextendo/policy.h").read_text()
+        self.assertIn('Common::ReplaceAll(fqdn_in, "%", "lp1")', source)
+        self.assertIn('host == "g2b309e01-lp1.s.n.srv.nintendo"', policy)
+
 
 if __name__ == "__main__":
     unittest.main()
