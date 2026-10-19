@@ -1246,11 +1246,11 @@ CommandFacade* Context::Commands() {
     static const bool debug_recorder = BisectEnabled("NXBOX_D3D12_DEBUG");
     if (debug_recorder) {
         // Diagnostic: the command list and copy hazard state are single-threaded.
-        static std::atomic<DWORD> recorder{};
+        static std::atomic<DWORD> owner_thread{};
         static std::atomic<u32> foreign{};
         DWORD expected{};
         const DWORD self = GetCurrentThreadId();
-        if (!recorder.compare_exchange_strong(expected, self) && expected != self &&
+        if (!owner_thread.compare_exchange_strong(expected, self) && expected != self &&
             foreign.fetch_add(1) < 16)
             Diagnostic(fmt::format("D3D12_FOREIGN_RECORDER thread={} owner={} recording={}",
                                    self, expected, recording));
