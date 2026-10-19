@@ -1,0 +1,511 @@
+mk8d-orig: graphics=1246 shader_sets=631 PSOs/set=[(1, 372), (2, 154), (3, 28), (4, 31), (5, 21), (6, 6), (7, 2), (8, 4), (9, 2), (10, 1), (11, 2), (12, 3), (13, 2), (16, 1), (20, 1), (23, 1)] request_a_avoided=248 exact_recipe_unique=1246 recipe_a_avoided=211 recipe_b_topology_upper_bound=0 native_unique=1246 native_a_avoided=211 native_b_avoided=0 native_final=1035
+  attribute[0].divisor: differing_shader_sets=39 class=a/c conditional
+  attribute[0].dxgi: differing_shader_sets=32 class=c
+  attribute[10].divisor: differing_shader_sets=4 class=a/c conditional
+  attribute[10].dxgi: differing_shader_sets=13 class=c
+  attribute[11].dxgi: differing_shader_sets=2 class=c
+  attribute[12].divisor: differing_shader_sets=1 class=a/c conditional
+  attribute[1].divisor: differing_shader_sets=17 class=a/c conditional
+  attribute[1].offset: differing_shader_sets=9 class=c
+  attribute[1].slot: differing_shader_sets=9 class=c
+  attribute[2].divisor: differing_shader_sets=1 class=a/c conditional
+  attribute[2].offset: differing_shader_sets=8 class=c
+  attribute[2].slot: differing_shader_sets=8 class=c
+  attribute[3].divisor: differing_shader_sets=1 class=a/c conditional
+  attribute[4].offset: differing_shader_sets=6 class=c
+  attribute[4].slot: differing_shader_sets=6 class=c
+  attribute[6].offset: differing_shader_sets=9 class=c
+  attribute[6].slot: differing_shader_sets=9 class=c
+  attribute[8].divisor: differing_shader_sets=1 class=a/c conditional
+  attribute[8].dxgi: differing_shader_sets=81 class=c
+  attribute[8].offset: differing_shader_sets=9 class=c
+  attribute[8].slot: differing_shader_sets=9 class=c
+  attribute[9].divisor: differing_shader_sets=33 class=a/c conditional
+  attribute[9].dxgi: differing_shader_sets=6 class=c
+  attribute[9].offset: differing_shader_sets=4 class=c
+  attribute[9].slot: differing_shader_sets=4 class=c
+  blend[0].dst: differing_shader_sets=9 class=a/c conditional
+  blend[0].dst_alpha: differing_shader_sets=7 class=c
+  blend[0].enable: differing_shader_sets=3 class=a/c conditional
+  blend[0].op: differing_shader_sets=2 class=c
+  blend[0].op_alpha: differing_shader_sets=3 class=c
+  blend[0].src: differing_shader_sets=4 class=a/c conditional
+  blend[0].src_alpha: differing_shader_sets=2 class=c
+  blend[0].write_mask: differing_shader_sets=3 class=c
+  blend[1].dst: differing_shader_sets=3 class=a/c conditional
+  blend[1].dst_alpha: differing_shader_sets=3 class=a/c conditional
+  blend[1].src: differing_shader_sets=3 class=a/c conditional
+  blend[1].src_alpha: differing_shader_sets=3 class=a/c conditional
+  blend[1].write_mask: differing_shader_sets=1 class=a/c conditional
+  blend[2].dst: differing_shader_sets=3 class=a/c conditional
+  blend[2].dst_alpha: differing_shader_sets=3 class=a/c conditional
+  blend[2].src: differing_shader_sets=3 class=a/c conditional
+  blend[2].src_alpha: differing_shader_sets=3 class=a/c conditional
+  blend[2].write_mask: differing_shader_sets=1 class=a/c conditional
+  blend[3].dst: differing_shader_sets=3 class=a/c conditional
+  blend[3].dst_alpha: differing_shader_sets=3 class=a/c conditional
+  blend[3].src: differing_shader_sets=3 class=a/c conditional
+  blend[3].src_alpha: differing_shader_sets=3 class=a/c conditional
+  blend[3].write_mask: differing_shader_sets=1 class=a/c conditional
+  blend[4].dst: differing_shader_sets=3 class=a/c conditional
+  blend[4].dst_alpha: differing_shader_sets=3 class=a/c conditional
+  blend[4].src: differing_shader_sets=3 class=a/c conditional
+  blend[4].src_alpha: differing_shader_sets=3 class=a/c conditional
+  blend[4].write_mask: differing_shader_sets=1 class=a/c conditional
+  blend[5].dst: differing_shader_sets=3 class=a/c conditional
+  blend[5].dst_alpha: differing_shader_sets=3 class=a/c conditional
+  blend[5].src: differing_shader_sets=3 class=a/c conditional
+  blend[5].src_alpha: differing_shader_sets=3 class=a/c conditional
+  blend[5].write_mask: differing_shader_sets=1 class=a/c conditional
+  blend[6].dst: differing_shader_sets=3 class=a/c conditional
+  blend[6].dst_alpha: differing_shader_sets=3 class=a/c conditional
+  blend[6].src: differing_shader_sets=3 class=a/c conditional
+  blend[6].src_alpha: differing_shader_sets=3 class=a/c conditional
+  blend[6].write_mask: differing_shader_sets=1 class=a/c conditional
+  blend[7].dst: differing_shader_sets=3 class=a/c conditional
+  blend[7].dst_alpha: differing_shader_sets=3 class=a/c conditional
+  blend[7].src: differing_shader_sets=3 class=a/c conditional
+  blend[7].src_alpha: differing_shader_sets=3 class=a/c conditional
+  blend[7].write_mask: differing_shader_sets=1 class=a/c conditional
+  cull_mode: differing_shader_sets=5 class=c
+  depth_bias: differing_shader_sets=22 class=c
+  depth_clip: differing_shader_sets=13 class=c
+  depth_enable: differing_shader_sets=1 class=c
+  depth_func: differing_shader_sets=125 class=a/c conditional
+  depth_write: differing_shader_sets=82 class=a/c conditional
+  dsv_format: differing_shader_sets=16 class=c
+  num_render_targets: differing_shader_sets=12 class=c
+  request: differing_shader_sets=259 class=c
+  rtv[0].format: differing_shader_sets=90 class=c
+  rtv[3].format: differing_shader_sets=1 class=c
+  runtime: differing_shader_sets=5 class=c
+  slope_scaled_bias_bits: differing_shader_sets=22 class=c
+  sources: differing_shader_sets=62 class=c
+  dynamic blend factor/stencil ref/depth bounds values/viewports/scissors: absent from key; b=0
+  runtime: binding metadata + stream-output; sources: exact HLSL + descriptor counts; request: includes shader specialization (retained)
+botw-orig: graphics=1413 shader_sets=351 PSOs/set=[(1, 56), (2, 127), (3, 75), (4, 21), (5, 6), (6, 19), (7, 5), (8, 9), (9, 8), (10, 1), (11, 4), (12, 2), (13, 1), (14, 1), (15, 4), (17, 1), (18, 2), (20, 1), (22, 1), (23, 2), (24, 1), (28, 1), (30, 1), (36, 1), (47, 1)] request_a_avoided=802 exact_recipe_unique=1393 recipe_a_avoided=782 recipe_b_topology_upper_bound=0 native_unique=1393 native_a_avoided=782 native_b_avoided=0 native_final=611
+  attribute[0].divisor: differing_shader_sets=272 class=a/c conditional
+  attribute[0].dxgi: differing_shader_sets=25 class=c
+  attribute[12].divisor: differing_shader_sets=91 class=a/c conditional
+  attribute[12].dxgi: differing_shader_sets=15 class=c
+  attribute[12].offset: differing_shader_sets=40 class=c
+  attribute[1].divisor: differing_shader_sets=156 class=a/c conditional
+  attribute[1].offset: differing_shader_sets=35 class=c
+  attribute[2].divisor: differing_shader_sets=76 class=a/c conditional
+  attribute[2].offset: differing_shader_sets=25 class=c
+  attribute[3].divisor: differing_shader_sets=3 class=a/c conditional
+  attribute[8].divisor: differing_shader_sets=106 class=a/c conditional
+  attribute[8].dxgi: differing_shader_sets=53 class=c
+  attribute[8].offset: differing_shader_sets=39 class=c
+  attribute[9].divisor: differing_shader_sets=19 class=a/c conditional
+  attribute[9].dxgi: differing_shader_sets=10 class=c
+  attribute[9].offset: differing_shader_sets=9 class=c
+  blend[0].dst: differing_shader_sets=5 class=c
+  blend[0].dst_alpha: differing_shader_sets=7 class=c
+  blend[0].enable: differing_shader_sets=2 class=c
+  blend[0].op: differing_shader_sets=1 class=c
+  blend[0].op_alpha: differing_shader_sets=4 class=c
+  blend[0].src: differing_shader_sets=4 class=c
+  blend[0].src_alpha: differing_shader_sets=6 class=c
+  blend[0].write_mask: differing_shader_sets=1 class=c
+  blend[1].dst: differing_shader_sets=1 class=c
+  blend[1].dst_alpha: differing_shader_sets=1 class=c
+  blend[1].enable: differing_shader_sets=1 class=c
+  blend[1].src: differing_shader_sets=1 class=c
+  blend[1].src_alpha: differing_shader_sets=1 class=c
+  blend[2].dst: differing_shader_sets=1 class=a/c conditional
+  blend[2].dst_alpha: differing_shader_sets=1 class=a/c conditional
+  blend[2].enable: differing_shader_sets=1 class=a/c conditional
+  blend[2].src: differing_shader_sets=1 class=a/c conditional
+  blend[2].src_alpha: differing_shader_sets=1 class=a/c conditional
+  blend[3].dst: differing_shader_sets=1 class=a/c conditional
+  blend[3].dst_alpha: differing_shader_sets=1 class=a/c conditional
+  blend[3].enable: differing_shader_sets=1 class=a/c conditional
+  blend[3].src: differing_shader_sets=1 class=a/c conditional
+  blend[3].src_alpha: differing_shader_sets=1 class=a/c conditional
+  blend[4].dst: differing_shader_sets=1 class=a/c conditional
+  blend[4].dst_alpha: differing_shader_sets=1 class=a/c conditional
+  blend[4].enable: differing_shader_sets=1 class=a/c conditional
+  blend[4].src: differing_shader_sets=1 class=a/c conditional
+  blend[4].src_alpha: differing_shader_sets=1 class=a/c conditional
+  blend[5].dst: differing_shader_sets=1 class=a/c conditional
+  blend[5].dst_alpha: differing_shader_sets=1 class=a/c conditional
+  blend[5].enable: differing_shader_sets=1 class=a/c conditional
+  blend[5].src: differing_shader_sets=1 class=a/c conditional
+  blend[5].src_alpha: differing_shader_sets=1 class=a/c conditional
+  blend[6].dst: differing_shader_sets=1 class=a/c conditional
+  blend[6].dst_alpha: differing_shader_sets=1 class=a/c conditional
+  blend[6].enable: differing_shader_sets=1 class=a/c conditional
+  blend[6].src: differing_shader_sets=1 class=a/c conditional
+  blend[6].src_alpha: differing_shader_sets=1 class=a/c conditional
+  blend[7].dst: differing_shader_sets=1 class=a/c conditional
+  blend[7].dst_alpha: differing_shader_sets=1 class=a/c conditional
+  blend[7].enable: differing_shader_sets=1 class=a/c conditional
+  blend[7].src: differing_shader_sets=1 class=a/c conditional
+  blend[7].src_alpha: differing_shader_sets=1 class=a/c conditional
+  cull_mode: differing_shader_sets=12 class=c
+  depth_bias: differing_shader_sets=9 class=c
+  depth_clip: differing_shader_sets=7 class=c
+  depth_func: differing_shader_sets=50 class=a/c conditional
+  depth_write: differing_shader_sets=12 class=a/c conditional
+  dsv_format: differing_shader_sets=2 class=c
+  num_render_targets: differing_shader_sets=2 class=c
+  request: differing_shader_sets=295 class=c
+  rtv[0].format: differing_shader_sets=21 class=c
+  rtv[1].format: differing_shader_sets=2 class=c
+  rtv[3].format: differing_shader_sets=2 class=c
+  rtv[5].format: differing_shader_sets=2 class=c
+  runtime: differing_shader_sets=2 class=c
+  slope_scaled_bias_bits: differing_shader_sets=9 class=c
+  sources: differing_shader_sets=2 class=c
+  dynamic blend factor/stencil ref/depth bounds values/viewports/scissors: absent from key; b=0
+  runtime: binding metadata + stream-output; sources: exact HLSL + descriptor counts; request: includes shader specialization (retained)
+ody-orig: graphics=1513 shader_sets=564 PSOs/set=[(1, 193), (2, 165), (3, 85), (4, 56), (5, 20), (6, 16), (7, 3), (8, 5), (9, 3), (10, 9), (11, 1), (13, 1), (14, 2), (15, 2), (18, 2), (19, 1)] request_a_avoided=618 exact_recipe_unique=1513 recipe_a_avoided=618 recipe_b_topology_upper_bound=2 native_unique=1513 native_a_avoided=618 native_b_avoided=2 native_final=893
+  attribute[0].divisor: differing_shader_sets=296 class=a/c conditional
+  attribute[10].divisor: differing_shader_sets=75 class=a/c conditional
+  attribute[11].divisor: differing_shader_sets=116 class=a/c conditional
+  attribute[11].slot: differing_shader_sets=1 class=c
+  attribute[1].divisor: differing_shader_sets=206 class=a/c conditional
+  attribute[1].offset: differing_shader_sets=16 class=c
+  attribute[1].slot: differing_shader_sets=16 class=c
+  attribute[2].divisor: differing_shader_sets=77 class=a/c conditional
+  attribute[2].offset: differing_shader_sets=5 class=c
+  attribute[2].slot: differing_shader_sets=5 class=c
+  attribute[3].divisor: differing_shader_sets=104 class=a/c conditional
+  attribute[3].dxgi: differing_shader_sets=1 class=c
+  attribute[3].offset: differing_shader_sets=13 class=c
+  attribute[3].slot: differing_shader_sets=14 class=c
+  attribute[4].divisor: differing_shader_sets=151 class=a/c conditional
+  attribute[4].dxgi: differing_shader_sets=47 class=c
+  attribute[4].offset: differing_shader_sets=20 class=c
+  attribute[4].slot: differing_shader_sets=20 class=c
+  attribute[5].divisor: differing_shader_sets=4 class=a/c conditional
+  attribute[5].dxgi: differing_shader_sets=1 class=c
+  attribute[5].slot: differing_shader_sets=1 class=c
+  blend[0].dst: differing_shader_sets=5 class=c
+  blend[0].dst_alpha: differing_shader_sets=7 class=c
+  blend[0].enable: differing_shader_sets=2 class=c
+  blend[0].op_alpha: differing_shader_sets=2 class=c
+  blend[0].src: differing_shader_sets=2 class=c
+  blend[0].src_alpha: differing_shader_sets=4 class=c
+  blend[0].write_mask: differing_shader_sets=1 class=c
+  blend[1].dst: differing_shader_sets=18 class=a/c conditional
+  blend[1].dst_alpha: differing_shader_sets=18 class=a/c conditional
+  blend[1].enable: differing_shader_sets=2 class=a/c conditional
+  blend[1].src: differing_shader_sets=18 class=a/c conditional
+  blend[1].src_alpha: differing_shader_sets=18 class=a/c conditional
+  blend[1].write_mask: differing_shader_sets=1 class=a/c conditional
+  blend[2].dst: differing_shader_sets=23 class=a/c conditional
+  blend[2].dst_alpha: differing_shader_sets=23 class=a/c conditional
+  blend[2].enable: differing_shader_sets=2 class=a/c conditional
+  blend[2].src: differing_shader_sets=23 class=a/c conditional
+  blend[2].src_alpha: differing_shader_sets=23 class=a/c conditional
+  blend[3].dst: differing_shader_sets=15 class=a/c conditional
+  blend[3].dst_alpha: differing_shader_sets=8 class=a/c conditional
+  blend[3].enable: differing_shader_sets=2 class=a/c conditional
+  blend[3].src: differing_shader_sets=15 class=a/c conditional
+  blend[3].src_alpha: differing_shader_sets=8 class=a/c conditional
+  blend[4].dst: differing_shader_sets=23 class=a/c conditional
+  blend[4].dst_alpha: differing_shader_sets=23 class=a/c conditional
+  blend[4].enable: differing_shader_sets=2 class=a/c conditional
+  blend[4].src: differing_shader_sets=23 class=a/c conditional
+  blend[4].src_alpha: differing_shader_sets=23 class=a/c conditional
+  blend[5].dst: differing_shader_sets=23 class=a/c conditional
+  blend[5].dst_alpha: differing_shader_sets=23 class=a/c conditional
+  blend[5].enable: differing_shader_sets=2 class=a/c conditional
+  blend[5].src: differing_shader_sets=23 class=a/c conditional
+  blend[5].src_alpha: differing_shader_sets=23 class=a/c conditional
+  blend[6].dst: differing_shader_sets=23 class=a/c conditional
+  blend[6].dst_alpha: differing_shader_sets=23 class=a/c conditional
+  blend[6].enable: differing_shader_sets=2 class=a/c conditional
+  blend[6].src: differing_shader_sets=23 class=a/c conditional
+  blend[6].src_alpha: differing_shader_sets=23 class=a/c conditional
+  blend[7].dst: differing_shader_sets=23 class=a/c conditional
+  blend[7].dst_alpha: differing_shader_sets=23 class=a/c conditional
+  blend[7].enable: differing_shader_sets=2 class=a/c conditional
+  blend[7].src: differing_shader_sets=23 class=a/c conditional
+  blend[7].src_alpha: differing_shader_sets=23 class=a/c conditional
+  cull_mode: differing_shader_sets=18 class=c
+  depth_bias: differing_shader_sets=20 class=c
+  depth_clip: differing_shader_sets=11 class=c
+  depth_func: differing_shader_sets=157 class=a/c conditional
+  depth_write: differing_shader_sets=3 class=a/c conditional
+  num_render_targets: differing_shader_sets=10 class=c
+  request: differing_shader_sets=371 class=c
+  rtv[0].format: differing_shader_sets=24 class=c
+  rtv[1].format: differing_shader_sets=10 class=c
+  rtv[2].format: differing_shader_sets=10 class=c
+  rtv[3].format: differing_shader_sets=10 class=c
+  runtime: differing_shader_sets=10 class=c
+  slope_scaled_bias_bits: differing_shader_sets=13 class=c
+  sources: differing_shader_sets=10 class=c
+  topology: differing_shader_sets=2 class=b (IA topology; shader specialization may require it)
+  dynamic blend factor/stencil ref/depth bounds values/viewports/scissors: absent from key; b=0
+  runtime: binding metadata + stream-output; sources: exact HLSL + descriptor counts; request: includes shader specialization (retained)
+wonder-orig: graphics=1214 shader_sets=586 PSOs/set=[(1, 317), (2, 145), (3, 45), (4, 36), (5, 6), (6, 18), (7, 3), (8, 7), (9, 1), (10, 1), (11, 3), (12, 1), (14, 2), (21, 1)] request_a_avoided=311 exact_recipe_unique=1043 recipe_a_avoided=264 recipe_b_topology_upper_bound=0 native_unique=1056 native_a_avoided=265 native_b_avoided=0 native_final=791
+  attribute[0].divisor: differing_shader_sets=184 class=a/c conditional
+  attribute[0].dxgi: differing_shader_sets=46 class=c
+  attribute[12].divisor: differing_shader_sets=24 class=a/c conditional
+  attribute[12].dxgi: differing_shader_sets=6 class=c
+  attribute[12].enabled: differing_shader_sets=3 class=c
+  attribute[12].slot: differing_shader_sets=6 class=c
+  attribute[1].divisor: differing_shader_sets=85 class=a/c conditional
+  attribute[2].divisor: differing_shader_sets=51 class=a/c conditional
+  attribute[2].dxgi: differing_shader_sets=9 class=c
+  attribute[3].divisor: differing_shader_sets=1 class=a/c conditional
+  attribute[4].divisor: differing_shader_sets=25 class=a/c conditional
+  attribute[4].slot: differing_shader_sets=1 class=c
+  attribute[6].divisor: differing_shader_sets=36 class=a/c conditional
+  attribute[6].slot: differing_shader_sets=1 class=c
+  attribute[8].divisor: differing_shader_sets=77 class=a/c conditional
+  attribute[8].dxgi: differing_shader_sets=58 class=c
+  attribute[8].slot: differing_shader_sets=1 class=c
+  attribute[9].divisor: differing_shader_sets=5 class=a/c conditional
+  attribute[9].dxgi: differing_shader_sets=2 class=c
+  attribute[9].enabled: differing_shader_sets=2 class=c
+  blend[0].dst: differing_shader_sets=8 class=c
+  blend[0].dst_alpha: differing_shader_sets=12 class=c
+  blend[0].enable: differing_shader_sets=4 class=c
+  blend[0].op_alpha: differing_shader_sets=9 class=c
+  blend[0].src: differing_shader_sets=4 class=c
+  blend[0].src_alpha: differing_shader_sets=10 class=c
+  blend[0].write_mask: differing_shader_sets=1 class=c
+  blend[1].dst: differing_shader_sets=2 class=a/c conditional
+  blend[1].dst_alpha: differing_shader_sets=2 class=a/c conditional
+  blend[1].enable: differing_shader_sets=2 class=a/c conditional
+  blend[1].src: differing_shader_sets=2 class=a/c conditional
+  blend[1].src_alpha: differing_shader_sets=2 class=a/c conditional
+  blend[1].write_mask: differing_shader_sets=4 class=a/c conditional
+  blend[2].dst: differing_shader_sets=2 class=a/c conditional
+  blend[2].dst_alpha: differing_shader_sets=2 class=a/c conditional
+  blend[2].enable: differing_shader_sets=2 class=a/c conditional
+  blend[2].src: differing_shader_sets=2 class=a/c conditional
+  blend[2].src_alpha: differing_shader_sets=2 class=a/c conditional
+  blend[2].write_mask: differing_shader_sets=4 class=a/c conditional
+  blend[3].dst: differing_shader_sets=2 class=a/c conditional
+  blend[3].dst_alpha: differing_shader_sets=2 class=a/c conditional
+  blend[3].enable: differing_shader_sets=2 class=a/c conditional
+  blend[3].src: differing_shader_sets=2 class=a/c conditional
+  blend[3].src_alpha: differing_shader_sets=2 class=a/c conditional
+  blend[3].write_mask: differing_shader_sets=4 class=a/c conditional
+  blend[4].dst: differing_shader_sets=2 class=a/c conditional
+  blend[4].dst_alpha: differing_shader_sets=2 class=a/c conditional
+  blend[4].enable: differing_shader_sets=2 class=a/c conditional
+  blend[4].src: differing_shader_sets=2 class=a/c conditional
+  blend[4].src_alpha: differing_shader_sets=2 class=a/c conditional
+  blend[4].write_mask: differing_shader_sets=4 class=a/c conditional
+  blend[5].dst: differing_shader_sets=2 class=a/c conditional
+  blend[5].dst_alpha: differing_shader_sets=2 class=a/c conditional
+  blend[5].enable: differing_shader_sets=2 class=a/c conditional
+  blend[5].src: differing_shader_sets=2 class=a/c conditional
+  blend[5].src_alpha: differing_shader_sets=2 class=a/c conditional
+  blend[5].write_mask: differing_shader_sets=4 class=a/c conditional
+  blend[6].dst: differing_shader_sets=2 class=a/c conditional
+  blend[6].dst_alpha: differing_shader_sets=2 class=a/c conditional
+  blend[6].enable: differing_shader_sets=2 class=a/c conditional
+  blend[6].src: differing_shader_sets=2 class=a/c conditional
+  blend[6].src_alpha: differing_shader_sets=2 class=a/c conditional
+  blend[6].write_mask: differing_shader_sets=4 class=a/c conditional
+  blend[7].dst: differing_shader_sets=2 class=a/c conditional
+  blend[7].dst_alpha: differing_shader_sets=2 class=a/c conditional
+  blend[7].enable: differing_shader_sets=2 class=a/c conditional
+  blend[7].src: differing_shader_sets=2 class=a/c conditional
+  blend[7].src_alpha: differing_shader_sets=2 class=a/c conditional
+  blend[7].write_mask: differing_shader_sets=4 class=a/c conditional
+  cull_mode: differing_shader_sets=12 class=c
+  depth_enable: differing_shader_sets=3 class=c
+  depth_func: differing_shader_sets=16 class=a/c conditional
+  depth_write: differing_shader_sets=18 class=a/c conditional
+  dsv_format: differing_shader_sets=1 class=c
+  num_render_targets: differing_shader_sets=3 class=c
+  request: differing_shader_sets=269 class=c
+  rtv[0].format: differing_shader_sets=16 class=c
+  rtv[1].format: differing_shader_sets=3 class=c
+  runtime: differing_shader_sets=3 class=c
+  sources: differing_shader_sets=21 class=c
+  dynamic blend factor/stencil ref/depth bounds values/viewports/scissors: absent from key; b=0
+  runtime: binding metadata + stream-output; sources: exact HLSL + descriptor counts; request: includes shader specialization (retained)
+all-kirby-orig: graphics=779 shader_sets=251 PSOs/set=[(1, 40), (2, 132), (3, 10), (4, 37), (5, 4), (6, 13), (7, 1), (8, 4), (9, 1), (10, 1), (11, 1), (12, 1), (13, 2), (14, 1), (18, 1), (20, 1), (40, 1)] request_a_avoided=406 exact_recipe_unique=765 recipe_a_avoided=355 recipe_b_topology_upper_bound=0 native_unique=765 native_a_avoided=355 native_b_avoided=0 native_final=410
+  attribute[0].divisor: differing_shader_sets=197 class=a/c conditional
+  attribute[0].dxgi: differing_shader_sets=3 class=c
+  attribute[10].divisor: differing_shader_sets=9 class=a/c conditional
+  attribute[10].dxgi: differing_shader_sets=1 class=c
+  attribute[10].enabled: differing_shader_sets=1 class=c
+  attribute[10].offset: differing_shader_sets=2 class=c
+  attribute[10].slot: differing_shader_sets=1 class=c
+  attribute[11].divisor: differing_shader_sets=1 class=a/c conditional
+  attribute[11].dxgi: differing_shader_sets=1 class=c
+  attribute[12].divisor: differing_shader_sets=1 class=a/c conditional
+  attribute[12].dxgi: differing_shader_sets=1 class=c
+  attribute[13].divisor: differing_shader_sets=109 class=a/c conditional
+  attribute[13].offset: differing_shader_sets=1 class=c
+  attribute[1].divisor: differing_shader_sets=136 class=a/c conditional
+  attribute[1].offset: differing_shader_sets=2 class=c
+  attribute[2].divisor: differing_shader_sets=3 class=a/c conditional
+  attribute[2].dxgi: differing_shader_sets=4 class=c
+  attribute[2].enabled: differing_shader_sets=2 class=c
+  attribute[2].offset: differing_shader_sets=3 class=c
+  attribute[2].slot: differing_shader_sets=2 class=c
+  attribute[4].divisor: differing_shader_sets=8 class=a/c conditional
+  attribute[4].dxgi: differing_shader_sets=4 class=c
+  attribute[4].enabled: differing_shader_sets=3 class=c
+  attribute[4].offset: differing_shader_sets=4 class=c
+  attribute[4].slot: differing_shader_sets=3 class=c
+  attribute[6].divisor: differing_shader_sets=98 class=a/c conditional
+  attribute[6].dxgi: differing_shader_sets=24 class=c
+  attribute[6].enabled: differing_shader_sets=23 class=c
+  attribute[6].offset: differing_shader_sets=25 class=c
+  attribute[6].slot: differing_shader_sets=23 class=c
+  attribute[7].divisor: differing_shader_sets=15 class=a/c conditional
+  attribute[8].divisor: differing_shader_sets=12 class=a/c conditional
+  attribute[9].divisor: differing_shader_sets=140 class=a/c conditional
+  attribute[9].dxgi: differing_shader_sets=24 class=c
+  attribute[9].offset: differing_shader_sets=26 class=c
+  back.func: differing_shader_sets=20 class=a/c conditional
+  back.pass: differing_shader_sets=31 class=a/c conditional
+  blend[0].dst: differing_shader_sets=8 class=c
+  blend[0].dst_alpha: differing_shader_sets=9 class=c
+  blend[0].enable: differing_shader_sets=7 class=c
+  blend[0].src: differing_shader_sets=7 class=c
+  blend[0].src_alpha: differing_shader_sets=9 class=c
+  cull_mode: differing_shader_sets=7 class=c
+  depth_func: differing_shader_sets=30 class=a/c conditional
+  depth_write: differing_shader_sets=1 class=a/c conditional
+  dsv_format: differing_shader_sets=7 class=c
+  front.func: differing_shader_sets=20 class=a/c conditional
+  front.pass: differing_shader_sets=31 class=a/c conditional
+  request: differing_shader_sets=211 class=c
+  rtv[0].format: differing_shader_sets=10 class=c
+  runtime: differing_shader_sets=11 class=c
+  sources: differing_shader_sets=63 class=c
+  stencil_back_read_mask: differing_shader_sets=2 class=a/c conditional
+  stencil_back_write_mask: differing_shader_sets=3 class=a/c conditional
+  stencil_enable: differing_shader_sets=1 class=c
+  stencil_read_mask: differing_shader_sets=2 class=a/c conditional
+  stencil_write_mask: differing_shader_sets=3 class=a/c conditional
+  dynamic blend factor/stencil ref/depth bounds values/viewports/scissors: absent from key; b=0
+  runtime: binding metadata + stream-output; sources: exact HLSL + descriptor counts; request: includes shader specialization (retained)
+all-bf-orig: graphics=999 shader_sets=405 PSOs/set=[(1, 254), (2, 56), (3, 17), (4, 34), (5, 6), (6, 9), (8, 11), (9, 2), (10, 2), (12, 6), (16, 1), (17, 2), (18, 1), (22, 1), (23, 1), (24, 1), (27, 1)] request_a_avoided=167 exact_recipe_unique=967 recipe_a_avoided=210 recipe_b_topology_upper_bound=0 native_unique=967 native_a_avoided=210 native_b_avoided=0 native_final=757
+  attribute[0].divisor: differing_shader_sets=71 class=a/c conditional
+  attribute[0].dxgi: differing_shader_sets=1 class=c
+  attribute[0].offset: differing_shader_sets=1 class=c
+  attribute[10].divisor: differing_shader_sets=31 class=a/c conditional
+  attribute[10].dxgi: differing_shader_sets=24 class=c
+  attribute[10].offset: differing_shader_sets=23 class=c
+  attribute[11].divisor: differing_shader_sets=2 class=a/c conditional
+  attribute[11].dxgi: differing_shader_sets=3 class=c
+  attribute[11].offset: differing_shader_sets=2 class=c
+  attribute[12].divisor: differing_shader_sets=11 class=a/c conditional
+  attribute[12].dxgi: differing_shader_sets=7 class=c
+  attribute[12].enabled: differing_shader_sets=1 class=c
+  attribute[12].offset: differing_shader_sets=7 class=c
+  attribute[12].slot: differing_shader_sets=1 class=c
+  attribute[13].divisor: differing_shader_sets=2 class=a/c conditional
+  attribute[13].offset: differing_shader_sets=1 class=c
+  attribute[14].divisor: differing_shader_sets=2 class=a/c conditional
+  attribute[14].offset: differing_shader_sets=1 class=c
+  attribute[15].dxgi: differing_shader_sets=2 class=c
+  attribute[15].offset: differing_shader_sets=1 class=c
+  attribute[1].divisor: differing_shader_sets=50 class=a/c conditional
+  attribute[1].dxgi: differing_shader_sets=2 class=c
+  attribute[1].offset: differing_shader_sets=38 class=c
+  attribute[2].divisor: differing_shader_sets=23 class=a/c conditional
+  attribute[2].offset: differing_shader_sets=20 class=c
+  attribute[3].divisor: differing_shader_sets=35 class=a/c conditional
+  attribute[3].offset: differing_shader_sets=25 class=c
+  attribute[4].divisor: differing_shader_sets=46 class=a/c conditional
+  attribute[4].dxgi: differing_shader_sets=37 class=c
+  attribute[4].offset: differing_shader_sets=36 class=c
+  attribute[5].divisor: differing_shader_sets=3 class=a/c conditional
+  attribute[5].dxgi: differing_shader_sets=1 class=c
+  attribute[5].offset: differing_shader_sets=1 class=c
+  attribute[6].divisor: differing_shader_sets=46 class=a/c conditional
+  attribute[6].dxgi: differing_shader_sets=26 class=c
+  attribute[6].enabled: differing_shader_sets=2 class=c
+  attribute[6].offset: differing_shader_sets=39 class=c
+  attribute[6].slot: differing_shader_sets=2 class=c
+  attribute[7].divisor: differing_shader_sets=26 class=a/c conditional
+  attribute[7].dxgi: differing_shader_sets=1 class=c
+  attribute[7].enabled: differing_shader_sets=1 class=c
+  attribute[7].offset: differing_shader_sets=18 class=c
+  attribute[7].slot: differing_shader_sets=1 class=c
+  attribute[8].divisor: differing_shader_sets=25 class=a/c conditional
+  attribute[8].dxgi: differing_shader_sets=18 class=c
+  attribute[8].offset: differing_shader_sets=18 class=c
+  attribute[9].divisor: differing_shader_sets=4 class=a/c conditional
+  attribute[9].dxgi: differing_shader_sets=3 class=c
+  attribute[9].offset: differing_shader_sets=3 class=c
+  back.func: differing_shader_sets=28 class=a/c conditional
+  back.pass: differing_shader_sets=29 class=a/c conditional
+  blend[0].dst: differing_shader_sets=6 class=a/c conditional
+  blend[0].dst_alpha: differing_shader_sets=9 class=a/c conditional
+  blend[0].enable: differing_shader_sets=8 class=a/c conditional
+  blend[0].op_alpha: differing_shader_sets=2 class=c
+  blend[0].src: differing_shader_sets=4 class=a/c conditional
+  blend[0].src_alpha: differing_shader_sets=13 class=a/c conditional
+  blend[0].write_mask: differing_shader_sets=2 class=c
+  blend[4].write_mask: differing_shader_sets=9 class=a/c conditional
+  blend[5].write_mask: differing_shader_sets=9 class=a/c conditional
+  blend[6].write_mask: differing_shader_sets=9 class=a/c conditional
+  blend[7].write_mask: differing_shader_sets=9 class=a/c conditional
+  cull_mode: differing_shader_sets=5 class=c
+  depth_bias: differing_shader_sets=10 class=c
+  depth_clip: differing_shader_sets=11 class=c
+  depth_func: differing_shader_sets=20 class=a/c conditional
+  depth_write: differing_shader_sets=10 class=a/c conditional
+  dsv_format: differing_shader_sets=12 class=c
+  front.func: differing_shader_sets=28 class=a/c conditional
+  front.pass: differing_shader_sets=29 class=a/c conditional
+  num_render_targets: differing_shader_sets=11 class=c
+  request: differing_shader_sets=137 class=c
+  rtv[0].format: differing_shader_sets=14 class=c
+  rtv[1].format: differing_shader_sets=11 class=c
+  rtv[2].format: differing_shader_sets=11 class=c
+  rtv[3].format: differing_shader_sets=11 class=c
+  runtime: differing_shader_sets=11 class=c
+  slope_scaled_bias_bits: differing_shader_sets=5 class=c
+  sources: differing_shader_sets=113 class=c
+  stencil_enable: differing_shader_sets=9 class=c
+  dynamic blend factor/stencil ref/depth bounds values/viewports/scissors: absent from key; b=0
+  runtime: binding metadata + stream-output; sources: exact HLSL + descriptor counts; request: includes shader specialization (retained)
+all-dbsz-orig: graphics=495 shader_sets=181 PSOs/set=[(1, 85), (2, 37), (3, 12), (4, 30), (5, 5), (6, 3), (8, 2), (9, 2), (11, 1), (12, 1), (16, 1), (28, 1), (36, 1)] request_a_avoided=173 exact_recipe_unique=410 recipe_a_avoided=122 recipe_b_topology_upper_bound=0 native_unique=410 native_a_avoided=122 native_b_avoided=0 native_final=288
+  attribute[0].divisor: differing_shader_sets=18 class=a/c conditional
+  attribute[10].offset: differing_shader_sets=8 class=c
+  attribute[13].divisor: differing_shader_sets=2 class=a/c conditional
+  attribute[14].offset: differing_shader_sets=9 class=c
+  attribute[15].offset: differing_shader_sets=9 class=c
+  attribute[1].divisor: differing_shader_sets=38 class=a/c conditional
+  attribute[2].divisor: differing_shader_sets=36 class=a/c conditional
+  attribute[3].divisor: differing_shader_sets=6 class=a/c conditional
+  attribute[4].divisor: differing_shader_sets=6 class=a/c conditional
+  attribute[4].offset: differing_shader_sets=9 class=c
+  attribute[5].divisor: differing_shader_sets=11 class=a/c conditional
+  attribute[5].dxgi: differing_shader_sets=3 class=c
+  attribute[6].divisor: differing_shader_sets=5 class=a/c conditional
+  attribute[6].offset: differing_shader_sets=4 class=c
+  back.pass: differing_shader_sets=37 class=a/c conditional
+  blend[0].src: differing_shader_sets=1 class=c
+  blend[0].write_mask: differing_shader_sets=4 class=a/c conditional
+  cull_mode: differing_shader_sets=2 class=c
+  depth_write: differing_shader_sets=1 class=c
+  front.pass: differing_shader_sets=37 class=a/c conditional
+  num_render_targets: differing_shader_sets=1 class=c
+  request: differing_shader_sets=70 class=c
+  rtv[0].format: differing_shader_sets=2 class=c
+  rtv[1].format: differing_shader_sets=1 class=c
+  runtime: differing_shader_sets=1 class=c
+  sources: differing_shader_sets=64 class=c
+  stencil_enable: differing_shader_sets=4 class=c
+  dynamic blend factor/stencil ref/depth bounds values/viewports/scissors: absent from key; b=0
+  runtime: binding metadata + stream-output; sources: exact HLSL + descriptor counts; request: includes shader specialization (retained)
+all-la-orig: graphics=26 shader_sets=21 PSOs/set=[(1, 17), (2, 3), (3, 1)] request_a_avoided=0 exact_recipe_unique=26 recipe_a_avoided=0 recipe_b_topology_upper_bound=0 native_unique=26 native_a_avoided=0 native_b_avoided=0 native_final=26
+  blend[0].dst: differing_shader_sets=1 class=c
+  blend[0].dst_alpha: differing_shader_sets=1 class=c
+  blend[0].src: differing_shader_sets=1 class=c
+  blend[0].src_alpha: differing_shader_sets=1 class=c
+  depth_enable: differing_shader_sets=3 class=c
+  dsv_format: differing_shader_sets=3 class=c
+  request: differing_shader_sets=4 class=c
+  rtv[0].format: differing_shader_sets=1 class=c
+  dynamic blend factor/stencil ref/depth bounds values/viewports/scissors: absent from key; b=0
+  runtime: binding metadata + stream-output; sources: exact HLSL + descriptor counts; request: includes shader specialization (retained)

@@ -86,7 +86,9 @@ class D3D12RootCbv(unittest.TestCase):
         self.assertIn("Append32(bytes, UseRootCbvs(cbv_count) ? 1u : 0u)", pipelines)
         self.assertIn("root_cbvs != UseRootCbvs(cbv_count)", pipelines)
         self.assertIn("StageBindingAbi = 10", pipelines)
-        self.assertIn("QueryIdentity(context.Device(), {4, 2, 6})", pipelines)
+        self.assertIn(
+            "QueryIdentity(context.Device(), {4, 2, PsoNormalizeEnabled() ? 7u : 6u})", pipelines
+        )
         self.assertIn("FormatVersion = 3", source("d3d12_disk_pipeline_cache.cpp"))
         self.assertIn("Pso::HashBytes(recipe.data(), recipe.size(), request)", pipelines)
 

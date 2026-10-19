@@ -44,6 +44,9 @@ struct DiskPipelineRecord {
     // Packed guest request identity and pointer-free draw/dispatch binding metadata.
     DiskBytes request_key{};
     DiskBytes runtime_data{};
+    std::uint64_t legacy_request_hash{}; // Request identity before schema-6 normalization.
+    bool legacy{};    // Transient: schema-6 recipe normalized on read, rewritten after prewarm.
+    bool prewarmed{}; // Replay must not count as foreground use.
 };
 
 // Std-only, little-endian, bounded, checksummed format. A miss includes stale,
@@ -103,6 +106,9 @@ public:
     std::optional<DiskBytes> FindDxil(std::uint64_t hlsl_hash);
     bool StoreDxil(std::uint64_t hlsl_hash, std::span<const std::uint8_t> validated_dxil);
     bool RememberPipeline(const DiskPipelineRecord& record);
+    bool DiscardLegacyDuplicate(const DiskPipelineRecord& record);
+    // Called on first foreground lookup, including a prewarmed hit; no disk I/O.
+    void RememberFirstUse(std::span<const std::uint8_t> request);
     void StartWarmup(BuildCallback build, ProgressCallback progress,
                      std::stop_token stop_loading = {});
     // Owner thread: join without cancelling; all progress callbacks finish before return.

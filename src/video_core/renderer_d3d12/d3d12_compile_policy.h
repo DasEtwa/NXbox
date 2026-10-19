@@ -11,6 +11,32 @@
 #include <string_view>
 
 namespace D3D12 {
+inline bool PsoNormalizeEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("NXBOX_D3D12_PSO_NORMALIZE");
+        return !value || std::string_view{value} != "0";
+    }();
+    return enabled;
+}
+inline bool PsoFirstUseOrderEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("NXBOX_D3D12_PSO_FIRST_USE_ORDER");
+        return !value || std::string_view{value} != "0";
+    }();
+    return enabled;
+}
+constexpr unsigned ParseDxcOptimization(std::string_view value) {
+    return value.size() == 1 && value[0] >= '0' && value[0] <= '3'
+               ? static_cast<unsigned>(value[0] - '0')
+               : 3;
+}
+inline unsigned DxcOptimization() {
+    static const unsigned level = [] {
+        const char* value = std::getenv("NXBOX_D3D12_DXC_OPT");
+        return ParseDxcOptimization(value ? value : "");
+    }();
+    return level;
+}
 // Values match the Windows thread priority constants.
 constexpr int ParsePsoWorkerPriority(std::string_view value) {
     return value == "lowest" ? -2 : value == "normal" ? 0 : -1;
