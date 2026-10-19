@@ -568,6 +568,20 @@ part. Frames 3000, 4000 and 5000 are bit-identical to
 the N = 0 frames within each of the two variants the scene already produces without the knob (5041
 pixels differ between them at frame 5000). The console result is still required.
 
+## Asynchronous ASTC decode on D3D12 (18/10/2026)
+
+The D3D12 renderer decodes ASTC on the CPU (the GPU decoder corrupts small textures). Inline, that
+decode ran on the GPU thread during a texture upload. Since 1.0.5 the default on D3D12 is
+`accelerate_astc=2`: the texture decode worker converts it and the upload lands at a later frame
+tick, so the texture samples empty for those frames. `accelerate_astc=0` in `eden_settings.txt` or
+`NXBOX_ASTC_SYNC=1` in `nxbox_env.txt` restores the inline decode. The OpenGL path keeps `0`.
+
+Series X result (Super Mario Bros. Wonder, package 0.3.747, World 1-1 with a warm cache, 215 s per
+run, off/on/off/on): upload time on the GPU thread fell from 7.5 s to 1.2 s per run (-84%). The
+level-load hitch fell from about 1.6 s to 0.8-0.9 s, the later bursts from about 0.65 s to
+0.06-0.17 s, and no window reached 1 s. Median fps (27.0 against 26.8), p10, peak memory and the 96
+screenshots compared were the same.
+
 ## Persona 5 Royal is playable on Xbox Series X (28/09/2026)
 
 Measured on the console with remote input:

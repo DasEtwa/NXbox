@@ -58,6 +58,16 @@ class AsyncAstcTests(unittest.TestCase):
         self.assertLess(self.base.index("std::vector<std::unique_ptr<AsyncDecodeContext>> async_decodes;"),
                         self.base.index("Common::ThreadWorker texture_decode_worker"))
 
+    def test_d3d12_defaults_to_the_worker_decode_before_the_settings_file(self):
+        session = (ROOT / "src/eden_uwp/game_session.cpp").read_text()
+        default = session.index("Settings::values.accelerate_astc.SetValue(window.UsesNativeD3D12()")
+        rule = session[default : session.index(";", default)]
+        self.assertIn("? Settings::AstcDecodeMode::CpuAsynchronous", rule)
+        self.assertIn(": Settings::AstcDecodeMode::Cpu)", rule)
+        # eden_settings.txt and NXBOX_ASTC_SYNC=1 still override the default.
+        self.assertLess(default, session.index("ApplyEdenSettingsFile();", default))
+        self.assertLess(default, session.index("if (NxboxUpload::ForceAstcSync())", default))
+
 
 if __name__ == "__main__":
     unittest.main()

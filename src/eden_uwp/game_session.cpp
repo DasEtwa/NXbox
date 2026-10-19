@@ -802,7 +802,12 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
     // Mesa d3d12: the GPU ASTC decoder leaves garbage in the lower mip levels (sparkling dots and
     // moire on every distant texture in P5R), and GPU video decoding (d3d11va) freezes the intro
     // movie on a frame. Decode both on the CPU, which renders cleanly on the Xbox.
-    Settings::values.accelerate_astc.SetValue(Settings::AstcDecodeMode::Cpu);
+    // On D3D12 the ASTC decode runs on the texture worker instead of the GPU thread: on the
+    // Series X it cut the upload stall in Wonder by 84% and removed the 1 s level-load hitch, with
+    // the same fps and image. NXBOX_ASTC_SYNC=1 restores the inline decode.
+    Settings::values.accelerate_astc.SetValue(window.UsesNativeD3D12()
+                                                  ? Settings::AstcDecodeMode::CpuAsynchronous
+                                                  : Settings::AstcDecodeMode::Cpu);
     Settings::values.nvdec_emulation.SetValue(Settings::NvdecEmulation::Cpu);
     Settings::values.resolution_setup.SetValue(Settings::ResolutionSetup::Res1X);
     // The firmware error applet never draws on the Xbox: P5R opens it from the network prompt,
