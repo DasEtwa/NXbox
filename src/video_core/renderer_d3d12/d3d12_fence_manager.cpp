@@ -23,6 +23,7 @@ bool InnerFence::IsSignaled() const {
 }
 void InnerFence::Wait() {
     if (!is_stubbed) {
+        const Common::GpuProfile::WaitScope origin{Common::GpuProfile::Wait::GuestFenceCompletion};
         try {
             context.WaitSubmitted(tick);
         } catch (const std::exception& error) {

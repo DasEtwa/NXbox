@@ -74,6 +74,7 @@ bool DmaPusher::Step() {
         // Submit deferred host fences before waiting for the DMA memory-sync callback.
         // The completion thread cannot submit the recording thread's command list.
         rasterizer->FlushDeferredFences();
+        const Common::GpuProfile::WaitScope origin{Common::GpuProfile::Wait::DmaMemorySync};
         const Common::GpuProfile::PhaseScope wait{Common::GpuProfile::Phase::SyncWait};
         std::unique_lock lk(sync_mutex);
         sync_cv.wait(lk, [this]() { return synced; });
