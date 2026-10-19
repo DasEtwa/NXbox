@@ -171,6 +171,7 @@ Estimates are the maintainer's guess, not a promise; they move as bugs are found
 | Kirby and the Forgotten Land | **In-game** | NXbox 1.0.3: reaches gameplay; 60 FPS at first, about 16 FPS in the heavier areas | — |
 | Hollow Knight: Silksong | **In-game** | Opens on the first try, runs the profile screen and intro at about 60 FPS and reaches gameplay at about 44 FPS | — |
 | Super Mario Odyssey | **In-game** | Opening cutscene at about 58 FPS; past the camera tutorial, Cap Kingdom gameplay runs at about 22 FPS | — |
+| Super Mario Bros. Wonder | **In-game** | NXbox 1.0.4: gets through the Bowser cutscene, which ran out of memory before, and keeps playing; gameplay runs at 30 FPS (the game targets 60), with a few-second freeze when many new effects compile at once | — |
 | Pokémon Legends: Arceus | **In-game** | The opening draws correctly at 30 FPS; the name keyboard works (Plus confirms) and the game reaches the Hisui beach at about 27 FPS | — |
 | Pokémon Scarlet | **Boots** | NXbox 1.0.3: runs at 30 FPS but the screen stays gray | — |
 | Bayonetta | Not tested | Planned after Breath of the Wild | — |
