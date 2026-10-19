@@ -3,6 +3,8 @@
 #pragma once
 
 #include <algorithm>
+#include <cstdint>
+#include <optional>
 #include <regex>
 #include <string>
 #include <string_view>
@@ -10,6 +12,14 @@
 #include <vector>
 
 namespace Shader::Backend::HLSL {
+// A cbuffer is an array of uint4s. Preserve the helper for unaligned, dynamic,
+// undeclared and out-of-range accesses, including unsigned offset wraparound.
+inline constexpr bool IsDirectCbufferAddress(std::optional<std::uint32_t> binding,
+                                             std::optional<std::uint32_t> offset, bool declared,
+                                             std::uint32_t vectors = 4096) {
+    return binding && offset && declared && (*offset & 3u) == 0 && (*offset / 16u) < vectors;
+}
+
 // This scans the emitter's regular top-level declarations, not arbitrary user HLSL.
 // Keep all overloads of a reachable name: resolving HLSL overloads belongs to the compiler.
 inline std::string StripUncalledHelpers(std::string_view source) {

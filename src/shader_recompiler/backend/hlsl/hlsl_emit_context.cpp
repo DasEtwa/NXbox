@@ -5,6 +5,7 @@
 #include "shader_recompiler/backend/bindings.h"
 #include "shader_recompiler/backend/hlsl/hlsl_emit_context.h"
 #include "shader_recompiler/backend/hlsl/hlsl_helpers.h"
+#include "shader_recompiler/backend/hlsl/hlsl_source.h"
 #include "shader_recompiler/backend/hlsl/hlsl_vertex_semantic.h"
 #include "shader_recompiler/frontend/ir/program.h"
 #include "shader_recompiler/profile.h"
@@ -139,13 +140,14 @@ EmitContext::EmitContext(IR::Program& program, Bindings& bindings, const Profile
                     const auto alignment =
                         std::max(static_cast<u32>(profile.min_ssbo_alignment), 1u);
                     header += fmt::format(
-                        "{{ uint64_t base = packUint2x32(uint2(nx_cbuf_load({0}u, {1}u) & {2}u, "
-                        "nx_cbuf_load({0}u, {3}u))); uint64_t size = "
-                        "packUint2x32(uint2(nx_cbuf_load({0}u, {4}u), nx_cbuf_load({0}u, {5}u))); "
+                        "{{ uint64_t base = packUint2x32(uint2({} & {}u, {})); uint64_t size = "
+                        "packUint2x32(uint2({}, {})); "
                         "if (address >= base && address - base <= size && size - (address - base) "
-                        ">= {6}u) {{ ",
-                        desc.cbuf_index, desc.cbuf_offset, ~(alignment - 1u), desc.cbuf_offset + 4,
-                        desc.cbuf_offset + 8, desc.cbuf_offset + 12, bits / 8);
+                        ">= {}u) {{ ",
+                        CbufferLoad(desc.cbuf_index, desc.cbuf_offset), ~(alignment - 1u),
+                        CbufferLoad(desc.cbuf_index, desc.cbuf_offset + 4),
+                        CbufferLoad(desc.cbuf_index, desc.cbuf_offset + 8),
+                        CbufferLoad(desc.cbuf_index, desc.cbuf_offset + 12), bits / 8);
                     if (write)
                         header += fmt::format(
                             "ssbo{}.Store{}(uint(address - base), value); return; }} }}\n", i,
@@ -394,16 +396,35 @@ std::string EmitContext::Resource(const IR::Value& index, u32 descriptor, bool i
                            ? fmt::format("[NonUniformResourceIndex({})]", var_alloc.Consume(index))
                            : "");
 }
+std::string EmitContext::CbufferLoad(u32 binding, u32 offset) {
+    return CbufferLoad(IR::Value{binding}, IR::Value{offset});
+}
+std::string EmitContext::CbufferLoad(const IR::Value& binding, const IR::Value& offset, u32 delta) {
+    const std::optional<u32> index =
+        binding.IsImmediate() ? std::optional{binding.U32()} : std::nullopt;
+    const std::optional<u32> bytes =
+        offset.IsImmediate() ? std::optional{offset.U32() + delta} : std::nullopt;
+    const bool declared =
+        index && std::any_of(info.constant_buffer_descriptors.begin(),
+                             info.constant_buffer_descriptors.end(),
+                             [&](const auto& desc) { return desc.index == *index; });
+    if (IsDirectCbufferAddress(index, bytes, declared))
+        return fmt::format("cbuf{}[{}][{}]", *index, *bytes >> 4, (*bytes >> 2) & 3u);
+    const auto byte_offset = delta ? fmt::format("{} + {}u", var_alloc.Consume(offset), delta)
+                                   : var_alloc.Consume(offset);
+    return fmt::format("nx_cbuf_load({}, {})", var_alloc.Consume(binding), byte_offset);
+}
 void EmitContext::GlobalMemoryAccess(size_t index, std::string_view address, u32 bytes) {
     const auto& desc = info.storage_buffers_descriptors.at(index);
     const auto alignment = std::max(static_cast<u32>(profile.min_ssbo_alignment), 1u);
-    Add("{{ uint64_t nx_global_base = packUint2x32(uint2(nx_cbuf_load({0}u, {1}u) & {2}u, "
-        "nx_cbuf_load({0}u, {3}u))); uint64_t nx_global_size = "
-        "packUint2x32(uint2(nx_cbuf_load({0}u, {4}u), nx_cbuf_load({0}u, {5}u))); "
-        "if ({6} >= nx_global_base && {6} - nx_global_base <= nx_global_size && "
-        "nx_global_size - ({6} - nx_global_base) >= {7}u) {{",
-        desc.cbuf_index, desc.cbuf_offset, ~(alignment - 1u), desc.cbuf_offset + 4,
-        desc.cbuf_offset + 8, desc.cbuf_offset + 12, address, bytes);
+    Add("{{ uint64_t nx_global_base = packUint2x32(uint2({0} & {1}u, {2})); "
+        "uint64_t nx_global_size = packUint2x32(uint2({3}, {4})); "
+        "if ({5} >= nx_global_base && {5} - nx_global_base <= nx_global_size && "
+        "nx_global_size - ({5} - nx_global_base) >= {6}u) {{",
+        CbufferLoad(desc.cbuf_index, desc.cbuf_offset), ~(alignment - 1u),
+        CbufferLoad(desc.cbuf_index, desc.cbuf_offset + 4),
+        CbufferLoad(desc.cbuf_index, desc.cbuf_offset + 8),
+        CbufferLoad(desc.cbuf_index, desc.cbuf_offset + 12), address, bytes);
 }
 std::string EmitContext::Sampler(const IR::Value& index, u32 descriptor) {
     const auto def = textures.at(descriptor);

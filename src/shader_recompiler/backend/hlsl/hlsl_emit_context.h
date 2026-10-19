@@ -138,6 +138,8 @@ public:
     bool uses_shared_wide{};
     std::set<u32> goto_variables;
     std::unordered_set<IR::Inst*> handled_pseudo;
+    std::string CbufferLoad(const IR::Value& binding, const IR::Value& offset, u32 delta = 0);
+    std::string CbufferLoad(u32 binding, u32 offset);
     std::string Attribute(IR::Attribute attribute, bool output);
     std::string Resource(const IR::Value& index, u32 descriptor, bool image, bool buffer = false);
     void GlobalMemoryAccess(size_t index, std::string_view address, u32 bytes);

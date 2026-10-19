@@ -4,6 +4,18 @@
 #include "shader_recompiler/backend/hlsl/hlsl_source.h"
 using namespace Shader::Backend::HLSL;
 int main() {
+    static_assert(IsDirectCbufferAddress(0u, 0u, true));
+    static_assert(IsDirectCbufferAddress(17u, 65532u, true));
+    static_assert(!IsDirectCbufferAddress(0u, 65536u, true));
+    static_assert(!IsDirectCbufferAddress(0u, 1u, true));
+    static_assert(!IsDirectCbufferAddress(0u, 2u, true));
+    static_assert(!IsDirectCbufferAddress(0u, 3u, true));
+    static_assert(!IsDirectCbufferAddress(0u, 0u, false));
+    static_assert(!IsDirectCbufferAddress(std::nullopt, 0u, true));
+    static_assert(!IsDirectCbufferAddress(0u, std::nullopt, true));
+    static_assert(IsDirectCbufferAddress(0u, 28u, true, 2));
+    static_assert(!IsDirectCbufferAddress(0u, 32u, true, 2));
+    static_assert(!IsDirectCbufferAddress(0u, 0u, true, 0));
     const std::string declarations = "cbuffer C { uint4 data[4]; };\nstruct Input { float x; };\n";
     const std::string helpers = "uint leaf(uint x) { return x; }\n"
                                 "float leaf(float x) { return x; }\n"
