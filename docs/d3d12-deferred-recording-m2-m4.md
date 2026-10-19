@@ -5,7 +5,7 @@ lifetime audit remain in `d3d12-deferred-recording-m1.md`.
 
 ## M2 implementation
 
-`NXBOX_D3D12_DEFERRED_RECORDING` is read at device creation, defaults to 0, and is
+`NXBOX_D3D12_DEFERRED_RECORDING` is read at device creation, defaults to 1 (set it to 0 to record inline), and is
 logged once with `chunk_size=262144 chunk_count=8`. No stream, descriptor snapshot
 heaps, or worker is created in mode 0. `CommandFacade` methods are forced inline;
 the immediate path checks its latched stream pointer once and forwards the original
