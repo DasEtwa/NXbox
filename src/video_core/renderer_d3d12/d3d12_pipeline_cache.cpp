@@ -1273,86 +1273,161 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(const Pso::Framebuffer
     if (!maxwell3d)
         return nullptr;
     std::scoped_lock lock{pipeline_mutex};
-    if (const auto* reason = UnsupportedState(
-            maxwell3d->regs, static_cast<u32>(maxwell3d->draw_manager.draw_state.topology))) {
-        ReportUnsupported(reason);
-        return nullptr;
-    }
     SyncGuestHost();
     if (!RefreshStages(guest_hashes))
         return nullptr;
-    Pso::GraphicsPsoState state;
-    FillGraphicsState(*maxwell3d, state);
-    Pso::ApplyFramebufferFormats(state, formats);
-    if (!Pso::DsvHasStencil(state.dsv_format))
-        state.stencil_enable = 0;
-    if (state.stencil_enable & 2) {
-        const auto& options = QueryFeature(D3D12_FEATURE_D3D12_OPTIONS14, graphics_options14);
-        if (FAILED(options.result) ||
-            !options.data.IndependentFrontAndBackStencilRefMaskSupported) {
-            ReportUnsupported("stencil_back_ref/stencil_back_mask/stencil_back_func_mask differ; "
-                              "host lacks IndependentFrontAndBackStencilRefMaskSupported");
-            return nullptr;
-        }
-    }
-    if (state.depth_bounds) {
-        const auto& options = QueryFeature(D3D12_FEATURE_D3D12_OPTIONS2, graphics_options2);
-        if (FAILED(options.result) || !options.data.DepthBoundsTestSupported) {
-            ReportUnsupported("depth_bounds_enable/depth_bounds unsupported by host device");
-            return nullptr;
-        }
-    }
-    const u32 constant_factors = Pso::ConstantBlendFactors(state);
-    if (constant_factors & 2) {
-        const auto& options = QueryFeature(D3D12_FEATURE_D3D12_OPTIONS13, graphics_options13);
-        if (FAILED(options.result) || !options.data.AlphaBlendFactorSupported) {
-            if (constant_factors & 1) {
-                ReportUnsupported(
-                    "blend mixes constant-color and constant-alpha RGB factors; host lacks "
-                    "AlphaBlendFactorSupported and needs shader blend emulation");
-                return nullptr;
-            }
-            // The draw path replicates blend_color.a into RGB. No shader change
-            // is needed when RGB never consumes the original constant color.
-            Pso::EmulateConstantAlpha(state);
-        }
-    }
-    if (state.logic_enable || state.conservative_raster) {
-        const auto& options = QueryFeature(D3D12_FEATURE_D3D12_OPTIONS, graphics_options);
-        if (FAILED(options.result) || (state.logic_enable && !options.data.OutputMergerLogicOp) ||
-            (state.conservative_raster &&
-             options.data.ConservativeRasterizationTier ==
-                 D3D12_CONSERVATIVE_RASTERIZATION_TIER_NOT_SUPPORTED)) {
-            ReportUnsupported("logic_op/conservative_raster_enable unsupported by host device");
-            return nullptr;
-        }
-    }
-    if (state.logic_enable) {
-        std::optional<u8> mask;
-        for (size_t i = 0; i < formats.colors.size(); ++i) {
-            if (!formats.colors[i])
-                continue;
-            if (mask && *mask != state.blend[i].write_mask) {
-                ReportUnsupported(
-                    "logic_op with independent color_mask requires programmable blend emulation");
-                return nullptr;
-            }
-            mask = state.blend[i].write_mask;
-            const auto& support = QueryFormatSupport(static_cast<DXGI_FORMAT>(formats.colors[i]));
-            if (FAILED(support.result) ||
-                !(support.data.Support2 & D3D12_FORMAT_SUPPORT2_OUTPUT_MERGER_LOGIC_OP)) {
-                ReportUnsupported("logic_op RTV format lacks OUTPUT_MERGER_LOGIC_OP; requires "
-                                  "programmable blend emulation");
-                return nullptr;
-            }
-        }
-        if (mask)
-            state.blend[0].write_mask = *mask;
-    }
-    const auto topology = Pso::PrimitiveTopology(
-        static_cast<u32>(maxwell3d->draw_manager.draw_state.topology), state.patch_vertices);
-    GraphicsPipelineKey request{guest_hashes, state};
     const auto& regs = maxwell3d->regs;
+    const GraphicsStateInputs inputs{
+        context.GraphicsStateTracker().Update(*maxwell3d),
+        guest_hashes,
+        formats,
+        static_cast<u32>(maxwell3d->draw_manager.draw_state.topology),
+        regs.zeta_enable,
+        is_indexed,
+        {regs.pipelines[2].enable != 0, regs.pipelines[3].enable != 0}};
+    Pso::GraphicsPsoState state;
+    Pso::TopologyInfo topology{};
+    GraphicsPipelineKey request{};
+    const bool reuse = StateFastpathEnabled() && graphics_state_inputs.Matches(inputs);
+    const auto compute_request = [&]() -> bool {
+        if (const auto* reason = UnsupportedState(
+                maxwell3d->regs, static_cast<u32>(maxwell3d->draw_manager.draw_state.topology))) {
+            ReportUnsupported(reason);
+            return false;
+        }
+        FillGraphicsState(*maxwell3d, state);
+        Pso::ApplyFramebufferFormats(state, formats);
+        if (!Pso::DsvHasStencil(state.dsv_format))
+            state.stencil_enable = 0;
+        if (state.stencil_enable & 2) {
+            const auto& options = QueryFeature(D3D12_FEATURE_D3D12_OPTIONS14, graphics_options14);
+            if (FAILED(options.result) ||
+                !options.data.IndependentFrontAndBackStencilRefMaskSupported) {
+                ReportUnsupported(
+                    "stencil_back_ref/stencil_back_mask/stencil_back_func_mask differ; "
+                    "host lacks IndependentFrontAndBackStencilRefMaskSupported");
+                return false;
+            }
+        }
+        if (state.depth_bounds) {
+            const auto& options = QueryFeature(D3D12_FEATURE_D3D12_OPTIONS2, graphics_options2);
+            if (FAILED(options.result) || !options.data.DepthBoundsTestSupported) {
+                ReportUnsupported("depth_bounds_enable/depth_bounds unsupported by host device");
+                return false;
+            }
+        }
+        const u32 constant_factors = Pso::ConstantBlendFactors(state);
+        if (constant_factors & 2) {
+            const auto& options = QueryFeature(D3D12_FEATURE_D3D12_OPTIONS13, graphics_options13);
+            if (FAILED(options.result) || !options.data.AlphaBlendFactorSupported) {
+                if (constant_factors & 1) {
+                    ReportUnsupported(
+                        "blend mixes constant-color and constant-alpha RGB factors; host lacks "
+                        "AlphaBlendFactorSupported and needs shader blend emulation");
+                    return false;
+                }
+                // The draw path replicates blend_color.a into RGB. No shader change
+                // is needed when RGB never consumes the original constant color.
+                Pso::EmulateConstantAlpha(state);
+            }
+        }
+        if (state.logic_enable || state.conservative_raster) {
+            const auto& options = QueryFeature(D3D12_FEATURE_D3D12_OPTIONS, graphics_options);
+            if (FAILED(options.result) ||
+                (state.logic_enable && !options.data.OutputMergerLogicOp) ||
+                (state.conservative_raster &&
+                 options.data.ConservativeRasterizationTier ==
+                     D3D12_CONSERVATIVE_RASTERIZATION_TIER_NOT_SUPPORTED)) {
+                ReportUnsupported("logic_op/conservative_raster_enable unsupported by host device");
+                return false;
+            }
+        }
+        if (state.logic_enable) {
+            std::optional<u8> mask;
+            for (size_t i = 0; i < formats.colors.size(); ++i) {
+                if (!formats.colors[i])
+                    continue;
+                if (mask && *mask != state.blend[i].write_mask) {
+                    ReportUnsupported("logic_op with independent color_mask requires programmable "
+                                      "blend emulation");
+                    return false;
+                }
+                mask = state.blend[i].write_mask;
+                const auto& support =
+                    QueryFormatSupport(static_cast<DXGI_FORMAT>(formats.colors[i]));
+                if (FAILED(support.result) ||
+                    !(support.data.Support2 & D3D12_FORMAT_SUPPORT2_OUTPUT_MERGER_LOGIC_OP)) {
+                    ReportUnsupported("logic_op RTV format lacks OUTPUT_MERGER_LOGIC_OP; requires "
+                                      "programmable blend emulation");
+                    return false;
+                }
+            }
+            if (mask)
+                state.blend[0].write_mask = *mask;
+        }
+        topology = Pso::PrimitiveTopology(
+            static_cast<u32>(maxwell3d->draw_manager.draw_state.topology), state.patch_vertices);
+        request = GraphicsPipelineKey{guest_hashes, state};
+        u64 specialization = Pso::HashBytes(&regs.depth_mode, sizeof(regs.depth_mode));
+        specialization =
+            Pso::HashBytes(&regs.window_origin, sizeof(regs.window_origin), specialization);
+        specialization = Pso::HashBytes(&regs.viewport_scale_offset_enabled,
+                                        sizeof(regs.viewport_scale_offset_enabled), specialization);
+        const auto& viewport = regs.viewport_transform[0];
+        const bool positive_y = viewport.scale_y > 0;
+        specialization = Pso::HashBytes(&positive_y, sizeof(positive_y), specialization);
+        specialization =
+            Pso::HashBytes(&viewport.swizzle, sizeof(viewport.swizzle), specialization);
+        specialization = vertex_specialization_hash.Get(
+            regs.vertex_attrib_format.data(), sizeof(regs.vertex_attrib_format), specialization);
+        specialization =
+            Pso::HashBytes(&topology.topology, sizeof(topology.topology), specialization);
+        specialization =
+            Pso::HashBytes(&regs.provoking_vertex, sizeof(regs.provoking_vertex), specialization);
+        specialization =
+            Pso::HashBytes(&regs.mandated_early_z, sizeof(regs.mandated_early_z), specialization);
+        const auto alpha = Pso::AlphaTestSpecialization(
+            regs.alpha_test_enabled != 0,
+            Pso::ComparisonFunc(static_cast<u32>(regs.alpha_test_func)),
+            std::bit_cast<u32>(regs.alpha_test_ref));
+        specialization = Pso::HashBytes(alpha.data(), sizeof(alpha), specialization);
+        specialization = Pso::HashBytes(&regs.transform_feedback_enabled,
+                                        sizeof(regs.transform_feedback_enabled), specialization);
+        if (regs.transform_feedback_enabled) {
+            specialization =
+                Pso::HashBytes(regs.transform_feedback.controls.data(),
+                               sizeof(regs.transform_feedback.controls), specialization);
+            specialization = Pso::HashBytes(regs.stream_out_layout.data(),
+                                            sizeof(regs.stream_out_layout), specialization);
+        }
+        request.stage_hashes[0] =
+            Pso::HashBytes(&specialization, sizeof(specialization), request.stage_hashes[0]);
+        return true;
+    };
+    if (!reuse || StateVerifyEnabled()) {
+        const bool supported = compute_request();
+        if (StateVerifyEnabled() && reuse) {
+            if (!supported) {
+                const bool was_supported = true;
+                StateVerifyMismatch("pipeline", &was_supported, &supported, sizeof(supported));
+            } else if (!(request == cached_graphics_request)) {
+                StateVerifyMismatch("pipeline", &cached_graphics_request, &request,
+                                    sizeof(request));
+            }
+        }
+        if (!supported) {
+            graphics_state_inputs.Invalidate();
+            return nullptr;
+        }
+        // Verify mode always uses the freshly computed result, including on a mismatch.
+        cached_graphics_request = request;
+        cached_topology = topology;
+        graphics_state_inputs.Store(inputs);
+    } else {
+        request = cached_graphics_request;
+        topology = cached_topology;
+        state = request.state;
+    }
     // Diagnostic (NXBOX_D3D12_PSO_SKIP_TRACE=1): one line per pipeline request the first time a
     // draw is dropped for it, to see which draws a skip rule drops.
     const auto trace_skip = [&](std::string_view why, u64 request_hash) {
@@ -1370,36 +1445,6 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(const Pso::Framebuffer
             static_cast<u32>(regs.rt_control.count), rt0.width, rt0.height,
             static_cast<u32>(rt0.format), rt0.Address(), regs.zeta_enable != 0));
     };
-    u64 specialization = Pso::HashBytes(&regs.depth_mode, sizeof(regs.depth_mode));
-    specialization =
-        Pso::HashBytes(&regs.window_origin, sizeof(regs.window_origin), specialization);
-    specialization = Pso::HashBytes(&regs.viewport_scale_offset_enabled,
-                                    sizeof(regs.viewport_scale_offset_enabled), specialization);
-    const auto& viewport = regs.viewport_transform[0];
-    const bool positive_y = viewport.scale_y > 0;
-    specialization = Pso::HashBytes(&positive_y, sizeof(positive_y), specialization);
-    specialization = Pso::HashBytes(&viewport.swizzle, sizeof(viewport.swizzle), specialization);
-    specialization = vertex_specialization_hash.Get(
-        regs.vertex_attrib_format.data(), sizeof(regs.vertex_attrib_format), specialization);
-    specialization = Pso::HashBytes(&topology.topology, sizeof(topology.topology), specialization);
-    specialization =
-        Pso::HashBytes(&regs.provoking_vertex, sizeof(regs.provoking_vertex), specialization);
-    specialization =
-        Pso::HashBytes(&regs.mandated_early_z, sizeof(regs.mandated_early_z), specialization);
-    const auto alpha = Pso::AlphaTestSpecialization(
-        regs.alpha_test_enabled != 0, Pso::ComparisonFunc(static_cast<u32>(regs.alpha_test_func)),
-        std::bit_cast<u32>(regs.alpha_test_ref));
-    specialization = Pso::HashBytes(alpha.data(), sizeof(alpha), specialization);
-    specialization = Pso::HashBytes(&regs.transform_feedback_enabled,
-                                    sizeof(regs.transform_feedback_enabled), specialization);
-    if (regs.transform_feedback_enabled) {
-        specialization = Pso::HashBytes(regs.transform_feedback.controls.data(),
-                                        sizeof(regs.transform_feedback.controls), specialization);
-        specialization = Pso::HashBytes(regs.stream_out_layout.data(),
-                                        sizeof(regs.stream_out_layout), specialization);
-    }
-    request.stage_hashes[0] =
-        Pso::HashBytes(&specialization, sizeof(specialization), request.stage_hashes[0]);
     // A counter only: skip the per-draw hash lookup unless profiling.
     if (context.Profile().Enabled() && prewarmed_graphics.contains(request))
         context.Profile().Count(FrameCount::PrewarmedPsoHits);
@@ -2184,6 +2229,7 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
 }
 void PipelineCache::BindToChannel(s32 id) {
     std::scoped_lock lock{pipeline_mutex};
+    graphics_state_inputs.Invalidate();
     InvalidateLastGraphicsPipeline();
     VideoCommon::ShaderCache::BindToChannel(id);
     if (maxwell3d)

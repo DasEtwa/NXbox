@@ -132,6 +132,23 @@ public:
     void ReleaseChannel(s32 channel_id) override;
 
 private:
+    struct DynamicState {
+        std::array<D3D12_VIEWPORT, Tegra::Engines::Maxwell3D::Regs::NumViewports> viewports{};
+        std::array<D3D12_RECT, Tegra::Engines::Maxwell3D::Regs::NumViewports> scissors{};
+        std::array<UINT, 3> stencil{};
+        std::array<float, 4> blend{};
+        std::array<float, 2> depth_bounds{};
+        std::array<u32, 16> words{};
+        bool y_flip{};
+    };
+    static DynamicState ComputeDynamicState(const Tegra::Engines::Maxwell3D::Regs& regs,
+                                            const Pso::GraphicsPsoState& attachment_state,
+                                            const Pso::FramebufferFormats& formats, u32 width,
+                                            u32 height, const IGraphicsPipeline& pipeline);
+    StateInputCache<GraphicsStateInputs> attachment_inputs;
+    Pso::GraphicsPsoState cached_attachment_state{};
+    StateInputCache<DynamicStateInputs> dynamic_inputs;
+    DynamicState cached_dynamic_state;
     Context& context;
     Tegra::MaxwellDeviceMemoryManager& device_memory;
     BindingState bindings;

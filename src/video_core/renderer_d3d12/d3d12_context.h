@@ -370,6 +370,7 @@ private:
 
 #include "common/common_types.h"
 #include "video_core/renderer_d3d12/d3d12_recorded_state.h"
+#include "video_core/renderer_d3d12/d3d12_state_tracker.h"
 
 namespace D3D12 {
 using Microsoft::WRL::ComPtr;
@@ -465,8 +466,13 @@ public:
     ID3D12GraphicsCommandList* Commands();
     // Every recording path outside the cached guest draw must invalidate before
     // recording. Resource barriers and predication do not change cached state.
+    // The state tracker's caches hold values computed from registers, not command-list state:
+    // re-emission is RecordState's job, so a new recording does not recompute them.
     void InvalidateRecordedState() {
         ++recording_generation;
+    }
+    StateTracker& GraphicsStateTracker() {
+        return graphics_state_tracker;
     }
     RecordedDrawState& DrawState() {
         recorded_state.Refresh(recording_generation);
@@ -594,6 +600,7 @@ private:
     bool recording{};
     u64 recording_generation{};
     DrawFlushCadence flush_cadence{FlushDrawsKnob()};
+    StateTracker graphics_state_tracker;
     RecordedDrawState recorded_state;
     std::shared_ptr<MemoryBudget> budget = std::make_shared<MemoryBudget>();
     struct Batch {

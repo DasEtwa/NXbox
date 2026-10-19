@@ -49,6 +49,34 @@ bool BisectEnabled(const char* name) noexcept {
         cache[used++] = {name, enabled};
     return enabled;
 }
+bool StateFastpathEnabled() noexcept {
+    static const bool enabled = [] {
+        char value[2]{};
+        return !(GetEnvironmentVariableA("NXBOX_D3D12_STATE_FASTPATH", value, sizeof(value)) == 1 &&
+                 value[0] == '0');
+    }();
+    return enabled;
+}
+bool StateVerifyEnabled() noexcept {
+    static const bool enabled = BisectEnabled("NXBOX_D3D12_STATE_VERIFY");
+    return enabled;
+}
+void StateVerifyMismatch(std::string_view what, const void* fast, const void* slow, size_t size) {
+    struct Mismatch {
+        std::string_view what;
+        u64 fast{}, slow{};
+        bool operator==(const Mismatch&) const = default;
+    };
+    static std::array<Mismatch, 32> reported{};
+    static size_t count{};
+    const Mismatch mismatch{what, Pso::HashBytes(fast, size), Pso::HashBytes(slow, size)};
+    if (count == reported.size() ||
+        std::find(reported.begin(), reported.begin() + count, mismatch) != reported.begin() + count)
+        return;
+    reported[count++] = mismatch;
+    Diagnostic(fmt::format("D3D12_STATE_VERIFY mismatch what={} fast={:016x} slow={:016x}", what,
+                           mismatch.fast, mismatch.slow));
+}
 std::uint32_t FlushDrawsKnob() noexcept {
     char value[16]{};
     const auto length = GetEnvironmentVariableA("NXBOX_D3D12_FLUSH_DRAWS", value, sizeof(value));
@@ -721,6 +749,8 @@ void FrameProfile::EndFrame(bool presented) {
     timing.Reset(start_wall);
 }
 Context::Context() {
+    Diagnostic(fmt::format("D3D12 state fastpath={} verify={}", StateFastpathEnabled() ? 1 : 0,
+                           StateVerifyEnabled() ? 1 : 0));
     SetEnvironmentVariableA("NXBOX_D3D12_COMMAND_FAILURE", nullptr);
     SetEnvironmentVariableA("NXBOX_D3D12_FIRST_FAILURE", nullptr);
     ComPtr<ID3D12DeviceRemovedExtendedDataSettings1> dred;
