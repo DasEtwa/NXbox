@@ -398,7 +398,9 @@ private:
         // Remember the exact instruction reads used by the translator, not a later snapshot.
         std::map<u64, u32> instruction_reads;
         bool record_reads = conf.disk_cache && !disk_config.empty();
-        const auto get_code = [this, &instruction_reads, &record_reads](u64 vaddr) {
+        u64 guest_code_reads = 0;
+        const auto get_code = [this, &instruction_reads, &record_reads, &guest_code_reads](u64 vaddr) {
+            ++guest_code_reads;
             const auto word = conf.disk_cache ? conf.callbacks->MemoryReadCodeFresh(vaddr)
                                               : conf.callbacks->MemoryReadCode(vaddr);
             if (record_reads && word) {
@@ -425,6 +427,9 @@ private:
 #endif
             A64::Translate(ir_block, arch_descriptor, get_code, {conf.define_unpredictable_behaviour, conf.wall_clock_cntpct});
         }
+#if NXBOX_STALL_PROFILE
+        NxboxStall::AddJit(NxboxStall::JitEvent::GuestCodeReads, guest_code_reads);
+#endif
         bool disk_eligible = record_reads && emitter.DiskCacheEligible(ir_block);
         {
 #if NXBOX_STALL_PROFILE
@@ -514,18 +519,18 @@ private:
 #endif
                 emitter.InvalidateCacheRanges(invalid_cache_ranges);
             }
+#if NXBOX_STALL_PROFILE
+            SampleCache(false, invalidate_entire_cache);
+#endif
             invalid_cache_ranges.clear();
             invalidate_entire_cache = false;
-#if NXBOX_STALL_PROFILE
-            SampleCache();
-#endif
         }
     }
 
 #if NXBOX_STALL_PROFILE
-    void SampleCache(bool compilation = false) {
+    void SampleCache(bool compilation = false, bool cleared = false) {
         NxboxStall::SampleJitCache(conf.processor_id,
-                                   conf.code_cache_size - block_of_code.SpaceRemaining(), conf.code_cache_size, compilation);
+                                   conf.code_cache_size - block_of_code.SpaceRemaining(), conf.code_cache_size, compilation, cleared);
     }
 
     static constexpr size_t HISTORY_LIMIT = 65536;

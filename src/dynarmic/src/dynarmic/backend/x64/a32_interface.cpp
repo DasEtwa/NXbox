@@ -255,19 +255,19 @@ private:
 #endif
                 emitter.InvalidateCacheRanges(invalid_cache_ranges);
             }
+#if NXBOX_STALL_PROFILE
+            SampleCache(false, invalidate_entire_cache);
+#endif
             invalid_cache_ranges.clear();
             invalidate_entire_cache = false;
-#if NXBOX_STALL_PROFILE
-            SampleCache();
-#endif
         }
     }
 
 #if NXBOX_STALL_PROFILE
-    void SampleCache(bool compilation = false) {
+    void SampleCache(bool compilation = false, bool cleared = false) {
         NxboxStall::SampleJitCache(conf.processor_id,
                                    conf.code_cache_size - block_of_code.SpaceRemaining(),
-                                   conf.code_cache_size, compilation);
+                                   conf.code_cache_size, compilation, cleared);
     }
 #endif
 
