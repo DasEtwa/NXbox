@@ -16,6 +16,7 @@
 #include "video_core/renderer_d3d12/d3d12_clear.h"
 #include "video_core/renderer_d3d12/d3d12_descriptor.h"
 #include "video_core/renderer_d3d12/d3d12_dispatch.h"
+#include "video_core/renderer_d3d12/d3d12_draw_resource_index.h"
 #include "video_core/renderer_d3d12/d3d12_fence_manager.h"
 #include "video_core/renderer_d3d12/d3d12_index_converter.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_iface.h"
@@ -285,6 +286,7 @@ private:
     ResourcePtr zero_uniform_buffer;
     void PrepareZeroUniformBuffer();
     std::vector<std::pair<ResourcePtr, D3D12_RESOURCE_STATES>> state_scratch;
+    DrawResourceIndex<> draw_resource_index;
     DescriptorPlan draw_view_plan{{0, 0, 0}};
     DescriptorPlan draw_sampler_plan{{0, 0, 0}};
     std::vector<D3D12_GPU_VIRTUAL_ADDRESS> draw_root_cbv_addresses;
