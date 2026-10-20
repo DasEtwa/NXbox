@@ -12,6 +12,7 @@
 #include "video_core/engines/sw_blitter/blitter.h"
 #include "video_core/memory_manager.h"
 #include "video_core/rasterizer_interface.h"
+#include "video_core/submission_trace.h"
 #include "video_core/surface.h"
 #include "video_core/textures/decoders.h"
 
@@ -114,6 +115,11 @@ void Fermi2D::Blit() {
         config.src_x0 = 0;
     }
 
+    VideoCommon::SubmissionTrace::Log(
+        "guest_fermi_blit src_gpu={:x} dst_gpu={:x} src_format={} dst_format={} "
+        "src_extent={}x{} dst_extent={}x{}",
+        src.Address(), regs.dst.Address(), static_cast<u32>(src.format),
+        static_cast<u32>(regs.dst.format), src.width, src.height, regs.dst.width, regs.dst.height);
     memory_manager.FlushCaching();
     if (!rasterizer->AccelerateSurfaceCopy(src, regs.dst, config)) {
         software_blit_active = true;

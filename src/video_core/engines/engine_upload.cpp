@@ -7,6 +7,7 @@
 #include <cstring>
 #include "common/gpu_thread_profile.h"
 #include "video_core/shader_discovery.h"
+#include "video_core/submission_trace.h"
 
 #include "common/algorithm.h"
 #include "common/assert.h"
@@ -79,6 +80,13 @@ void State::ProcessData(const u32* data, size_t num_data) {
 void State::ProcessData(std::span<const u8> read_buffer) {
     const Common::GpuProfile::PhaseScope gpu_profile_scope{
         Common::GpuProfile::Phase::InlineToMemory};
+    if (VideoCommon::SubmissionTrace::Active()) {
+        VideoCommon::SubmissionTrace::Log(
+            "guest_i2m dst_gpu={:x} dst_cpu={} linear={} bytes_per_line={} lines={} "
+            "pitch={} payload_bytes={}",
+            regs.dest.Address(), memory_manager.GpuToCpuAddress(regs.dest.Address()).value_or(0),
+            is_linear, regs.line_length_in, regs.line_count, regs.dest.pitch, read_buffer.size());
+    }
     const GPUVAddr address{regs.dest.Address()};
     if (is_linear) {
         for (size_t line = 0; line < regs.line_count; ++line) {

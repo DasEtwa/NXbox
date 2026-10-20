@@ -1,3 +1,147 @@
+# Frame 1200 DMA/presentation follow-up — 2026-10-20
+
+This section audits `compat-2026-10-18/r-scarlet-cap` and supersedes its apparent
+five-pass interpretation. DMA invalidation, presentation/cache defects and a
+capture-index lifecycle defect are corrected. **The supplied files do not establish Scarlet's
+real final writer or demonstrate a rendering cure.** No console run was made.
+
+## Evidence chain
+
+1. `passdump/manifest.jsonl` has eleven records: passes 1–5 plus presentation,
+   then passes 1–4 plus presentation again. The second sequence reuses the same
+   filenames. Both `eden.txt` and `diag.txt` log only writes 1–4 and
+   `PASS_DUMP manifest frame=1200 passes=4`. Neither logs a write of pass 5.
+   Thus pass 5 is an uncorrelated leftover, not evidence of this run's scene
+   contents or clear ordering. Its 8,294,400 bytes really are 2,073,600 copies of
+   `0x591642c8` (RGB 0.0703125); those bytes cannot be assigned to this run.
+2. Eden's selected trace contains events 0–60 and
+   `frame_end events=61 truncated=false`. It has one submitted guest draw to
+   `0x54af60000`, 64×64 R16_FLOAT, and no recorded shader-UAV/blit/DrawTexture
+   output. The matching current presentation selects CPU `629936128`, GPU
+   `23033741312`, 1920×1080 A8B8G8R8_UNORM, `producer_seq=0`.
+   This says there is no selected-frame captured producer. It does not say the
+   image was never written. Run-wide profiles still show roughly fourteen draws
+   and seven accelerated Fermi blits per frame; they do not identify the last
+   writer of this particular display image.
+3. All four D3D12 `AccelerateDMA` entry points return false. Maxwell DMA therefore
+   takes guest-memory fallback copies/swizzles, not a hidden native D3D12 DMA
+   image upload. Linear I2M reaches `AccelerateInlineToMemory` and `WriteBlock`;
+   tiled I2M uses `GpuGuestMemoryScoped<SafeReadCachedWrite>`. Memory invalidation
+   reaches `TextureCache::WriteMemory`; `PrepareImage` subsequently uploads
+   `CpuModified` images through `RefreshContents`. These uploads were outside the
+   pass manifest. The paths exist, but their use at the display address is not
+   established by the old trace. One concrete omission is the single-line
+   constant-remap fill: it ignored `BufferClear`'s return value and always used
+   `WriteBlockUnsafe`. `MemoryManager::WriteBlockImpl(..., unsafe=true)` skips
+   `rasterizer->InvalidateRegion`, so the software fill could change guest RAM
+   without making a cached image CPU-dirty. This path is a real uncaptured writer,
+   but the supplied logs cannot tie it to Scarlet's framebuffer.
+4. `Fermi2D::Blit` has one accelerated attempt through `AccelerateSurfaceCopy`
+   and one software fallback. D3D12 already traces that accelerated attempt and
+   the shared successful blit dump. No separate accelerated Fermi path was found.
+5. The display lookup was independent of the normal texture lookup's format
+   policy: it selected the largest `modification_tick` among exact CPU-base
+   matches without checking geometry or format, and discarded images with no
+   existing view. D3D12's `HasBrokenTextureViewFormats()` is true: Maxwell's
+   32-bit view class is broader than DXGI resource cast families. Selecting an
+   incompatible newest alias could construct an unusable view and fall through
+   to `UploadFramebuffer`, which reads guest memory with `ReadBlockUnsafe` and
+   previously did not first download newer GPU-owned pixels. These are concrete
+   code defects, not proof that the supplied A8B8G8R8 mapping took those branches.
+
+## Changes and verification
+
+- Constant-remap DMA fills now honor `BufferClear`'s result. Declined or narrow
+  fills use `WriteBlock`, which invalidates overlapping texture/buffer caches;
+  successful accelerated fills retain the existing unsafe guest-RAM mirror so
+  their already-updated buffer cache keeps ownership. `guest_dma_clear` logs
+  destination, element count, component width, value and acceleration result.
+  Existing component packing/remap behavior is otherwise unchanged.
+- Display candidates must match 2D storage geometry (`stride` × height) and the
+  backend's `IsViewCompatible` policy. New images can receive their first view
+  during presentation. Recency still chooses among eligible aliases; normal
+  `PrepareImage` performs refresh/alias synchronization on the selected image.
+  Presentation retains a view ID across that preparation and reacquires its
+  pointer afterward: alias conversion can insert views and relocate the shared
+  view storage. The regression forces relocation under ASan/UBSan.
+- Before D3D12's guest-memory presentation fallback, `DownloadMemory(base, 1)`
+  downloads whole downloadable images overlapping the display base, in tick
+  order. This prevents a rejected GPU-owned alias from silently leaving stale
+  guest pixels for the fallback. It does not force a download on the direct
+  cached-view path or make nondownloadable images supported.
+- Capture initialization truncates `manifest.jsonl` and `sampled.jsonl` in the
+  selected output directory. Old unreferenced raw files can remain, but cannot
+  supply a producer through an appended index.
+- Capture-enabled caches retain one last-writer metadata record per live image
+  across frames, removed on image retirement. `history` is emitted when entering
+  the selected frame; `writer` and `display_writer` report frame, global write
+  order, modification tick and copy source. Records cover draw submissions,
+  clears, shader image outputs, Fermi/DrawTexture, guest uploads and alias sync.
+  This is image-wide provenance: `draw_submission` does not prove a fragment
+  passed predication/tests or wrote every subresource. A failed raw write cannot
+  become a successful manifest producer.
+- Submission tracing now observes Maxwell DMA launches, both I2M layouts,
+  engine-level Fermi attempts, CPU write notifications, and clear addresses,
+  layers, rectangles and values. Cache invalidation reports the overlapping
+  image addresses even if already CPU-dirty. Notifications are not themselves
+  proof of the bytes ultimately uploaded.
+- Clears close pending attachment snapshots before executing, preserving the
+  pre-clear state, then capture actual color/depth clear outputs. Draw and clear
+  writer order/address records distinguish a late clear from draws to another
+  image; attachment set changes alone cannot establish either.
+- `writer=present_snapshot` captures the selected cached view's pixels even
+  without a selected-frame producer. It uses the existing view without inserting
+  into the relocatable view storage. This observation changes neither writer
+  metadata nor `producer_seq`; a historical producer can legitimately leave
+  `producer_seq=0`.
+
+Host regressions execute the production display lookup and complete D3D12
+`FramebufferTexture` method against recording cache/device facades, including
+no-view images, newer incompatible/incorrect-size aliases, recency among valid
+aliases, padded stride, direct cache presentation and synchronized fallback.
+Both regressions fail against the prechange production bodies. A constant-remap
+DMA regression executes the production fill body with declined/successful/narrow
+acceleration and checks cache invalidation versus accelerated ownership; the
+prechange body fails the declined-acceleration case. Production writer
+regressions cover prior-frame metadata without raw readbacks, snapshot exclusion
+from producers, and snapshot view reuse. The directory-probe regression checks
+that both old indexes are actually emptied. Xbox/UWP compilation, native D3D12
+validation and rendered results remain unverified.
+
+Validation: the full `tests/port` discovery ran 897 tests with 44 skips, two
+known missing-`fontTools` import errors, and one abort in the unchanged deferred
+fence-wakeup test. All five fence-manager tests passed on the isolated rerun.
+After the final view-lifetime correction, all 35 focused capture/cache/DMA/
+presentation/guest-visibility/budget regressions passed; `git diff --check` passed.
+No commit was made.
+
+## Next capture
+
+Keep the exact env/collection contract below, with a freshly built package.
+No additional bisect or force-refresh env is needed. Collect both fresh logs,
+the marker, manifest, sampled index and all raws referenced by this manifest.
+
+- Expect one session's index. A scene-buffer claim requires a current write
+  message and matching manifest/raw, not a leftover `pass_0005_c0.raw`.
+- Follow `PASS_DUMP history` and `display_writer` for GPU `0x55ceb0000` backward
+  through source addresses. `writer_frame < 1200` identifies a historical cached
+  writer even when `producer_seq` remains zero. `unknown` remains inconclusive.
+- Inspect every `display_candidate`: expected extent/stride, eligibility, format,
+  tick and CPU/GPU dirty state name which aliases were considered. A change in
+  selected address/format would test the corrected selection path.
+- Inspect the raw with `writer=present_snapshot` for actual selected texels.
+  This snapshot is not a new rendering producer. A guest-memory fallback has no
+  cached-view snapshot and is explicitly reported as `source=guest_memory`.
+- Correlate `guest_dma`, `guest_i2m`, `cpu_write_notify`, `memory_invalidate` and
+  `writer=guest_upload` by GPU/CPU address and event/order. No matching events
+  means no observed selected-frame memory upload, not proof that prior frames
+  never uploaded the image.
+- Use `host_clear` plus `writer` order and pre/post-clear raws to establish
+  whether draws precede a destructive clear or instead target a different image.
+  Do not promise a non-gray scene: the current artifacts cannot establish it.
+
+---
+
 # Frame 1200 UAV/copy investigation — 2026-10-20
 
 This section covers `compat-2026-10-18/v-scarlet-cap` and supersedes absence

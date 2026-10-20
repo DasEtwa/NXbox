@@ -258,6 +258,7 @@ void TextureCache<P>::TickFrame() {
 
     runtime.TickFrame();
     ++frame_tick;
+    ReportPassDumpHistory();
 
     if constexpr (IMPLEMENTS_ASYNC_DOWNLOADS) {
         for (auto& buffer : async_buffers_death_ring) {
@@ -742,7 +743,14 @@ FramebufferId TextureCache<P>::GetFramebufferId(const RenderTargets& key) {
 
 template <class P>
 void TextureCache<P>::WriteMemory(DAddr cpu_addr, size_t size) {
-    ForEachImageInRegion(cpu_addr, size, [this](ImageId image_id, Image& image) {
+    ForEachImageInRegion(cpu_addr, size, [this, cpu_addr, size](ImageId image_id, Image& image) {
+        if (PassDump::GetConfig().enabled && CaptureFrame() == PassDump::GetConfig().frame) {
+            ReportPassDump(fmt::format(
+                "PASS_DUMP memory_invalidate frame={} cpu={} bytes={} image_cpu={} gpu={:x} "
+                "already_dirty={}",
+                CaptureFrame(), cpu_addr, size, image.cpu_addr, image.gpu_addr,
+                True(image.flags & ImageFlagBits::CpuModified)));
+        }
         if (True(image.flags & ImageFlagBits::CpuModified)) {
             return;
         }
@@ -938,6 +946,63 @@ void TextureCache<P>::PublishShaderImageWrites(std::span<const ImageViewId> view
 }
 
 template <class P>
+void TextureCache<P>::ReportPassDumpHistory() {
+    if (PassDump::GetConfig().enabled && CaptureFrame() == PassDump::GetConfig().frame) {
+        for (const auto& writer : pass_dump_writers) {
+            const auto& image = slot_images[writer.id];
+            ReportPassDump(
+                fmt::format("PASS_DUMP history frame={} gpu={:x} cpu={} format={} extent={}x{} "
+                            "writer={} writer_frame={} order={} tick={} source={:x}",
+                            CaptureFrame(), image.gpu_addr, image.cpu_addr,
+                            PassDump::FormatName(image.info.format), image.info.size.width,
+                            image.info.size.height, writer.writer, writer.frame, writer.order,
+                            writer.tick, writer.source));
+        }
+    }
+}
+
+template <class P>
+void TextureCache<P>::NotePassDumpImageWrite(ImageId id, std::string_view writer, GPUVAddr source) {
+    if (!PassDump::GetConfig().enabled || !id || id == NULL_IMAGE_ID) {
+        return;
+    }
+    const auto& image = slot_images[id];
+    PassDumpWriter record{
+        id,     CaptureFrame(),     ++pass_dump_write_order, image.modification_tick,
+        source, std::string{writer}};
+    const auto previous = std::ranges::find(pass_dump_writers, id, &PassDumpWriter::id);
+    if (previous == pass_dump_writers.end()) {
+        pass_dump_writers.push_back(std::move(record));
+    } else {
+        *previous = std::move(record);
+    }
+    if (CaptureFrame() == PassDump::GetConfig().frame) {
+        const auto& latest = *std::ranges::find(pass_dump_writers, id, &PassDumpWriter::id);
+        ReportPassDump(
+            fmt::format("PASS_DUMP writer frame={} order={} writer={} gpu={:x} cpu={} format={} "
+                        "extent={}x{} tick={} source={:x}",
+                        latest.frame, latest.order, writer, image.gpu_addr, image.cpu_addr,
+                        PassDump::FormatName(image.info.format), image.info.size.width,
+                        image.info.size.height, latest.tick, source));
+    }
+}
+
+template <class P>
+void TextureCache<P>::NotePassDumpRenderTargets(std::string_view writer) {
+    if (!PassDump::GetConfig().enabled) {
+        return;
+    }
+    for (const auto view_id : render_targets.color_buffer_ids) {
+        if (view_id && view_id != NULL_IMAGE_VIEW_ID) {
+            NotePassDumpImageWrite(slot_image_views[view_id].image_id, writer);
+        }
+    }
+    if (render_targets.depth_buffer_id) {
+        NotePassDumpImageWrite(slot_image_views[render_targets.depth_buffer_id].image_id, writer);
+    }
+}
+
+template <class P>
 void TextureCache<P>::BeginPassDumpImageWrite() {
     if (PassDump::GetConfig().enabled && CaptureFrame() == PassDump::GetConfig().frame) {
         DumpPassRenderTargets();
@@ -947,12 +1012,17 @@ void TextureCache<P>::BeginPassDumpImageWrite() {
 template <class P>
 void TextureCache<P>::RecordPassDumpImageWrite(ImageViewId view_id, std::string_view writer,
                                                GPUVAddr source, u64 program) {
-    if (!PassDump::GetConfig().enabled || CaptureFrame() != PassDump::GetConfig().frame ||
-        !view_id || view_id == NULL_IMAGE_VIEW_ID) {
+    if (!PassDump::GetConfig().enabled || !view_id || view_id == NULL_IMAGE_VIEW_ID) {
         return;
     }
     const auto& view = slot_image_views[view_id];
     if (view.IsBuffer()) {
+        return;
+    }
+    if (writer != "present_snapshot") {
+        NotePassDumpImageWrite(view.image_id, writer, source);
+    }
+    if (CaptureFrame() != PassDump::GetConfig().frame) {
         return;
     }
     DumpPassRenderTargets();
@@ -1018,7 +1088,8 @@ void TextureCache<P>::RecordPassDumpImageWrite(ImageViewId view_id, std::string_
             }
         }
         manifest.close();
-        if (info.num_samples == 1 && (info.type == ImageType::e1D || info.type == ImageType::e2D)) {
+        if (writer != "present_snapshot" && info.num_samples == 1 &&
+            (info.type == ImageType::e1D || info.type == ImageType::e2D)) {
             pass_dump_targets.push_back({view.image_id, seq, 0, view.range.base.level,
                                          view.range.base.layer, view.range.extent.levels,
                                          view.range.extent.layers});
@@ -1243,6 +1314,37 @@ bool TextureCache<P>::BlitImage(const Tegra::Engines::Fermi2D::Surface& dst,
 }
 
 template <class P>
+typename P::ImageView* TextureCache<P>::PrepareImageForPresentation(ImageView* view) {
+    const ImageId image_id = view->image_id;
+    for (const auto id : slot_images[image_id].image_view_ids) {
+        if (&slot_image_views[id] == view) {
+            // Alias conversion can insert views and relocate slot_image_views. Retain
+            // an ID across preparation, never the presenter's borrowed pointer.
+            PrepareImage(image_id, false, false);
+            return &slot_image_views[id];
+        }
+    }
+    return nullptr;
+}
+
+template <class P>
+void TextureCache<P>::SnapshotPassDumpPresentation(const ImageView& view) {
+    if (!PassDump::GetConfig().enabled || CaptureFrame() != PassDump::GetConfig().frame) {
+        return;
+    }
+    // Read the displayed mip/layer even when its last writer predates the selected frame.
+    // This is an observation, not a producer or a modification of the image.
+    // Reuse the display view: inserting a view could relocate slot_image_views and
+    // invalidate the presenter's pointer. Framebuffer views cover exactly one mip/layer.
+    for (const auto id : slot_images[view.image_id].image_view_ids) {
+        if (&slot_image_views[id] == &view) {
+            RecordPassDumpImageWrite(id, "present_snapshot");
+            return;
+        }
+    }
+}
+
+template <class P>
 std::string TextureCache<P>::RecordPassDumpPresentation(DAddr cpu_addr, const ImageView* view) {
     if (!PassDump::GetConfig().enabled || CaptureFrame() != PassDump::GetConfig().frame)
         return {};
@@ -1262,6 +1364,17 @@ std::string TextureCache<P>::RecordPassDumpPresentation(DAddr cpu_addr, const Im
         }
     }
     const auto* image = view ? &slot_images[view->image_id] : nullptr;
+    if (view) {
+        const auto writer =
+            std::ranges::find(pass_dump_writers, view->image_id, &PassDumpWriter::id);
+        if (writer != pass_dump_writers.end()) {
+            ReportPassDump(
+                fmt::format("PASS_DUMP display_writer frame={} gpu={:x} writer={} writer_frame={} "
+                            "order={} tick={} source={:x}",
+                            CaptureFrame(), image->gpu_addr, writer->writer, writer->frame,
+                            writer->order, writer->tick, writer->source));
+        }
+    }
     const std::string record =
         fmt::format("{{\"event\":\"present\",\"frame\":{},\"cpu_addr\":{},\"source\":\"{}\","
                     "\"gpu_addr\":{},\"format\":\"{}\",\"width\":{},\"height\":{},"
@@ -1292,7 +1405,17 @@ std::string TextureCache<P>::RecordPassDumpPresentation(DAddr cpu_addr, const Im
 template <class P>
 std::pair<typename P::ImageView*, bool> TextureCache<P>::TryFindFramebufferImageView(
     const Tegra::FramebufferConfig& config, DAddr cpu_addr) {
-    // TODO: Properly implement this
+    const auto view_format = [&]() {
+        switch (config.pixel_format) {
+        case Service::android::PixelFormat::Rgb565:
+            return PixelFormat::R5G6B5_UNORM;
+        case Service::android::PixelFormat::Bgra8888:
+            return PixelFormat::B8G8R8A8_UNORM;
+        default:
+            return PixelFormat::A8B8G8R8_UNORM;
+        }
+    }();
+
     const auto it = page_table.find(cpu_addr >> YUZU_PAGEBITS);
     if (it == page_table.end()) {
         return {};
@@ -1305,22 +1428,34 @@ std::pair<typename P::ImageView*, bool> TextureCache<P>::TryFindFramebufferImage
         if (image.cpu_addr != cpu_addr) {
             continue;
         }
-        if (image.image_view_ids.empty()) {
-            continue;
+        // An address can have several format/size aliases. Never create a display view
+        // on an incompatible resource just because it was modified more recently.
+        const bool eligible =
+            image.info.type == ImageType::e2D && image.info.size.width == config.stride &&
+            image.info.size.height == config.height &&
+            IsViewCompatible(image.info.format, view_format, runtime.HasBrokenTextureViewFormats(),
+                             runtime.HasNativeBgr());
+        if (PassDump::GetConfig().enabled && CaptureFrame() == PassDump::GetConfig().frame) {
+            const auto writer =
+                std::ranges::find(pass_dump_writers, map.image_id, &PassDumpWriter::id);
+            ReportPassDump(fmt::format(
+                "PASS_DUMP display_candidate frame={} cpu={} gpu={:x} format={} extent={}x{} "
+                "display={}x{} stride={} eligible={} tick={} cpu_dirty={} gpu_dirty={} "
+                "last_writer={} writer_frame={} writer_order={} source={:x}",
+                CaptureFrame(), cpu_addr, image.gpu_addr, PassDump::FormatName(image.info.format),
+                image.info.size.width, image.info.size.height, config.width, config.height,
+                config.stride, eligible, image.modification_tick,
+                True(image.flags & ImageFlagBits::CpuModified),
+                True(image.flags & ImageFlagBits::GpuModified),
+                writer == pass_dump_writers.end() ? "unknown" : writer->writer,
+                writer == pass_dump_writers.end() ? 0 : writer->frame,
+                writer == pass_dump_writers.end() ? 0 : writer->order,
+                writer == pass_dump_writers.end() ? 0 : writer->source));
         }
-        valid_image_ids.push_back(map.image_id);
+        if (eligible) {
+            valid_image_ids.push_back(map.image_id);
+        }
     }
-
-    const auto view_format = [&]() {
-        switch (config.pixel_format) {
-        case Service::android::PixelFormat::Rgb565:
-            return PixelFormat::R5G6B5_UNORM;
-        case Service::android::PixelFormat::Bgra8888:
-            return PixelFormat::B8G8R8A8_UNORM;
-        default:
-            return PixelFormat::A8B8G8R8_UNORM;
-        }
-    }();
 
     const auto GetImageViewForFramebuffer = [&](ImageId image_id) {
         ImageViewInfo info{ImageViewType::e2D, view_format};
@@ -1645,6 +1780,7 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
     auto staging = runtime.UploadStagingBuffer(MapSizeBytes(image));
     UploadImageContents(image, staging);
     runtime.InsertUploadMemoryBarrier();
+    NotePassDumpImageWrite(image_id, "guest_upload");
 }
 
 template <class P>
@@ -2897,6 +3033,8 @@ void TextureCache<P>::DeleteImage(ImageId image_id, bool immediate_delete) {
                 CaptureFrame(), retired.gpu_addr, retired.modification_tick,
                 True(retired.flags & ImageFlagBits::GpuModified), retired.aliased_images.size()));
         }
+        std::erase_if(pass_dump_writers,
+                      [image_id](const auto& writer) { return writer.id == image_id; });
         std::erase_if(pass_dump_targets,
                       [image_id](const auto& target) { return target.id == image_id; });
         std::erase(pass_dump_sampled, image_id);
@@ -3093,16 +3231,19 @@ void TextureCache<P>::SynchronizeAliases(ImageId image_id) {
     for (const AliasedImage* const aliased : aliased_images) {
         if (!resolution.active || !any_rescaled) {
             CopyImage(image_id, aliased->id, aliased->copies);
+            NotePassDumpImageWrite(image_id, "alias_sync", slot_images[aliased->id].gpu_addr);
             continue;
         }
         Image& aliased_image = slot_images[aliased->id];
         if (!can_rescale) {
             ScaleDown(aliased_image);
             CopyImage(image_id, aliased->id, aliased->copies);
+            NotePassDumpImageWrite(image_id, "alias_sync", slot_images[aliased->id].gpu_addr);
             continue;
         }
         ScaleUp(aliased_image);
         CopyImage(image_id, aliased->id, aliased->copies);
+        NotePassDumpImageWrite(image_id, "alias_sync", slot_images[aliased->id].gpu_addr);
     }
 }
 
