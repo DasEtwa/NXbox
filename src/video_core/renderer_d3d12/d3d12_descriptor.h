@@ -16,6 +16,27 @@
 #include <vector>
 
 namespace D3D12 {
+// Preserve copy order while collapsing adjacent handles from a single CPU heap.
+// Repeated null handles remain separate ranges: adjacency never means equality.
+template <class Handle, std::size_t Capacity>
+struct DescriptorCopyRanges {
+    void Add(Handle handle, std::size_t stride, std::uintptr_t heap = 0) {
+        if (stride && count && heap == last_heap && handle.ptr >= starts[count - 1].ptr &&
+            handle.ptr - starts[count - 1].ptr ==
+                static_cast<std::size_t>(sizes[count - 1]) * stride) {
+            ++sizes[count - 1];
+            return;
+        }
+        starts[count] = handle;
+        sizes[count++] = 1;
+        last_heap = heap;
+    }
+    std::array<Handle, Capacity> starts;
+    std::array<std::uint32_t, Capacity> sizes;
+    std::size_t count{};
+    std::uintptr_t last_heap{};
+};
+
 // Fixed storage: descriptor copies never allocate while a draw is being recorded.
 // Flush before recycling any source descriptor; sources are CPU-only heap handles.
 template <class Handle, std::size_t Capacity = 32>
@@ -80,10 +101,10 @@ struct DescriptorSources {
     }
 };
 
-// Bounded direct-mapped cache: lookup and replacement never allocate. A hash
+// Bounded set-associative cache: lookup and replacement never allocate. A hash
 // selects a candidate only; exact ordered handles and layout resolve collisions.
 // CPU generations prevent recycled handles from aliasing different descriptors.
-template <class Value, std::size_t Entries = 64, std::size_t MaxHandles = 128>
+template <class Value, std::size_t Entries = 64, std::size_t MaxHandles = 128, std::size_t Ways = 1>
 class BoundHandleTableCache {
 public:
     const Value* Find(std::uint64_t tick, std::uint64_t generation,
@@ -91,19 +112,40 @@ public:
                       std::span<const std::uintptr_t> handles) const {
         if (handles.size() > MaxHandles)
             return nullptr;
-        const auto& entry = entries[Hash(sizes, handles) % Entries];
-        if (!entry.valid || entry.tick != tick || entry.generation != generation ||
-            entry.sizes != sizes || entry.count != handles.size() ||
-            !std::equal(handles.begin(), handles.end(), entry.handles.begin()))
-            return nullptr;
-        return &entry.value;
+        const auto set = Hash(sizes, handles) % Entries;
+        for (std::size_t way = 0; way < Ways; ++way) {
+            const auto& entry = entries[set * Ways + way];
+            if (entry.valid && entry.tick == tick && entry.generation == generation &&
+                entry.sizes == sizes && entry.count == handles.size() &&
+                std::equal(handles.begin(), handles.end(), entry.handles.begin()))
+                return &entry.value;
+        }
+        return nullptr;
     }
     void Remember(std::uint64_t tick, std::uint64_t generation,
                   const std::array<std::uint32_t, 3>& sizes,
                   std::span<const std::uintptr_t> handles, Value value) {
         if (handles.size() > MaxHandles)
             return;
-        auto& entry = entries[Hash(sizes, handles) % Entries];
+        const auto set = Hash(sizes, handles) % Entries;
+        // Prefer stale ways; round-robin replacement bounds collision work.
+        auto way = next_way[set];
+        std::optional<std::size_t> stale;
+        for (std::size_t candidate = 0; candidate < Ways; ++candidate) {
+            const auto& old = entries[set * Ways + candidate];
+            if (!old.valid || old.tick != tick || old.generation != generation) {
+                if (!stale)
+                    stale = candidate;
+            } else if (old.sizes == sizes && old.count == handles.size() &&
+                       std::equal(handles.begin(), handles.end(), old.handles.begin())) {
+                entries[set * Ways + candidate].value = value;
+                return;
+            }
+        }
+        if (stale)
+            way = *stale;
+        next_way[set] = (way + 1) % Ways;
+        auto& entry = entries[set * Ways + way];
         entry.valid = true;
         entry.tick = tick;
         entry.generation = generation;
@@ -118,7 +160,7 @@ public:
     }
 
 private:
-    static_assert(Entries > 0);
+    static_assert(Entries > 0 && Ways > 0);
     static std::size_t Hash(const std::array<std::uint32_t, 3>& sizes,
                             std::span<const std::uintptr_t> handles) {
         std::size_t hash = handles.size();
@@ -139,7 +181,8 @@ private:
         std::array<std::uintptr_t, MaxHandles> handles{};
         Value value{};
     };
-    std::array<Entry, Entries> entries{};
+    std::array<Entry, Entries * Ways> entries{};
+    std::array<std::size_t, Entries> next_way{};
 };
 
 // A recording owns immutable slots only until its submission tick changes.
@@ -454,12 +497,18 @@ public:
     };
     struct DescriptorCache {
         ComPtr<ID3D12DescriptorHeap> heap;
+        D3D12_CPU_DESCRIPTOR_HANDLE cpu{};
         std::unordered_map<DescriptorKey, CachedDescriptor, DescriptorKeyHash> entries;
         u32 cursor{}, stride{}, capacity{};
         u64 generation{1};
     };
     void InitCache(DescriptorCache& cache, D3D12_DESCRIPTOR_HEAP_TYPE type, u32 capacity);
     void RefreshCaches();
+    bool IsNullDescriptorHandle(D3D12_CPU_DESCRIPTOR_HANDLE handle) const {
+        return persistent_null_descriptors && handle.ptr >= null_view_cache.cpu.ptr &&
+               handle.ptr - null_view_cache.cpu.ptr <
+                   static_cast<SIZE_T>(null_view_cache.capacity) * null_view_cache.stride;
+    }
     using CopyBatch = DescriptorCopyBatch<D3D12_CPU_DESCRIPTOR_HANDLE>;
     D3D12_CPU_DESCRIPTOR_HANDLE ResolveDescriptor(D3D12_DESCRIPTOR_HEAP_TYPE type,
                                                   const ResourcePtr& resource,
@@ -491,13 +540,16 @@ public:
     std::array<DescriptorSetCache<DescriptorKey, CachedDrawTable, DescriptorKeyHash>, 2>
         draw_table_cache;
     std::array<PreviousDrawTable, 2> previous_draw_tables;
-    std::array<BoundHandleTableCache<DescriptorTable>, 2> handle_table_cache;
+    std::array<BoundHandleTableCache<DescriptorTable, 64, 128, 4>, 2> handle_table_cache;
     const bool handle_table_reuse;
     const bool descriptor_table_cache;
     const bool descriptor_fastpath;
+    const bool descriptor_ranges;
+    const bool persistent_null_descriptors;
     u64 cache_tick{};
     bool new_frame{true};
     DescriptorCache view_cache, sampler_cache;
+    DescriptorCache null_view_cache;
     DescriptorCache bound_rtvs, bound_dsv;
     std::unordered_set<int> logged_srv_mismatches;
     std::unordered_map<SIZE_T, DescriptorKey> slot_contents;
