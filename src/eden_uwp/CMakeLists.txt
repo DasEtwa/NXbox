@@ -130,7 +130,9 @@ target_link_libraries(eden-uwp PRIVATE iphlpapi ws2_32 crypt32 user32)
 target_link_libraries(eden-uwp PRIVATE d3d11 d2d1 dwrite dxgi windowscodecs)
 
 # The HostMemory *FromApp path keys off this for the common headers it includes here too.
-target_compile_definitions(eden-uwp PRIVATE YUZU_UWP_APPCONTAINER=1)
+# Same as core and video_core: headers guarded by NXBOX_UWP must expand identically in
+# every translation unit (the vblank profile and struct layouts depend on it).
+target_compile_definitions(eden-uwp PRIVATE NXBOX_UWP=1 YUZU_UWP_APPCONTAINER=1)
 
 # C++/WinRT needs C++20 + exceptions.
 target_compile_features(eden-uwp PRIVATE cxx_std_20)
