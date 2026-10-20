@@ -134,6 +134,7 @@ struct Cache {
     void ReportPassDump(const std::string& message) { reports.push_back(message); }
     void MarkModification(ImageId) noexcept;
     void MarkModification(ImageBase&) noexcept;
+    void InvalidateAliasSync(ImageBase&) noexcept {} // Covered by test_texture_alias_sync.
     void PublishShaderImageWrites(std::span<const ImageViewId>, std::string_view, u64);
     void BeginPassDumpImageWrite();
     void ReportPassDumpHistory();

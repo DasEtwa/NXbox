@@ -418,12 +418,25 @@ SamplerId TextureCache<P>::GetSamplerId(u32 index, bool compute) {
     }
     auto const map_index = index | (compute ? Common::SlotId::TAGGED_VALUE : 0);
     auto const [descriptor, is_new] = table.Read(*gpu_memory, index);
-    if (is_new) {
-        auto const id = FindSampler(descriptor, compute);
-        channel_state->sampler_ids.insert_or_assign(map_index, id);
-        return id;
+    auto& slots = channel_state->resolved_samplers[compute ? 1 : 0];
+    auto& resolved = slots[index % slots.size()];
+    const bool cache_enabled = sampler_slot_fastpath;
+    // Read detects content changes and returns is_new after table Refresh/Invalidate.
+    // A matching index alone is insufficient, including after a channel table switch.
+    if (cache_enabled && !is_new && resolved.index == index) {
+        return resolved.id;
     }
-    return channel_state->sampler_ids.find(map_index)->second;
+    SamplerId id;
+    if (is_new) {
+        id = FindSampler(descriptor, compute);
+        channel_state->sampler_ids.insert_or_assign(map_index, id);
+    } else {
+        id = channel_state->sampler_ids.find(map_index)->second;
+    }
+    if (cache_enabled) {
+        resolved = {index, id};
+    }
+    return id;
 }
 
 template <class P>
@@ -1751,6 +1764,7 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
         runtime.RecordTextureUpload(image);
     }
     image.flags &= ~ImageFlagBits::CpuModified;
+    image.alias_sync_frame_tick = (std::numeric_limits<u64>::max)();
 
     TrackImage(image, image_id);
 
@@ -1972,6 +1986,7 @@ bool TextureCache<P>::ImageCanRescale(ImageBase& image) {
 
 template <class P>
 void TextureCache<P>::InvalidateScale(Image& image) {
+    ++alias_sync_generation;
     if (image.scale_tick <= frame_tick) {
         image.scale_tick = frame_tick + 1;
     }
@@ -2211,6 +2226,7 @@ bool TextureCache<P>::ScaleDown(Image& image) {
 template <class P>
 ImageId TextureCache<P>::InsertImage(const ImageInfo& info, GPUVAddr gpu_addr,
                                      RelaxedOptions options) {
+    ++alias_sync_generation;
     std::optional<DAddr> cpu_addr = gpu_memory->GpuToCpuAddress(gpu_addr);
     if (!cpu_addr) {
         const auto size = CalculateGuestSizeInBytes(info);
@@ -2440,6 +2456,7 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
     }
 
     RegisterImage(new_image_id);
+    ++alias_sync_generation;
     return new_image_id;
 }
 
@@ -3019,6 +3036,7 @@ void TextureCache<P>::UntrackImage(ImageBase& image, ImageId image_id) {
 
 template <class P>
 void TextureCache<P>::DeleteImage(ImageId image_id, bool immediate_delete) {
+    ++alias_sync_generation;
     // Target lookup can retire old images. Capture before their slot can be reused.
     if (PassDump::GetConfig().enabled) {
         if (pass_dump_has_set &&
@@ -3177,12 +3195,33 @@ template <class P>
 void TextureCache<P>::MarkModification(ImageBase& image) noexcept {
     image.flags |= ImageFlagBits::GpuModified;
     image.modification_tick = ++modification_tick;
+    InvalidateAliasSync(image);
+}
+
+template <class P>
+void TextureCache<P>::InvalidateAliasSync(ImageBase& image) noexcept {
+    if (!alias_sync_fastpath) {
+        return;
+    }
+    // Notify direct dependents on writes, rather than polling every alias on every read.
+    // SynchronizeAliases also notifies them when it adopts a newer source tick.
+    for (const auto& alias : image.aliased_images) {
+        slot_images[alias.id].alias_sync_frame_tick = (std::numeric_limits<u64>::max)();
+    }
 }
 
 template <class P>
 void TextureCache<P>::SynchronizeAliases(ImageId image_id) {
     boost::container::small_vector<const AliasedImage*, 8> aliased_images;
     Image& image = slot_images[image_id];
+    if (alias_sync_fastpath && image.alias_sync_frame_tick == frame_tick &&
+        image.alias_sync_generation == alias_sync_generation) {
+        return;
+    }
+    // Copying/scaling below can change the generation. Record the pre-copy generation
+    // conservatively: a changed generation must take the full path on the next use.
+    image.alias_sync_frame_tick = frame_tick;
+    image.alias_sync_generation = alias_sync_generation;
     bool any_rescaled = True(image.flags & ImageFlagBits::Rescaled);
     bool any_modified = True(image.flags & ImageFlagBits::GpuModified);
     u64 most_recent_tick = image.modification_tick;
@@ -3207,6 +3246,7 @@ void TextureCache<P>::SynchronizeAliases(ImageId image_id) {
         }
     }
     image.modification_tick = most_recent_tick;
+    InvalidateAliasSync(image);
     if (any_modified) {
         image.flags |= ImageFlagBits::GpuModified;
     }
@@ -3297,9 +3337,12 @@ void TextureCache<P>::PrepareImageView(ImageViewId image_view_id, bool is_modifi
     }
     Image& image = slot_images[image_view.image_id];
     static const bool force_refresh = std::getenv("NXBOX_FORCE_REFRESH_DIMS") != nullptr;
-    if (texture_cache_fastpath && !force_refresh && !invalidate &&
-        False(image.flags & ImageFlagBits::CpuModified) &&
-        !False(image.flags & ImageFlagBits::Tracked) && image.aliased_images.empty()) {
+    if (!force_refresh && !invalidate && False(image.flags & ImageFlagBits::CpuModified) &&
+        !False(image.flags & ImageFlagBits::Tracked) &&
+        ((texture_cache_fastpath && image.aliased_images.empty()) ||
+         (alias_sync_fastpath && !image.aliased_images.empty() &&
+          image.alias_sync_frame_tick == frame_tick &&
+          image.alias_sync_generation == alias_sync_generation))) {
         // Bound sets repeat across draws, but writes must still advance the modification
         // tick, including the second UpdateRenderTargets after sampled alias preparation.
         if (is_modification) {
