@@ -124,6 +124,9 @@ struct Context {
     struct Commands* Commands() { return &commands; }
     struct Profile& Profile() { return profile; }
 };
+void QueryUavBarrier(Context& context, const ResourcePtr&, const ResourcePtr&) {
+    ++context.barriers;
+}
 struct Impl {
     Context context;
     Cache cache;

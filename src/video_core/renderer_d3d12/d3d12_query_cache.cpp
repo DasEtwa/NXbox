@@ -42,6 +42,22 @@ bool SynchronousQueries() {
     static const bool enabled = BisectEnabled("NXBOX_D3D12_SYNC_QUERIES");
     return enabled;
 }
+void QueryUavBarrier(Context& context, const ResourcePtr& counters, const ResourcePtr& output) {
+    if (BisectEnabled("NXBOX_D3D12_GLOBAL_QUERY_UAV")) {
+        context.GlobalUavBarrier();
+        return;
+    }
+    // These committed buffers are private to query reduction/normalization, never guest
+    // aliases. Order their dependent dispatches without draining unrelated guest UAV work.
+    // SRV/copy consumers are covered by their resource transitions, as before.
+    const FrameProfile::Scope profile_barrier{context.Profile(), FramePhase::Barriers};
+    D3D12_RESOURCE_BARRIER barriers[2]{};
+    barriers[0].Type = barriers[1].Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+    barriers[0].UAV.pResource = counters->handle.Get();
+    barriers[1].UAV.pResource = output->handle.Get();
+    context.Commands()->ResourceBarrier(2, barriers);
+    context.Profile().Count(FrameCount::Barriers, 2);
+}
 ComPtr<ID3D12QueryHeap> CreateHeap(Context& context, D3D12_QUERY_HEAP_TYPE type, u32 count) {
     static const bool no_queries = BisectEnabled("NXBOX_D3D12_NO_QUERIES");
     if (no_queries)
@@ -292,7 +308,7 @@ struct QueryCacheRuntimeImpl {
         context.Retain(gpu_report);
         if (metadata.buffer)
             context.Retain(metadata.buffer);
-        context.GlobalUavBarrier();
+        QueryUavBarrier(context, gpu_counters, gpu_report);
         auto* commands = context.Commands();
         commands->OMSetRenderTargets(0, nullptr, FALSE, nullptr);
         commands->SetComputeRootSignature(resolve_root.Get());
@@ -311,7 +327,7 @@ struct QueryCacheRuntimeImpl {
         context.MarkWork("query GPU reduction");
         commands->Dispatch(static_cast<UINT>((TypeCount * 4 + 31) / 32), 1, 1);
         context.Profile().Count(FrameCount::Dispatches);
-        context.GlobalUavBarrier();
+        QueryUavBarrier(context, gpu_counters, gpu_report);
     }
     void AccumulateGpu() {
         RequireClosed();
@@ -883,7 +899,7 @@ void QueryCacheRuntime::SetGpuPredicate(DAddr address, D3D12_PREDICATION_OP op,
             context.Retain(resource);
             context.Retain(impl->gpu_counters);
             context.Retain(impl->predicate);
-            context.GlobalUavBarrier();
+            QueryUavBarrier(context, impl->gpu_counters, impl->predicate);
             auto* commands = context.Commands();
             commands->OMSetRenderTargets(0, nullptr, FALSE, nullptr);
             commands->SetComputeRootSignature(impl->resolve_root.Get());
@@ -899,7 +915,7 @@ void QueryCacheRuntime::SetGpuPredicate(DAddr address, D3D12_PREDICATION_OP op,
             context.MarkWork("conditional predicate resolve");
             commands->Dispatch(1, 1, 1);
             context.Profile().Count(FrameCount::Dispatches);
-            context.GlobalUavBarrier();
+            QueryUavBarrier(context, impl->gpu_counters, impl->predicate);
         } else {
             impl->context.Transition(resource, D3D12_RESOURCE_STATE_COPY_SOURCE);
             impl->context.Transition(impl->predicate, D3D12_RESOURCE_STATE_COPY_DEST);

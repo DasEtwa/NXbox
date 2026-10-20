@@ -50,7 +50,33 @@ ComputeDispatch::ComputeDispatch(Context& context) : context{context} {
         context.Device()->CreateCommandSignature(&desc, nullptr, IID_PPV_ARGS(&indirect_signature)),
         "create indirect compute signature", context.Device());
 }
-void ComputeDispatch::UavBarrier() {
+void ComputeDispatch::UavBarrier(const ComputeBindings& bindings) {
+    if (BisectEnabled("NXBOX_D3D12_SCOPED_COMPUTE_UAV")) {
+        // Every storage binding participates, including read-only guest images represented
+        // by UAVs. Deduplicate native resources, not guest descriptors or wrapper objects.
+        // Keep this opt-in until console validation confirms guest aliases are all tracked.
+        std::vector<D3D12_RESOURCE_BARRIER> barriers;
+        barriers.reserve(bindings.resources.size());
+        for (const auto& use : bindings.resources) {
+            if (!(use.state & D3D12_RESOURCE_STATE_UNORDERED_ACCESS))
+                continue;
+            auto* resource = use.resource->handle.Get();
+            if (std::any_of(barriers.begin(), barriers.end(), [&](const auto& existing) {
+                    return existing.UAV.pResource == resource;
+                }))
+                continue;
+            D3D12_RESOURCE_BARRIER barrier{};
+            barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+            barrier.UAV.pResource = resource;
+            barriers.push_back(barrier);
+        }
+        if (barriers.empty())
+            return;
+        const FrameProfile::Scope profile_barrier{context.Profile(), FramePhase::Barriers};
+        context.Commands()->ResourceBarrier(static_cast<UINT>(barriers.size()), barriers.data());
+        context.Profile().Count(FrameCount::Barriers, barriers.size());
+        return;
+    }
     D3D12_RESOURCE_BARRIER barrier{};
     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
     // Global ordering also covers aliasing guest storage descriptors.
@@ -113,7 +139,7 @@ void ComputeDispatch::Bind(const ComputeBindings& bindings) {
                              resources = bindings.resource_heap, samplers = bindings.sampler_heap,
                              signature = indirect_signature] {});
     commands->OMSetRenderTargets(0, nullptr, FALSE, nullptr);
-    UavBarrier();
+    UavBarrier(bindings);
     std::vector<std::pair<ResourcePtr, D3D12_RESOURCE_STATES>> transitions;
     transitions.reserve(bindings.resources.size());
     for (const auto& use : bindings.resources) {
@@ -150,7 +176,7 @@ void ComputeDispatch::Direct(const ComputeBindings& bindings, ComputeGroups grou
     Bind(bindings);
     context.Commands()->Dispatch(groups[0], groups[1], groups[2]);
     context.Profile().Count(FrameCount::Dispatches);
-    UavBarrier();
+    UavBarrier(bindings);
 }
 void ComputeDispatch::Indirect(const ComputeBindings& bindings, const ResourcePtr& arguments,
                                std::uint64_t offset) {
@@ -167,6 +193,6 @@ void ComputeDispatch::Indirect(const ComputeBindings& bindings, const ResourcePt
     context.Commands()->ExecuteIndirect(indirect_signature.Get(), 1, arguments->handle.Get(),
                                         offset, nullptr, 0);
     context.Profile().Count(FrameCount::Dispatches);
-    UavBarrier();
+    UavBarrier(bindings);
 }
 } // namespace D3D12

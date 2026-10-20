@@ -1446,6 +1446,16 @@ void Context::Retain(const ResourcePtr& resource) {
     retained.push_back(resource);
     resource->retained_generation = retention_generation;
 }
+namespace {
+constexpr bool ShaderReadStateCovers(D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after) {
+    constexpr auto shader_reads =
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    // A transition to a subset of an existing shader-read state orders no writes. Preserve
+    // the actual superset in the tracker so the next write barrier has the correct Before.
+    // COMMON (zero), write states and split subresources must keep their normal barriers.
+    return after != 0 && (before & ~shader_reads) == 0 && (before & after) == after;
+}
+} // namespace
 void Context::Transition(const ResourcePtr& resource, D3D12_RESOURCE_STATES state) {
     if (!resource)
         throw std::invalid_argument("D3D12 null resource");
@@ -1459,6 +1469,8 @@ void Context::Transition(const ResourcePtr& resource, D3D12_RESOURCE_STATES stat
                  D3D12_RESOURCE_STATE_STREAM_OUT))
         ++resource->content_version;
     if (resource->heap != D3D12_HEAP_TYPE_DEFAULT || resource->state == state)
+        return;
+    if (ShaderReadStateCovers(resource->state, state))
         return;
     const FrameProfile::Scope profile_barrier{profile, FramePhase::Barriers};
     D3D12_RESOURCE_BARRIER barrier{};
@@ -1641,7 +1653,8 @@ void Context::TransitionBatch(std::span<const std::pair<ResourcePtr, D3D12_RESOU
         if (!resource->sub_states.empty())
             return std::any_of(resource->sub_states.begin(), resource->sub_states.end(),
                                [&](auto before) { return before != state; });
-        return resource->heap == D3D12_HEAP_TYPE_DEFAULT && resource->state != state;
+        return resource->heap == D3D12_HEAP_TYPE_DEFAULT && resource->state != state &&
+               !ShaderReadStateCovers(resource->state, state);
     });
     if (!needs_barrier) {
         for (const auto& [resource, state] : uses) {
@@ -1681,7 +1694,8 @@ void Context::TransitionBatch(std::span<const std::pair<ResourcePtr, D3D12_RESOU
             resource->state = state;
             continue;
         }
-        if (resource->heap != D3D12_HEAP_TYPE_DEFAULT || resource->state == state)
+        if (resource->heap != D3D12_HEAP_TYPE_DEFAULT || resource->state == state ||
+            ShaderReadStateCovers(resource->state, state))
             continue;
         D3D12_RESOURCE_BARRIER barrier{};
         barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
