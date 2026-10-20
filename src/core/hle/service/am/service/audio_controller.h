@@ -4,11 +4,11 @@
 #pragma once
 
 #include "core/hle/service/cmif_types.h"
-#include "core/hle/service/service.h"
+#include "core/hle/service/am/polling_service.h"
 
 namespace Service::AM {
 
-class IAudioController final : public ServiceFramework<IAudioController> {
+class IAudioController final : public PollingServiceFramework<IAudioController> {
 public:
     explicit IAudioController(Core::System& system_);
     ~IAudioController() override;

@@ -7,13 +7,13 @@
 #pragma once
 
 #include "core/hle/service/cmif_types.h"
-#include "core/hle/service/service.h"
+#include "core/hle/service/am/polling_service.h"
 
 namespace Service::AM {
 
 struct Applet;
 
-class IAppletCommonFunctions final : public ServiceFramework<IAppletCommonFunctions> {
+class IAppletCommonFunctions final : public PollingServiceFramework<IAppletCommonFunctions> {
 public:
     explicit IAppletCommonFunctions(Core::System& system_, std::shared_ptr<Applet> applet_);
     ~IAppletCommonFunctions() override;

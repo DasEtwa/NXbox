@@ -52,7 +52,7 @@ void ReplaceEmptyUuidWithCurrentUser(const std::shared_ptr<LibraryAppletStorage>
 ILibraryAppletAccessor::ILibraryAppletAccessor(Core::System& system_,
                                                std::shared_ptr<AppletDataBroker> broker,
                                                std::shared_ptr<Applet> applet)
-    : ServiceFramework{system_, "ILibraryAppletAccessor"}, m_broker{std::move(broker)},
+    : PollingServiceFramework{system_, "ILibraryAppletAccessor"}, m_broker{std::move(broker)},
       m_applet{std::move(applet)} {
     // clang-format off
     static const FunctionInfo functions[] = {

@@ -3,7 +3,7 @@
 
 #pragma once
 
-#include "core/hle/service/service.h"
+#include "core/hle/service/am/polling_service.h"
 
 namespace Core {
 class System;
@@ -11,7 +11,7 @@ class System;
 
 namespace Service::FileSystem {
 
-class FSP_LDR final : public ServiceFramework<FSP_LDR> {
+class FSP_LDR final : public PollingServiceFramework<FSP_LDR> {
 public:
     explicit FSP_LDR(Core::System& system_);
     ~FSP_LDR() override;

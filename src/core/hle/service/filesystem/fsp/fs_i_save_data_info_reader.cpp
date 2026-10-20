@@ -15,7 +15,7 @@ namespace Service::FileSystem {
 ISaveDataInfoReader::ISaveDataInfoReader(Core::System& system_,
                                          std::shared_ptr<SaveDataController> save_data_controller_,
                                          FileSys::SaveDataSpaceId space)
-    : ServiceFramework{system_, "ISaveDataInfoReader"}, save_data_controller{
+    : PollingServiceFramework{system_, "ISaveDataInfoReader"}, save_data_controller{
                                                             save_data_controller_} {
     static const FunctionInfo functions[] = {
         {0, D<&ISaveDataInfoReader::ReadSaveDataInfo>, "ReadSaveDataInfo"},

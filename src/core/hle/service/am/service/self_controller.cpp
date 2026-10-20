@@ -19,7 +19,7 @@ namespace Service::AM {
 
 ISelfController::ISelfController(Core::System& system_, std::shared_ptr<Applet> applet,
                                  Kernel::KProcess* process)
-    : ServiceFramework{system_, "ISelfController"}, m_process{process}, m_applet{
+    : PollingServiceFramework{system_, "ISelfController"}, m_process{process}, m_applet{
                                                                             std::move(applet)} {
     // clang-format off
     static const FunctionInfo functions[] = {

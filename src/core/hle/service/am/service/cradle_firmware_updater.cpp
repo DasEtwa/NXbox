@@ -7,7 +7,7 @@
 namespace Service::AM {
 
 ICradleFirmwareUpdater::ICradleFirmwareUpdater(Core::System& system_)
-    : ServiceFramework{system_, "ICradleFirmwareUpdater"},
+    : PollingServiceFramework{system_, "ICradleFirmwareUpdater"},
       m_context{system, "ICradleFirmwareUpdater"}, m_cradle_device_info_event{m_context} {
     // clang-format off
     static const FunctionInfo functions[] = {

@@ -3,12 +3,12 @@
 
 #pragma once
 
-#include "core/hle/service/service.h"
+#include "core/hle/service/am/polling_service.h"
 
 namespace Service::AM {
     struct Applet;
 
-    class IOverlayFunctions final : public ServiceFramework<IOverlayFunctions> {
+    class IOverlayFunctions final : public PollingServiceFramework<IOverlayFunctions> {
     public:
         explicit IOverlayFunctions(Core::System &system_, std::shared_ptr<Applet> applet);
         ~IOverlayFunctions() override;

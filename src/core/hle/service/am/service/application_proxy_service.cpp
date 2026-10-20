@@ -13,7 +13,7 @@ namespace Service::AM {
 
 IApplicationProxyService::IApplicationProxyService(Core::System& system_,
                                                    WindowSystem& window_system)
-    : ServiceFramework{system_, "appletOE"}, m_window_system{window_system} {
+    : PollingServiceFramework{system_, "appletOE"}, m_window_system{window_system} {
     static const FunctionInfo functions[] = {
         {0, D<&IApplicationProxyService::OpenApplicationProxy>, "OpenApplicationProxy"},
     };

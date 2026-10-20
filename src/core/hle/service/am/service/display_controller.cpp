@@ -13,7 +13,7 @@
 namespace Service::AM {
 
 IDisplayController::IDisplayController(Core::System& system_, std::shared_ptr<Applet> applet_)
-    : ServiceFramework{system_, "IDisplayController"}, applet(std::move(applet_)) {
+    : PollingServiceFramework{system_, "IDisplayController"}, applet(std::move(applet_)) {
     // clang-format off
     static const FunctionInfo functions[] = {
         {0, nullptr, "GetLastForegroundCaptureImage"},

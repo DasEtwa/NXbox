@@ -8,7 +8,7 @@
 
 #include "core/hle/service/am/am_types.h"
 #include "core/hle/service/cmif_types.h"
-#include "core/hle/service/service.h"
+#include "core/hle/service/am/polling_service.h"
 
 namespace Service::AM {
 
@@ -17,7 +17,7 @@ class ILibraryAppletAccessor;
 class IStorage;
 class WindowSystem;
 
-class ILibraryAppletCreator final : public ServiceFramework<ILibraryAppletCreator> {
+class ILibraryAppletCreator final : public PollingServiceFramework<ILibraryAppletCreator> {
 public:
     explicit ILibraryAppletCreator(Core::System& system_, std::shared_ptr<Applet> applet,
                                    WindowSystem& window_system);

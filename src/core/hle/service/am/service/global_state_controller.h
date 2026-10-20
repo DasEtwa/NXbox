@@ -6,13 +6,13 @@
 #include "core/hle/service/cmif_types.h"
 #include "core/hle/service/kernel_helpers.h"
 #include "core/hle/service/os/event.h"
-#include "core/hle/service/service.h"
+#include "core/hle/service/am/polling_service.h"
 
 namespace Service::AM {
 
 class ICradleFirmwareUpdater;
 
-class IGlobalStateController final : public ServiceFramework<IGlobalStateController> {
+class IGlobalStateController final : public PollingServiceFramework<IGlobalStateController> {
 public:
     explicit IGlobalStateController(Core::System& system_);
     ~IGlobalStateController() override;

@@ -6,11 +6,11 @@
 #include "core/file_sys/vfs/vfs.h"
 #include "core/hle/service/cmif_types.h"
 #include "core/hle/service/filesystem/filesystem.h"
-#include "core/hle/service/service.h"
+#include "core/hle/service/am/polling_service.h"
 
 namespace Service::FileSystem {
 
-class IStorage final : public ServiceFramework<IStorage> {
+class IStorage final : public PollingServiceFramework<IStorage> {
 public:
     explicit IStorage(Core::System& system_, FileSys::VirtualFile backend_);
 

@@ -6,7 +6,7 @@
 namespace Service::FileSystem {
 
 ISaveDataTransferProhibiter::ISaveDataTransferProhibiter(Core::System& system_)
-    : ServiceFramework{system_, "ISaveDataTransferProhibiter"} {}
+    : PollingServiceFramework{system_, "ISaveDataTransferProhibiter"} {}
 
 ISaveDataTransferProhibiter::~ISaveDataTransferProhibiter() = default;
 

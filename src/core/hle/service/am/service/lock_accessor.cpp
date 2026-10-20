@@ -10,7 +10,7 @@
 namespace Service::AM {
 
 ILockAccessor::ILockAccessor(Core::System& system_)
-    : ServiceFramework{system_, "ILockAccessor"}, m_context{system_, "ILockAccessor"},
+    : PollingServiceFramework{system_, "ILockAccessor"}, m_context{system_, "ILockAccessor"},
       m_event{m_context} {
     // clang-format off
     static const FunctionInfo functions[] = {

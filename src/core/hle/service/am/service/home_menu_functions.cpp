@@ -16,7 +16,7 @@ namespace Service::AM {
 
 IHomeMenuFunctions::IHomeMenuFunctions(Core::System& system_, std::shared_ptr<Applet> applet,
                                        WindowSystem& window_system)
-    : ServiceFramework{system_, "IHomeMenuFunctions"}, m_window_system{window_system},
+    : PollingServiceFramework{system_, "IHomeMenuFunctions"}, m_window_system{window_system},
       m_applet{std::move(applet)}, m_context{system, "IHomeMenuFunctions"} {
     // clang-format off
     static const FunctionInfo functions[] = {

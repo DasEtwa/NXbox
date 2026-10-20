@@ -9,7 +9,7 @@
 #include "core/hle/service/cmif_types.h"
 #include "core/hle/service/kernel_helpers.h"
 #include "core/hle/service/os/event.h"
-#include "core/hle/service/service.h"
+#include "core/hle/service/am/polling_service.h"
 
 namespace Service::AM {
 
@@ -17,7 +17,7 @@ struct Applet;
 class WindowSystem;
 class IStorage;
 
-class IHomeMenuFunctions final : public ServiceFramework<IHomeMenuFunctions> {
+class IHomeMenuFunctions final : public PollingServiceFramework<IHomeMenuFunctions> {
 public:
     explicit IHomeMenuFunctions(Core::System& system_, std::shared_ptr<Applet> applet,
                                 WindowSystem& window_system);
