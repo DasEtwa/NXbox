@@ -111,7 +111,8 @@ private:
     std::shared_ptr<Impl> impl_;
 };
 
-// Puts the disabled mods of every game into Eden's disabled add-ons list (Settings::values
+// Configures LocalState/load and game-folder load roots, then puts the disabled mods of
+// every game into Eden's disabled add-ons list (Settings::values
 // .disabled_addons), which PatchManager reads when a game boots. Call it after the settings of
 // the session were applied.
 void ApplyDisabledMods(const std::filesystem::path& local_state);

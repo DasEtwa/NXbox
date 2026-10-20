@@ -6,8 +6,11 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cstddef>
+#include <cstdlib>
 #include <cstring>
+#include <mutex>
 
 #include "common/assert.h"
 #include "common/hex_util.h"
@@ -38,6 +41,25 @@
 
 namespace FileSys {
 namespace {
+
+std::mutex additional_mod_roots_mutex;
+std::vector<VirtualDir> additional_mod_roots;
+
+bool ModsEnabled() {
+    const char* value = std::getenv("NXBOX_MODS");
+    return value == nullptr || std::string_view{value} != "0";
+}
+
+std::string LowerPatchName(std::string name) {
+    std::transform(name.begin(), name.end(), name.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return name;
+}
+
+bool IsIPSPatch(const VirtualFile& file) {
+    const auto extension = LowerPatchName(file->GetExtension());
+    return extension == "ips" || extension == "ips32";
+}
 
 constexpr u32 SINGLE_BYTE_MODULUS = 0x100;
 
@@ -85,10 +107,16 @@ VirtualDir FindSubdirectoryCaseless(const VirtualDir dir, std::string_view name)
 }
 
 std::optional<std::vector<Core::Memory::CheatEntry>> ReadCheatFileFromFolder(
-    u64 title_id, const PatchManager::BuildID& build_id_, const VirtualDir& base_path, bool upper) {
-    const auto build_id_raw = Common::HexToString(build_id_, upper);
+    u64 title_id, const PatchManager::BuildID& build_id_, const VirtualDir& base_path) {
+    const auto build_id_raw = Common::HexToString(build_id_, false);
     const auto build_id = build_id_raw.substr(0, sizeof(u64) * 2);
-    const auto file = base_path->GetFile(fmt::format("{}.txt", build_id));
+    VirtualFile file;
+    for (const auto& candidate : base_path->GetFiles()) {
+        if (LowerPatchName(candidate->GetName()) == fmt::format("{}.txt", build_id)) {
+            file = candidate;
+            break;
+        }
+    }
 
     if (file == nullptr) {
         LOG_INFO(Common_Filesystem, "No cheats file found for title_id={:016X}, build_id={}",
@@ -104,7 +132,15 @@ std::optional<std::vector<Core::Memory::CheatEntry>> ReadCheatFileFromFolder(
     }
 
     const Core::Memory::TextCheatParser parser;
-    return parser.Parse(std::string_view(reinterpret_cast<const char*>(data.data()), data.size()));
+    auto cheats =
+        parser.Parse(std::string_view(reinterpret_cast<const char*>(data.data()), data.size()));
+    for (const auto& cheat : cheats) {
+        if (cheat.enabled) {
+            LOG_INFO(Loader, "NXBOX_CHEAT_LOADED title={:016X} file={} cheat={}", title_id,
+                     file->GetFullPath(), cheat.definition.readable_name.data());
+        }
+    }
+    return cheats;
 }
 
 void AppendCommaIfNotEmpty(std::string& to, std::string_view with) {
@@ -174,15 +210,36 @@ u64 PatchManager::GetTitleID() const {
     return title_id;
 }
 
+void PatchManager::SetAdditionalModLoadRoots(std::vector<VirtualDir> roots) {
+    std::scoped_lock lock{additional_mod_roots_mutex};
+    additional_mod_roots = std::move(roots);
+}
+
 VirtualDir PatchManager::GetModificationLoadRoot(bool sdmc) const {
+    if (!ModsEnabled()) {
+        return nullptr;
+    }
     const auto get_root = [&](u64 id) {
         return sdmc ? fs_controller.GetSDMCModificationLoadRoot(id) : fs_controller.GetModificationLoadRoot(id);
     };
-    auto root = get_root(title_id);
-    if (!parent_title_id) {
-        return root;
+    std::vector<VirtualDir> roots{get_root(title_id)};
+    if (parent_title_id) {
+        roots.push_back(get_root(*parent_title_id));
     }
-    std::vector<VirtualDir> roots{std::move(root), get_root(*parent_title_id)};
+    if (!sdmc) {
+        std::scoped_lock lock{additional_mod_roots_mutex};
+        for (const auto& load : additional_mod_roots) {
+            if (!load) {
+                continue;
+            }
+            roots.push_back(
+                FindSubdirectoryCaseless(load, LowerPatchName(fmt::format("{:016X}", title_id))));
+            if (parent_title_id) {
+                roots.push_back(FindSubdirectoryCaseless(
+                    load, LowerPatchName(fmt::format("{:016X}", *parent_title_id))));
+            }
+        }
+    }
     std::erase(roots, nullptr);
     return LayeredVfsDirectory::MakeLayeredDirectory(std::move(roots));
 }
@@ -351,6 +408,7 @@ VirtualDir PatchManager::PatchExeFS(VirtualDir exefs) const {
         patch_dirs.insert(patch_dirs.end(), load_patch_dirs.begin(), load_patch_dirs.end());
     }
 
+    std::erase(patch_dirs, nullptr);
     std::sort(patch_dirs.begin(), patch_dirs.end(),
               [](const VirtualDir& l, const VirtualDir& r) { return l->GetName() < r->GetName(); });
 
@@ -411,7 +469,7 @@ VirtualDir PatchManager::PatchExeFS(VirtualDir exefs) const {
 
 std::vector<VirtualFile> PatchManager::CollectPatches(const std::vector<VirtualDir>& patch_dirs, const std::string& build_id) const {
     const auto disabled = GetDisabledAddons();
-    const auto nso_build_id = fmt::format("{:0<64}", build_id);
+    const auto nso_build_id = LowerPatchName(fmt::format("{:0<64}", build_id));
 
     std::vector<VirtualFile> out;
     out.reserve(patch_dirs.size());
@@ -421,15 +479,20 @@ std::vector<VirtualFile> PatchManager::CollectPatches(const std::vector<VirtualD
 
         auto exefs_dir = FindSubdirectoryCaseless(subdir, "exefs");
         if (exefs_dir != nullptr) {
-            for (const auto& file : exefs_dir->GetFiles()) {
-                if (file->GetExtension() == "ips") {
+            auto files = exefs_dir->GetFiles();
+            std::sort(files.begin(), files.end(),
+                      [](const auto& l, const auto& r) { return l->GetName() < r->GetName(); });
+            for (const auto& file : files) {
+                if (IsIPSPatch(file)) {
                     auto name = file->GetName();
-                    const auto this_build_id = fmt::format("{:0<64}", name.substr(0, name.find('.')));
+                    const auto this_build_id =
+                        LowerPatchName(fmt::format("{:0<64}", name.substr(0, name.find('.'))));
                     if (nso_build_id == this_build_id)
                         out.push_back(file);
-                } else if (file->GetExtension() == "pchtxt") {
+                } else if (LowerPatchName(file->GetExtension()) == "pchtxt") {
                     IPSwitchCompiler compiler{file};
-                    const auto this_build_id = Common::HexToString(compiler.GetBuildID());
+                    const auto this_build_id =
+                        LowerPatchName(Common::HexToString(compiler.GetBuildID()));
                     if (nso_build_id == this_build_id)
                         out.push_back(file);
                 }
@@ -476,25 +539,27 @@ std::vector<u8> PatchManager::PatchNSO(const std::vector<u8>& nso, const std::st
     }
 
     auto patch_dirs = load_dir->GetSubdirectories();
+    std::erase(patch_dirs, nullptr);
     std::sort(patch_dirs.begin(), patch_dirs.end(),
               [](const VirtualDir& l, const VirtualDir& r) { return l->GetName() < r->GetName(); });
     const auto patches = CollectPatches(patch_dirs, build_id);
 
     auto out = nso;
     for (const auto& patch_file : patches) {
-        if (patch_file->GetExtension() == "ips") {
-            LOG_INFO(Loader, "    - Applying IPS patch from mod \"{}\"",
-                     patch_file->GetContainingDirectory()->GetParentDirectory()->GetName());
-            const auto patched = PatchIPS(std::make_shared<VectorVfsFile>(out), patch_file);
-            if (patched != nullptr)
-                out = patched->ReadAllBytes();
-        } else if (patch_file->GetExtension() == "pchtxt") {
-            LOG_INFO(Loader, "    - Applying IPSwitch patch from mod \"{}\"",
-                     patch_file->GetContainingDirectory()->GetParentDirectory()->GetName());
+        VirtualFile patched;
+        if (IsIPSPatch(patch_file)) {
+            patched = PatchIPS(std::make_shared<VectorVfsFile>(out), patch_file);
+        } else if (LowerPatchName(patch_file->GetExtension()) == "pchtxt") {
             const IPSwitchCompiler compiler{patch_file};
-            const auto patched = compiler.Apply(std::make_shared<VectorVfsFile>(out));
-            if (patched != nullptr)
-                out = patched->ReadAllBytes();
+            patched = compiler.Apply(std::make_shared<VectorVfsFile>(out));
+        }
+        if (patched != nullptr) {
+            out = patched->ReadAllBytes();
+            LOG_INFO(Loader, "NXBOX_MOD_APPLIED title={:016X} nso={} build_id={} patch={}",
+                     title_id, name, build_id, patch_file->GetFullPath());
+        } else {
+            LOG_ERROR(Loader, "NXBOX_MOD_FAILED title={:016X} patch={}", title_id,
+                      patch_file->GetFullPath());
         }
     }
 
@@ -519,6 +584,7 @@ bool PatchManager::HasNSOPatch(const BuildID& build_id_, std::string_view name) 
     }
 
     auto patch_dirs = load_dir->GetSubdirectories();
+    std::erase(patch_dirs, nullptr);
     std::sort(patch_dirs.begin(), patch_dirs.end(),
               [](const VirtualDir& l, const VirtualDir& r) { return l->GetName() < r->GetName(); });
 
@@ -534,6 +600,7 @@ std::vector<Core::Memory::CheatEntry> PatchManager::CreateCheatList(const BuildI
 
     const auto disabled = GetDisabledAddons();
     auto patch_dirs = load_dir->GetSubdirectories();
+    std::erase(patch_dirs, nullptr);
     std::sort(patch_dirs.begin(), patch_dirs.end(), [](auto const& l, auto const& r) { return l->GetName() < r->GetName(); });
 
     // <mod dir> / <folder> / cheats / <build id>.txt
@@ -541,9 +608,7 @@ std::vector<Core::Memory::CheatEntry> PatchManager::CreateCheatList(const BuildI
     for (const auto& subdir : patch_dirs) {
         if (std::find(disabled.cbegin(), disabled.cend(), subdir->GetName()) == disabled.cend()) {
             if (auto cheats_dir = FindSubdirectoryCaseless(subdir, "cheats"); cheats_dir != nullptr) {
-                if (auto const res = ReadCheatFileFromFolder(title_id, build_id_, cheats_dir, true))
-                    std::copy(res->begin(), res->end(), std::back_inserter(out));
-                if (auto const res = ReadCheatFileFromFolder(title_id, build_id_, cheats_dir, false))
+                if (auto const res = ReadCheatFileFromFolder(title_id, build_id_, cheats_dir))
                     std::copy(res->begin(), res->end(), std::back_inserter(out));
             }
         }
@@ -576,10 +641,12 @@ void PatchManager::ApplyLayeredFS(VirtualFile& romfs, ContentRecordType type) co
     }
 
     const auto disabled = GetDisabledAddons();
-    std::vector<VirtualDir> patch_dirs = load_dir->GetSubdirectories();
+    std::vector<VirtualDir> patch_dirs =
+        load_dir ? load_dir->GetSubdirectories() : std::vector<VirtualDir>{};
     if (std::find(disabled.cbegin(), disabled.cend(), "SDMC") == disabled.cend()) {
         patch_dirs.push_back(sdmc_load_dir);
     }
+    std::erase(patch_dirs, nullptr);
     std::sort(patch_dirs.begin(), patch_dirs.end(),
               [](const VirtualDir& l, const VirtualDir& r) { return l->GetName() < r->GetName(); });
 
@@ -984,7 +1051,7 @@ std::vector<Patch> PatchManager::GetPatches(VirtualFile update_raw) const {
     }
 
     // General Mods (LayeredFS and IPS)
-    const auto mod_dir = fs_controller.GetModificationLoadRoot(title_id);
+    const auto mod_dir = GetModificationLoadRoot();
     if (mod_dir != nullptr) {
         for (auto const& f : mod_dir->GetFiles())
             if (auto const name = f->GetName(); name.starts_with("cheat_")) {
@@ -1011,14 +1078,14 @@ std::vector<Patch> PatchManager::GetPatches(VirtualFile update_raw) const {
                 bool layeredfs = false;
 
                 for (const auto& file : exefs_dir->GetFiles()) {
-                    if (file->GetExtension() == "ips") {
+                    if (IsIPSPatch(file)) {
                         ips = true;
-                    } else if (file->GetExtension() == "pchtxt") {
+                    } else if (LowerPatchName(file->GetExtension()) == "pchtxt") {
                         ipswitch = true;
                     } else if (std::find(EXEFS_FILE_NAMES.begin(), EXEFS_FILE_NAMES.end(),
                                          file->GetName()) != EXEFS_FILE_NAMES.end()) {
                         layeredfs = true;
-                                         }
+                    }
                 }
 
                 if (ips)
