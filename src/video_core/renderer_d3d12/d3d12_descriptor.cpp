@@ -729,6 +729,7 @@ void D3D12DescriptorAllocator::WriteNullSampler(const DescriptorTable& table, u3
     D3D12_SAMPLER_DESC desc{};
     desc.Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
     desc.AddressU = desc.AddressV = desc.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    desc.MaxAnisotropy = 1;
     desc.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
     desc.MaxLOD = D3D12_FLOAT32_MAX;
     WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, {}, 3, &desc, sizeof(desc), table, slot);
