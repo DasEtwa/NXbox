@@ -43,10 +43,7 @@ class DescriptorBatchTests(unittest.TestCase):
         )
         finish = source.split("DescriptorTable D3D12DescriptorAllocator::FinishDrawTable", 1)[1]
         finish = finish.split("void D3D12DescriptorAllocator::WriteCached", 1)[0]
-        self.assertIn(
-            'static const bool batch_copies = BisectEnabled("NXBOX_D3D12_BATCH_DESCRIPTOR_COPIES")',
-            finish,
-        )
+        self.assertIn('std::getenv("NXBOX_D3D12_BATCH_DESCRIPTOR_COPIES")', finish)
         self.assertLess(finish.index("return previous.table"), finish.index("batch.emplace()"))
         self.assertLess(
             finish.rindex("FlushCopies(type, *batch)"), finish.rindex("previous.tick =")

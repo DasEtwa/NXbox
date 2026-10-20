@@ -238,6 +238,14 @@ D3D12DescriptorAllocator::D3D12DescriptorAllocator(Context& context, u32 view_ca
           const char* value = std::getenv("NXBOX_D3D12_DESCRIPTOR_FASTPATH");
           return !value || std::strcmp(value, "0") != 0;
       }()},
+      descriptor_ranges{[] {
+          const char* value = std::getenv("NXBOX_D3D12_DESCRIPTOR_RANGES");
+          return !value || std::strcmp(value, "0") != 0;
+      }()},
+      persistent_null_descriptors{[] {
+          const char* value = std::getenv("NXBOX_D3D12_PERSISTENT_NULL_DESCRIPTORS");
+          return !value || std::strcmp(value, "0") != 0;
+      }()},
       context{context}, views{view_capacity}, samplers{sampler_capacity} {
     if (!view_capacity || view_capacity > ViewHeapSize || !sampler_capacity ||
         sampler_capacity > SamplerHeapSize)
@@ -248,11 +256,15 @@ D3D12DescriptorAllocator::D3D12DescriptorAllocator(Context& context, u32 view_ca
     Init(dsvs, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, DsvHeapSize, false);
     InitCache(view_cache, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 4096);
     InitCache(sampler_cache, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, 256);
+    if (persistent_null_descriptors)
+        InitCache(null_view_cache, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 32);
     InitCache(bound_rtvs, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 8);
     InitCache(bound_dsv, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 1);
     Diagnostic(fmt::format("D3D12 handle_table_cache={}", handle_table_reuse ? 1 : 0));
     Diagnostic(fmt::format("D3D12 descriptor_fastpath={}", descriptor_fastpath ? 1 : 0));
     Diagnostic(fmt::format("D3D12 descriptor_table_cache={}", descriptor_table_cache ? 1 : 0));
+    Diagnostic(fmt::format("D3D12 descriptor_ranges={} persistent_null_descriptors={}",
+                           descriptor_ranges, persistent_null_descriptors));
 }
 
 void D3D12DescriptorAllocator::InitCache(DescriptorCache& cache, D3D12_DESCRIPTOR_HEAP_TYPE type,
@@ -264,6 +276,7 @@ void D3D12DescriptorAllocator::InitCache(DescriptorCache& cache, D3D12_DESCRIPTO
           "create CPU descriptor cache", context.Device());
     cache.stride = context.Device()->GetDescriptorHandleIncrementSize(type);
     cache.capacity = capacity;
+    cache.cpu = cache.heap->GetCPUDescriptorHandleForHeapStart();
 }
 void D3D12DescriptorAllocator::RefreshCaches() {
     if (cache_tick == context.CurrentTick())
@@ -413,12 +426,24 @@ DescriptorTable D3D12DescriptorAllocator::FinishDrawTable(DescriptorPlan& plan, 
     RefreshCaches(); // Reserve may have submitted and invalidated CPU sources.
     const auto& cache = sampler ? sampler_cache : view_cache;
     if (descriptor_fastpath && plan.sources.Current(cache.generation)) {
-        // The destination is contiguous; every source range contains one descriptor.
-        std::array<D3D12_CPU_DESCRIPTOR_HANDLE, 4096> sources;
-        for (u32 slot = 0; slot < count; ++slot)
-            sources[slot].ptr = plan.sources.handles[slot];
-        context.Device()->CopyDescriptors(1, &table.cpu, &count, count, sources.data(), nullptr,
-                                          type);
+        // The destination is contiguous. Merge adjacent CPU sources, but keep
+        // repeated null handles separate so every GPU slot gets initialized.
+        if (descriptor_ranges) {
+            DescriptorCopyRanges<D3D12_CPU_DESCRIPTOR_HANDLE, 4096> sources;
+            for (u32 slot = 0; slot < count; ++slot) {
+                const D3D12_CPU_DESCRIPTOR_HANDLE handle{plan.sources.handles[slot]};
+                sources.Add(handle, cache.stride, IsNullDescriptorHandle(handle));
+            }
+            context.Device()->CopyDescriptors(1, &table.cpu, &count,
+                                              static_cast<UINT>(sources.count),
+                                              sources.starts.data(), sources.sizes.data(), type);
+        } else {
+            std::array<D3D12_CPU_DESCRIPTOR_HANDLE, 4096> sources;
+            for (u32 slot = 0; slot < count; ++slot)
+                sources[slot].ptr = plan.sources.handles[slot];
+            context.Device()->CopyDescriptors(1, &table.cpu, &count, count, sources.data(), nullptr,
+                                              type);
+        }
         TraceApiCall(context.Device(), "CopyDescriptors", nullptr, &type, sizeof(type));
         context.Profile().Count(FrameCount::DescriptorCopyCalls);
         context.Profile().Count(FrameCount::DescriptorCopies, count);
@@ -428,7 +453,10 @@ DescriptorTable D3D12DescriptorAllocator::FinishDrawTable(DescriptorPlan& plan, 
         previous.table = table;
         return table;
     }
-    static const bool batch_copies = BisectEnabled("NXBOX_D3D12_BATCH_DESCRIPTOR_COPIES");
+    static const bool batch_copies = [] {
+        const char* value = std::getenv("NXBOX_D3D12_BATCH_DESCRIPTOR_COPIES");
+        return !value || std::strcmp(value, "0") != 0;
+    }();
     std::optional<CopyBatch> batch;
     if (batch_copies)
         batch.emplace();
@@ -484,7 +512,18 @@ D3D12_CPU_DESCRIPTOR_HANDLE D3D12DescriptorAllocator::ResolveDescriptor(
     CopyBatch* batch) {
     const auto kind = key.kind;
     const void* desc = key.description.data();
-    auto& cache = type == D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER ? sampler_cache : view_cache;
+    // Null views own no resources and never change. Keep their CPU slots out
+    // of the frame/rollover cache; a full permanent heap falls back without
+    // recycling any handles borrowed by an unfinished descriptor plan.
+    const bool null_view = persistent_null_descriptors && !resource && kind < 3;
+    if (null_view) {
+        if (const auto found = null_view_cache.entries.find(key);
+            found != null_view_cache.entries.end())
+            return found->second.handle;
+    }
+    auto& cache = null_view && null_view_cache.cursor < null_view_cache.capacity ? null_view_cache
+                  : type == D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER                   ? sampler_cache
+                                                                                 : view_cache;
     auto found = cache.entries.find(key);
     if (found == cache.entries.end()) {
         if (cache.cursor == cache.capacity) {
@@ -497,7 +536,7 @@ D3D12_CPU_DESCRIPTOR_HANDLE D3D12DescriptorAllocator::ResolveDescriptor(
             cache.cursor = 0;
             ++cache.generation;
         }
-        auto handle = cache.heap->GetCPUDescriptorHandleForHeapStart();
+        auto handle = cache.cpu;
         handle.ptr += static_cast<SIZE_T>(cache.cursor++) * cache.stride;
         switch (kind) {
         case 0: {
@@ -561,9 +600,23 @@ D3D12_CPU_DESCRIPTOR_HANDLE D3D12DescriptorAllocator::ResolveDescriptor(
 void D3D12DescriptorAllocator::CopyDescriptors(D3D12_DESCRIPTOR_HEAP_TYPE type, size_t count,
                                                const D3D12_CPU_DESCRIPTOR_HANDLE* destinations,
                                                const D3D12_CPU_DESCRIPTOR_HANDLE* sources) {
-    // Null range-size arrays mean one descriptor per range, including noncontiguous slots.
-    context.Device()->CopyDescriptors(static_cast<UINT>(count), destinations, nullptr,
-                                      static_cast<UINT>(count), sources, nullptr, type);
+    if (descriptor_ranges) {
+        DescriptorCopyRanges<D3D12_CPU_DESCRIPTOR_HANDLE, 32> destination_ranges, source_ranges;
+        const auto stride =
+            type == D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER ? sampler_cache.stride : view_cache.stride;
+        for (size_t index = 0; index < count; ++index) {
+            destination_ranges.Add(destinations[index], stride);
+            source_ranges.Add(sources[index], stride, IsNullDescriptorHandle(sources[index]));
+        }
+        context.Device()->CopyDescriptors(
+            static_cast<UINT>(destination_ranges.count), destination_ranges.starts.data(),
+            destination_ranges.sizes.data(), static_cast<UINT>(source_ranges.count),
+            source_ranges.starts.data(), source_ranges.sizes.data(), type);
+    } else {
+        // Null range-size arrays mean one descriptor per range, including noncontiguous slots.
+        context.Device()->CopyDescriptors(static_cast<UINT>(count), destinations, nullptr,
+                                          static_cast<UINT>(count), sources, nullptr, type);
+    }
     TraceApiCall(context.Device(), "CopyDescriptors", nullptr, &type, sizeof(type));
     context.Profile().Count(FrameCount::DescriptorCopyCalls);
 }
