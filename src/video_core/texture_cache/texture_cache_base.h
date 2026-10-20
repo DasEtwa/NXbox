@@ -92,6 +92,9 @@ public:
     ::Common::unordered_map<u32, SamplerId> sampler_ids;
     ::Common::unordered_map<u32, ImageViewId> image_view_ids;
 
+    // A descriptor is still read each use. Only its resolved ID avoids a hash lookup.
+    std::array<std::vector<ImageViewId>, 2> indexed_image_view_ids;
+
     TextureCacheGPUMap* gpu_page_table = nullptr;
     TextureCacheGPUMap* sparse_page_table = nullptr;
 };
@@ -450,6 +453,17 @@ private:
 
     Tegra::MaxwellDeviceMemoryManager& device_memory;
     std::deque<TextureCacheGPUMap> gpu_page_table_storage;
+
+    bool texture_cache_fastpath = false;
+    struct CachedImageLookup {
+        ImageInfo info;
+        GPUVAddr address = 0;
+        DAddr cpu_address = 0;
+        RelaxedOptions options{};
+        const Tegra::MemoryManager* memory = nullptr;
+        ImageId id{};
+    };
+    std::array<CachedImageLookup, 64> cached_image_lookup{};
 
     RenderTargets render_targets;
     u64 render_targets_serial = 0;

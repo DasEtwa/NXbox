@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <limits>
+
 #include "common/common_funcs.h"
 #include "video_core/surface.h"
 #include "video_core/texture_cache/types.h"
@@ -43,6 +45,7 @@ struct ImageViewBase {
     Extent3D size{0, 0, 0};
     ImageViewFlagBits flags{};
 
+    u64 prepare_frame_tick = (std::numeric_limits<u64>::max)();
     u64 invalidation_tick = 0;
     u64 modification_tick = 0;
 };
