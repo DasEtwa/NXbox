@@ -105,7 +105,7 @@ class PsoFrameBudgetTests(unittest.TestCase):
         # Protected and RT-history decisions still govern whether a request waits at all.
         self.assertIn("if (!may_skip && pso_waited.insert(request_hash).second)", source)
         self.assertIn("CanSkipPendingGraphicsPsoFromRtHistory(", source)
-        self.assertIn('BisectEnabled("NXBOX_D3D12_PSO_WAIT_RT_HISTORY")', source)
+        self.assertIn('RtHistoryEnabled()', source)
 
     def test_compute_translation_moves_off_gpu_thread_with_budget(self):
         source = (D3D12 / "d3d12_pipeline_cache.cpp").read_text()
