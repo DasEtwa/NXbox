@@ -90,6 +90,14 @@ if(fmt_FOUND AND HLSL_BOOST_INCLUDE_DIR)
 endif()
 
 find_program(HLSL_DXC_EXECUTABLE dxc)
+# Exercise the same embedded FidelityFX HLSL entry points as the runtime compiler.
+find_package(Python3 QUIET COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND AND HLSL_DXC_EXECUTABLE)
+  add_test(NAME d3d12-fsr-dxc
+    COMMAND ${CMAKE_COMMAND} -E env "DXC=${HLSL_DXC_EXECUTABLE}"
+      ${Python3_EXECUTABLE} -B -m unittest discover
+      -s ${CMAKE_CURRENT_SOURCE_DIR} -p test_d3d12_fsr.py -k test_hlsl_dxc)
+endif()
 if(TARGET hlsl-ir-tests AND HLSL_DXC_EXECUTABLE)
   foreach(fixture vertex fragment compute waves resources arithmetic msaa msaa_array msaa_depth msaa_array_depth clip intsample intsample_array global global_windows)
     if(fixture STREQUAL "vertex" OR fixture STREQUAL "clip")

@@ -47,6 +47,12 @@ inline unsigned SyncInterval(bool vsync, unsigned interval = 1) {
         throw std::invalid_argument("DXGI vsync interval must be between 1 and 4");
     return vsync ? interval : 0;
 }
+// Compare the visible source rectangle in source axes, before final rotation.
+inline bool NeedsUpscale(Extent source, Extent output, Crop crop, std::uint32_t transform) {
+    const Extent destination = (transform & 4) ? Extent{output.height, output.width} : output;
+    return (crop.right - crop.left) * source.width < destination.width ||
+           (crop.bottom - crop.top) * source.height < destination.height;
+}
 inline std::array<float, 4> EasuMapping(Extent source, Extent output, Crop crop) {
     ValidateExtent(source);
     ValidateExtent(output);

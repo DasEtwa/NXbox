@@ -133,8 +133,10 @@ float4 Rcas(Vertex input) : SV_Target {
     uint4 constants;
     FsrRcasCon(constants, sharpness);
     float4 color;
-    FsrRcasF(color.r, color.g, color.b, color.a, uint2(input.position.xy), constants);
-    return color;
+    // Use transformed UVs so the final pass supports rotation, flips and viewport offsets.
+    uint2 pixel = uint2(clamp(input.uv * source_size, 0.0, source_size - 1.0));
+    FsrRcasF(color.r, color.g, color.b, color.a, pixel, constants);
+    return FinishColor(color);
 }
 
 // SPDX-FileCopyrightText: 2020 BreadFish64

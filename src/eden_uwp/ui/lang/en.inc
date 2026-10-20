@@ -421,3 +421,7 @@
 
     {Text::ErrorTitle, L"An error occurred"}, {Text::ErrorDismiss, L"Dismiss"},
     {Text::ErrorScroll, L"Scroll"},
+
+    {Text::UpscalerTitle, L"Upscaler"}, {Text::UpscalerBilinear, L"Bilinear"},
+    {Text::UpscalerFsr, L"FSR 1"},
+    {Text::UpscalerHint, L"DirectX 12 upscaling for smaller frames. Applies on next launch."},
