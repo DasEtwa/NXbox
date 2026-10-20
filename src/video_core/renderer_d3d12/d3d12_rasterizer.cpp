@@ -68,6 +68,8 @@ RasterizerD3D12::RasterizerD3D12(Tegra::GPU& gpu, Tegra::MaxwellDeviceMemoryMana
       transform_feedback{context}, query_runtime{context, memory, buffer_cache, transform_feedback},
       query_cache{gpu, *this, memory, query_runtime},
       fence_manager{*this, gpu, texture_cache, buffer_cache, query_cache, context}, m_gpu{gpu} {
+    // Root signatures are bounded by 64 parameters; never grow draw scratch.
+    draw_root_cbv_addresses.reserve(64);
     if (BisectEnabled("NXBOX_GPU_PIPELINE")) {
         gpu_pipeline = std::make_unique<VideoCommon::GpuDrawPipeline>();
         gpu_pipeline->Invoke([&gpu] {
@@ -1592,8 +1594,6 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         PrepareZeroUniformBuffer();
     auto& root_cbv_addresses = draw_root_cbv_addresses;
     root_cbv_addresses.clear();
-    if (root_cbvs)
-        root_cbv_addresses.reserve(totals.cbv);
     const u32 cbv_size = root_cbvs ? 0u : TableSize(totals.cbv);
     const u32 srv_size = TableSize(totals.srv);
     const u32 uav_size = TableSize(totals.uav);
@@ -1992,9 +1992,17 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     bind_table(RootSrvTable - table_shift, srv_table.gpu);
     bind_table(RootUavTable - table_shift, uav_table.gpu);
     bind_table(RootSamplerTable - table_shift, sampler_table.gpu);
+    // Opt in independently: EndDraw deliberately invalidates general draw state
+    // for a known title workaround. Track actual root writes without relaxing it.
+    const bool root_cbv_reuse = commands->reuse_graphics_root_cbvs;
     for (UINT i = 0; i < root_cbv_addresses.size(); ++i) {
-        if (context.RecordState(
-                recorded.root_args.cbvs.Update(kFirstRootCbv + i, root_cbv_addresses[i]))) {
+        const bool changed =
+            recorded.root_args.cbvs.Update(kFirstRootCbv + i, root_cbv_addresses[i]);
+        const bool root_changed =
+            root_cbv_reuse
+                ? commands->graphics_root_cbvs.cbvs.Update(kFirstRootCbv + i, root_cbv_addresses[i])
+                : changed;
+        if (context.RecordState(root_cbv_reuse ? root_changed : changed)) {
             if (batch_root_bindings)
                 root_bindings[root_binding_count++] = {root_cbv_addresses[i], kFirstRootCbv + i,
                                                        false};

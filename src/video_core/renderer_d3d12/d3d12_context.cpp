@@ -1325,6 +1325,7 @@ CommandFacade* Context::Commands() {
         static std::atomic<u64> next_retention_generation{1};
         retention_generation = next_retention_generation.fetch_add(1, std::memory_order_relaxed);
         recording = true;
+        facade.graphics_root_cbvs.Reset();
         InvalidateRecordedState();
         if (gpu_time_heap && profile.Enabled()) {
             facade.EndQuery(
