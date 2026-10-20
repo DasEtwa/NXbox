@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -103,6 +104,60 @@ private:
     }
     std::uint64_t tick{};
     std::unordered_map<std::string, Value> tables;
+};
+
+// GPU slots are immutable within a recording. Hash the ordered semantic keys,
+// then compare every key and the root-table layout to resolve collisions.
+// Value owns resource pins; CPU descriptor heap generations are independent.
+template <class Key, class Value, class Hash>
+class DescriptorSetCache {
+public:
+    const Value* Find(std::uint64_t current, const std::array<std::uint32_t, 3>& sizes,
+                      std::span<const Key> keys) const {
+        if (tick != current)
+            return nullptr;
+        const auto [first, last] = tables.equal_range(HashSet(sizes, keys));
+        for (auto entry = first; entry != last; ++entry) {
+            const auto& candidate = entry->second;
+            if (candidate.sizes == sizes && candidate.keys.size() == keys.size() &&
+                std::equal(keys.begin(), keys.end(), candidate.keys.begin()))
+                return &candidate.value;
+        }
+        return nullptr;
+    }
+    void Remember(std::uint64_t current, const std::array<std::uint32_t, 3>& sizes,
+                  std::span<const Key> keys, Value value) {
+        if (tick != current) {
+            Clear();
+            tick = current;
+        }
+        tables.emplace(HashSet(sizes, keys),
+                       Entry{sizes, {keys.begin(), keys.end()}, std::move(value)});
+    }
+    void Clear() {
+        tables.clear();
+    }
+
+private:
+    static std::size_t HashSet(const std::array<std::uint32_t, 3>& sizes,
+                               std::span<const Key> keys) {
+        std::size_t hash = keys.size();
+        const auto combine = [&](std::size_t part) {
+            hash ^= part + 0x9e3779b9u + (hash << 6) + (hash >> 2);
+        };
+        for (const auto size : sizes)
+            combine(size);
+        for (const auto& key : keys)
+            combine(Hash{}(key));
+        return hash;
+    }
+    struct Entry {
+        std::array<std::uint32_t, 3> sizes;
+        std::vector<Key> keys;
+        Value value;
+    };
+    std::uint64_t tick{};
+    std::unordered_multimap<std::size_t, Entry> tables;
 };
 } // namespace D3D12
 
@@ -290,9 +345,15 @@ public:
                    const ResourcePtr& replacement = {}, u32 layer_count = 0);
     void CreateDsv(D3D12_CPU_DESCRIPTOR_HANDLE handle, const ImageView& view,
                    D3D12_DSV_FLAGS flags = D3D12_DSV_FLAG_NONE, u32 layer_count = 0);
-    /// Lets the CPU view cache release the resources it keeps alive.
+    /// Release cached GPU tables and let the CPU view cache refresh its resource pins.
     void TickFrame() {
         new_frame = true;
+        for (auto& cache : draw_table_cache)
+            cache.Clear();
+        if (descriptor_table_cache) {
+            for (auto& previous : previous_draw_tables)
+                previous.tick = 0;
+        }
     }
 
   private:
@@ -348,7 +409,17 @@ public:
         DescriptorPlan plan{{0, 0, 0}};
         DescriptorTable table;
     };
+    struct CachedDrawTable {
+        DescriptorTable table;
+        std::vector<ResourcePtr> resources;
+    };
+    const CachedDrawTable* FindCachedDrawTable(const DescriptorPlan& plan, bool sampler) const;
+    bool CanReusePreviousDrawTable(const DescriptorPlan& plan, bool sampler) const;
+    void RememberDrawTable(const DescriptorPlan& plan, DescriptorTable table, bool sampler);
+    std::array<DescriptorSetCache<DescriptorKey, CachedDrawTable, DescriptorKeyHash>, 2>
+        draw_table_cache;
     std::array<PreviousDrawTable, 2> previous_draw_tables;
+    const bool descriptor_table_cache;
     const bool descriptor_fastpath;
     u64 cache_tick{};
     bool new_frame{true};
