@@ -164,6 +164,9 @@ struct Image { GPUVAddr gpu_addr=0x55ceb0000ULL; Info info; };
 struct ImageView { unsigned image_id=1; int format=1; Size size; };
 struct Cache {
     u64 frame=120; bool pending=true; unsigned flushes=0;
+    u64 pass_dump_sequence=72;
+    std::vector<std::string> reports;
+    void ReportPassDump(const std::string& message) { reports.push_back(message); }
     struct Target { unsigned id; u64 sequence; unsigned slot; };
     std::vector<Target> pass_dump_targets{{1, 12, 1}};
     std::vector<Image> slot_images{2};
@@ -187,9 +190,14 @@ int main(int argc, char** argv) {
     cache.frame=120;
     assert(!cache.RecordPassDumpPresentation(0x26131000, &view).empty());
     assert(cache.flushes==1);
+    assert(!cache.reports.empty());
+    assert(cache.reports.back().find("PASS_DUMP manifest frame=120 passes=72 dir=") == 0);
     cache.RecordPassDumpPresentation(0x26132000, nullptr);
     view.image_id=0;
     cache.RecordPassDumpPresentation(0x26133000, &view);
+    PassDump::config.directory /= "manifest.jsonl";
+    cache.RecordPassDumpPresentation(0x26134000, &view);
+    assert(cache.reports.back().find("PASS_DUMP presentation failed dir=") == 0);
     cache.frame=121;
     assert(cache.RecordPassDumpPresentation(0x26131000, &view).empty());
 }
@@ -215,6 +223,150 @@ int main(int argc, char** argv) {
             self.assertEqual((fallback["gpu_addr"], fallback["producer_seq"]), (0, 0))
             self.assertEqual(unmatched["producer_seq"], 0)
             self.assertEqual(pass_diff.read_manifest(directory), [])
+
+    def test_actual_raw_writer_closes_before_reporting_success(self):
+        source = CACHE.read_text()
+        download = source.split("    const auto download =", 1)[1].split("    try {", 1)[0]
+        driver = (
+            r"""
+#define FMT_HEADER_ONLY
+#include <algorithm>
+#include <array>
+#include <cassert>
+#include <cstdint>
+#include <filesystem>
+#include <fstream>
+#include <span>
+#include <string>
+#include <vector>
+#include <fmt/format.h>
+using u32 = std::uint32_t;
+using s32 = std::int32_t;
+namespace VideoCore::Surface {
+unsigned DefaultBlockWidth(int) { return 1; }
+unsigned DefaultBlockHeight(int) { return 1; }
+unsigned BytesPerBlock(int) { return 4; }
+}
+struct Extent2D { unsigned width, height; };
+struct Subresource { int base_level, base_layer, num_layers; };
+struct BufferImageCopy {
+    size_t buffer_offset, buffer_size;
+    unsigned buffer_row_length, buffer_image_height;
+    Subresource image_subresource;
+    std::array<unsigned,3> image_offset, image_extent;
+};
+struct Map { std::span<unsigned char> mapped_span; };
+struct Image {
+    struct Info { struct Size { unsigned width=1, height=1; } size; int format=0; } info;
+    void DownloadMemory(Map& map, const std::array<BufferImageCopy,1>& copies) {
+        assert(copies[0].buffer_size==4);
+        std::fill(map.mapped_span.begin(), map.mapped_span.end(), 76);
+    }
+};
+struct Runtime {
+    std::array<unsigned char,4> bytes{};
+    bool finished=false;
+    Map DownloadStagingBuffer(size_t size) { assert(size==4); return {bytes}; }
+    void Finish() { finished=true; }
+};
+int main(int argc, char** argv) {
+    Runtime runtime;
+    Image image;
+    const auto CaptureFrame = [] { return 1200; };
+    const unsigned seq=1;
+    std::vector<std::string> reports;
+    const auto ReportPassDump = [&](const std::string& message) { reports.push_back(message); };
+    const auto download ="""
+            + download
+            + r"""
+    const std::filesystem::path root=argv[1];
+    const auto output=root / "pass_0001_c0.raw";
+    assert(download(image, 0, output)==4);
+    assert(runtime.finished);
+    assert(std::filesystem::file_size(output)==4);
+    std::ifstream input{output, std::ios::binary};
+    std::string bytes{std::istreambuf_iterator<char>{input}, {}};
+    assert(bytes==std::string(4, 76));
+    assert(reports.size()==1);
+    assert(reports[0].find("PASS_DUMP wrote frame=1200 seq=1 bytes=4 file=")==0);
+    bool rejected=false;
+    try { download(image, 0, root / "missing" / "output.raw"); }
+    catch (const std::exception&) { rejected=true; }
+    assert(rejected);
+    assert(reports.size()==1);
+}
+"""
+        )
+        flags = shlex.split(subprocess.check_output(["pkg-config", "--cflags", "fmt"], text=True))
+        with tempfile.TemporaryDirectory() as temporary:
+            compile_run(driver, Path(temporary), extra_flags=flags)
+
+    def test_destination_probe_writes_marker_and_reports_unwritable_paths(self):
+        driver = r"""
+#include <cassert>
+#include <sstream>
+#include "video_core/pass_dump.h"
+int main(int argc, char** argv) {
+    const std::filesystem::path root = argv[1];
+    const auto destination = root / "LocalState" / "passdump";
+    VideoCommon::PassDump::PrepareDirectory(destination, "1200");
+    std::ifstream marker{destination / "capture.txt"};
+    std::stringstream contents;
+    contents << marker.rdbuf();
+    assert(contents.str() == "NXBOX_PASS_DUMP_FRAME=1200\n");
+    // A stale marker is replaced for the next session.
+    VideoCommon::PassDump::PrepareDirectory(destination, "3000");
+    std::ifstream updated{destination / "capture.txt"};
+    std::string line;
+    std::getline(updated, line);
+    assert(line == "NXBOX_PASS_DUMP_FRAME=3000");
+    bool rejected = false;
+    try { VideoCommon::PassDump::PrepareDirectory(destination / "capture.txt", "1"); }
+    catch (const std::exception&) { rejected = true; }
+    assert(rejected);
+    // Directory creation can succeed even when opening the output fails.
+    const auto blocked = root / "blocked";
+    std::filesystem::create_directories(blocked / "capture.txt");
+    rejected = false;
+    try { VideoCommon::PassDump::PrepareDirectory(blocked, "1"); }
+    catch (const std::exception&) { rejected = true; }
+    assert(rejected);
+}
+"""
+        with tempfile.TemporaryDirectory() as temporary:
+            compile_run(driver, Path(temporary))
+
+    def test_capture_reports_reach_the_runtime_sink_without_eden_logging(self):
+        source = CACHE.read_text()
+        method = source.split("template <class P>\nvoid TextureCache<P>::ReportPassDump", 1)[1]
+        method = method.split("\ntemplate <class P>", 1)[0]
+        driver = (
+            r"""
+#include <cassert>
+#include <string>
+#include <vector>
+#define LOG_INFO(...) ((void)0)
+struct Runtime {
+    std::vector<std::string> messages;
+    void ReportPassDump(const std::string& message) { messages.push_back(message); }
+};
+struct Cache { Runtime runtime; void ReportPassDump(const std::string&); };
+"""
+            + "void Cache::ReportPassDump"
+            + method
+            + r"""
+int main() {
+    Cache cache;
+    cache.ReportPassDump("PASS_DUMP failed frame=1200 seq=1 error=denied");
+    cache.ReportPassDump("PASS_DUMP wrote frame=1200 seq=2 bytes=4 file=pass_0002_c0.raw");
+    assert(cache.runtime.messages.size() == 2);
+    assert(cache.runtime.messages[0].find("error=denied") != std::string::npos);
+    assert(cache.runtime.messages[1].find("bytes=4") != std::string::npos);
+}
+"""
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            compile_run(driver, Path(temporary))
 
     def test_submission_trace_selection_and_event_limit(self):
         driver = r"""

@@ -1,3 +1,129 @@
+# Scarlet capture audit — 2026-10-20
+
+This section supersedes the older run instructions below. No rendering fix or
+performance improvement is established by this audit.
+
+## What actually fired
+
+Both requested frames were reached. `z-scarlet-capture` contains one
+`D3D12_DRAW_TRACE frame=3000` and one `D3D12_PASS_PRESENT frame=3000`;
+`z-scarlet-cap2` contains the same pair at frame 1200. Counting their copies in
+`diag.txt`, `eden.txt` and `crash.txt` as separate draws would triple-count them.
+The cache clock starts at zero; `CaptureFrame()` is `frame_tick + 1`, and
+`TextureCache::TickFrame()` closes the selected pass before incrementing it.
+D3D12 calls that method from `RendererD3D12::Composite`. Pass dumping is hooked
+from both dirty and unchanged render-target updates, and from presentation.
+There is no evidence here that either capture missed its frame counter.
+
+**The archived directory does not match the configured destination.** Both
+archives contain an empty `passdump/`, but the env points to
+`LocalState/scarlet-pass-3000` / `LocalState/scarlet-pass-1200`. Neither archive
+contains those directories. There is no `Pass dump ... failed` message in their
+Eden logs. This establishes a collection mismatch, not proof that the console
+wrote zero files. Q:/ directory creation has not been tested on the host and
+must not be declared the cause without a filesystem error from the console.
+
+The instrumentation now probes the actual destination at startup, writing
+`capture.txt`, and emits `PASS_DUMP ready frame=... dir=...` or
+`PASS_DUMP directory failed ... error=...` to diag. Completed raw writes emit
+`PASS_DUMP wrote frame=... seq=... bytes=... file=...` **after close**.
+Presentation closes the manifest before emitting `PASS_DUMP manifest ...`.
+Raw/manifest failures also reach the D3D12 diagnostic sink independently of the
+Eden log filter. The normal capture path, shaders and rendering decisions are
+unchanged. These are diagnostic changes, already gated by the existing capture
+env; no speculative renderer bisect was enabled.
+
+## What the gray-frame evidence permits
+
+Each selected frame has a complete submission trace: events 0–78,
+`frame_end events=79 truncated=false`. It contains one `guest_draw`:
+nonindexed, 3 vertices, 6 instances, `execute=true`, condition mode 0; the host
+submits it with `active=0` predication. Its target is `0x54af60000`, 64×64,
+`R16_FLOAT` (DXGI 54), six layers. The presented cache image is a different
+1920×1080 `A8B8G8R8_UNORM` image at GPU address 23033741312, with
+`producer_seq=0`, `producer_slot=-1`. That means no captured producer was found;
+it does not prove that the compositor chose the wrong image.
+
+Neither selected trace contains guest indirect draws, guest compute, condition
+suppression, PSO drops, or query report/wait events. The `query_flush_begin/end`
+pairs complete. No `D3D12_QUERY_RESOLVED` or `D3D12_PREDICATE` completion appears
+in diag. Prewarm builds 29/29 PSOs, zero failures; live profile windows report
+zero pending-PSO draw/dispatch drops and zero guest compute cache entries.
+Dispatch totals alone include backend query helpers and do not demonstrate
+missing guest compute.
+
+There is a material discrepancy: whole-run profiles count **14.0036** and
+**14.0030** guest draws/frame (4,139 and 5,040 frames), while each isolated trace
+has one draw. Do not extrapolate those isolated frames into a claim that the
+game never submits its other draws, or name an incorrect fullscreen pass without
+collecting its actual outputs. The early guest read fault in cap2 is at
+8.182 s, PC `0x8177e0f8`, address `0x11c422867f`, well before frame 1200 at
+55.409 s. It remains a separate CPU-side lead. The exact-conditional plain run
+also remains gray; the older AND/OR predicate defect is not a demonstrated cure.
+The supplied artifacts do not establish a first wrong render pass, an incorrect
+present selection, a dropped compute pass, or an unsupported-format conversion.
+
+## Next console run — exact env and collection contract
+
+Build/package the current branch first. Terminate the app and archive/remove
+old `LocalState/passdump` and logs. Replace `nxbox_env.txt` with exactly:
+
+```text
+NXBOX_D3D12_FRAME_PROFILE=1
+NXBOX_THREAD_PROFILE=1
+NXBOX_D3D12_DRAW_TRACE_FRAME=1200
+NXBOX_PASS_DUMP_FRAME=1200
+NXBOX_D3D12_DUMP_HLSL=1
+NXBOX_SUBMISSION_TRACE=1
+```
+
+**Omit `NXBOX_PASS_DUMP_DIR`.** Startup resolves the real application LocalFolder
+and selects its `passdump` child, matching the archived collection directory.
+Use `log_filter.txt` containing `*:Info` and `flush` on separate lines. Use the
+same game/update/save/input route as cap2; run 90 seconds after launch (cap2
+reached the selected frame at 55.4 s). Collect fresh diag/Eden/crash logs, a
+screenshot, the **entire directory printed by `PASS_DUMP ready`**, including
+`capture.txt`, `manifest.jsonl`, `sampled.jsonl`, all raw files, and all
+`log/gfx_*.hlsl` / `log/gfx_*.hash`. A renamed empty local directory is not a
+successful capture. Check that every `PASS_DUMP wrote ... file=...` exists in
+the archive with the logged byte count. If startup or a write fails, retain its
+full error; do not compensate by guessing another Q: path.
+
+Require the frame-1200 presentation mapping and complete submission `frame_end`.
+If the selected frame again contains only one draw, repeat with both frame
+settings at **1201**, a clean output directory and identical inputs, to sample
+its neighbor. Correlate the actual presented producer and sampled inputs before
+changing renderer state. Do not add exact-conditional/CPU-predicate/no-compute
+bisects to this baseline. Terminate the app and restore env/log filter afterward.
+
+## Measured costs and validation limits
+
+`winstat.py` over cap2's 34 live windows reports median game fps 30.0,
+GPU-thread CPU mean 4.6%, stall GPU busy share 14%, peak 2082 MiB. Across its
+5,040 profiled frames, largest inclusive phase times are sync wait **29.071**,
+Fermi2D **1.404**, Maxwell methods **0.648**, and DMA pusher **0.419 ms/frame**.
+Capture 3000 has sync wait **29.009** and Fermi2D **1.437 ms/frame**.
+These are inclusive wall scopes, not additive CPU usage. Removing sync waits
+without proving their dependencies unnecessary is not an optimization justified
+by these logs. No measured reduction or locked-60 claim is made.
+
+The other supplied captures reproduce the historical table below: BOTW 12.9 fps,
+sync wait 13.234 / draw recording 6.972 ms; Odyssey 24.7 fps, Maxwell methods
+9.498 / sync wait 4.923 ms; MK8D 31.8 fps, sync wait 5.743 / Maxwell methods
+3.828 ms; DBSZ 18.8 fps, pipeline lookup 6.490 / sync wait 6.278 ms.
+`dbsz-final105` supplies `eden_uwp_diag.txt`, not `diag.txt`.
+
+Host clang++ tests execute the actual raw-write lambda, presentation writer,
+diagnostic forwarding and filesystem probe, covering successful bytes, closed
+outputs, mismatched frame selection, missing directories and blocked output
+files. The raw and manifest reporting regressions fail against the original
+production bodies. Xbox/UWP MSVC compilation, actual Q: filesystem access,
+console readback, the next capture and Series S performance remain unverified.
+
+---
+
+# Historical investigation (through 2026-10-19)
+
 # Scarlet: trace the presented image and missing scene draws
 
 This is a diagnostic capture, not a rendering fix. The prior capture showed empty

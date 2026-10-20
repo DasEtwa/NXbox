@@ -772,6 +772,16 @@ void TextureCache<P>::UpdatePassDumpRenderTargets() {
 }
 
 template <class P>
+void TextureCache<P>::ReportPassDump(const std::string& message) {
+    // D3D12's diagnostic sink is retained independently of the Eden log filter.
+    if constexpr (requires { runtime.ReportPassDump(message); }) {
+        runtime.ReportPassDump(message);
+    } else {
+        LOG_INFO(Render, "{}", message);
+    }
+}
+
+template <class P>
 void TextureCache<P>::DumpPassRenderTargets() {
     if (!pass_dump_has_set) {
         return;
@@ -816,6 +826,9 @@ void TextureCache<P>::DumpPassRenderTargets() {
         output.exceptions(std::ios::failbit | std::ios::badbit);
         output.write(reinterpret_cast<const char*>(map.mapped_span.data()),
                      static_cast<std::streamsize>(bytes));
+        output.close();
+        ReportPassDump(fmt::format("PASS_DUMP wrote frame={} seq={} bytes={} file={}",
+                                   CaptureFrame(), seq, bytes, path.string()));
         return bytes;
     };
     try {
@@ -876,6 +889,8 @@ void TextureCache<P>::DumpPassRenderTargets() {
             }
         }
     } catch (const std::exception& error) {
+        ReportPassDump(fmt::format("PASS_DUMP failed frame={} seq={} dir={} error={}",
+                                   CaptureFrame(), seq, directory.string(), error.what()));
         LOG_ERROR(Render, "Pass dump seq={} failed: {}", seq, error.what());
     }
 }
@@ -1120,7 +1135,12 @@ std::string TextureCache<P>::RecordPassDumpPresentation(DAddr cpu_addr, const Im
         std::ofstream manifest{PassDump::GetConfig().directory / "manifest.jsonl", std::ios::app};
         manifest.exceptions(std::ios::failbit | std::ios::badbit);
         manifest << record << '\n';
+        manifest.close();
+        ReportPassDump(fmt::format("PASS_DUMP manifest frame={} passes={} dir={}", CaptureFrame(),
+                                   pass_dump_sequence, PassDump::GetConfig().directory.string()));
     } catch (const std::exception& error) {
+        ReportPassDump(fmt::format("PASS_DUMP presentation failed dir={} error={}",
+                                   PassDump::GetConfig().directory.string(), error.what()));
         LOG_ERROR(Render, "Pass dump presentation failed: {}", error.what());
     }
     return record;

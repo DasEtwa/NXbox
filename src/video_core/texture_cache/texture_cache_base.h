@@ -319,6 +319,7 @@ private:
     void RunGarbageCollector();
 
     void UpdatePassDumpRenderTargets();
+    void ReportPassDump(const std::string& message);
     void DumpPassRenderTargets();
 
     /// Find or create an image view in the guest descriptor table

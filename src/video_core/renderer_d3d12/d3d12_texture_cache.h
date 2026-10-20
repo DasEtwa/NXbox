@@ -48,6 +48,9 @@ public:
         static const bool enabled = BisectEnabled("NXBOX_D3D12_TEXTURE_CACHE_FASTPATH");
         return enabled;
     }
+    void ReportPassDump(const std::string& message) {
+        Diagnostic(message);
+    }
     void TickFrame();
     void FlushDeferredClear() {}
     u64 GetDeviceLocalMemory() const {

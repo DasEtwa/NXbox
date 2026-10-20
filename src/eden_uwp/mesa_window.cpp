@@ -8,6 +8,7 @@
 #include "eden_uwp/mesa_window.h"
 #include "eden_uwp/renderer_settings.h"
 #include "eden_uwp/ui/renderer.h"
+#include "video_core/pass_dump.h"
 #include "video_core/renderer_d3d12/backend_selection.h"
 
 #include <algorithm>
@@ -63,6 +64,19 @@ void LoadRuntimeEnvironment() {
         const std::string pass_dir = (env_file.parent_path() / "passdump").string();
         _putenv_s("NXBOX_PASS_DUMP_DIR", pass_dir.c_str());
         Diagnostic("PASS_DUMP dir=" + pass_dir);
+    }
+    if (const char* capture_frame = std::getenv("NXBOX_PASS_DUMP_FRAME")) {
+        const char* capture_directory = std::getenv("NXBOX_PASS_DUMP_DIR");
+        if (capture_directory && *capture_directory) {
+            try {
+                VideoCommon::PassDump::PrepareDirectory(capture_directory, capture_frame);
+                Diagnostic(std::string("PASS_DUMP ready frame=") + capture_frame +
+                           " dir=" + capture_directory);
+            } catch (const std::exception& error) {
+                Diagnostic(std::string("PASS_DUMP directory failed dir=") + capture_directory +
+                           " error=" + error.what());
+            }
+        }
     }
 }
 HMODULE loader_library = nullptr;
