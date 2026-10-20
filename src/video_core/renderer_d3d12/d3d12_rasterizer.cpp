@@ -3615,7 +3615,7 @@ void RasterizerD3D12::InvalidateRegion(DAddr addr, u64 size, VideoCommon::CacheT
 }
 void RasterizerD3D12::InnerInvalidation(std::span<const std::pair<DAddr, std::size_t>> sequences) {
     if (OnGpuPipeline())
-        return RunGpuPipeline([&] { return InnerInvalidation(DAddr, sequences); });
+        return RunGpuPipeline([&] { return InnerInvalidation(sequences); });
 
     // FlushCaching drains guest inline writes, even when CPU inner invalidation is skipped.
     // Match Vulkan: make those bytes CPU-owned before the next buffer synchronization.
