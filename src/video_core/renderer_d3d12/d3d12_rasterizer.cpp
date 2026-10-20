@@ -3637,6 +3637,7 @@ void RasterizerD3D12::NotifyFencesSubmitted() {
     fence_manager.NotifyDeferredSubmit();
 }
 void RasterizerD3D12::TickFrame() {
+    default_pipeline_cache->TickFrame();
     if (VideoCommon::ShaderDiscovery::Enabled())
         VideoCommon::ShaderDiscovery::EndFrame(gpu_memory);
     // Bisect toggles: each one skips one cache's per-frame aging.
