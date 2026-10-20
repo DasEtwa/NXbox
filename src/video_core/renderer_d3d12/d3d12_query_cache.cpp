@@ -496,7 +496,7 @@ struct QueryCacheRuntimeImpl {
     std::array<bool, TypeCount> enabled{};
     std::atomic<u64> pending_reports{}, completed_reports{}, invalidated_reports{}, report_copies{};
     u32 count{};
-    bool drawing{}, predicate_set{};
+    bool drawing{}, predicate_set{}, idle_draw{};
     // EQUAL_ZERO skips commands when the predicate is zero; NOT_EQUAL_ZERO inverts that.
     D3D12_PREDICATION_OP predicate_op{D3D12_PREDICATION_OP_EQUAL_ZERO};
     // Pipeline statistics are recorded only once the guest has read one of those counters.
@@ -558,11 +558,20 @@ void QueryCacheRuntime::BeginDraw(bool geometry) {
         throw std::logic_error("PrepareDraw must precede draw state binding");
     }
     ResumeHostConditionalRendering();
+    // Predication still resumes on an idle draw. No bank slot needs to be touched
+    // until a counter, pipeline statistics or stream output actually records data.
+    const bool occlusion = impl->enabled[static_cast<size_t>(QueryType::ZPassPixelCount)] ||
+                           impl->enabled[static_cast<size_t>(QueryType::ZPassPixelCount64)];
+    const u32 streams = impl->feedback.StreamMask();
+    static const bool draw_fastpaths = !BisectEnabled("NXBOX_D3D12_NO_DRAW_FASTPATHS");
+    impl->idle_draw = draw_fastpaths && !occlusion && !impl->pipeline_wanted && !streams;
+    if (impl->idle_draw) {
+        impl->drawing = true;
+        return;
+    }
     const u32 slot = impl->Slot();
     auto& draw = impl->draws[slot];
-    draw = {impl->enabled[static_cast<size_t>(QueryType::ZPassPixelCount)] ||
-                impl->enabled[static_cast<size_t>(QueryType::ZPassPixelCount64)],
-            geometry, impl->pipeline_wanted, false, impl->feedback.StreamMask()};
+    draw = {occlusion, geometry, impl->pipeline_wanted, false, streams};
     draw.recorded = draw.occlusion || draw.pipeline || draw.streams;
     impl->drawing = true;
     if (!draw.recorded)
@@ -586,6 +595,10 @@ void QueryCacheRuntime::EndDraw() {
         return;
     if (!impl->drawing) {
         throw std::logic_error("D3D12 EndDraw without BeginDraw");
+    }
+    if (impl->idle_draw) {
+        impl->drawing = false;
+        return;
     }
     const u32 slot = impl->Slot();
     const auto& draw = impl->draws[slot];

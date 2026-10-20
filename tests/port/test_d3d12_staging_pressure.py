@@ -20,6 +20,7 @@ DRIVER = r"""
 #include <vector>
 using u64 = std::uint64_t;
 using u8 = std::uint8_t;
+bool BisectEnabled(const char*) { return false; }
 constexpr u64 Align(u64 size, u64 alignment) { return (size + alignment - 1) & ~(alignment - 1); }
 struct Resource {
     std::vector<u8> bytes;
@@ -47,6 +48,7 @@ struct Context {
     FrameProfile& Profile() { return profile; }
     std::vector<ResourcePtr> retained;
     bool IsFree(u64 value) const { return value <= completed; }
+    u64 CompletedTick() { ++fence_polls; return completed; }
     u64 CurrentTick() const { return tick; }
     void Collect() { ++fence_polls; }
     void Finish(FrameCount = FrameCount::ForcedSubmitStagingPressure) { ++finishes; completed = tick++; retained.clear(); }
@@ -137,6 +139,9 @@ int main() {
         cache.push_back(sub.buffer);
         pressure_context.retained.push_back(sub.buffer);
     }
+    const int sweep_polls = pressure_context.fence_polls;
+    pressure.Collect();
+    assert(pressure_context.fence_polls == sweep_polls + 2); // Not one poll per page.
     auto recycled = pressure.Request(256);
     assert(cache.empty() && pressure_context.finishes == 1);
     assert(pressure_context.resources == 16 && recycled.offset == 0);
