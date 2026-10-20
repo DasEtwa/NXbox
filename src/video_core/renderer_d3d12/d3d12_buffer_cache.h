@@ -33,6 +33,7 @@ public:
     void MarkUsage(u64 offset, u64 size);
     void ResetUsageTracking() {
         usage.Reset();
+        usage_cached = false;
     }
     u64 LastUsageTick() const {
         return tick;
@@ -43,16 +44,25 @@ private:
     ResourcePtr resource;
     VideoCommon::UsageTracker usage{0};
     u64 tick{};
+    u64 usage_offset{}, usage_size{};
+    bool usage_cached{};
+    bool binding_cache{BisectEnabled("NXBOX_D3D12_BINDING_CACHE")};
 };
 class BufferCacheRuntime {
 public:
     BufferCacheRuntime(Context& context, BindingState& bindings)
         : context{context}, bindings{bindings}, upload{context, D3D12_HEAP_TYPE_UPLOAD},
           readback{context, D3D12_HEAP_TYPE_READBACK},
-          uniform_snapshots{context, D3D12_HEAP_TYPE_DEFAULT, [this] { uniform_copies.Clear(); }} {}
+          uniform_snapshots{context, D3D12_HEAP_TYPE_DEFAULT, [this] {
+                                uniform_copies.Clear();
+                                InvalidateUniformBindings();
+                            }} {}
     bool synchronizing_indices{};
     bool BufferFastpathEnabled() const {
         return buffer_fastpath;
+    }
+    bool BindingCacheEnabled() const {
+        return binding_cache;
     }
     bool PreferCachedUniformBuffers() const {
         return true;
@@ -142,6 +152,21 @@ private:
         const char* value = std::getenv("NXBOX_D3D12_BUFFER_FASTPATH");
         return !value || value[0] != '0' || value[1] != '\0';
     }();
+    const bool binding_cache{BisectEnabled("NXBOX_D3D12_BINDING_CACHE")};
+    struct UniformBindingResolution {
+        ResourcePtr source;
+        u64 version{};
+        u32 offset{}, size{}, read_limit{};
+        BoundBuffer resolved;
+    };
+    // Indexed by the dense per-stage slot, also used by compute. Full keys handle
+    // shader/channel switches; writes invalidate snapshots through content_version.
+    std::array<std::array<UniformBindingResolution, VideoCommon::NUM_GRAPHICS_UNIFORM_BUFFERS>,
+               BindingState::NumStages>
+        uniform_bindings{};
+    void InvalidateUniformBindings() {
+        uniform_bindings = {};
+    }
     UniformCopyCache<Resource> uniform_copies;
     FrameCount upload_source{FrameCount::OtherUploadBytes};
     BindingState& bindings;

@@ -53,7 +53,14 @@ Buffer::Buffer(BufferCacheRuntime& runtime, VAddr address, u64 size, bool)
 void Buffer::MarkUsage(u64 offset, u64 size) {
     if (!context || !resource)
         return;
-    usage.Track(offset, size);
+    // Retention remains unconditional: Retain can open a new command list. Usage
+    // bits only need another update when the range changes (or tracking resets).
+    if (!binding_cache || !usage_cached || offset != usage_offset || size != usage_size) {
+        usage.Track(offset, size);
+        usage_offset = offset;
+        usage_size = size;
+        usage_cached = true;
+    }
     tick = context->CurrentTick();
     context->Retain(resource);
 }
@@ -94,6 +101,9 @@ u32 WitnessWindowNonzero(std::span<const u8> page) {
 }
 } // namespace
 void BufferCacheRuntime::TickFrame(Common::SlotVector<Buffer>& buffers) {
+    // Drop source leases and snapshot results at the frame boundary. The ring's
+    // recycle callback also clears them before a snapshot page is reused.
+    InvalidateUniformBindings();
     bool trim_staging = false;
 #ifdef NXBOX_UWP
     const auto usage = context.MemoryUsage();
@@ -377,6 +387,12 @@ void BufferCacheRuntime::BindVertexBuffer(u32 index, ResourcePtr buffer, u32 off
                                           u32 stride) {
     if (index >= GeometryBindings::MaxVertexBuffers)
         return;
+    if (BindingCacheEnabled()) {
+        const auto& previous = bindings.geometry.vertex[index];
+        if (previous.resource == buffer && previous.offset == offset && previous.size == size &&
+            previous.stride == stride && !UploadTraceEnabled())
+            return;
+    }
     const auto width = buffer ? (BufferFastpathEnabled() ? buffer->Description().Width
                                                          : buffer->handle->GetDesc().Width)
                               : 0;
@@ -428,6 +444,24 @@ std::span<u8> BufferCacheRuntime::BindMappedUniformBuffer(size_t stage, u32, u32
 void BufferCacheRuntime::BindUniformBuffer(const Buffer& buffer, u32 offset, u32 size) {
     const u32 read_limit = std::exchange(uniform_read_limit, ~0U);
     auto resource = buffer.Handle();
+    auto& destination = bindings.stages[bindings.current_stage].uniform;
+    UniformBindingResolution* resolution = nullptr;
+    if (BindingCacheEnabled() && destination.size() < uniform_bindings[0].size()) {
+        resolution = &uniform_bindings[bindings.current_stage][destination.size()];
+        if (resource && resolution->source == resource &&
+            resolution->version == resource->content_version && resolution->offset == offset &&
+            resolution->size == size && resolution->read_limit == read_limit) {
+            destination.push_back(resolution->resolved);
+            return;
+        }
+    }
+    const auto remember = [&] {
+        if (resolution) {
+            const auto source = buffer.Handle();
+            *resolution = {source,     source->content_version, offset, size,
+                           read_limit, destination.back()};
+        }
+    };
     const auto width = resource ? (BufferFastpathEnabled() ? resource->Description().Width
                                                            : resource->handle->GetDesc().Width)
                                 : 0;
@@ -450,10 +484,12 @@ void BufferCacheRuntime::BindUniformBuffer(const Buffer& buffer, u32 offset, u32
     if ((offset & 255) || (size != padded && !unread_tail) || padded > width - offset) {
         bindings.stages[bindings.current_stage].uniform.push_back(
             CopyUniform({std::move(resource), offset, size}));
+        remember();
         return;
     }
     bindings.stages[bindings.current_stage].uniform.push_back(
         {std::move(resource), offset, padded});
+    remember();
 }
 BoundBuffer BufferCacheRuntime::CopyUniform(const BoundBuffer& uniform) {
     const auto& resource = uniform.resource;

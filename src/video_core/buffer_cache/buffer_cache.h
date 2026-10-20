@@ -535,8 +535,15 @@ bool BufferCache<P>::BindGraphicsStorageBuffer(size_t stage, size_t ssbo_index, 
 
     const auto& cbufs = maxwell3d->state.shader_stages[stage];
     const GPUVAddr ssbo_addr = cbufs.const_buffers[cbuf_index].address + cbuf_offset;
-    channel_state->storage_buffers[stage][ssbo_index] =
-        StorageBufferBinding(ssbo_addr, cbuf_index, is_written);
+    Binding binding = StorageBufferBinding(ssbo_addr, cbuf_index, is_written);
+    if constexpr (requires { runtime.BindingCacheEnabled(); }) {
+        const Binding& previous = channel_state->storage_buffers[stage][ssbo_index];
+        if (runtime.BindingCacheEnabled() && previous.device_addr == binding.device_addr &&
+            previous.gpu_addr == binding.gpu_addr && previous.size == binding.size) {
+            binding.buffer_id = previous.buffer_id;
+        }
+    }
+    channel_state->storage_buffers[stage][ssbo_index] = binding;
     return (channel_state->storage_buffers[stage][ssbo_index].buffer_id != NULL_BUFFER_ID);
 }
 
@@ -1538,8 +1545,16 @@ void BufferCache<P>::UpdateStorageBuffers(size_t stage) {
     ForEachEnabledBit(channel_state->enabled_storage_buffers[stage], [&](u32 index) {
         // Resolve buffer
         Binding& binding = channel_state->storage_buffers[stage][index];
-        const BufferId buffer_id = FindBuffer(binding.device_addr, binding.size, false);
-        binding.buffer_id = buffer_id;
+        bool resolved = false;
+        if constexpr (requires { runtime.BindingCacheEnabled(); }) {
+            resolved = runtime.BindingCacheEnabled() && binding.buffer_id != NULL_BUFFER_ID;
+        }
+        if (!resolved) {
+            binding.buffer_id = FindBuffer(binding.device_addr, binding.size, false);
+        } else if (Settings::IsGPUFenceBehaviorAccurate()) {
+            // Reuse the identity, preserving FindBuffer's write-fence contract.
+            SynchronizeBufferWrites(slot_buffers[binding.buffer_id]);
+        }
         const bool is_written = ((channel_state->written_storage_buffers[stage] >> index) & 1) != 0;
         ResolveMultiRangeStorage(binding, is_written, graphics_segments);
     });
@@ -2075,11 +2090,12 @@ void BufferCache<P>::DeleteBuffer(BufferId buffer_id, bool do_not_mark) {
     replace(channel_state->transform_feedback_buffers);
     replace(channel_state->compute_uniform_buffers);
     replace(channel_state->compute_storage_buffers);
-    // Duplicate uniform notifications keep their resolved buffer_id, so a channel that is not
-    // current must not keep an id this deletion frees.
+    // Cached bindings in inactive channels must not retain a deleted/merged identity.
     if constexpr (requires { runtime.BufferFastpathEnabled(); }) {
-        for (const size_t id : active_channel_ids)
+        for (const size_t id : active_channel_ids) {
             std::ranges::for_each(channel_storage[id].uniform_buffers, replace);
+            std::ranges::for_each(channel_storage[id].storage_buffers, replace);
+        }
     }
 
     // Mark the whole buffer as CPU written to stop tracking CPU writes
