@@ -430,9 +430,10 @@ void ArmDynarmic64::MakeJit(Common::PageTable* page_table, std::size_t address_s
         config.fastmem_exclusive_access = false;
     }
 #ifdef NXBOX_UWP
-    // Removing the two PC stores per guest memory operation matches desktop emission.
-    // Keep precise crash context by default; console A/B tests can opt out explicitly.
-    NxboxJit::ApplyA64OptOuts(config, std::uint32_t(address_space_bits));
+    NxboxJit::ApplyA64OptOuts(config, std::uint32_t(address_space_bits),
+                              Settings::values.cpu_accuracy.GetValue() ==
+                                      Settings::CpuAccuracy::Auto &&
+                                  !m_system.DebuggerEnabled());
     LOG_INFO(Core_ARM,
              "NXBOX FAULT CONFIG core={} accuracy={} optimizations={:#x} unsafe={} "
              "page_table={} fastmem={} fastmem_exclusives={} wall_clock={} "

@@ -80,9 +80,19 @@ void ApplyOptOuts(Config& config) {
 }
 // A64-only diagnostics and Auto's unchecked host address-space optimization.
 template <typename Config>
-void ApplyA64OptOuts(Config& config, std::uint32_t address_space_bits) {
+void ApplyA64OptOuts(Config& config, std::uint32_t address_space_bits,
+                     bool allow_fast_memory_context = false) {
     ApplyOptOuts(config);
-    config.collect_memory_access_context = !Disabled("NXBOX_JIT_PRECISE_MEMORY");
+    // Match desktop emission in Auto: diagnostic PC stores at every memory IR
+    // operation also inhibit register-store elimination. Neither is needed for
+    // normal execution. Preserve context for watchpoints/protection fault exits,
+    // explicit accuracy/debug modes, and console crash investigations.
+    config.collect_memory_access_context =
+        config.check_halt_on_memory_access || !Disabled("NXBOX_JIT_PRECISE_MEMORY");
+    if (allow_fast_memory_context && !config.check_halt_on_memory_access &&
+        !Disabled("NXBOX_JIT_FAST_MEMORY_CONTEXT") && !BisectEnabled("NXBOX_JIT_PRECISE_MEMORY")) {
+        config.collect_memory_access_context = false;
+    }
     if (Disabled("NXBOX_JIT_UNCHECKED_FASTMEM")) {
         config.fastmem_address_space_bits = address_space_bits;
     }
