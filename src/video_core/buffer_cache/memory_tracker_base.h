@@ -16,6 +16,7 @@
 
 #include "common/alignment.h"
 #include "common/common_types.h"
+#include "video_core/buffer_cache/upload_range_cache.h"
 #include "video_core/buffer_cache/word_manager.h"
 
 namespace VideoCommon {
@@ -72,9 +73,11 @@ public:
 
     /// Mark region as CPU modified, notifying the device_tracker about this change
     void MarkRegionAsCpuModified(VAddr dirty_cpu_addr, u64 query_size) {
-        IteratePages<true>(dirty_cpu_addr, query_size, [](Manager* manager, u64 offset, size_t size) {
-            manager->ChangeRegionState(Type::CPU, true, manager->cpu_addr + offset, size);
-        });
+        upload_ranges.Invalidate(dirty_cpu_addr, query_size);
+        IteratePages<true>(
+            dirty_cpu_addr, query_size, [](Manager* manager, u64 offset, size_t size) {
+                manager->ChangeRegionState(Type::CPU, true, manager->cpu_addr + offset, size);
+            });
     }
 
     /// Unmark region as CPU modified, notifying the device_tracker about this change
@@ -115,33 +118,49 @@ public:
     /// Mark region as modified from the CPU
     /// but don't mark it as modified until FlusHCachedWrites is called.
     void CachedCpuWrite(VAddr dirty_cpu_addr, u64 query_size) {
-        IteratePages<true>(dirty_cpu_addr, query_size, [this](Manager* manager, u64 offset, size_t size) {
-            const VAddr cpu_address = manager->cpu_addr + offset;
-            manager->ChangeRegionState(Type::CachedCPU, true, cpu_address, size);
-            cached_pages.insert(u32(cpu_address >> HIGHER_PAGE_BITS));
-        });
+        upload_ranges.Invalidate(dirty_cpu_addr, query_size);
+        IteratePages<true>(dirty_cpu_addr, query_size,
+                           [this](Manager* manager, u64 offset, size_t size) {
+                               const VAddr cpu_address = manager->cpu_addr + offset;
+                               manager->ChangeRegionState(Type::CachedCPU, true, cpu_address, size);
+                               cached_pages.insert(u32(cpu_address >> HIGHER_PAGE_BITS));
+                           });
     }
 
     /// Flushes cached CPU writes, and notify the device_tracker about the deltas
     void FlushCachedWrites(VAddr query_cpu_addr, u64 query_size) noexcept {
-        IteratePages<false>(query_cpu_addr, query_size, [](Manager* manager, [[maybe_unused]] u64 offset, [[maybe_unused]] size_t size) {
-            manager->FlushCachedWrites();
-        });
+        IteratePages<false>(
+            query_cpu_addr, query_size,
+            [this](Manager* manager, [[maybe_unused]] u64 offset, [[maybe_unused]] size_t size) {
+                upload_ranges.Invalidate(manager->cpu_addr, HIGHER_PAGE_SIZE);
+                manager->FlushCachedWrites();
+            });
     }
 
     void FlushCachedWrites() noexcept {
         for (auto id : cached_pages) {
+            upload_ranges.Invalidate(u64{id} << HIGHER_PAGE_BITS, HIGHER_PAGE_SIZE);
             top_tier[id]->FlushCachedWrites();
         }
         cached_pages.clear();
     }
 
+    [[nodiscard]] bool IsUploadRangeCached(VAddr address, u64 size) const {
+        return upload_ranges.Contains(address, size);
+    }
+
     /// Call 'func' for each CPU modified range and unmark those pages as CPU modified
     template <typename Func>
-    void ForEachUploadRange(VAddr query_cpu_range, u64 query_size, Func&& func) {
-        IteratePages<true>(query_cpu_range, query_size, [&func](Manager* manager, u64 offset, size_t size) {
-            manager->ForEachModifiedRange(Type::CPU, true, manager->cpu_addr + offset, size, func);
-        });
+    void ForEachUploadRange(VAddr query_cpu_range, u64 query_size, Func&& func,
+                            bool cache_range = false) {
+        IteratePages<true>(query_cpu_range, query_size,
+                           [&func](Manager* manager, u64 offset, size_t size) {
+                               manager->ForEachModifiedRange(
+                                   Type::CPU, true, manager->cpu_addr + offset, size, func);
+                           });
+        if (cache_range) {
+            upload_ranges.Record(query_cpu_range, query_size);
+        }
     }
 
     /// Call 'func' for each GPU modified range and unmark those pages as GPU modified
@@ -259,6 +278,7 @@ private:
     std::deque<Manager*> free_managers;
     ::Common::unordered_set<u32> cached_pages;
     DeviceTracker* device_tracker = nullptr;
+    UploadRangeCache upload_ranges;
 };
 
 } // namespace VideoCommon

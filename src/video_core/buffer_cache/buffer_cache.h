@@ -1932,6 +1932,19 @@ void BufferCache<P>::TouchBuffer(Buffer& buffer, BufferId buffer_id) noexcept {
 template <class P>
 bool BufferCache<P>::SynchronizeBuffer(Buffer& buffer, DAddr device_addr, u32 size,
                                        BufferUploadSource source) {
+    // D3D12 already reuses host binding resolutions. Avoid re-walking CPU dirty words
+    // for those same ranges; write notifications invalidate the memoized page regions.
+    bool cache_range = false;
+    if constexpr (requires { runtime.BindingResolutionCacheEnabled(); }) {
+        static const bool cache_upload_ranges = [] {
+            const char* value = std::getenv("NXBOX_BUFFER_UPLOAD_RANGE_CACHE");
+            return !value || std::string_view{value} != "0";
+        }();
+        cache_range = cache_upload_ranges;
+        if (cache_range && memory_tracker.IsUploadRangeCached(device_addr, size)) {
+            return true;
+        }
+    }
     upload_copies.clear();
     u64 total_size_bytes = 0;
     u64 largest_copy = 0;
@@ -1947,14 +1960,18 @@ bool BufferCache<P>::SynchronizeBuffer(Buffer& buffer, DAddr device_addr, u32 si
         total_size_bytes += range_size;
         largest_copy = (std::max)(largest_copy, range_size);
     };
-    memory_tracker.ForEachUploadRange(device_addr, size, [&](u64 device_addr_out, u64 range_size) {
-        DAddr upload_start = device_addr_out;
-        gpu_modified_ranges.ForEachInRange(device_addr_out, range_size, [&](DAddr gpu_start, DAddr gpu_end) {
-            add_upload(upload_start, gpu_start);
-            upload_start = gpu_end;
-        });
-        add_upload(upload_start, device_addr_out + range_size);
-    });
+    memory_tracker.ForEachUploadRange(
+        device_addr, size,
+        [&](u64 device_addr_out, u64 range_size) {
+            DAddr upload_start = device_addr_out;
+            gpu_modified_ranges.ForEachInRange(device_addr_out, range_size,
+                                               [&](DAddr gpu_start, DAddr gpu_end) {
+                                                   add_upload(upload_start, gpu_start);
+                                                   upload_start = gpu_end;
+                                               });
+            add_upload(upload_start, device_addr_out + range_size);
+        },
+        cache_range);
     if (total_size_bytes == 0) {
         return true;
     }
