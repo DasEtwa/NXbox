@@ -40,9 +40,14 @@
 #include <winrt/Windows.Web.Http.h>
 #include <zlib.h>
 
+#include "common/fs/path_util.h"
 #include "common/settings.h"
+#include "core/file_sys/patch_manager.h"
+#include "core/file_sys/vfs/vfs_real.h"
 #include "eden_uwp/diagnostic.h"
+#include "eden_uwp/ui/mods_paths.h"
 #include "eden_uwp/ui/widgets.h"
+#include "eden_uwp/usb_library.h"
 
 namespace EdenXbox::Ui {
 namespace {
@@ -1729,6 +1734,32 @@ ModDetails ModStore::Details(const std::shared_ptr<ModEntry>& entry) const {
 }
 
 void ApplyDisabledMods(const fs::path& local_state) {
+    // Keep the real filesystem alive: its directories retain a reference to it.
+    static FileSys::RealVfsFilesystem mod_filesystem;
+    std::string selected;
+    std::ifstream game_file(local_state / "game.txt");
+    std::getline(game_file, selected);
+    while (!selected.empty() && (selected.back() == '\r' || selected.back() == ' ')) {
+        selected.pop_back();
+    }
+    auto game_folders = ExternalGameFolders(false);
+    if (!selected.empty() && selected != "none") {
+        const fs::path game{Common::FS::ToU8String(selected)};
+        game_folders.push_back((game.is_absolute() ? game : local_state / game).parent_path());
+    }
+    std::vector<FileSys::VirtualDir> roots;
+    for (const auto& path : ModLoadPaths(local_state, game_folders)) {
+        std::error_code path_error;
+        if (!fs::is_directory(path, path_error)) {
+            continue;
+        }
+        if (auto root = mod_filesystem.OpenDirectory(Common::FS::PathToUTF8String(path),
+                                                     FileSys::OpenMode::Read)) {
+            Diagnostic("MODS load root " + Common::FS::PathToUTF8String(path));
+            roots.push_back(std::move(root));
+        }
+    }
+    FileSys::PatchManager::SetAdditionalModLoadRoots(std::move(roots));
     std::error_code ec;
     fs::directory_iterator it(local_state / "library", ec);
     if (ec) {
