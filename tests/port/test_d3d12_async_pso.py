@@ -280,7 +280,7 @@ class AsyncPsoTests(unittest.TestCase):
             "depth_tested = regs.zeta_enable != 0 && regs.depth_test_enable != 0", source
         )
         self.assertIn("if (!may_skip && pso_waited.insert(request_hash).second)", graphics)
-        self.assertIn('BisectEnabled("NXBOX_D3D12_PSO_WAIT_RT_HISTORY")', graphics)
+        self.assertIn('RtHistoryEnabled()', graphics)
         self.assertIn("const bool may_skip = old_may_skip || history_skip;", graphics)
         self.assertIn('history_skip ? "rt_history"', source)
         # Only Ready results enter the guest cache; pending/missing remain retryable.

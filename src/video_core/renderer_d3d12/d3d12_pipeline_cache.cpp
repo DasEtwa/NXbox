@@ -49,6 +49,16 @@
 
 namespace D3D12 {
 namespace {
+// On by default: fewer cold-cache hitches in Odyssey and MK8D on Series X. =0 waits as before.
+bool RtHistoryEnabled() {
+    static const bool enabled = [] {
+        char value[2]{};
+        return !(GetEnvironmentVariableA("NXBOX_D3D12_PSO_WAIT_RT_HISTORY", value, sizeof(value)) ==
+                     1 &&
+                 value[0] == '0');
+    }();
+    return enabled;
+}
 
 // No hashing, allocation, locking or file IO unless explicitly enabled.
 void DumpGraphicsHlsl(u64 guest_hash, Shader::Stage stage, std::string_view source) {
@@ -1307,8 +1317,7 @@ IGraphicsPipeline* PipelineCache::RememberGraphicsPipeline(const GraphicsPipelin
 }
 
 void PipelineCache::RecordGraphicsDraw(u64 frame) {
-    static const bool enabled = BisectEnabled("NXBOX_D3D12_PSO_WAIT_RT_HISTORY");
-    if (!enabled || !maxwell3d || maxwell3d->regs.rt_control.count == 0)
+    if (!RtHistoryEnabled() || !maxwell3d || maxwell3d->regs.rt_control.count == 0)
         return;
     const auto& rt0 = maxwell3d->regs.rt[maxwell3d->regs.rt_control.Map(0)];
     rt_draw_history.Record(rt0.Address(), frame);
@@ -1577,14 +1586,13 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(const Pso::Framebuffer
             const bool old_may_skip = CanSkipPendingGraphicsPso(
                 skip_pending, draw_count, drawn_count, !wait_depth && depth_tested,
                 maxwell3d->regs.transform_feedback_enabled != 0);
-            static const bool rt_history_enabled = BisectEnabled("NXBOX_D3D12_PSO_WAIT_RT_HISTORY");
-            const auto last_rt_draw = rt_history_enabled && formats.colors[0] != 0
+            const auto last_rt_draw = RtHistoryEnabled() && formats.colors[0] != 0
                                           ? rt_draw_history.LastDrawFrame(
                                                 regs.rt[regs.rt_control.Map(0)].Address(), frame)
                                           : std::nullopt;
             const bool history_skip =
                 !old_may_skip && CanSkipPendingGraphicsPsoFromRtHistory(
-                                     skip_pending, rt_history_enabled,
+                                     skip_pending, RtHistoryEnabled(),
                                      regs.transform_feedback_enabled != 0, frame, last_rt_draw);
             const bool may_skip = old_may_skip || history_skip;
             if (entry.status == AsyncCache::Status::Missing && async->CanSubmit(!may_skip)) {
