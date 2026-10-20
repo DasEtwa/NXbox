@@ -22,7 +22,7 @@ class QueryBatchTests(unittest.TestCase):
         context = (BACKEND / "d3d12_context.cpp").read_text()
         rasterizer = (BACKEND / "d3d12_rasterizer.cpp").read_text()
         self.assertIn('std::getenv("NXBOX_D3D12_BATCH_QUERIES")', runtime)
-        self.assertIn("value[0] != '0' || value[1] != '\\0'", runtime)
+        self.assertIn("value && value[0] == '1' && value[1] == '\\0'", runtime)
         read = function_body(runtime, "QueryCacheRuntime::ReadCounter(")
         self.assertIn("++destination->content_version;", read)
         self.assertIn("CopyFilledSize(stream, impl->gpu_report)", read)

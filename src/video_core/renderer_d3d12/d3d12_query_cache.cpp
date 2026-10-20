@@ -587,9 +587,10 @@ struct QueryCacheRuntimeImpl {
         return value;
     }
     const bool synchronous{SynchronousQueries()};
-    const bool batch_queries = [] {
+    // Opt-in: on Series X it cost Odyssey 18% (25.0 vs 30.4 fps without profilers).
+    static const bool batch_queries = [] {
         const char* value = std::getenv("NXBOX_D3D12_BATCH_QUERIES");
-        return !value || value[0] != '0' || value[1] != '\0';
+        return value && value[0] == '1' && value[1] == '\0';
     }();
     struct ReportDestination {
         ResourcePtr resource;
