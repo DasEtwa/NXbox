@@ -11,6 +11,7 @@
 #include <mutex>
 #include <span>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 // Opt-in flight recorder. Read by the frontend heartbeat, never by a GPU-thread task:
@@ -74,8 +75,19 @@ inline void Max(Counter counter, std::uint64_t value) {
     while (old < value && !target.compare_exchange_weak(old, value, std::memory_order_relaxed)) {
     }
 }
-enum class Kind { Svc, Service, Fence, NvEvent, Syncpoint };
-inline constexpr std::array KindNames{"svc", "service", "fence", "nv_event", "syncpoint"};
+enum class Kind {
+    Svc,
+    Service,
+    Fence,
+    NvEvent,
+    Syncpoint,
+    CacheRetirement,
+    GuestCallbacks,
+    FencePublication
+};
+inline constexpr std::array KindNames{
+    "svc",       "service",          "fence",           "nv_event",
+    "syncpoint", "cache_retirement", "guest_callbacks", "fence_publication"};
 struct Entry {
     Kind kind{};
     std::uint64_t key{}, token{}, began_ms{}, ended_ms{}, pc{}, lr{}, result{};
@@ -163,6 +175,58 @@ inline std::uint64_t Begin(Kind kind, std::uint64_t key, std::string_view label,
 inline void End(std::uint64_t token, std::uint64_t result = 0) {
     if (token)
         recorder.End(token, result);
+}
+// Separate active-only storage: report bursts must not evict guest wait observations.
+// Instantiated only with diagnostics enabled; the heartbeat takes an owned copy.
+enum class PendingKind { Query, Syncpoint };
+inline constexpr std::array PendingNames{"query", "syncpoint"};
+struct PendingEntry {
+    PendingKind kind{};
+    std::uint64_t token{}, key{}, tick{}, began_ms{};
+};
+class PendingRecorder {
+public:
+    std::uint64_t Begin(PendingKind kind, std::uint64_t key, std::uint64_t tick) {
+        std::scoped_lock lock{mutex};
+        if (entries.size() == 8192) {
+            ++dropped;
+            return 0;
+        }
+        const auto token = ++sequence;
+        entries.emplace(token, PendingEntry{kind, token, key, tick, NowMs()});
+        return token;
+    }
+    void End(std::uint64_t token) {
+        std::scoped_lock lock{mutex};
+        entries.erase(token);
+    }
+    struct Snapshot {
+        std::vector<PendingEntry> entries;
+        std::uint64_t dropped{};
+    };
+    Snapshot Read() {
+        std::scoped_lock lock{mutex};
+        Snapshot result{{}, dropped};
+        for (const auto& [token, entry] : entries)
+            result.entries.push_back(entry);
+        return result;
+    }
+
+private:
+    std::mutex mutex;
+    std::unordered_map<std::uint64_t, PendingEntry> entries;
+    std::uint64_t sequence{}, dropped{};
+};
+inline PendingRecorder& Pending() {
+    static PendingRecorder pending;
+    return pending;
+}
+inline std::uint64_t BeginPending(PendingKind kind, std::uint64_t key, std::uint64_t tick) {
+    return Enabled() ? Pending().Begin(kind, key, tick) : 0;
+}
+inline void EndPending(std::uint64_t token) {
+    if (token)
+        Pending().End(token);
 }
 class Scope {
 public:

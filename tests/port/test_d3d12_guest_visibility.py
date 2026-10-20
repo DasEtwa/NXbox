@@ -146,12 +146,13 @@ int main() {
         marker = "template <typename Traits>\nvoid QueryCacheBase<Traits>::CounterReport"
         method = marker + source.split(marker, 1)[1].split("template <typename Traits>", 1)[0]
         driver = DRIVER.replace(
-            "struct Runtime {};",
+            function_body(DRIVER, "struct Runtime") + ";",
             """struct Runtime {
                 int pending=0,written=0,invalidated=0;
-                void ReportPending() { ++pending; }
-                void ReportCompleted(bool bad) {
-                    assert(pending>0); --pending;
+                u64 sequence=0;
+                u64 ReportPending(VAddr) { ++pending; return ++sequence; }
+                void ReportCompleted(bool bad, u64 token) {
+                    assert(token==sequence && pending>0); --pending;
                     if(bad) ++invalidated; else ++written;
                 }
             };""",

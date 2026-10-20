@@ -1401,6 +1401,27 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
                                             NxboxWait::counters[i].load(std::memory_order_relaxed));
                 }
                 Diagnostic(progress);
+                const auto pending = NxboxWait::Pending().Read();
+                const auto pending_ms = NxboxWait::NowMs();
+                for (size_t kind = 0; kind < NxboxWait::PendingNames.size(); ++kind) {
+                    u64 count{}, oldest_ms{};
+                    for (const auto& entry : pending.entries) {
+                        if (static_cast<size_t>(entry.kind) != kind)
+                            continue;
+                        ++count;
+                        oldest_ms = std::max(oldest_ms, pending_ms - entry.began_ms);
+                        if (frames == measured_frames) {
+                            Diagnostic(fmt::format(
+                                "WAIT_PENDING kind={} token={} key={:#x} tick={} age_ms={}",
+                                NxboxWait::PendingNames[kind], entry.token, entry.key, entry.tick,
+                                pending_ms - entry.began_ms));
+                        }
+                    }
+                    Diagnostic(fmt::format("WAIT_PENDING_SUMMARY sampled_ms={} kind={} count={} "
+                                           "oldest_age_ms={} dropped={}",
+                                           pending_ms, NxboxWait::PendingNames[kind], count,
+                                           oldest_ms, pending.dropped));
+                }
                 if (frames == measured_frames) {
                     const auto snapshot = NxboxWait::recorder.Read();
                     const auto sampled_ms = NxboxWait::NowMs();
