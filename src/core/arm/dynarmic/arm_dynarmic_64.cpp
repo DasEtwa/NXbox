@@ -325,7 +325,7 @@ void ArmDynarmic64::MakeJit(Common::PageTable* page_table, std::size_t address_s
     config.enable_cycle_counting = !m_uses_wall_clock;
 
     // Code cache size. On the Xbox the whole process has a 5 GiB budget; four 512 MiB caches
-    // leave too little for the guest heap, so bound them. Larger UWP caches are opt-in.
+    // leave too little for the guest heap, so bound them. UWP retains 192 MiB per core by default.
 #if defined(NXBOX_UWP)
     config.code_cache_size = NxboxJit::UwpCodeCacheSize();
 #elif defined(ARCHITECTURE_arm64) || defined(__sun__) || defined(__NetBSD__) || defined(__DragonFly__) || defined(__OpenBSD__)

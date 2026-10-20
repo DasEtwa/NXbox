@@ -104,6 +104,7 @@ void BufferCacheRuntime::TickFrame(Common::SlotVector<Buffer>& buffers) {
     // Drop source leases and snapshot results at the frame boundary. The ring's
     // recycle callback also clears them before a snapshot page is reused.
     InvalidateUniformBindings();
+    storage_bindings = {};
     bool trim_staging = false;
 #ifdef NXBOX_UWP
     const auto usage = context.MemoryUsage();
@@ -342,6 +343,30 @@ void BufferCacheRuntime::ClearBuffer(ResourcePtr dst, u32 offset, size_t size, u
     }
 }
 using Maxwell = Tegra::Engines::Maxwell3D::Regs;
+bool BufferCacheRuntime::TryReuseIndexBinding(Maxwell::PrimitiveTopology topology,
+                                              Maxwell::IndexFormat format, const Buffer& buffer,
+                                              u32 offset, u32 size) {
+    const auto& previous = bindings.geometry;
+    const bool unsupported = format == Maxwell::IndexFormat::UnsignedByte ||
+                             topology == Maxwell::PrimitiveTopology::Quads ||
+                             topology == Maxwell::PrimitiveTopology::QuadStrip;
+    return BindingResolutionCacheEnabled() && previous.index == buffer.Handle() &&
+           previous.index_offset == offset && previous.index_size == size &&
+           previous.index_is_32bit == (format == Maxwell::IndexFormat::UnsignedInt) &&
+           previous.index_unsupported == unsupported;
+}
+
+bool BufferCacheRuntime::TryReuseVertexBinding(u32 index, const Buffer& buffer, u32 offset,
+                                               u32 size, u32 stride) {
+    if (!BindingResolutionCacheEnabled() || UploadTraceEnabled() ||
+        index >= GeometryBindings::MaxVertexBuffers) {
+        return false;
+    }
+    const auto& previous = bindings.geometry.vertex[index];
+    return previous.resource == buffer.Handle() && previous.offset == offset &&
+           previous.size == size && previous.stride == stride;
+}
+
 void BufferCacheRuntime::BindIndexBuffer(Maxwell::PrimitiveTopology topology,
                                          Maxwell::IndexFormat format, u32, u32, ResourcePtr buffer,
                                          u32 offset, u32 size) {
@@ -442,17 +467,35 @@ std::span<u8> BufferCacheRuntime::BindMappedUniformBuffer(size_t stage, u32, u32
         {staging.buffer, static_cast<u32>(staging.offset), padded});
     return staging.mapped_span.first(size);
 }
+bool BufferCacheRuntime::TryReuseUniformBinding(const Buffer& buffer, u32 offset, u32 size,
+                                                u32 read_limit) {
+    auto& destination = bindings.stages[bindings.current_stage].uniform;
+    if ((!BindingResolutionCacheEnabled() && !BindingCacheEnabled()) ||
+        destination.size() >= uniform_bindings[0].size()) {
+        return false;
+    }
+    const auto& resolution = uniform_bindings[bindings.current_stage][destination.size()];
+    const auto& resource = buffer.Handle();
+    // Snapshot reuse remains experimental; direct views do not depend on allocator lifetime.
+    if (resource && resolution.source == resource &&
+        (resolution.resolved.resource == resource || BindingCacheEnabled()) &&
+        resolution.version == resource->content_version && resolution.offset == offset &&
+        resolution.size == size && resolution.read_limit == read_limit) {
+        destination.push_back(resolution.resolved);
+        return true;
+    }
+    return false;
+}
+
 void BufferCacheRuntime::BindUniformBuffer(const Buffer& buffer, u32 offset, u32 size) {
     const u32 read_limit = std::exchange(uniform_read_limit, ~0U);
     auto resource = buffer.Handle();
     auto& destination = bindings.stages[bindings.current_stage].uniform;
     UniformBindingResolution* resolution = nullptr;
-    if (BindingCacheEnabled() && destination.size() < uniform_bindings[0].size()) {
+    if ((BindingResolutionCacheEnabled() || BindingCacheEnabled()) &&
+        destination.size() < uniform_bindings[0].size()) {
         resolution = &uniform_bindings[bindings.current_stage][destination.size()];
-        if (resource && resolution->source == resource &&
-            resolution->version == resource->content_version && resolution->offset == offset &&
-            resolution->size == size && resolution->read_limit == read_limit) {
-            destination.push_back(resolution->resolved);
+        if (TryReuseUniformBinding(buffer, offset, size, read_limit)) {
             return;
         }
     }
@@ -528,6 +571,23 @@ BoundBuffer BufferCacheRuntime::CopyUniform(const BoundBuffer& uniform) {
     uniform_copies.Insert(resource, resource->content_version, offset, size, target, target_offset);
     return {std::move(target), target_offset, padded};
 }
+bool BufferCacheRuntime::TryReuseStorageBinding(const Buffer& buffer, u32 offset, u32 size,
+                                                bool is_written) {
+    auto& destination = bindings.stages[bindings.current_stage].storage;
+    if (!BindingResolutionCacheEnabled() || destination.size() >= storage_bindings[0].size()) {
+        return false;
+    }
+    const auto& previous = storage_bindings[bindings.current_stage][destination.size()];
+    // Invalid/zero views take the validation path; content and write tracking are done by
+    // the shared cache even on a hit. D3D12 resource extents are immutable.
+    if (previous.resource && previous.resource == buffer.Handle() && previous.offset == offset &&
+        previous.size == size && previous.written == is_written) {
+        destination.push_back(previous);
+        return true;
+    }
+    return false;
+}
+
 void BufferCacheRuntime::BindStorageBuffer(const Buffer& buffer, u32 offset, u32 size,
                                            bool is_written) {
     auto resource = buffer.Handle();
@@ -539,6 +599,11 @@ void BufferCacheRuntime::BindStorageBuffer(const Buffer& buffer, u32 offset, u32
                      size, width);
         bindings.stages[bindings.current_stage].storage.push_back({nullptr, 0, 0, is_written});
         return;
+    }
+    auto& destination = bindings.stages[bindings.current_stage].storage;
+    if (BindingResolutionCacheEnabled() && destination.size() < storage_bindings[0].size()) {
+        storage_bindings[bindings.current_stage][destination.size()] = {resource, offset, size,
+                                                                        is_written};
     }
     bindings.stages[bindings.current_stage].storage.push_back(
         {std::move(resource), offset, size, is_written});

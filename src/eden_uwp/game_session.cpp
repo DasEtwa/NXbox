@@ -1533,11 +1533,17 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
             }
             // Brackets distinguish raw counts/bytes from duration triples and let existing
             // duration-only stall-report.py readers ignore these fields.
-            constexpr std::array<std::pair<NxboxStall::JitEvent, const char*>, 17> jit_events{{
+            constexpr std::array<std::pair<NxboxStall::JitEvent, const char*>, 26> jit_events{{
                 {NxboxStall::JitEvent::RangeCalls, "jit_inv_calls"},
                 {NxboxStall::JitEvent::RangeBytes, "jit_inv_bytes"},
                 {NxboxStall::JitEvent::ClearRequests, "jit_clear_req"},
                 {NxboxStall::JitEvent::CacheClears, "jit_clears"},
+                {NxboxStall::JitEvent::CapacityClears, "jit_clear_capacity"},
+                {NxboxStall::JitEvent::ExplicitClears, "jit_clear_explicit"},
+                {NxboxStall::JitEvent::RangeBatches, "jit_range_batches"},
+                {NxboxStall::JitEvent::FastmemFaults, "jit_fastmem_faults"},
+                {NxboxStall::JitEvent::FastmemInvalidations, "jit_fastmem_inv"},
+                {NxboxStall::JitEvent::DiskStale, "jit_disk_stale"},
                 {NxboxStall::JitEvent::ClearBlocks, "jit_clear_blocks"},
                 {NxboxStall::JitEvent::RangeBlocks, "jit_range_blocks"},
                 {NxboxStall::JitEvent::EmptyInvalidations, "jit_inv_empty"},
@@ -1548,6 +1554,9 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
                 {NxboxStall::JitEvent::NewKey, "jit_key_new"},
                 {NxboxStall::JitEvent::RepeatKey, "jit_key_repeat"},
                 {NxboxStall::JitEvent::UnknownKey, "jit_key_unknown"},
+                {NxboxStall::JitEvent::SampledNewKey, "jit_sample64_new"},
+                {NxboxStall::JitEvent::SampledRepeatKey, "jit_sample64_repeat"},
+                {NxboxStall::JitEvent::SampledUnknownKey, "jit_sample64_unknown"},
                 {NxboxStall::JitEvent::InstructionInvalidations, "jit_ic"},
                 {NxboxStall::JitEvent::PageTableInvalidations, "jit_pt"},
                 {NxboxStall::JitEvent::ProtectBytes, "jit_protect_bytes"},
@@ -1556,10 +1565,13 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
                 stall_line += fmt::format(" {}=[{}]", name, NxboxStall::TakeJit(event));
             }
             for (std::size_t core = 0; core < NxboxStall::JitCaches().size(); ++core) {
-                const auto& cache = NxboxStall::JitCaches()[core];
+                auto& cache = NxboxStall::JitCaches()[core];
                 stall_line += fmt::format(" jit_cache{}=[{}/{}]", core,
                                           cache.used.load(std::memory_order_relaxed),
                                           cache.capacity.load(std::memory_order_relaxed));
+                stall_line += fmt::format(" jit_cache_peak{}=[{}] jit_compiled{}=[{}]", core,
+                                          cache.peak.load(std::memory_order_relaxed), core,
+                                          cache.compiled.exchange(0, std::memory_order_relaxed));
             }
             Diagnostic(stall_line);
 #endif

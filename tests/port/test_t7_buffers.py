@@ -203,6 +203,7 @@ struct GeometryBindings {
     Slot vertex[32];
 };
 struct BindingState {
+    static constexpr size_t NumStages = 5;
     struct Stage { std::vector<BoundBuffer> uniform, storage; };
     Stage stages[5]; size_t current_stage=0;
     GeometryBindings geometry;
@@ -213,6 +214,10 @@ struct BufferCacheRuntime {
     bool buffer_fastpath = true;
     bool BufferFastpathEnabled() const { return buffer_fastpath; }
     bool BindingCacheEnabled() const { return binding_cache; }
+    bool BindingResolutionCacheEnabled() const { return resolution_cache; }
+    bool resolution_cache = false;
+    bool TryReuseUniformBinding(const Buffer&, u32, u32, u32);
+    bool TryReuseStorageBinding(const Buffer&, u32, u32, bool);
     bool binding_cache = true;
     Context context;
     Staging upload{context};
@@ -424,6 +429,7 @@ class T7BuffersTests(unittest.TestCase):
             resolution = "    struct UniformBindingResolution {" + resolution
             resolution = resolution.replace("VideoCommon::NUM_GRAPHICS_UNIFORM_BUFFERS", "18")
             resolution = resolution.replace("BindingState::NumStages", "5")
+            resolution = resolution.replace("VideoCommon::NUM_STORAGE_BUFFERS", "16")
             source_file.write_text(
                 BINDINGS_DRIVER.replace("__BINDINGS__", implementation).replace(
                     "__RESOLUTION_FIELDS__", resolution
