@@ -79,6 +79,7 @@ struct Pipeline {
 };
 std::array<u32, 16> ComputeWords(const Maxwell& regs) {
     const u32 width=1280, height=720;
+    [[maybe_unused]] const bool rescaled = false;
     [[maybe_unused]] const bool y_flip = (regs.viewport_scale_offset_enabled
         ? MakeViewport(regs, 0) : MakeFullViewport(regs)).y_flip;
     Pipeline pipeline;
