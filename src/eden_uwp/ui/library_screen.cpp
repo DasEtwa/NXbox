@@ -221,6 +221,10 @@ public:
         internet_art_ = !std::filesystem::exists(local_state_ / "internet-art.disabled");
         if (internet_art_)
             backgrounds_ = std::make_unique<BackgroundArtSource>(local_state_);
+        // Headless transfers: an ftp-autostart file in LocalState starts the FTP server with the
+        // library, so games can be copied to the removable drive without a controller.
+        if (std::filesystem::exists(local_state_ / "ftp-autostart"))
+            ftp_.Start(local_state_);
         return_home_ = return_home;
         guest_home_request_ = guest_home_request;
         input_.SetCancelFlag(return_home_);
