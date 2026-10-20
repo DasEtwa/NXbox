@@ -506,6 +506,7 @@ if (WIN32 AND (ENABLE_D3D12 OR CMAKE_SYSTEM_NAME STREQUAL "WindowsStore"))
         renderer_d3d12/d3d12_state_cache.h
         renderer_d3d12/d3d12_state_tracker.h
         renderer_d3d12/d3d12_state_tracker.cpp
+        renderer_d3d12/d3d12_command_validation.h
         renderer_d3d12/d3d12_commands.h
         renderer_d3d12/d3d12_record_args.h
         renderer_d3d12/d3d12_record_descriptors.h

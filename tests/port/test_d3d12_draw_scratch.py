@@ -8,11 +8,14 @@ import unittest
 from pathlib import Path
 
 from test_d3d12_subresource_feedback import function
+from test_d3d12_command_validation import FMT
 
 ROOT = Path(__file__).resolve().parents[2]
 NATIVE = ROOT / "src/video_core/renderer_d3d12"
 
-MOCK = r"""
+MOCK = (
+    FMT.replace("#pragma once", "")
+    + r"""
 #include "video_core/renderer_d3d12/d3d12_descriptor.h"
 using D3D12::DescriptorSources;
 using D3D12::BoundHandleTableCache;
@@ -28,8 +31,14 @@ using u8 = std::uint8_t;
 using u32 = std::uint32_t;
 using u64 = std::uint64_t;
 using ResourcePtr = std::shared_ptr<int>;
-bool BisectEnabled(const char*) { return false; }
+bool validation_enabled = false;
+bool BisectEnabled(const char* name) {
+    return validation_enabled && std::strcmp(name, "NXBOX_D3D12_VALIDATE_COMMANDS") == 0;
+}
+std::string diagnostic;
+void Diagnostic(const std::string& text) { diagnostic = text; }
 """
+)
 ALLOCATOR = r"""
 enum class FrameCount { DescriptorTableReuses, DescriptorCopies, DescriptorCopyCalls };
 enum class FramePhase { DescriptorWrites };
@@ -95,6 +104,23 @@ struct D3D12DescriptorAllocator {
 """
 DRIVER = r"""
 int main() {
+    // Production Reset must mark every slot unwritten, including retained keys.
+    validation_enabled = true;
+    D3D12DescriptorAllocator validation_allocator;
+    DescriptorPlan checked{{0, 1, 0}};
+    checked.keys[0].kind = 1;
+    checked.initialized[0] = 1;
+    checked.Reset({0, 1, 0});
+    assert(checked.keys[0].kind == 1 && checked.initialized[0] == 0);
+    bool rejected = false;
+    try { validation_allocator.FinishDrawTable(checked); }
+    catch (const std::invalid_argument&) { rejected = true; }
+    assert(rejected && validation_allocator.allocations == 0);
+    assert(diagnostic.find("unwritten_slot") != std::string::npos);
+    checked.initialized[0] = 1;
+    validation_allocator.FinishDrawTable(checked);
+    assert(validation_allocator.allocations == 1);
+    validation_enabled = false;
     D3D12DescriptorAllocator allocator;
     DescriptorPlan plan{{0, 0, 0}};
     auto resource = std::make_shared<int>(42);

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 NSPX
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
+#include "video_core/renderer_d3d12/d3d12_command_validation.h"
 #include "video_core/renderer_d3d12/d3d12_record_args.h"
 #include "video_core/renderer_d3d12/d3d12_recorded_state.h"
 
@@ -72,6 +73,7 @@ class CommandFacade {
 public:
     const bool reuse_graphics_root_cbvs{BisectEnabled("NXBOX_D3D12_ROOT_CBV_REUSE")};
     GraphicsRootCbvCache graphics_root_cbvs;
+    CommandValidation validation;
     ID3D12Device* device{};
     int32_t depth_bounds_status{}, independent_stencil_status{};
     RecordDescriptors* descriptors{};
@@ -125,6 +127,7 @@ public:
     D3D12_FORWARD_INLINE void ResolveQueryData(ID3D12QueryHeap* heap, D3D12_QUERY_TYPE type,
                                                UINT start, UINT count, ID3D12Resource* destination,
                                                UINT64 offset) {
+        validation.Resolve(heap, type, start, count, destination, offset);
         if (!stream) {
             immediate->ResolveQueryData(heap, type, start, count, destination, offset);
             return;
@@ -174,6 +177,7 @@ public:
     D3D12_FORWARD_INLINE void CopyBufferRegion(ID3D12Resource* destination,
                                                UINT64 destination_offset, ID3D12Resource* source,
                                                UINT64 source_offset, UINT64 size) {
+        validation.BufferCopy(destination, destination_offset, source, source_offset, size);
         if (!stream) {
             immediate->CopyBufferRegion(destination, destination_offset, source, source_offset,
                                         size);
@@ -198,6 +202,7 @@ public:
                                                 UINT x, UINT y, UINT z,
                                                 const D3D12_TEXTURE_COPY_LOCATION* source,
                                                 const D3D12_BOX* box) {
+        validation.TextureCopy(device, destination, x, y, z, source, box);
         if (!stream) {
             immediate->CopyTextureRegion(destination, x, y, z, source, box);
             return;
@@ -477,6 +482,7 @@ public:
     }
     D3D12_FORWARD_INLINE void SetComputeRootConstantBufferView(UINT index,
                                                                D3D12_GPU_VIRTUAL_ADDRESS address) {
+        validation.Root("SetComputeRootConstantBufferView", index, address, true);
         if (!stream) {
             immediate->SetComputeRootConstantBufferView(index, address);
             return;
@@ -488,6 +494,7 @@ public:
     }
     D3D12_FORWARD_INLINE void SetComputeRootShaderResourceView(UINT index,
                                                                D3D12_GPU_VIRTUAL_ADDRESS address) {
+        validation.Root("SetComputeRootShaderResourceView", index, address, false);
         if (!stream) {
             immediate->SetComputeRootShaderResourceView(index, address);
             return;
@@ -499,6 +506,7 @@ public:
     }
     D3D12_FORWARD_INLINE void SetComputeRootUnorderedAccessView(UINT index,
                                                                 D3D12_GPU_VIRTUAL_ADDRESS address) {
+        validation.Root("SetComputeRootUnorderedAccessView", index, address, false);
         if (!stream) {
             immediate->SetComputeRootUnorderedAccessView(index, address);
             return;
@@ -510,6 +518,7 @@ public:
     }
     D3D12_FORWARD_INLINE void SetComputeRootDescriptorTable(UINT index,
                                                             D3D12_GPU_DESCRIPTOR_HANDLE handle) {
+        validation.Table("SetComputeRootDescriptorTable", index, handle.ptr);
         if (!stream) {
             immediate->SetComputeRootDescriptorTable(index, handle);
             return;
@@ -543,6 +552,7 @@ public:
     }
     D3D12_FORWARD_INLINE void SetGraphicsRootConstantBufferView(UINT index,
                                                                 D3D12_GPU_VIRTUAL_ADDRESS address) {
+        validation.Root("SetGraphicsRootConstantBufferView", index, address, true);
         if (reuse_graphics_root_cbvs)
             graphics_root_cbvs.cbvs.Update(index, address);
         if (!stream) {
@@ -556,6 +566,7 @@ public:
     }
     D3D12_FORWARD_INLINE void SetGraphicsRootShaderResourceView(UINT index,
                                                                 D3D12_GPU_VIRTUAL_ADDRESS address) {
+        validation.Root("SetGraphicsRootShaderResourceView", index, address, false);
         if (reuse_graphics_root_cbvs)
             graphics_root_cbvs.Invalidate(index);
         if (!stream) {
@@ -569,6 +580,7 @@ public:
     }
     D3D12_FORWARD_INLINE void SetGraphicsRootUnorderedAccessView(
         UINT index, D3D12_GPU_VIRTUAL_ADDRESS address) {
+        validation.Root("SetGraphicsRootUnorderedAccessView", index, address, false);
         if (reuse_graphics_root_cbvs)
             graphics_root_cbvs.Invalidate(index);
         if (!stream) {
@@ -582,6 +594,7 @@ public:
     }
     D3D12_FORWARD_INLINE void SetGraphicsRootDescriptorTable(UINT index,
                                                              D3D12_GPU_DESCRIPTOR_HANDLE handle) {
+        validation.Table("SetGraphicsRootDescriptorTable", index, handle.ptr);
         if (reuse_graphics_root_cbvs)
             graphics_root_cbvs.Invalidate(index);
         if (!stream) {
@@ -605,6 +618,7 @@ public:
         }>(*stream, signature);
     }
     D3D12_FORWARD_INLINE void SetDescriptorHeaps(UINT count, ID3D12DescriptorHeap* const* heaps) {
+        validation.Heaps(device, count, heaps);
         if (!stream) {
             immediate->SetDescriptorHeaps(count, heaps);
             return;

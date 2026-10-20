@@ -49,8 +49,15 @@ struct Object {
     void AddRef() { ++refs; }
     void Release() { if (--refs == 0) delete this; }
 };
-struct ID3D12Resource : Object {};
-struct ID3D12QueryHeap : Object {};
+struct D3D12_RESOURCE_DESC {
+    unsigned Dimension{}; uint64_t Width{};
+    unsigned Height{}, DepthOrArraySize{}, MipLevels{}; DXGI_FORMAT Format{};
+};
+struct ID3D12Resource : Object { D3D12_RESOURCE_DESC GetDesc() { return {}; } };
+struct ID3D12QueryHeap : Object {
+    struct Description { unsigned Count; };
+    Description GetDesc() { return {}; }
+};
 struct ID3D12RootSignature : Object {};
 struct ID3D12PipelineState : Object {};
 struct ID3D12CommandSignature : Object {};
@@ -62,7 +69,28 @@ struct D3D12_VIEWPORT { float TopLeftX, TopLeftY, Width, Height, MinDepth, MaxDe
 struct D3D12_VERTEX_BUFFER_VIEW { uint64_t BufferLocation; UINT SizeInBytes, StrideInBytes; };
 struct D3D12_INDEX_BUFFER_VIEW { uint64_t BufferLocation; UINT SizeInBytes; DXGI_FORMAT Format; };
 struct D3D12_STREAM_OUTPUT_BUFFER_VIEW { uint64_t BufferLocation, SizeInBytes, BufferFilledSizeLocation; };
-struct D3D12_TEXTURE_COPY_LOCATION { ID3D12Resource* pResource; int Type; uint64_t detail[5]; };
+constexpr unsigned D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER = 1;
+constexpr unsigned D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE = 1;
+constexpr unsigned D3D12_RESOURCE_DIMENSION_BUFFER = 1;
+constexpr unsigned D3D12_RESOURCE_DIMENSION_TEXTURE3D = 4;
+constexpr unsigned D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT = 1;
+constexpr unsigned D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX = 0;
+constexpr int D3D12_QUERY_TYPE_PIPELINE_STATISTICS = 2;
+constexpr int D3D12_QUERY_TYPE_SO_STATISTICS_STREAM0 = 4;
+constexpr int D3D12_QUERY_TYPE_SO_STATISTICS_STREAM3 = 7;
+struct D3D12_QUERY_DATA_PIPELINE_STATISTICS { uint64_t counters[11]; };
+struct D3D12_QUERY_DATA_SO_STATISTICS { uint64_t counters[2]; };
+struct D3D12_TEXTURE_COPY_LOCATION {
+    ID3D12Resource* pResource; int Type;
+    union {
+        uint64_t detail[5];
+        unsigned SubresourceIndex;
+        struct {
+            uint64_t Offset;
+            struct { DXGI_FORMAT Format; unsigned Width, Height, Depth, RowPitch; } Footprint;
+        } PlacedFootprint;
+    };
+};
 constexpr int D3D12_RESOURCE_BARRIER_TYPE_TRANSITION = 0, D3D12_RESOURCE_BARRIER_TYPE_ALIASING = 1,
               D3D12_RESOURCE_BARRIER_TYPE_UAV = 2;
 struct D3D12_RESOURCE_BARRIER {
@@ -75,9 +103,11 @@ struct D3D12_RESOURCE_BARRIER {
 };
 static std::map<size_t, size_t> descriptors;
 constexpr int D3D12_DESCRIPTOR_HEAP_TYPE_RTV = 1, D3D12_DESCRIPTOR_HEAP_TYPE_DSV = 2;
-struct D3D12_DESCRIPTOR_HEAP_DESC { int Type; UINT NumDescriptors; };
+struct D3D12_DESCRIPTOR_HEAP_DESC { int Type; UINT NumDescriptors; UINT Flags{}; };
 struct ID3D12DescriptorHeap : Object {
     size_t base = 0;
+    D3D12_DESCRIPTOR_HEAP_DESC GetDesc() { return {}; }
+    D3D12_GPU_DESCRIPTOR_HANDLE GetGPUDescriptorHandleForHeapStart() { return {base}; }
     D3D12_CPU_DESCRIPTOR_HANDLE GetCPUDescriptorHandleForHeapStart() { return {base}; }
 };
 template <class T> struct ComPtr {
@@ -88,7 +118,14 @@ template <class T> struct ComPtr {
 };
 #define IID_PPV_ARGS(p) p
 inline void Check(int result, const char*, void* = nullptr) { if (result) throw std::runtime_error("fake interface failure"); }
+constexpr int D3D12_FEATURE_FORMAT_INFO = 1;
+constexpr DXGI_FORMAT DXGI_FORMAT_BC1_TYPELESS = 70, DXGI_FORMAT_BC5_SNORM = 84;
+constexpr DXGI_FORMAT DXGI_FORMAT_BC6H_TYPELESS = 94, DXGI_FORMAT_BC7_UNORM_SRGB = 99;
+struct D3D12_FEATURE_DATA_FORMAT_INFO { DXGI_FORMAT Format; unsigned PlaneCount; };
 struct ID3D12Device {
+    int CheckFeatureSupport(int, void* data, size_t) {
+        static_cast<D3D12_FEATURE_DATA_FORMAT_INFO*>(data)->PlaneCount = 1; return 0;
+    }
     size_t next = 100000;
     int CreateDescriptorHeap(D3D12_DESCRIPTOR_HEAP_DESC* d, ID3D12DescriptorHeap** result) {
         *result = new ID3D12DescriptorHeap; (*result)->base = next;
@@ -137,7 +174,12 @@ struct ID3D12GraphicsCommandList : Object {
 using ID3D12GraphicsCommandList1 = ID3D12GraphicsCommandList;
 using ID3D12GraphicsCommandList8 = ID3D12GraphicsCommandList;
 // Exercise root-CBV tracking while comparing every facade call to the raw list.
-namespace D3D12 { inline bool BisectEnabled(const char*) { return true; } }
+namespace D3D12 {
+inline bool BisectEnabled(const char* name) {
+    return std::strcmp(name, "NXBOX_D3D12_VALIDATE_COMMANDS") != 0;
+}
+inline void Diagnostic(const std::string&) {}
+}
 #include "video_core/renderer_d3d12/d3d12_commands.h"
 using namespace D3D12;
 int main() {
@@ -504,6 +546,11 @@ class DeferredRecording(unittest.TestCase):
             cpp = Path(tmp) / "test.cpp"
             binary = Path(tmp) / "test"
             cpp.write_text(make_source())
+            # The validator has its own behavior test. Transport tests leave it disabled.
+            from test_d3d12_command_validation import FMT
+
+            (Path(tmp) / "fmt").mkdir()
+            (Path(tmp) / "fmt/format.h").write_text(FMT)
             compilation = subprocess.run(
                 [
                     "clang++",
@@ -513,6 +560,7 @@ class DeferredRecording(unittest.TestCase):
                     "-pthread",
                     "-fsanitize=" + sanitizer,
                     "-fno-omit-frame-pointer",
+                    "-I" + tmp,
                     "-I" + str(ROOT / "src"),
                     str(cpp),
                     "-o",
