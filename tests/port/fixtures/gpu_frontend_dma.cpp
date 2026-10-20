@@ -12,6 +12,7 @@
 #include <tuple>
 #include <utility>
 #include <vector>
+#include "video_core/gpu_draw_pipeline.h"
 #include "video_core/gpu_frontend.h"
 using u32 = std::uint32_t;
 using u64 = std::uint64_t;
@@ -97,7 +98,14 @@ struct Puller {
     void CallMultiMethod(DmaPusher&, u32, u32, const u32*, u32, u32);
 };
 } // namespace Engines
+struct DisabledRasterizer {
+    bool HasGpuPipeline() const {
+        return false;
+    }
+    void DrainGpuPipeline() {}
+};
 struct DmaPusher {
+    DisabledRasterizer* rasterizer{};
     struct State {
         u32 method{}, method_count{}, subchannel{};
         u64 dma_word_offset{}, dma_get{100};

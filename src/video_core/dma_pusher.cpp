@@ -12,6 +12,7 @@
 #include "video_core/dma_pusher.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/gpu.h"
+#include "video_core/gpu_draw_pipeline.h"
 #include "video_core/guest_memory.h"
 #include "video_core/memory_manager.h"
 #include "video_core/rasterizer_interface.h"
@@ -122,6 +123,11 @@ bool DmaPusher::Step() {
 }
 
 void DmaPusher::ProcessCommands(std::span<const CommandHeader> commands) {
+    std::vector<CommandHeader> pipeline_commands;
+    if (rasterizer && rasterizer->HasGpuPipeline()) {
+        rasterizer->DrainGpuPipeline();
+        commands = VideoCommon::SnapshotGpuMethods(commands, pipeline_commands);
+    }
     for (size_t index = 0; index < commands.size();) {
         // Data word of methods command
         if (dma_state.method_count && dma_state.non_incrementing) {

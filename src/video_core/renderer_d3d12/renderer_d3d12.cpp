@@ -465,6 +465,8 @@ bool RendererD3D12::HasFailed() const {
     return impl->failed;
 }
 void RendererD3D12::Composite(std::span<const Tegra::FramebufferConfig> layers) {
+    if (rasterizer.OnGpuPipeline())
+        return rasterizer.RunGpuPipeline([&] { Composite(layers); });
     impl->context.Profile().EndFrame();
     try {
         if (IsScreenshotPending()) {

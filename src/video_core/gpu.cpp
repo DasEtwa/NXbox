@@ -407,6 +407,10 @@ void GPU::CancelSyncRequests() {
     impl->CancelSyncRequests();
 }
 
+void GPU::RegisterHostThread() {
+    impl->system.RegisterHostThread();
+}
+
 void GPU::TickWork() {
     impl->TickWork();
 }

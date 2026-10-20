@@ -40,6 +40,12 @@ public:
     virtual ~RasterizerInterface() = default;
     virtual void ProfileGpuThread(bool /*active*/) {}
 
+    // Complete queued host draw building before accessing guest memory.
+    virtual void DrainGpuPipeline() {}
+    virtual bool HasGpuPipeline() const {
+        return false;
+    }
+
     /// Dispatches a draw invocation
     virtual void Draw(bool is_indexed, u32 instance_count) = 0;
 

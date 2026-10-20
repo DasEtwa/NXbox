@@ -107,7 +107,11 @@ class StateTrackerTests(unittest.TestCase):
             function(rasterizer, "void RasterizerD3D12::InitializeChannel"),
         )
         bind = function(rasterizer, "void RasterizerD3D12::BindChannel")
-        self.assertIn("StateTracker::Bind(channel.payload->maxwell_3d)", bind)
+        self.assertIn("StateTracker::Bind(*maxwell3d)", bind)
+        self.assertLess(
+            bind.index("BindToChannel(channel.bind_id)"),
+            bind.index("StateTracker::Bind(*maxwell3d)"),
+        )
         self.assertIn("context.GraphicsStateTracker().Invalidate()", bind)
         tracker = (NATIVE / "d3d12_state_tracker.cpp").read_text()
         self.assertIn("RescaleViewports", tracker)
