@@ -435,3 +435,6 @@
     {Text::DlcWithoutBase, L"DLC sem o jogo base"},
     {Text::LaunchMissingKeys, L"As chaves do jogo estão ausentes ou incorretas. Importe prod.keys "
                               L"e title.keys em Configurações."},
+
+    {Text::ErrorTitle, L"Ocorreu um erro"}, {Text::ErrorDismiss, L"Fechar"},
+    {Text::ErrorScroll, L"Rolar"},

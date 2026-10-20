@@ -29,6 +29,10 @@ add_executable(eden-uwp WIN32
     ui/moru_screen.h
     moru_model.h
     moru_parts.h
+    error_applet.cpp
+    error_applet.h
+    ui/error_overlay.cpp
+    ui/error_overlay.h
     game_session.cpp
     game_session.h
     protocol_uri.h
