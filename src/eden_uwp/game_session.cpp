@@ -1562,7 +1562,7 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
             }
             // Brackets distinguish raw counts/bytes from duration triples and let existing
             // duration-only stall-report.py readers ignore these fields.
-            constexpr std::array<std::pair<NxboxStall::JitEvent, const char*>, 26> jit_events{{
+            constexpr std::array<std::pair<NxboxStall::JitEvent, const char*>, 32> jit_events{{
                 {NxboxStall::JitEvent::RangeCalls, "jit_inv_calls"},
                 {NxboxStall::JitEvent::RangeBytes, "jit_inv_bytes"},
                 {NxboxStall::JitEvent::ClearRequests, "jit_clear_req"},
@@ -1589,6 +1589,12 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
                 {NxboxStall::JitEvent::InstructionInvalidations, "jit_ic"},
                 {NxboxStall::JitEvent::PageTableInvalidations, "jit_pt"},
                 {NxboxStall::JitEvent::ProtectBytes, "jit_protect_bytes"},
+                {NxboxStall::JitEvent::GuestCodeReads, "jit_guest_code_reads"},
+                {NxboxStall::JitEvent::IrInstructions, "jit_ir_insts"},
+                {NxboxStall::JitEvent::HostBytes, "jit_host_bytes"},
+                {NxboxStall::JitEvent::RegAllocLookups, "jit_ra_lookups"},
+                {NxboxStall::JitEvent::RegAllocProbes, "jit_ra_probes"},
+                {NxboxStall::JitEvent::RegAllocReleases, "jit_ra_releases"},
             }};
             for (const auto& [event, name] : jit_events) {
                 stall_line += fmt::format(" {}=[{}]", name, NxboxStall::TakeJit(event));
@@ -1601,6 +1607,8 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
                 stall_line += fmt::format(" jit_cache_peak{}=[{}] jit_compiled{}=[{}]", core,
                                           cache.peak.load(std::memory_order_relaxed), core,
                                           cache.compiled.exchange(0, std::memory_order_relaxed));
+                stall_line += fmt::format(" jit_clear_total{}=[{}]", core,
+                                          cache.clears.load(std::memory_order_relaxed));
             }
             Diagnostic(stall_line);
 #endif

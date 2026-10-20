@@ -71,10 +71,11 @@ int main() {
     assert(TakeJit(JitEvent::CapacityClears) == 0);
     SampleJitCache(0, 123, 192, true);
     SampleJitCache(0, 124, 192, true);
-    SampleJitCache(0, 4, 192); // A clear changes usage, not the high-water mark.
+    SampleJitCache(0, 4, 192, false, true); // A clear changes usage, not the high-water mark.
     auto& cache = JitCaches()[0];
     assert(cache.used == 4 && cache.peak == 124 && cache.capacity == 192);
     assert(cache.compiled.exchange(0) == 2 && cache.compiled == 0);
+    assert(cache.clears == 1);
 }
 """)
 
@@ -124,7 +125,7 @@ struct Harness {
     HaltReason halt = HaltReason::None;
     void HaltExecution(HaltReason hr) { halt = hr; }
     void ClearHalt(HaltReason) { halt = HaltReason::None; }
-    void SampleCache() {}
+    void SampleCache(bool = false, bool = false) {}
 METHODS
     void CapacityMiss() {
 CAPACITY
