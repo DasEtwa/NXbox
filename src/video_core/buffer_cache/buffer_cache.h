@@ -308,7 +308,6 @@ bool BufferCache<P>::DMACopy(GPUVAddr src_address, GPUVAddr dest_address, u64 am
     const auto& copy = copies[0];
     src_buffer.MarkUsage(copy.src_offset, copy.size);
     dest_buffer.MarkUsage(copy.dst_offset, copy.size);
-    uniform_upload_cache.Invalidate(*cpu_dest_address, amount);
     runtime.CopyBuffer(dest_buffer, src_buffer, copies, true);
     if (has_new_downloads) {
         memory_tracker.MarkRegionAsGpuModified(*cpu_dest_address, amount);
@@ -346,7 +345,6 @@ bool BufferCache<P>::DMAClear(GPUVAddr dst_address, u64 amount, u32 value) {
     const BufferId buffer = FindBuffer(*cpu_dst_address, static_cast<u32>(size), false);
     Buffer& dest_buffer = slot_buffers[buffer];
     const u32 offset = dest_buffer.Offset(*cpu_dst_address);
-    uniform_upload_cache.Invalidate(*cpu_dst_address, size);
     runtime.ClearBuffer(dest_buffer, offset, size, value);
     dest_buffer.MarkUsage(offset, size);
     return true;
@@ -383,7 +381,6 @@ std::pair<typename P::Buffer*, u32> BufferCache<P>::ObtainCPUBuffer(
         MarkWrittenBuffer(buffer_id, device_addr, size);
         break;
     case ObtainBufferOperation::DiscardWrite: {
-        uniform_upload_cache.Invalidate(device_addr, size);
         ClearDownload(device_addr, size);
         gpu_modified_ranges.Subtract(device_addr, size);
         break;
@@ -856,7 +853,6 @@ void BufferCache<P>::BindHostIndexBuffer() {
         SynchronizeBuffer(buffer, channel_state->index_buffer.device_addr, size,
                           BufferUploadSource::Index);
     } else {
-        uniform_upload_cache.Invalidate(buffer.CpuAddr(), size);
         if constexpr (USE_MEMORY_MAPS_FOR_UPLOADS) {
             if constexpr (requires { runtime.RecordBufferUpload(BufferUploadSource::Index, size); })
                 runtime.RecordBufferUpload(BufferUploadSource::Index, size);
@@ -1147,14 +1143,6 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
         channel_state->uniform_buffer_binding_sizes[stage][binding_index] = size;
     }
     buffer.MarkUsage(offset, size);
-    if constexpr (requires { runtime.TryReuseUniformBinding(buffer, offset, size, u32{}); }) {
-        const u32 read_limit = (*channel_state->uniform_buffer_sizes)[stage][index];
-        if (channel_state->uniform_upload_dedup &&
-            runtime.TryReuseUniformBinding(buffer, offset, size, read_limit)) {
-            channel_state->fast_bound_uniform_buffers[stage] &= ~(1u << binding_index);
-            return;
-        }
-    }
     if constexpr (requires { runtime.SetUniformReadLimit(u32{}); }) {
         runtime.SetUniformReadLimit((*channel_state->uniform_buffer_sizes)[stage][index]);
     }
@@ -1713,7 +1701,6 @@ void BufferCache<P>::MarkWrittenBuffer(BufferId buffer_id, DAddr device_addr, u3
             buffer.setWriteTick(runtime.CurrentTick());
         }
     }
-    uniform_upload_cache.Invalidate(device_addr, size);
     memory_tracker.MarkRegionAsGpuModified(device_addr, size);
     gpu_modified_ranges.Add(device_addr, size);
     uncommitted_gpu_modified_ranges.Add(device_addr, size);
@@ -1890,7 +1877,6 @@ BufferId BufferCache<P>::CreateBuffer(DAddr device_addr, u32 wanted_size,
         slot_buffers.insert(runtime, overlap.begin, size, sparse_compatible);
     auto& new_buffer = slot_buffers[new_buffer_id];
     const size_t size_bytes = new_buffer.SizeBytes();
-    uniform_upload_cache.Invalidate(new_buffer.CpuAddr(), size_bytes);
     runtime.ClearBuffer(new_buffer, 0, size_bytes, 0);
     new_buffer.MarkUsage(0, size_bytes);
     for (const BufferId overlap_id : overlap.ids) {
@@ -1990,42 +1976,29 @@ bool BufferCache<P>::SynchronizeBuffer(Buffer& buffer, DAddr device_addr, u32 si
         return true;
     }
     const std::span<BufferCopy> copies_span(upload_copies.data(), upload_copies.size());
-    // Keep the host resource version stable on equal CPU uploads so the runtime
-    // can reuse its existing uniform binding/snapshot, including read-limit padding.
-    bool deduplicate = false;
-    if constexpr (requires { runtime.TryReuseUniformBinding(buffer, u32{}, u32{}, u32{}); }) {
-        deduplicate = channel_state && channel_state->uniform_upload_dedup &&
-                      source == BufferUploadSource::Uniform;
-    }
-    total_size_bytes =
-        UploadMemory(buffer, total_size_bytes, largest_copy, copies_span, deduplicate);
-    if (total_size_bytes == 0) {
-        return true;
-    }
     NxboxUpload::Record(NxboxUpload::Event::BufferUpload);
     if constexpr (requires { runtime.RecordBufferUpload(source, total_size_bytes); }) {
         runtime.RecordBufferUpload(source, total_size_bytes);
     }
+    UploadMemory(buffer, total_size_bytes, largest_copy, copies_span);
     any_buffer_uploaded = true;
     return false;
 }
 
 template <class P>
-u64 BufferCache<P>::UploadMemory(Buffer& buffer, u64 total_size_bytes, u64 largest_copy,
-                                 std::span<BufferCopy> copies, bool deduplicate) {
+void BufferCache<P>::UploadMemory(Buffer& buffer, u64 total_size_bytes, u64 largest_copy,
+                                  std::span<BufferCopy> copies) {
     if constexpr (USE_MEMORY_MAPS_FOR_UPLOADS) {
-        return MappedUploadMemory(buffer, total_size_bytes, copies, deduplicate);
+        MappedUploadMemory(buffer, total_size_bytes, copies);
     } else {
-        return ImmediateUploadMemory(buffer, largest_copy, copies, deduplicate);
+        ImmediateUploadMemory(buffer, largest_copy, copies);
     }
 }
 
 template <class P>
-u64 BufferCache<P>::ImmediateUploadMemory([[maybe_unused]] Buffer& buffer,
-                                          [[maybe_unused]] u64 largest_copy,
-                                          [[maybe_unused]] std::span<const BufferCopy> copies,
-                                          bool deduplicate) {
-    u64 uploaded = 0;
+void BufferCache<P>::ImmediateUploadMemory([[maybe_unused]] Buffer& buffer,
+                                           [[maybe_unused]] u64 largest_copy,
+                                           [[maybe_unused]] std::span<const BufferCopy> copies) {
     if constexpr (!USE_MEMORY_MAPS_FOR_UPLOADS) {
         std::span<u8> immediate_buffer;
         for (const BufferCopy& copy : copies) {
@@ -2043,56 +2016,29 @@ u64 BufferCache<P>::ImmediateUploadMemory([[maybe_unused]] Buffer& buffer,
                 device_memory.ReadBlockUnsafe(device_addr, immediate_buffer.data(), copy.size);
                 upload_span = immediate_buffer.subspan(0, copy.size);
             }
-            if (deduplicate) {
-                if (uniform_upload_cache.MatchAndRecord(device_addr, upload_span)) {
-                    continue;
-                }
-            } else {
-                uniform_upload_cache.Invalidate(device_addr, copy.size);
-            }
             buffer.ImmediateUpload(copy.dst_offset, upload_span);
-            uploaded += copy.size;
         }
     }
-    return uploaded;
 }
 
 template <class P>
-u64 BufferCache<P>::MappedUploadMemory([[maybe_unused]] Buffer& buffer,
-                                       [[maybe_unused]] u64 total_size_bytes,
-                                       [[maybe_unused]] std::span<BufferCopy> copies,
-                                       bool deduplicate) {
-    u64 uploaded = 0;
+void BufferCache<P>::MappedUploadMemory([[maybe_unused]] Buffer& buffer,
+                                        [[maybe_unused]] u64 total_size_bytes,
+                                        [[maybe_unused]] std::span<BufferCopy> copies) {
     if constexpr (USE_MEMORY_MAPS) {
         auto upload_staging = runtime.UploadStagingBuffer(total_size_bytes);
         const std::span<u8> staging_pointer = upload_staging.mapped_span;
-        size_t retained = 0;
-        for (BufferCopy copy : copies) {
+        for (BufferCopy& copy : copies) {
             u8* const src_pointer = staging_pointer.data() + copy.src_offset;
             const DAddr device_addr = buffer.CpuAddr() + copy.dst_offset;
             device_memory.ReadBlockUnsafe(device_addr, src_pointer, copy.size);
-            if (deduplicate) {
-                if (uniform_upload_cache.MatchAndRecord(
-                        device_addr, std::span<const u8>{src_pointer, copy.size})) {
-                    continue;
-                }
-            } else {
-                uniform_upload_cache.Invalidate(device_addr, copy.size);
-            }
-            uploaded += copy.size;
             WatchEvent(device_memory, "upload", device_addr, copy.size, buffer.CpuAddr());
             // Apply the staging offset
             copy.src_offset += upload_staging.offset;
-            copies[retained++] = copy;
-        }
-        copies = copies.first(retained);
-        if (copies.empty()) {
-            return 0;
         }
         const bool can_reorder = runtime.CanReorderUpload(buffer, copies);
         runtime.CopyBuffer(buffer, upload_staging.buffer, copies, true, can_reorder);
     }
-    return uploaded;
 }
 
 template <class P>
@@ -2123,7 +2069,6 @@ void BufferCache<P>::InlineMemoryImplementation(DAddr dest_address, size_t copy_
     BufferId buffer_id = FindBuffer(dest_address, static_cast<u32>(copy_size), false);
     auto& buffer = slot_buffers[buffer_id];
     SynchronizeBuffer(buffer, dest_address, static_cast<u32>(copy_size));
-    uniform_upload_cache.Invalidate(dest_address, copy_size);
 
     if constexpr (USE_MEMORY_MAPS_FOR_UPLOADS) {
         auto upload_staging = runtime.UploadStagingBuffer(copy_size);
@@ -2207,8 +2152,6 @@ void BufferCache<P>::DownloadBufferMemory(Buffer& buffer, DAddr device_addr, u64
 
 template <class P>
 void BufferCache<P>::DeleteBuffer(BufferId buffer_id, bool do_not_mark) {
-    const auto& deleted = slot_buffers[buffer_id];
-    uniform_upload_cache.Invalidate(deleted.CpuAddr(), deleted.SizeBytes());
     if constexpr (requires { runtime.OnBufferDeleted(slot_buffers[buffer_id]); }) {
         runtime.OnBufferDeleted(slot_buffers[buffer_id]);
     }
