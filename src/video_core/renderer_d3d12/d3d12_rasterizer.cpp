@@ -567,7 +567,8 @@ RasterizerD3D12::DynamicState RasterizerD3D12::ComputeDynamicState(
     }
     // PositionPass converts guest window coordinates to NDC using guest dimensions.
     result.words = pipeline.RootConstants(
-        {rescaled ? regs.surface_clip.width : width, rescaled ? regs.surface_clip.height : height,
+        {rescaled ? static_cast<u32>(regs.surface_clip.width) : width,
+         rescaled ? static_cast<u32>(regs.surface_clip.height) : height,
          regs.window_origin.mode != Maxwell::WindowOrigin::Mode::UpperLeft});
     return result;
 }
@@ -2916,10 +2917,12 @@ void RasterizerD3D12::DrawTexture() {
             blit.src_y0,
             blit.src_x1,
             blit.src_y1,
-            static_cast<float>(texture_cache.IsRescaling() ? maxwell3d->regs.surface_clip.width
-                                                           : size.width),
-            static_cast<float>(texture_cache.IsRescaling() ? maxwell3d->regs.surface_clip.height
-                                                           : size.height),
+            static_cast<float>(texture_cache.IsRescaling()
+                                   ? static_cast<u32>(maxwell3d->regs.surface_clip.width)
+                                   : size.width),
+            static_cast<float>(texture_cache.IsRescaling()
+                                   ? static_cast<u32>(maxwell3d->regs.surface_clip.height)
+                                   : size.height),
             static_cast<float>(source.size.width),
             static_cast<float>(source.size.height)};
         if (!size.width || !size.height || !source.size.width || !source.size.height)

@@ -203,8 +203,8 @@ int main() {
                 "void RasterizerD3D12::Clear("
             )
         ]
-        self.assertTrue("texture_cache.IsRescaling() ? maxwell3d->regs.surface_clip.width" in draw)
-        self.assertTrue("texture_cache.IsRescaling() ? maxwell3d->regs.surface_clip.height" in draw)
+        self.assertTrue("texture_cache.IsRescaling() ? static_cast<u32>(maxwell3d->regs.surface_clip.width)" in " ".join(draw.split()))
+        self.assertTrue("texture_cache.IsRescaling() ? static_cast<u32>(maxwell3d->regs.surface_clip.height)" in " ".join(draw.split()))
 
     def test_shader_scaling_masks_follow_each_stage(self):
         source = (ROOT / "src/video_core/renderer_d3d12/d3d12_rasterizer.cpp").read_text()
