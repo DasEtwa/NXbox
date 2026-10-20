@@ -219,7 +219,9 @@ D3D12_RECT MakeScissor(const Maxwell& regs, size_t index) {
                 static_cast<s32>(regs.surface_clip.x + regs.surface_clip.width),
                 static_cast<s32>(regs.surface_clip.y + regs.surface_clip.height)};
     }
-    if (src.enable) {
+    // The untransformed path uses the surface clip as its scissor, like Vulkan.
+    // Scissor registers can still contain the preceding transformed pass's bounds.
+    if (regs.viewport_scale_offset_enabled && src.enable) {
         clip = ClearOperations::Intersect(
             clip, {static_cast<s32>(src.min_x), static_cast<s32>(src.min_y),
                    static_cast<s32>(src.max_x), static_cast<s32>(src.max_y)});
@@ -545,7 +547,8 @@ RasterizerD3D12::DynamicState RasterizerD3D12::ComputeDynamicState(
         result.depth_bounds = {std::clamp(regs.depth_bounds[0], 0.0f, 1.0f),
                                std::clamp(regs.depth_bounds[1], 0.0f, 1.0f)};
     }
-    result.words = pipeline.RootConstants({width, height, y_flip});
+    result.words = pipeline.RootConstants(
+        {width, height, regs.window_origin.mode != Maxwell::WindowOrigin::Mode::UpperLeft});
     return result;
 }
 
