@@ -155,6 +155,9 @@ private:
     Pso::TopologyInfo cached_topology{};
     GraphicsPipelineKey last_graphics_request{};
     IGraphicsPipeline* last_graphics_pipeline{};
+    // True only when the last resolved pipeline belongs to cached_graphics_request's inputs.
+    bool last_graphics_request_current{};
+    bool last_graphics_prewarmed{};
     std::array<u64, 6> guest_hashes{};
     DxcCache dxc{&context.Profile()};
     std::unique_ptr<DiskPipelineCache> disk;
