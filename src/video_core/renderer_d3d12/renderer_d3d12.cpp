@@ -16,6 +16,7 @@
 #include "eden_uwp/renderer_boundary.h"
 #include "eden_uwp/thread_profile.h"
 #include "video_core/capture.h"
+#include "video_core/renderer_d3d12/d3d12_present/present.h"
 #include "video_core/renderer_d3d12/d3d12_resolution.h"
 #include "video_core/renderer_d3d12/d3d12_shader.h"
 
@@ -55,6 +56,7 @@ struct RendererD3D12::Impl {
     static constexpr UINT MaxLayers = 64;
     D3D12::Context context;
     ComPtr<IDXGISwapChain3> swapchain;
+    std::unique_ptr<Present::Presenter> upscaler;
     ComPtr<ID3D12DescriptorHeap> rtv_heap;
     ComPtr<ID3D12DescriptorHeap> srv_heap;
     ComPtr<ID3D12RootSignature> root;
@@ -239,8 +241,18 @@ struct RendererD3D12::Impl {
         textures.reserve(layers.size());
         for (const auto& layer : layers)
             textures.push_back(rasterizer.FramebufferTexture(layer));
-        if (index < BufferCount)
+        // Capture uses a BGRA target and keeps its existing presentation PSO.
+        const bool use_upscaler =
+            !layers.empty() && index < BufferCount && BisectEnabled("NXBOX_D3D12_FSR");
+        if (use_upscaler) {
+            if (!upscaler) {
+                upscaler = std::make_unique<Present::Presenter>(context);
+                Diagnostic("D3D12 FSR 1 EASU + RCAS ready");
+            }
+            upscaler->BeginFrame(index, present_ticks[index]);
+        } else if (index < BufferCount) {
             context.WaitSubmitted(present_ticks[index], "present");
+        }
         context.MarkWork(layers.empty() ? "init present clear" : "frame present clear/compositor");
         auto* commands = context.Commands();
         context.Transition(render_target, D3D12_RESOURCE_STATE_RENDER_TARGET);
@@ -308,6 +320,26 @@ struct RendererD3D12::Impl {
                 {crop_x(crop.left), crop_y(crop.top), crop_x(crop.right), crop_y(crop.bottom)},
                 static_cast<u32>(layer.transform_flags),
                 layer.blending == Tegra::BlendMode::Opaque ? 1u : 0u};
+            if (use_upscaler) {
+                Present::Layer upscale_layer;
+                upscale_layer.source = texture.resource;
+                upscale_layer.view = texture.view;
+                upscale_layer.guest_extent = {
+                    texture.scaled ? texture.guest_width : static_cast<u32>(texture_width),
+                    texture.scaled ? texture.guest_height : static_cast<u32>(texture_height)};
+                upscale_layer.crop_pixels = {
+                    static_cast<float>(crop.left), static_cast<float>(crop.top),
+                    static_cast<float>(crop.right), static_cast<float>(crop.bottom)};
+                upscale_layer.transform = static_cast<u32>(layer.transform_flags);
+                upscale_layer.blend = layer.blending == Tegra::BlendMode::Opaque
+                                          ? Present::Blend::Opaque
+                                      : layer.blending == Tegra::BlendMode::Premultiplied
+                                          ? Present::Blend::Premultiplied
+                                          : Present::Blend::Coverage;
+                upscaler->DrawLayer(upscale_layer, target, viewport, scissor,
+                                    {Present::Filter::Fsr, false, .5f});
+                continue;
+            }
             commands->SetPipelineState(
                 target_pipelines[layer.blending == Tegra::BlendMode::Opaque          ? 0
                                  : layer.blending == Tegra::BlendMode::Premultiplied ? 1

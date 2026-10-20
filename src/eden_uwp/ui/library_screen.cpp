@@ -232,6 +232,7 @@ public:
         renderer_backend_ = RendererSettings::Read(local_state_);
         shader_preload_ = RendererSettings::ReadShaderPreload(local_state_);
         async_shaders_ = RendererSettings::ReadAsyncShaders(local_state_);
+        fsr_ = RendererSettings::ReadFsr(local_state_);
         xbox_button_icons_ = RendererSettings::ReadXboxButtonIcons(local_state_);
         button_layout_ = RendererSettings::ReadButtonLayout(local_state_);
         std::ifstream resolution_settings(local_state_ / "eden_settings.txt");
@@ -994,6 +995,13 @@ private:
         if (SelectedSetting() == Setting::AsyncShaders) {
             if (RendererSettings::SaveAsyncShaders(local_state_, !async_shaders_))
                 async_shaders_ = !async_shaders_;
+            else
+                Toast(Tr(Text::ResolutionSaveFailed), now);
+            return;
+        }
+        if (SelectedSetting() == Setting::Upscaler) {
+            if (RendererSettings::SaveFsr(local_state_, !fsr_))
+                fsr_ = !fsr_;
             else
                 Toast(Tr(Text::ResolutionSaveFailed), now);
             return;
@@ -1847,6 +1855,8 @@ private:
               Theme::kTextSecondary, Tr(Text::ButtonLayoutHint)},
              {Tr(Text::ResolutionTitle), Tr(resolution_label), Theme::kTextSecondary,
               Tr(Text::ResolutionMemoryHint)},
+             {Tr(Text::UpscalerTitle), Tr(fsr_ ? Text::UpscalerFsr : Text::UpscalerBilinear),
+              Theme::kTextSecondary, Tr(Text::UpscalerHint)},
              {Tr(Text::SettingsVersion), build.c_str(), Theme::kTextSecondary,
               Tr(Text::SettingsBuildHint)},
              {Tr(Text::FtpServer), ftp_address.c_str(), Theme::kTextSecondary,
@@ -1878,11 +1888,12 @@ private:
         }};
         const int row_count =
             renderer_open_ ? 3 : kSettingsCategories[Idx(settings_category_)].count;
-        for (int i = 0; i < row_count; ++i) {
+        const int first_row = renderer_open_ ? 0 : SettingsFirstVisibleRow(settings_row_);
+        for (int i = first_row; i < std::min(row_count, first_row + 7); ++i) {
             const auto setting = kSettingsCategories[Idx(settings_category_)].rows[Idx(i)];
             const Row& item =
                 renderer_open_ ? renderer_rows[Idx(i)] : rows[static_cast<std::size_t>(setting)];
-            const float y = kRowTop + static_cast<float>(i) * kRowPitch;
+            const float y = kRowTop + static_cast<float>(i - first_row) * kRowPitch;
             const auto rect = RectF(kRowsLeft, y, kRight, y + kRowPitch - 16.0f);
             const bool disabled = renderer_open_ ? !RendererChoiceEnabled(i)
                                                  : setting == Setting::Version ||
@@ -2121,6 +2132,7 @@ private:
     bool resolution_global_ = false;
     bool shader_preload_ = true;
     bool async_shaders_ = true;
+    bool fsr_ = true;
     bool xbox_button_icons_ = true;
     ButtonLayout button_layout_ = ButtonLayout::Name;
     int renderer_backend_ = RendererSettings::kDirectX12;

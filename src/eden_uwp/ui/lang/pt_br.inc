@@ -440,3 +440,8 @@
 
     {Text::ErrorTitle, L"Ocorreu um erro"}, {Text::ErrorDismiss, L"Fechar"},
     {Text::ErrorScroll, L"Rolar"},
+
+    {Text::UpscalerTitle, L"Upscaler"}, {Text::UpscalerBilinear, L"Bilinear"},
+    {Text::UpscalerFsr, L"FSR 1"},
+    {Text::UpscalerHint,
+     L"Ampliação no DirectX 12 para quadros menores. Vale na próxima execução."},

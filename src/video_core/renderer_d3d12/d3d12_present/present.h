@@ -1,9 +1,9 @@
 // SPDX-FileCopyrightText: Copyright 2026 NSPX
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
-// Composite integration (renderer_d3d12.cpp, intentionally not edited here):
+// Composition integration (renderer_d3d12.cpp):
 // Own one Presenter alongside Impl::context; construction compiles all DXIL/PSOs.
-// Resolve ALL FramebufferTexture uploads before BeginFrame(), which drains Context
+// Resolve ALL FramebufferTexture uploads before BeginFrame(), which waits for its slot
 // before recycling descriptors. Clear the backbuffer, then DrawLayer() for each
 // selected layer with its ResourcePtr/SRV, guest extent, guest-pixel crop,
 // transform_flags and blend mode. Use the real SRV mip extent, never multiply an
@@ -13,7 +13,7 @@
 // Transition the backbuffer to PRESENT, Context::Submit(), then
 // Check(presenter.Present(swapchain, vsync, interval), "Present"). It uses DXGI
 // refresh pacing (0 when disabled, 1..4 when enabled), without a CPU sleep.
-// Call BeginFrame before ResizeBuffers. Presenter teardown drains Context.
+// Drain Context before ResizeBuffers. Presenter teardown also drains Context.
 // Targets must be single-sample RGBA8 RTVs, matching the existing swapchain.
 // Empty frames may skip DrawLayer; the caller still owns the backbuffer clear.
 #include <memory>
@@ -40,7 +40,8 @@ class Presenter {
 public:
     explicit Presenter(Context& context);
     ~Presenter();
-    void BeginFrame();
+    // Two swapchain slots; previous_tick must cover every use of this slot.
+    void BeginFrame(unsigned frame_index, u64 previous_tick);
     void DrawLayer(const Layer& layer, D3D12_CPU_DESCRIPTOR_HANDLE target, D3D12_VIEWPORT viewport,
                    D3D12_RECT scissor, Options options);
     HRESULT Present(IDXGISwapChain3* swapchain, bool vsync, unsigned interval = 1);
