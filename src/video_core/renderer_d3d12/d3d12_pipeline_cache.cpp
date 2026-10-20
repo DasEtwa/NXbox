@@ -49,6 +49,16 @@
 
 namespace D3D12 {
 namespace {
+bool PipelineLookupFastpathEnabled() {
+    static const bool enabled = [] {
+        char value[2]{};
+        return !(GetEnvironmentVariableA("NXBOX_D3D12_PIPELINE_LOOKUP_FASTPATH", value,
+                                         sizeof(value)) == 1 &&
+                 value[0] == '0');
+    }();
+    return enabled;
+}
+
 // On by default: fewer cold-cache hitches in Odyssey and MK8D on Series X. =0 waits as before.
 bool RtHistoryEnabled() {
     static const bool enabled = [] {
@@ -1312,6 +1322,7 @@ PipelineCache::QueryFormatSupport(DXGI_FORMAT format) {
 
 void PipelineCache::InvalidateLastGraphicsPipeline() {
     last_graphics_pipeline = nullptr;
+    last_graphics_request_current = false;
 }
 
 void PipelineCache::StoreGuestGraphics(const GraphicsPipelineKey& request,
@@ -1326,6 +1337,11 @@ IGraphicsPipeline* PipelineCache::RememberGraphicsPipeline(const GraphicsPipelin
     if (pipeline) {
         last_graphics_request = request;
         last_graphics_pipeline = pipeline;
+        last_graphics_request_current = true;
+        // Profiling is fixed for the context lifetime; avoid hashing even on installation
+        // during normal gameplay.
+        last_graphics_prewarmed =
+            context.Profile().Enabled() && prewarmed_graphics.contains(request);
     }
     return pipeline;
 }
@@ -1375,10 +1391,19 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(const Pso::Framebuffer
         regs.zeta_enable,
         is_indexed,
         {regs.pipelines[2].enable != 0, regs.pipelines[3].enable != 0}};
+    const bool reuse = StateFastpathEnabled() && graphics_state_inputs.Matches(inputs);
+    // The tracker generation covers register writes; inputs also cover shader invalidation,
+    // framebuffer formats and draw topology. Do not copy, compare or hash the full key on hits.
+    // Verification still computes the reference key. Pending PSOs never install a pointer.
+    if (PipelineLookupFastpathEnabled() && !StateVerifyEnabled() && reuse &&
+        last_graphics_request_current && last_graphics_pipeline) {
+        if (context.Profile().Enabled() && last_graphics_prewarmed)
+            context.Profile().Count(FrameCount::PrewarmedPsoHits);
+        return last_graphics_pipeline;
+    }
     Pso::GraphicsPsoState state;
     Pso::TopologyInfo topology{};
     GraphicsPipelineKey request{};
-    const bool reuse = StateFastpathEnabled() && graphics_state_inputs.Matches(inputs);
     const auto compute_request = [&]() -> bool {
         if (const auto* reason = UnsupportedState(
                 maxwell3d->regs, static_cast<u32>(maxwell3d->draw_manager.draw_state.topology))) {
@@ -1497,6 +1522,9 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(const Pso::Framebuffer
         return true;
     };
     if (!reuse || StateVerifyEnabled()) {
+        // A new input set can miss or be unsupported. Keep the old key for the equality
+        // fallback, but never associate its pointer with a newly cached pending request.
+        last_graphics_request_current = false;
         const bool supported = compute_request();
         if (StateVerifyEnabled() && reuse) {
             if (!supported) {
@@ -1544,8 +1572,10 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(const Pso::Framebuffer
     // A counter only: skip the per-draw hash lookup unless profiling.
     if (context.Profile().Enabled() && prewarmed_graphics.contains(request))
         context.Profile().Count(FrameCount::PrewarmedPsoHits);
-    if (last_graphics_pipeline && request == last_graphics_request)
+    if (last_graphics_pipeline && request == last_graphics_request) {
+        last_graphics_request_current = true;
         return last_graphics_pipeline;
+    }
     if (const auto found = guest_graphics.find(request); found != guest_graphics.end()) {
         if (!found->second)
             context.Profile().Count(FrameCount::NegativeCacheHits);
