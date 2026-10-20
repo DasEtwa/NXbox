@@ -7,6 +7,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstdlib>
 #include <deque>
 #include <limits>
 #include <mutex>
@@ -84,6 +85,9 @@ public:
     DescriptorTable<TSCEntry> graphics_sampler_table;
     DescriptorTable<TICEntry> compute_image_table;
     DescriptorTable<TSCEntry> compute_sampler_table;
+
+    bool graphics_descriptors_initialized = false;
+    bool graphics_linked_tsc = false;
 
     // TODO: still relies on bad iterators :(
     std::unordered_map<TICEntry, ImageViewId> image_views;
@@ -456,6 +460,10 @@ private:
     std::deque<TextureCacheGPUMap> gpu_page_table_storage;
 
     bool texture_cache_fastpath = false;
+    const bool draw_state_fastpath = [] {
+        const char* value = std::getenv("NXBOX_TEXTURE_DRAW_STATE_FASTPATH");
+        return !value || value[0] != '0' || value[1] != '\0';
+    }();
     struct CachedImageLookup {
         ImageInfo info;
         GPUVAddr address = 0;

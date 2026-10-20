@@ -304,7 +304,9 @@ void TextureCache<P>::FillImageViews(std::span<ImageViewInOut> views, bool compu
                 if (view.blacklist && view.id != NULL_IMAGE_VIEW_ID) {
                     const ImageViewBase& image_view = slot_image_views[view.id];
                     auto& image = slot_images[image_view.image_id];
-                    has_blacklisted |= ScaleDown(image);
+                    if (!draw_state_fastpath || True(image.flags & ImageFlagBits::Rescaled)) {
+                        has_blacklisted |= ScaleDown(image);
+                    }
                     image.scale_rating = 0;
                 }
             }
@@ -448,6 +450,18 @@ void TextureCache<P>::SynchronizeDescriptors(bool compute) {
         }
     } else {
         const bool linked_tsc = maxwell3d->regs.sampler_binding == Tegra::Engines::Maxwell3D::Regs::SamplerBinding::ViaHeaderBinding;
+        auto& flags = maxwell3d->dirty.flags;
+        // Descriptors tracks table registers, not writes to descriptor memory. Only skip
+        // Synchronize here; VisitImageView/GetSamplerId must still read each descriptor.
+        // sampler_binding is not covered by Dirty::Descriptors.
+        if (draw_state_fastpath && !flags[Dirty::Descriptors] &&
+            channel_state->graphics_descriptors_initialized &&
+            channel_state->graphics_linked_tsc == linked_tsc) {
+            return;
+        }
+        flags[Dirty::Descriptors] = false;
+        channel_state->graphics_descriptors_initialized = true;
+        channel_state->graphics_linked_tsc = linked_tsc;
         const u32 tic_limit = maxwell3d->regs.tex_header.limit;
         const u32 tsc_limit = linked_tsc ? tic_limit : maxwell3d->regs.tex_sampler.limit;
         bool bindings_changed = false;
@@ -567,12 +581,23 @@ void TextureCache<P>::UpdateRenderTargets(bool is_clear) {
         if (PassDump::GetConfig().enabled) {
             UpdatePassDumpRenderTargets();
         }
-        for (size_t index = 0; index < NUM_RT; ++index) {
-            ImageViewId& color_buffer_id = render_targets.color_buffer_ids[index];
-            PrepareImageView(color_buffer_id, true, is_clear && IsFullClear(color_buffer_id));
+        if (draw_state_fastpath) {
+            // The clean binding set already has an active mask. Preserve slot order and
+            // every preparation of a live image (alias sync and modification ticks).
+            for (u32 active = rt_active_mask; active; active &= active - 1) {
+                const auto index = std::countr_zero(active);
+                const ImageViewId id = index == NUM_RT ? render_targets.depth_buffer_id
+                                                       : render_targets.color_buffer_ids[index];
+                PrepareImageView(id, true, is_clear && IsFullClear(id));
+            }
+        } else {
+            for (size_t index = 0; index < NUM_RT; ++index) {
+                ImageViewId& color_buffer_id = render_targets.color_buffer_ids[index];
+                PrepareImageView(color_buffer_id, true, is_clear && IsFullClear(color_buffer_id));
+            }
+            const ImageViewId depth_buffer_id = render_targets.depth_buffer_id;
+            PrepareImageView(depth_buffer_id, true, is_clear && IsFullClear(depth_buffer_id));
         }
-        const ImageViewId depth_buffer_id = render_targets.depth_buffer_id;
-        PrepareImageView(depth_buffer_id, true, is_clear && IsFullClear(depth_buffer_id));
         return;
     }
 
