@@ -10,7 +10,7 @@
 #include "core/file_sys/fs_save_data_types.h"
 #include "core/hle/service/cmif_types.h"
 #include "core/hle/service/filesystem/fsp/fsp_types.h"
-#include "core/hle/service/service.h"
+#include "core/hle/service/am/polling_service.h"
 
 namespace Core {
 class Reporter;
@@ -44,7 +44,7 @@ enum class AccessLogMode : u32 {
     SdCard,
 };
 
-class FSP_SRV final : public ServiceFramework<FSP_SRV> {
+class FSP_SRV final : public PollingServiceFramework<FSP_SRV> {
 public:
     explicit FSP_SRV(Core::System& system_);
     ~FSP_SRV() override;

@@ -6,11 +6,11 @@
 #include "core/file_sys/fsa/fs_i_file.h"
 #include "core/hle/service/cmif_types.h"
 #include "core/hle/service/filesystem/filesystem.h"
-#include "core/hle/service/service.h"
+#include "core/hle/service/am/polling_service.h"
 
 namespace Service::FileSystem {
 
-class IFile final : public ServiceFramework<IFile> {
+class IFile final : public PollingServiceFramework<IFile> {
 public:
     explicit IFile(Core::System& system_, FileSys::VirtualFile file_);
 

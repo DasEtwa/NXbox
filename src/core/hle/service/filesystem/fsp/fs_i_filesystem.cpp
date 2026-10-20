@@ -14,7 +14,7 @@
 namespace Service::FileSystem {
 
 IFileSystem::IFileSystem(Core::System& system_, FileSys::VirtualDir dir_, SizeGetter size_getter_)
-    : ServiceFramework{system_, "IFileSystem"}, backend{std::make_unique<FileSys::Fsa::IFileSystem>(
+    : PollingServiceFramework{system_, "IFileSystem"}, backend{std::make_unique<FileSys::Fsa::IFileSystem>(
                                                     dir_)},
       size_getter{std::move(size_getter_)} {
     static const FunctionInfo functions[] = {

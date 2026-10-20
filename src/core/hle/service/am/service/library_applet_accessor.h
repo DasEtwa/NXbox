@@ -8,7 +8,7 @@
 
 #include "core/hle/service/am/service/library_applet_self_accessor.h"
 #include "core/hle/service/cmif_types.h"
-#include "core/hle/service/service.h"
+#include "core/hle/service/am/polling_service.h"
 
 namespace Service::AM {
 
@@ -16,7 +16,7 @@ class AppletDataBroker;
 struct Applet;
 class IStorage;
 
-class ILibraryAppletAccessor final : public ServiceFramework<ILibraryAppletAccessor> {
+class ILibraryAppletAccessor final : public PollingServiceFramework<ILibraryAppletAccessor> {
 public:
     explicit ILibraryAppletAccessor(Core::System& system_, std::shared_ptr<AppletDataBroker> broker,
                                     std::shared_ptr<Applet> applet);

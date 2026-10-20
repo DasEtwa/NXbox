@@ -7,13 +7,13 @@
 #pragma once
 
 #include "core/hle/service/cmif_types.h"
-#include "core/hle/service/service.h"
+#include "core/hle/service/am/polling_service.h"
 
 namespace Service::AM {
 
 struct Applet;
 
-class IDisplayController final : public ServiceFramework<IDisplayController> {
+class IDisplayController final : public PollingServiceFramework<IDisplayController> {
 public:
     explicit IDisplayController(Core::System& system_, std::shared_ptr<Applet> applet_);
     ~IDisplayController() override;

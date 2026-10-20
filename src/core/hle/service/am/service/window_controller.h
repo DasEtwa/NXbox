@@ -4,14 +4,14 @@
 #pragma once
 
 #include "core/hle/service/cmif_types.h"
-#include "core/hle/service/service.h"
+#include "core/hle/service/am/polling_service.h"
 
 namespace Service::AM {
 
 struct Applet;
 class WindowSystem;
 
-class IWindowController final : public ServiceFramework<IWindowController> {
+class IWindowController final : public PollingServiceFramework<IWindowController> {
 public:
     explicit IWindowController(Core::System& system_, std::shared_ptr<Applet> applet,
                                WindowSystem& window_system);

@@ -4,11 +4,11 @@
 #pragma once
 
 #include "core/file_sys/vfs/vfs.h"
-#include "core/hle/service/service.h"
+#include "core/hle/service/am/polling_service.h"
 
 namespace Service::FileSystem {
 
-class IMultiCommitManager final : public ServiceFramework<IMultiCommitManager> {
+class IMultiCommitManager final : public PollingServiceFramework<IMultiCommitManager> {
 public:
     explicit IMultiCommitManager(Core::System& system_);
     ~IMultiCommitManager() override;

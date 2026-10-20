@@ -6,7 +6,7 @@
 #include "core/hle/service/cmif_types.h"
 #include "core/hle/service/kernel_helpers.h"
 #include "core/hle/service/os/event.h"
-#include "core/hle/service/service.h"
+#include "core/hle/service/am/polling_service.h"
 
 namespace Service::AM {
 
@@ -18,7 +18,7 @@ struct CradleDeviceInfo {
 };
 static_assert(sizeof(CradleDeviceInfo) == 0x10, "CradleDeviceInfo has incorrect size");
 
-class ICradleFirmwareUpdater final : public ServiceFramework<ICradleFirmwareUpdater> {
+class ICradleFirmwareUpdater final : public PollingServiceFramework<ICradleFirmwareUpdater> {
 public:
     explicit ICradleFirmwareUpdater(Core::System& system_);
     ~ICradleFirmwareUpdater() override;

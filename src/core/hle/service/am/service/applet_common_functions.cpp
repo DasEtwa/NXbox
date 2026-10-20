@@ -14,7 +14,7 @@ namespace Service::AM {
 
 IAppletCommonFunctions::IAppletCommonFunctions(Core::System& system_,
                                                std::shared_ptr<Applet> applet_)
-    : ServiceFramework{system_, "IAppletCommonFunctions"}, applet{std::move(applet_)} {
+    : PollingServiceFramework{system_, "IAppletCommonFunctions"}, applet{std::move(applet_)} {
     // clang-format off
     static const FunctionInfo functions[] = {
         {0, nullptr, "SetTerminateResult"},

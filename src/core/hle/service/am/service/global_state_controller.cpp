@@ -8,7 +8,7 @@
 namespace Service::AM {
 
 IGlobalStateController::IGlobalStateController(Core::System& system_)
-    : ServiceFramework{system_, "IGlobalStateController"},
+    : PollingServiceFramework{system_, "IGlobalStateController"},
       m_context{system_, "IGlobalStateController"}, m_hdcp_authentication_failed_event{m_context} {
     // clang-format off
     static const FunctionInfo functions[] = {

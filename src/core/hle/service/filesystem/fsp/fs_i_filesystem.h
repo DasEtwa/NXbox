@@ -13,7 +13,7 @@
 #include "core/hle/service/cmif_types.h"
 #include "core/hle/service/filesystem/filesystem.h"
 #include "core/hle/service/filesystem/fsp/fsp_types.h"
-#include "core/hle/service/service.h"
+#include "core/hle/service/am/polling_service.h"
 
 namespace FileSys::Sf {
 struct Path;
@@ -24,7 +24,7 @@ namespace Service::FileSystem {
 class IFile;
 class IDirectory;
 
-class IFileSystem final : public ServiceFramework<IFileSystem> {
+class IFileSystem final : public PollingServiceFramework<IFileSystem> {
 public:
     explicit IFileSystem(Core::System& system_, FileSys::VirtualDir dir_, SizeGetter size_getter_);
 

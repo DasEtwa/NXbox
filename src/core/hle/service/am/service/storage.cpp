@@ -13,7 +13,7 @@
 namespace Service::AM {
 
 IStorage::IStorage(Core::System& system_, std::shared_ptr<LibraryAppletStorage> impl)
-    : ServiceFramework{system_, "IStorage"}, m_impl{std::move(impl)} {
+    : PollingServiceFramework{system_, "IStorage"}, m_impl{std::move(impl)} {
     static const FunctionInfo functions[] = {
         {0, D<&IStorage::Open>, "Open"},
         {1, D<&IStorage::OpenTransferStorage>, "OpenTransferStorage"},

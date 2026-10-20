@@ -9,7 +9,7 @@
 #include "common/uuid.h"
 #include "core/hle/service/am/am_types.h"
 #include "core/hle/service/cmif_types.h"
-#include "core/hle/service/service.h"
+#include "core/hle/service/am/polling_service.h"
 
 namespace FileSys {
 enum class StorageId : u8;
@@ -45,7 +45,7 @@ struct ErrorContext {
 };
 static_assert(sizeof(ErrorContext) == 0x200, "ErrorContext has incorrect size.");
 
-class ILibraryAppletSelfAccessor final : public ServiceFramework<ILibraryAppletSelfAccessor> {
+class ILibraryAppletSelfAccessor final : public PollingServiceFramework<ILibraryAppletSelfAccessor> {
 public:
     explicit ILibraryAppletSelfAccessor(Core::System& system_, std::shared_ptr<Applet> applet);
     ~ILibraryAppletSelfAccessor() override;

@@ -6,13 +6,13 @@
 #include <vector>
 #include "common/common_types.h"
 #include "core/hle/service/cmif_types.h"
-#include "core/hle/service/service.h"
+#include "core/hle/service/am/polling_service.h"
 
 namespace Service::FileSystem {
 
 class SaveDataController;
 
-class ISaveDataInfoReader final : public ServiceFramework<ISaveDataInfoReader> {
+class ISaveDataInfoReader final : public PollingServiceFramework<ISaveDataInfoReader> {
 public:
     explicit ISaveDataInfoReader(Core::System& system_,
                                  std::shared_ptr<SaveDataController> save_data_controller_,

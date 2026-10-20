@@ -5,11 +5,11 @@
 
 #include "core/hle/service/am/library_applet_storage.h"
 #include "core/hle/service/cmif_types.h"
-#include "core/hle/service/service.h"
+#include "core/hle/service/am/polling_service.h"
 
 namespace Service::AM {
 
-class IStorageAccessor final : public ServiceFramework<IStorageAccessor> {
+class IStorageAccessor final : public PollingServiceFramework<IStorageAccessor> {
 public:
     explicit IStorageAccessor(Core::System& system_, std::shared_ptr<LibraryAppletStorage> impl);
     ~IStorageAccessor() override;
@@ -22,7 +22,7 @@ private:
     const std::shared_ptr<LibraryAppletStorage> m_impl;
 };
 
-class ITransferStorageAccessor final : public ServiceFramework<ITransferStorageAccessor> {
+class ITransferStorageAccessor final : public PollingServiceFramework<ITransferStorageAccessor> {
 public:
     explicit ITransferStorageAccessor(Core::System& system_,
                                       std::shared_ptr<LibraryAppletStorage> impl);

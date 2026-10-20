@@ -6,7 +6,7 @@
 #include "common/uuid.h"
 #include "core/hle/service/am/am_types.h"
 #include "core/hle/service/cmif_types.h"
-#include "core/hle/service/service.h"
+#include "core/hle/service/am/polling_service.h"
 
 namespace Service::AM {
 
@@ -15,7 +15,7 @@ class ILibraryAppletAccessor;
 class IStorage;
 class WindowSystem;
 
-class IApplicationAccessor final : public ServiceFramework<IApplicationAccessor> {
+class IApplicationAccessor final : public PollingServiceFramework<IApplicationAccessor> {
 public:
     explicit IApplicationAccessor(Core::System& system_, std::shared_ptr<Applet> applet,
                                   WindowSystem& window_system);
