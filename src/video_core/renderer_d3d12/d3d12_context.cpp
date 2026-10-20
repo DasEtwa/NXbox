@@ -969,7 +969,8 @@ void Context::Acknowledge(u64 tick) {
 }
 void Context::StartRecorder() {
     stream = std::make_unique<RecordStream<>>(
-        BisectEnabled("NXBOX_D3D12_SMALL_RECORDER_QUEUE") ? 8 : RecordStream<>::chunk_count);
+        BisectEnabled("NXBOX_D3D12_SMALL_RECORDER_QUEUE") ? 8 : RecordStream<>::chunk_count,
+        BisectEnabled("NXBOX_D3D12_DIRECT_REPLAY"));
     stream->metrics = profile.Enabled();
     recorder = std::thread{[this] {
         RecordingTarget target;

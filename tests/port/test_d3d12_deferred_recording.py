@@ -373,7 +373,8 @@ int main() {
     std::cout << "failed recorder drains exhausted pool without stranding producer or COM holds OK\n";
     // A scratch allocation failure occurs after the header has been consumed. The
     // failure drain must resume that record, not interpret its payload as a header.
-    RecordStream<> scratch_failure;
+    // Force scratch: the direct path intentionally does not allocate.
+    RecordStream<> scratch_failure{RecordStream<>::chunk_count, false};
     unsigned scratch_replays = 0;
     EncodeCall<[](void* target, uint64_t, uint64_t, ID3D12Resource*) {
         ++*static_cast<unsigned*>(target);
