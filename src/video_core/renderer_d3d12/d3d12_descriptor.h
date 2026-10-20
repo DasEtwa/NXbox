@@ -301,6 +301,7 @@ struct DescriptorPlan {
     DescriptorSources<std::uintptr_t> sources;
     std::array<u32, 3> sizes{};
     std::vector<DescriptorKey> keys;
+    std::vector<u8> initialized;
     std::vector<ResourcePtr> resources;
     explicit DescriptorPlan(std::array<u32, 3> sizes_) {
         // Allocate both persistent plans once, including the previous-draw swap
@@ -315,6 +316,8 @@ struct DescriptorPlan {
         // Every slot, including padding, is written before FinishDrawTable.
         // Keep key storage initialized and reuse its capacity across draws.
         keys.resize(count);
+        if (BisectEnabled("NXBOX_D3D12_VALIDATE_COMMANDS"))
+            initialized.assign(count, 0);
         sources.Reset(count);
         resources.clear();
         resources.resize(count);

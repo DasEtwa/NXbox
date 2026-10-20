@@ -2019,6 +2019,17 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
             context.Profile().Count(FrameCount::RootCbvBinds);
         }
     }
+    if (batch_root_bindings && commands->validation.enabled) {
+        for (size_t i = 0; i < root_binding_count; ++i) {
+            const auto& binding = root_bindings[i];
+            if (binding.table)
+                commands->validation.Table("SetGraphicsRootDescriptorTable", binding.parameter,
+                                           binding.address);
+            else
+                commands->validation.Root("SetGraphicsRootConstantBufferView", binding.parameter,
+                                          binding.address, true);
+        }
+    }
     if (batch_root_bindings)
         RecordGraphicsRootBindings<RecordingTarget>(*commands->stream, root_bindings.data(),
                                                     root_binding_count);

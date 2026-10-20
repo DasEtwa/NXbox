@@ -889,7 +889,7 @@ Context::Context() {
           "NXBOX_D3D12_NO_DRAWS", "NXBOX_D3D12_NO_QUERIES", "NXBOX_D3D12_SUBMIT_TRACE",
           "NXBOX_D3D12_FENCE_BATCHING", "NXBOX_D3D12_BATCH_DESCRIPTOR_COPIES",
           "NXBOX_D3D12_ASYNC_DMA", "NXBOX_D3D12_SMALL_RECORDER_QUEUE",
-          "NXBOX_D3D12_SYNC_BUFFER_CLEARS"})
+          "NXBOX_D3D12_SYNC_BUFFER_CLEARS", "NXBOX_D3D12_VALIDATE_COMMANDS"})
         Diagnostic(fmt::format("D3D12 bisect {}={}", knob, BisectEnabled(knob) ? 1 : 0));
     Diagnostic(fmt::format("D3D12 flush_draws={}", FlushDrawsKnob()));
     D3D12_FEATURE_DATA_SHADER_MODEL model{D3D_SHADER_MODEL_6_0};
@@ -1097,6 +1097,11 @@ u64 Context::SealRecording(FrameCount reason) {
         batches.push_back({tick, std::move(completion), std::move(retained)});
         completion.clear();
         retained.clear();
+    }
+    if (facade.validation.enabled) {
+        const auto summary = facade.validation.Summary();
+        EncodeCall<[](void*, const char* message) { Diagnostic(message); }>(
+            *stream, Snapshot(summary.c_str(), summary.size() + 1));
     }
     EncodeCall<[](void* target, u64 tick) {
         static_cast<Context*>(static_cast<RecordingTarget*>(target)->owner)->RecorderSubmit(tick);
@@ -1336,6 +1341,7 @@ CommandFacade* Context::Commands() {
             Check(commands->Reset(allocators[allocator_index].handle.Get(), nullptr),
                   "command list Reset", device.Get());
         }
+        facade.validation.Begin(CurrentTick());
         facade.ResetDrawState();
         copy_writes.clear();
         // Globally unique across Context instances; never reuse a resource stamp.
@@ -1438,6 +1444,8 @@ u64 Context::Submit(FrameCount reason) {
             Diagnostic(fmt::format("D3D12 ExecuteCommandLists sequence={} tick={} contents={}",
                                    execute_sequence, CurrentTick(), contents));
         Check(device->GetDeviceRemovedReason(), "before ExecuteCommandLists", device.Get());
+        if (facade.validation.enabled)
+            Diagnostic(facade.validation.Summary());
         queue->ExecuteCommandLists(1, lists);
         profile.Count(FrameCount::Executes);
         profile.Count(reason);

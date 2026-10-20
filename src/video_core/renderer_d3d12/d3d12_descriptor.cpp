@@ -295,6 +295,8 @@ DescriptorKey D3D12DescriptorAllocator::MakeDescriptorKey(const ResourcePtr& res
 void D3D12DescriptorAllocator::WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE type,
                                            const ResourcePtr& resource, u32 kind, const void* desc,
                                            size_t size, const DescriptorTable& table, u32 slot) {
+    if (slot >= table.count)
+        throw std::out_of_range("D3D12 descriptor write outside table slice");
     if (table.plan) {
         const u32 index = table.first + slot;
         const DescriptorKey key = MakeDescriptorKey(resource, kind, desc, size);
@@ -312,6 +314,8 @@ void D3D12DescriptorAllocator::WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE type,
         }
         table.plan->keys.at(index) = key;
         table.plan->resources.at(index) = resource;
+        if (!table.plan->initialized.empty())
+            table.plan->initialized.at(index) = 1;
         return;
     }
     WriteCached(type, resource, kind, desc, size, table.Slot(slot));
@@ -369,6 +373,18 @@ void D3D12DescriptorAllocator::RememberDrawTable(const DescriptorPlan& plan, Des
 }
 
 DescriptorTable D3D12DescriptorAllocator::FinishDrawTable(DescriptorPlan& plan, bool sampler) {
+    if (!plan.initialized.empty()) {
+        for (u32 slot = 0; slot < plan.keys.size(); ++slot) {
+            if (!plan.initialized[slot]) {
+                const auto message =
+                    fmt::format("D3D12_VALIDATION invalid tick={} call=FinishDrawTable sampler={} "
+                                "unwritten_slot={} count={}",
+                                context.CurrentTick(), sampler, slot, plan.keys.size());
+                Diagnostic(message);
+                throw std::invalid_argument(message);
+            }
+        }
+    }
     auto& previous = previous_draw_tables[sampler ? 1 : 0];
     if (CanReusePreviousDrawTable(plan, sampler)) {
         context.Profile().Count(FrameCount::DescriptorTableReuses);
@@ -494,6 +510,19 @@ D3D12_CPU_DESCRIPTOR_HANDLE D3D12DescriptorAllocator::ResolveDescriptor(
         case 1: {
             D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
             std::memcpy(&srv, desc, sizeof(srv));
+            if (BisectEnabled("NXBOX_D3D12_VALIDATE_COMMANDS") && !resource) {
+                std::string words;
+                for (size_t offset = 0; offset < sizeof(srv); offset += sizeof(u32)) {
+                    u32 word{};
+                    std::memcpy(&word, reinterpret_cast<const u8*>(&srv) + offset,
+                                std::min(sizeof(word), sizeof(srv) - offset));
+                    words += fmt::format("{}{:08x}", offset ? " " : "", word);
+                }
+                Diagnostic(fmt::format(
+                    "D3D12_VALIDATION null_srv tick={} dimension={} format={} desc=[{}]",
+                    context.CurrentTick(), static_cast<UINT>(srv.ViewDimension),
+                    static_cast<UINT>(srv.Format), words));
+            }
             context.Device()->CreateShaderResourceView(resource ? resource->handle.Get() : nullptr,
                                                        &srv, handle);
             TraceApiCall(context.Device(), "CreateShaderResourceView",
