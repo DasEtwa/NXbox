@@ -95,7 +95,7 @@ public:
     u64 ReadTimestamp(const Timestamp& timestamp);
 
 private:
-    void SetGpuPredicate(DAddr address, D3D12_PREDICATION_OP op);
+    void SetGpuPredicate(DAddr address, D3D12_PREDICATION_OP op, bool compare_words = false);
     bool CompareConditional(VideoCommon::LookupData first, VideoCommon::LookupData second,
                             bool equal_check);
     void WriteValue(DAddr address, const void* value, u64 size);

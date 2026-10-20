@@ -788,11 +788,12 @@ bool QueryCacheRuntime::CompareConditional(VideoCommon::LookupData first,
         }
     }
     static const bool cpu_predicate = BisectEnabled("NXBOX_D3D12_CPU_PREDICATE");
+    static const bool exact_conditional = BisectEnabled("NXBOX_D3D12_EXACT_CONDITIONAL");
     if (!cpu_predicate) {
         if (!second.address) {
-            // "Render when the value is non-zero" is exactly EQUAL_ZERO predication. Reading it
-            // back on the CPU forced a submit and a fence wait per conditional draw.
-            SetGpuPredicate(first.address, D3D12_PREDICATION_OP_EQUAL_ZERO);
+            // Conditional requires both words to be nonzero. Normalize on the GPU to avoid
+            // a submit/readback wait while preserving Maxwell's two-word comparison.
+            SetGpuPredicate(first.address, D3D12_PREDICATION_OP_EQUAL_ZERO, exact_conditional);
             return true;
         }
         // Two reports, as in the Vulkan backend: outside high GPU accuracy only a known-zero
@@ -836,7 +837,9 @@ bool QueryCacheRuntime::CompareConditional(VideoCommon::LookupData first,
     }
     const auto a = impl->ReadGuest(first);
     const auto b = second.address ? impl->ReadGuest(second) : 0;
-    const u64 predicate = (a == b) == equal;
+    const u64 predicate = !second.address && exact_conditional
+                              ? static_cast<u32>(a) != 0 && static_cast<u32>(a >> 32) != 0
+                              : (a == b) == equal;
     impl->context.Profile().Count(FrameCount::BufferUploadBytes, 8);
     impl->context.Profile().Count(FrameCount::OtherUploadBytes, 8);
     impl->context.Profile().Count(FrameCount::StagingCopyBytes, 8);
@@ -855,21 +858,56 @@ bool QueryCacheRuntime::CompareConditional(VideoCommon::LookupData first,
     ResumeHostConditionalRendering();
     return true;
 }
-void QueryCacheRuntime::SetGpuPredicate(DAddr address, D3D12_PREDICATION_OP op) {
+void QueryCacheRuntime::SetGpuPredicate(DAddr address, D3D12_PREDICATION_OP op,
+                                        bool compare_words) {
     // Fresh storage: a previous SetPredication may still reference the old value.
     impl->predicate = impl->context.CreateBuffer(8, D3D12_HEAP_TYPE_DEFAULT);
+    if (compare_words)
+        impl->EnsureGpuCounters();
     {
         std::scoped_lock lock(impl->cache.mutex);
         const auto [buffer, offset] = impl->cache.ObtainCPUBuffer(
             address, 8, VideoCommon::ObtainBufferSynchronize::FullSynchronize,
             VideoCommon::ObtainBufferOperation::DoNothing);
         auto resource = buffer->Handle();
-        impl->context.Transition(resource, D3D12_RESOURCE_STATE_COPY_SOURCE);
-        impl->context.Transition(impl->predicate, D3D12_RESOURCE_STATE_COPY_DEST);
-        impl->context.MarkWork("query report/predicate copy");
-        impl->context.BeforeCopyWrite(impl->predicate, 0, 8);
-        impl->context.Commands()->CopyBufferRegion(impl->predicate->handle.Get(), 0,
-                                                   resource->handle.Get(), offset, 8);
+        if (compare_words) {
+            auto& context = impl->context;
+            // Root SRVs require aligned GPU addresses. Keep the suballocation offset in
+            // the shader constant rather than adding it to the root descriptor address.
+            if (offset > UINT32_MAX)
+                throw std::out_of_range("Conditional rendering buffer offset exceeds uint32");
+            context.InvalidateRecordedState();
+            context.Transition(resource, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            context.Transition(impl->gpu_counters, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            context.Transition(impl->predicate, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            context.Retain(resource);
+            context.Retain(impl->gpu_counters);
+            context.Retain(impl->predicate);
+            context.GlobalUavBarrier();
+            auto* commands = context.Commands();
+            commands->OMSetRenderTargets(0, nullptr, FALSE, nullptr);
+            commands->SetComputeRootSignature(impl->resolve_root.Get());
+            commands->SetPipelineState(impl->resolve_pipeline.Get());
+            const std::array<u32, 5> constants{3, static_cast<u32>(offset), 0, 0, 0};
+            commands->SetComputeRoot32BitConstants(0, 5, constants.data(), 0);
+            commands->SetComputeRootShaderResourceView(1, resource->handle->GetGPUVirtualAddress());
+            commands->SetComputeRootShaderResourceView(2, resource->handle->GetGPUVirtualAddress());
+            commands->SetComputeRootUnorderedAccessView(
+                3, impl->gpu_counters->handle->GetGPUVirtualAddress());
+            commands->SetComputeRootUnorderedAccessView(
+                4, impl->predicate->handle->GetGPUVirtualAddress());
+            context.MarkWork("conditional predicate resolve");
+            commands->Dispatch(1, 1, 1);
+            context.Profile().Count(FrameCount::Dispatches);
+            context.GlobalUavBarrier();
+        } else {
+            impl->context.Transition(resource, D3D12_RESOURCE_STATE_COPY_SOURCE);
+            impl->context.Transition(impl->predicate, D3D12_RESOURCE_STATE_COPY_DEST);
+            impl->context.MarkWork("query report/predicate copy");
+            impl->context.BeforeCopyWrite(impl->predicate, 0, 8);
+            impl->context.Commands()->CopyBufferRegion(impl->predicate->handle.Get(), 0,
+                                                       resource->handle.Get(), offset, 8);
+        }
     }
     impl->predicate_set = true;
     impl->predicate_op = op;
