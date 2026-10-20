@@ -435,6 +435,8 @@ private:
 
     [[nodiscard]] BufferId FindBuffer(DAddr device_addr, u32 size, bool sparse_compatible);
 
+    BufferId ResolveBufferBinding(const Binding& previous, DAddr device_addr, u32 size);
+
     void SynchronizeBufferWrites(Buffer& buffer);
 
     [[nodiscard]] OverlapResult ResolveOverlaps(DAddr device_addr, u32 wanted_size);
