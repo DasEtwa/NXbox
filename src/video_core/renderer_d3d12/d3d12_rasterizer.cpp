@@ -34,6 +34,7 @@
 #include "video_core/renderer_d3d12/d3d12_pipeline_cache.h"
 #include "video_core/renderer_d3d12/d3d12_rasterizer.h"
 #include "video_core/renderer_d3d12/d3d12_render_area.h"
+#include "video_core/renderer_d3d12/d3d12_resolution.h"
 #include "video_core/shader_discovery.h"
 #include "video_core/submission_trace.h"
 #include "video_core/textures/texture.h"
@@ -500,7 +501,10 @@ ResourcePtr RasterizerD3D12::CopyFeedback(const ResourcePtr& source,
 RasterizerD3D12::DynamicState RasterizerD3D12::ComputeDynamicState(
     const Maxwell& regs, const Pso::GraphicsPsoState& attachment_state,
     const Pso::FramebufferFormats& formats, u32 width, u32 height,
-    const IGraphicsPipeline& pipeline) {
+    const IGraphicsPipeline& pipeline, bool rescaled) {
+    const auto& resolution = Settings::values.resolution_info;
+    const ResolutionScale scale =
+        rescaled ? ResolutionScale{resolution.up_scale, resolution.down_shift} : ResolutionScale{};
     DynamicState result;
     auto& viewports = result.viewports;
     auto& scissors = result.scissors;
@@ -509,6 +513,10 @@ RasterizerD3D12::DynamicState RasterizerD3D12::ComputeDynamicState(
         const auto viewport_result =
             regs.viewport_scale_offset_enabled ? MakeViewport(regs, i) : MakeFullViewport(regs);
         viewports[i] = viewport_result.viewport;
+        viewports[i].TopLeftX = scale.Coordinate(viewports[i].TopLeftX);
+        viewports[i].TopLeftY = scale.Coordinate(viewports[i].TopLeftY);
+        viewports[i].Width = scale.Coordinate(viewports[i].Width);
+        viewports[i].Height = scale.Coordinate(viewports[i].Height);
         if (viewports[i].MinDepth > viewports[i].MaxDepth) {
             static bool logged_inverted_depth = false;
             if (!logged_inverted_depth) {
@@ -523,6 +531,10 @@ RasterizerD3D12::DynamicState RasterizerD3D12::ComputeDynamicState(
             viewports[i].MaxDepth = 1.0f;
         }
         scissors[i] = MakeScissor(regs, i);
+        const auto scaled_scissor =
+            scale.Rect(scissors[i].left, scissors[i].top, scissors[i].right, scissors[i].bottom);
+        scissors[i] = {scaled_scissor.left, scaled_scissor.top, scaled_scissor.right,
+                       scaled_scissor.bottom};
         scissors[i].right = std::min(scissors[i].right, static_cast<LONG>(width));
         scissors[i].bottom = std::min(scissors[i].bottom, static_cast<LONG>(height));
         scissors[i].left = std::min(scissors[i].left, scissors[i].right);
@@ -553,8 +565,10 @@ RasterizerD3D12::DynamicState RasterizerD3D12::ComputeDynamicState(
         result.depth_bounds = {std::clamp(regs.depth_bounds[0], 0.0f, 1.0f),
                                std::clamp(regs.depth_bounds[1], 0.0f, 1.0f)};
     }
+    // PositionPass converts guest window coordinates to NDC using guest dimensions.
     result.words = pipeline.RootConstants(
-        {width, height, regs.window_origin.mode != Maxwell::WindowOrigin::Mode::UpperLeft});
+        {rescaled ? regs.surface_clip.width : width, rescaled ? regs.surface_clip.height : height,
+         regs.window_origin.mode != Maxwell::WindowOrigin::Mode::UpperLeft});
     return result;
 }
 
@@ -1551,6 +1565,8 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
 
     // ---- 3. Build full descriptor keys and collect resource states for every draw ----
     u32 cbv_i = 0, srv_i = 0, uav_i = 0, smp_i = 0;
+    std::array<u32, NUM_GRAPHICS_STAGES> texture_scaling_masks{};
+    u32 image_scaling_mask = 0;
     const VideoCommon::ImageViewInOut* view_it = view_scratch.data();
     const VideoCommon::SamplerId* sampler_it = sampler_scratch.data();
     for (size_t stage = 0; stage < NUM_GRAPHICS_STAGES; ++stage) {
@@ -1585,9 +1601,13 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         const u32 image_buffer_count = Shader::NumDescriptors(info->image_buffer_descriptors);
         const VideoCommon::ImageViewInOut* texture_views =
             view_it + texel_count + image_buffer_count;
+        u32 texture_descriptor_index = 0;
         for (const auto& desc : info->texture_descriptors) {
+            const u32 scaling_index = texture_descriptor_index++;
             for (u32 i = 0; i < desc.count; ++i, ++srv_i, ++smp_i) {
                 ImageView& view = texture_cache.GetImageView((texture_views++)->id);
+                if (scaling_index < 32 && view.IsRescaled())
+                    texture_scaling_masks[stage] |= 1u << scaling_index;
                 auto sampled = view.ImageHandle();
                 bool color_feedback = false;
                 for (const auto& color : color_resources)
@@ -1752,6 +1772,8 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
             }
             for (u32 i = 0; i < desc.count; ++i, ++uav_i) {
                 auto& view = texture_cache.GetImageView((texture_views++)->id);
+                if (uav_i < 32 && view.IsRescaled())
+                    image_scaling_mask |= 1u << uav_i;
                 const auto guest_format = format.value_or(view.format);
                 if (const auto problem =
                         StorageImageProblem(context, guest_format, desc.format, desc.is_integer,
@@ -1935,13 +1957,13 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         regs.zeta_enable,
         is_indexed,
         {regs.pipelines[2].enable != 0, regs.pipelines[3].enable != 0}};
-    const DynamicStateInputs current_dynamic{dynamic_graphics, render_area.width,
+    const DynamicStateInputs current_dynamic{dynamic_graphics,   render_area.width,
                                              render_area.height, static_cast<u32>(topology),
-                                             pipeline};
+                                             pipeline,           texture_cache.IsRescaling()};
     const bool reuse_dynamic = StateFastpathEnabled() && dynamic_inputs.Matches(current_dynamic);
     if (!reuse_dynamic || StateVerifyEnabled()) {
         auto slow = ComputeDynamicState(regs, attachment_state, formats, render_area.width,
-                                        render_area.height, *pipeline);
+                                        render_area.height, *pipeline, texture_cache.IsRescaling());
         if (StateVerifyEnabled() && reuse_dynamic) {
             const auto compare = [](std::string_view what, const auto& fast, const auto& slow) {
                 if (std::memcmp(&fast, &slow, sizeof(fast)) != 0)
@@ -1986,6 +2008,11 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         commands->IASetIndexBuffer(&index_view);
 
     auto words = cached_dynamic_state.words;
+    words[4] = std::bit_cast<u32>(
+        texture_cache.IsRescaling() ? Settings::values.resolution_info.down_factor : 1.0f);
+    words[7] = image_scaling_mask;
+    for (size_t stage = 0; stage < texture_scaling_masks.size(); ++stage)
+        words[11 + stage] = texture_scaling_masks[stage];
     words[8] = is_indexed ? draw_state.base_index : draw_state.vertex_buffer.first;
     words[9] = draw_state.base_instance;
     words[10] = indirect_draw_id;
@@ -2880,18 +2907,21 @@ void RasterizerD3D12::DrawTexture() {
         commands->SetGraphicsRootDescriptorTable(3, tables.Slice(2, 1).gpu);
         commands->SetGraphicsRootDescriptorTable(4, sampler_table.gpu);
         const auto size = framebuffer.Size();
-        const std::array<float, 12> constants{blit.dst_x0,
-                                              blit.dst_y0,
-                                              blit.dst_x1,
-                                              blit.dst_y1,
-                                              blit.src_x0,
-                                              blit.src_y0,
-                                              blit.src_x1,
-                                              blit.src_y1,
-                                              static_cast<float>(size.width),
-                                              static_cast<float>(size.height),
-                                              static_cast<float>(source.size.width),
-                                              static_cast<float>(source.size.height)};
+        const std::array<float, 12> constants{
+            blit.dst_x0,
+            blit.dst_y0,
+            blit.dst_x1,
+            blit.dst_y1,
+            blit.src_x0,
+            blit.src_y0,
+            blit.src_x1,
+            blit.src_y1,
+            static_cast<float>(texture_cache.IsRescaling() ? maxwell3d->regs.surface_clip.width
+                                                           : size.width),
+            static_cast<float>(texture_cache.IsRescaling() ? maxwell3d->regs.surface_clip.height
+                                                           : size.height),
+            static_cast<float>(source.size.width),
+            static_cast<float>(source.size.height)};
         if (!size.width || !size.height || !source.size.width || !source.size.height)
             return;
         commands->SetGraphicsRoot32BitConstants(0, static_cast<UINT>(constants.size()),
@@ -2968,7 +2998,13 @@ void RasterizerD3D12::Clear(u32 layer_count) try {
         }
     }
     const auto size = framebuffer->Size();
-    ClearOperations::Rect clip{0, 0, static_cast<s32>(size.width), static_cast<s32>(size.height)};
+    const auto& resolution = Settings::values.resolution_info;
+    const ResolutionScale scale = texture_cache.IsRescaling()
+                                      ? ResolutionScale{resolution.up_scale, resolution.down_shift}
+                                      : ResolutionScale{};
+    const u32 guest_width = maxwell3d->regs.surface_clip.width;
+    const u32 guest_height = maxwell3d->regs.surface_clip.height;
+    ClearOperations::Rect clip{0, 0, static_cast<s32>(guest_width), static_cast<s32>(guest_height)};
     if (regs.clear_control.use_scissor && regs.scissor_test[0].enable) {
         const auto& scissor = regs.scissor_test[0];
         clip = ClearOperations::Intersect(
@@ -2990,9 +3026,13 @@ void RasterizerD3D12::Clear(u32 layer_count) try {
     }
     if (regs.window_origin.mode != Maxwell::WindowOrigin::Mode::UpperLeft) {
         const auto top = clip.top;
-        clip.top = static_cast<s32>(size.height) - clip.bottom;
-        clip.bottom = static_cast<s32>(size.height) - top;
+        clip.top = static_cast<s32>(guest_height) - clip.bottom;
+        clip.bottom = static_cast<s32>(guest_height) - top;
     }
+    const auto scaled_clip = scale.Rect(clip.left, clip.top, clip.right, clip.bottom);
+    clip = ClearOperations::Intersect(
+        {scaled_clip.left, scaled_clip.top, scaled_clip.right, scaled_clip.bottom},
+        {0, 0, static_cast<s32>(size.width), static_cast<s32>(size.height)});
     for (u32 layer = selection.layer; layer < selection.layer + layer_count; ++layer) {
         ClearAttachment color_attachment, depth_attachment;
         descriptors.Reserve(0, 0, selection.color_mask ? 1u : 0u,
@@ -3255,9 +3295,14 @@ void RasterizerD3D12::DispatchCompute() try {
         use(buffer.resource, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
     }
     u32 srv_index = 0, sampler_index = 0;
-    for (const auto& desc : info.texture_descriptors)
+    u32 compute_texture_scaling_mask = 0, compute_image_scaling_mask = 0;
+    u32 compute_texture_descriptor = 0;
+    for (const auto& desc : info.texture_descriptors) {
+        const u32 scaling_index = compute_texture_descriptor++;
         for (u32 i = 0; i < desc.count; ++i) {
             auto& view = texture_cache.GetImageView(view_scratch[view_index++].id);
+            if (scaling_index < 32 && view.IsRescaled())
+                compute_texture_scaling_mask |= 1u << scaling_index;
             descriptors.WriteImageSrv(srv, srv_index++, view,
                                       SrvDimension(desc.type, desc.is_multisample));
             if (const auto& image = view.ImageHandle())
@@ -3267,6 +3312,7 @@ void RasterizerD3D12::DispatchCompute() try {
                                      desc.is_depth);
             ++sampler_index;
         }
+    }
     const u32 texel_count = Shader::NumDescriptors(info.texture_buffer_descriptors);
     for (u32 i = 0; i < texel_count; ++i) {
         descriptors.WriteTexelSrv(srv, srv_index++, bound.texel[i]);
@@ -3292,6 +3338,8 @@ void RasterizerD3D12::DispatchCompute() try {
     for (const auto& desc : info.image_descriptors)
         for (u32 i = 0; i < desc.count; ++i) {
             auto& view = texture_cache.GetImageView(view_scratch[view_index++].id);
+            if (uav_index < 32 && view.IsRescaled())
+                compute_image_scaling_mask |= 1u << uav_index;
             const auto format = PixelFormatFromImageFormat(desc.format);
             if (!format && desc.format != Shader::ImageFormat::Typeless)
                 throw std::runtime_error("D3D12 unsupported compute storage image format");
@@ -3351,6 +3399,8 @@ void RasterizerD3D12::DispatchCompute() try {
     dispatch.root_cbvs = root_cbvs;
     dispatch.root_cbv_addresses = root_cbv_addresses;
     Shader::Backend::HLSL::RootConstants constants;
+    constants.texture_scaling_mask = compute_texture_scaling_mask;
+    constants.image_scaling_mask = compute_image_scaling_mask;
     std::memcpy(dispatch.constants.data(), &constants, sizeof(constants));
     dispatch.resources = resources;
     dispatch.split_reads = split_reads;
@@ -3768,7 +3818,7 @@ RasterizerD3D12::DisplayTexture RasterizerD3D12::FramebufferTexture(
             description.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
             description.Texture2DArray = {0, 1, 0, 1, 0, 0};
             log_source(resource, description.Format, true);
-            return {resource, description};
+            return {resource, description, scaled, view->size.width, view->size.height};
         }
         if (description.ViewDimension == D3D12_SRV_DIMENSION_TEXTURE2D) {
             const auto mip = description.Texture2D.MostDetailedMip;
@@ -3782,7 +3832,7 @@ RasterizerD3D12::DisplayTexture RasterizerD3D12::FramebufferTexture(
             return {};
         }
         log_source(view->ImageHandle(), description.Format, true);
-        return {view->ImageHandle(), description};
+        return {view->ImageHandle(), description, scaled, view->size.width, view->size.height};
     }
     auto resource = texture_runtime.UploadFramebuffer(device_memory, config);
     if (!resource)

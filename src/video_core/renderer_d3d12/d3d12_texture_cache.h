@@ -155,16 +155,15 @@ public:
     void DownloadMemory(std::span<const ResourcePtr> buffers, std::span<const size_t> offsets,
                         std::span<const VideoCommon::BufferImageCopy> copies);
     bool IsRescaled() const {
-        return false;
+        return True(flags & VideoCommon::ImageFlagBits::Rescaled);
     }
-    bool ScaleUp(bool = false) {
-        return false;
-    }
-    bool ScaleDown(bool = false) {
-        return false;
-    }
+    bool ScaleUp(bool ignore = false);
+    bool ScaleDown(bool ignore = false);
     ResourcePtr Handle() const {
         return resource;
+    }
+    ResourcePtr OriginalHandle() const {
+        return original_resource;
     }
     FormatInfo HostFormat() const {
         return host_format;
@@ -173,6 +172,9 @@ public:
     u64 allocation_tick{};
 
 private:
+    void BlitScale(const ResourcePtr& destination, const ResourcePtr& source);
+    ResourcePtr original_resource;
+    ResourcePtr scaled_resource;
     bool TransferConverted(const StagingBufferRef&, std::span<const VideoCommon::BufferImageCopy>,
                            bool download);
     void Transfer(const StagingBufferRef&, std::span<const VideoCommon::BufferImageCopy>,
@@ -192,7 +194,7 @@ public:
               const VideoCommon::ImageViewInfo&, GPUVAddr);
     ImageView(TextureCacheRuntime&, const VideoCommon::NullImageViewParams& params);
     bool IsRescaled() const {
-        return false;
+        return is_rescaled;
     }
     ResourcePtr ImageHandle() const {
         return resource;
@@ -223,6 +225,7 @@ public:
     }
 
 private:
+    bool is_rescaled{};
     u32 buffer_size{};
     u32 sample_count{1};
     VideoCommon::ImageType image_type{VideoCommon::ImageType::e2D};

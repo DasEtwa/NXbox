@@ -14,8 +14,8 @@
 namespace EdenXbox::TitleSettings {
 
 // The numeric values of Eden's ResolutionSetup, not the multipliers themselves.
-inline constexpr std::array<int, 4> kResolutionValues{3, 5, 6, 7};
-inline constexpr int kDefaultResolution = kResolutionValues[0];
+inline constexpr std::array<int, 6> kResolutionValues{1, 2, 3, 5, 6, 7};
+inline constexpr int kDefaultResolution = 3;
 
 struct Entry {
     std::string label;

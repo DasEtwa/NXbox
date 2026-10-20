@@ -88,6 +88,8 @@ enum class Text {
     LaunchMissingKeys,
 
     ResolutionTitle,
+    Resolution0_5X,
+    Resolution0_75X,
     Resolution1X,
     Resolution1_5X,
     Resolution2X,

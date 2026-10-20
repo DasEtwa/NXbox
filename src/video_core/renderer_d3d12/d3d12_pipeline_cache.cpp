@@ -29,6 +29,7 @@
 #include "common/fs/path_util.h"
 #include "common/logging.h"
 #include "common/scope_exit.h"
+#include "common/settings.h"
 #include "shader_recompiler/backend/hlsl/emit_hlsl.h"
 #include "shader_recompiler/frontend/maxwell/translate_program.h"
 #include "shader_recompiler/host_translate_info.h"
@@ -2091,8 +2092,15 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
     guest_compute.clear();
     graphics.clear();
     compute.clear();
-    const auto identity =
-        DiskPipelineCache::QueryIdentity(context.Device(), {4, 2, PsoNormalizeEnabled() ? 7u : 6u});
+    // RescalingPass bakes the scale into shader instructions. Never prewarm another
+    // resolution's serialized HLSL/PSO under the same guest shader hash. 1x keeps the old
+    // identity so existing caches survive this update.
+    const auto resolution = Settings::values.resolution_setup.GetValue();
+    const u32 emitter_identity =
+        resolution == Settings::ResolutionSetup::Res1X ? 4u
+                                                       : 5u + (static_cast<u32>(resolution) << 16);
+    const auto identity = DiskPipelineCache::QueryIdentity(
+        context.Device(), {emitter_identity, 2, PsoNormalizeEnabled() ? 7u : 6u});
     if (!identity) {
         LOG_WARNING(Render, "D3D12 adapter identity unavailable; disk PSO reuse disabled");
         disk.reset();

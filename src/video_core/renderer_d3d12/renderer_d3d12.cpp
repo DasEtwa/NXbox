@@ -16,6 +16,7 @@
 #include "eden_uwp/renderer_boundary.h"
 #include "eden_uwp/thread_profile.h"
 #include "video_core/capture.h"
+#include "video_core/renderer_d3d12/d3d12_resolution.h"
 #include "video_core/renderer_d3d12/d3d12_shader.h"
 
 namespace D3D12 {
@@ -287,11 +288,26 @@ struct RendererD3D12::Impl {
                 static_cast<float>(std::max(UINT64{1}, resource_desc.Width >> mip));
             const float texture_height =
                 static_cast<float>(std::max(1u, resource_desc.Height >> mip));
-            const PresentParameters constants{{crop.left / texture_width, crop.top / texture_height,
-                                               crop.right / texture_width,
-                                               crop.bottom / texture_height},
-                                              static_cast<u32>(layer.transform_flags),
-                                              layer.blending == Tegra::BlendMode::Opaque ? 1u : 0u};
+            const auto crop_x = [&](int value) {
+                return texture.scaled
+                           ? ResolutionScale::PresentCoordinate(static_cast<float>(value),
+                                                                texture.guest_width,
+                                                                static_cast<u32>(texture_width)) /
+                                 texture_width
+                           : static_cast<float>(value) / texture_width;
+            };
+            const auto crop_y = [&](int value) {
+                return texture.scaled
+                           ? ResolutionScale::PresentCoordinate(static_cast<float>(value),
+                                                                texture.guest_height,
+                                                                static_cast<u32>(texture_height)) /
+                                 texture_height
+                           : static_cast<float>(value) / texture_height;
+            };
+            const PresentParameters constants{
+                {crop_x(crop.left), crop_y(crop.top), crop_x(crop.right), crop_y(crop.bottom)},
+                static_cast<u32>(layer.transform_flags),
+                layer.blending == Tegra::BlendMode::Opaque ? 1u : 0u};
             commands->SetPipelineState(
                 target_pipelines[layer.blending == Tegra::BlendMode::Opaque          ? 0
                                  : layer.blending == Tegra::BlendMode::Premultiplied ? 1

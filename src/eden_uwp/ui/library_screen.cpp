@@ -608,7 +608,9 @@ private:
                 resolution_save_failed_ = false;
             }
             if (input_.Pressed(Button::Right) || input_.Pressed(Button::Down)) {
-                resolution_choice_ = std::min(3, resolution_choice_ + 1);
+                resolution_choice_ =
+                    std::min(static_cast<int>(TitleSettings::kResolutionValues.size()) - 1,
+                             resolution_choice_ + 1);
                 resolution_save_failed_ = false;
             }
             if (input_.Pressed(Button::A)) {
@@ -869,7 +871,7 @@ private:
             std::ifstream title(TitleSettings::File(local_state_, Game(selected_).title_id));
             value = TitleSettings::ReadResolution(title, value);
         }
-        resolution_choice_ = 0;
+        resolution_choice_ = 2;
         for (std::size_t i = 0; i < TitleSettings::kResolutionValues.size(); ++i) {
             if (TitleSettings::kResolutionValues[i] == value) {
                 resolution_choice_ = static_cast<int>(i);
@@ -1786,7 +1788,9 @@ private:
             winrt::to_hstring(Common::g_build_version).c_str() + std::wstring(L" · ") +
             winrt::to_hstring(std::string(Common::g_scm_rev).substr(0, 8)).c_str();
         const int resolution = settings_resolution_;
-        const Text resolution_label = resolution == 5   ? Text::Resolution1_5X
+        const Text resolution_label = resolution == 1   ? Text::Resolution0_5X
+                                      : resolution == 2 ? Text::Resolution0_75X
+                                      : resolution == 5 ? Text::Resolution1_5X
                                       : resolution == 6 ? Text::Resolution2X
                                       : resolution == 7 ? Text::Resolution3X
                                                         : Text::Resolution1X;
@@ -2040,10 +2044,11 @@ private:
                                                 : Game(selected_).name.c_str(),
                              Font::Meta, RectF(left, sheet.top + 115.0f, right, sheet.top + 155.0f),
                              Theme::kTextSecondary);
-        const std::array<Text, 4> labels = {Text::Resolution1X, Text::Resolution1_5X,
-                                            Text::Resolution2X, Text::Resolution3X};
+        const std::array<Text, 6> labels = {Text::Resolution0_5X, Text::Resolution0_75X,
+                                            Text::Resolution1X,   Text::Resolution1_5X,
+                                            Text::Resolution2X,   Text::Resolution3X};
         float x = left;
-        for (int i = 0; i < 4; ++i) {
+        for (int i = 0; i < static_cast<int>(labels.size()); ++i) {
             const std::wstring label = Tr(labels[Idx(i)]);
             const float width = PillWidth(renderer_, label, false);
             DrawChoicePill(
@@ -2052,7 +2057,7 @@ private:
                 false, resolution_choice_ == i);
             x += width + kPillGap;
         }
-        if (resolution_choice_ >= 2) {
+        if (TitleSettings::kResolutionValues[Idx(resolution_choice_)] >= 6) {
             renderer_.DrawString(Tr(Text::ResolutionMemoryHint), Font::Body,
                                  RectF(left, sheet.top + 300.0f, right, sheet.top + 380.0f),
                                  Theme::kTextSecondary);

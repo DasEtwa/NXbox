@@ -4,6 +4,8 @@
     {Text::InternetArtworkHint, L"Fundos da comunidade LaunchBox."},
     {Text::NavLibrary, L"Biblioteca"}, {Text::NavSettings, L"Configurações"},
     {Text::ActionPlay, L"Jogar"}, {Text::ActionMods, L"Mods"}, {Text::ActionDetails, L"Detalhes"},
+    {Text::Resolution0_5X, L"0.5x"},
+    {Text::Resolution0_75X, L"0.75x"},
     {Text::ResolutionTitle, L"Resolução"}, {Text::Resolution1X, L"1x (720p/1080p)"},
     {Text::Resolution1_5X, L"1.5x"}, {Text::Resolution2X, L"2x"}, {Text::Resolution3X, L"3x (4K)"},
     {Text::ResolutionMemoryHint,

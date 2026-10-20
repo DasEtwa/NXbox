@@ -32,6 +32,7 @@ struct DynamicStateInputs {
     GraphicsStateInputs graphics{};
     std::uint32_t width{}, height{}, converted_topology{};
     const void* pipeline{};
+    bool rescaled{};
     bool operator==(const DynamicStateInputs&) const = default;
 };
 
