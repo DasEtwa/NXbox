@@ -310,7 +310,6 @@ struct QueryCacheRuntimeImpl {
                          const StagingBufferRef& metadata = {}) {
         EnsureGpuCounters();
         context.Commands()->SetPredication(nullptr, 0, D3D12_PREDICATION_OP_EQUAL_ZERO);
-        ++helper_state_invalidations;
         context.InvalidateRecordedState();
         context.Transition(results, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         context.Transition(gpu_counters, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
@@ -383,7 +382,6 @@ struct QueryCacheRuntimeImpl {
         std::memcpy(batch_upload.mapped_span.data() + BatchOperationsOffset,
                     batch_operations.data(), batch_operations.size() * 32);
         context.Commands()->SetPredication(nullptr, 0, D3D12_PREDICATION_OP_EQUAL_ZERO);
-        ++helper_state_invalidations;
         context.InvalidateRecordedState();
         context.Transition(results, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         context.Transition(gpu_counters, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
@@ -631,10 +629,6 @@ struct QueryCacheRuntimeImpl {
     std::atomic<u64> pending_reports{}, completed_reports{}, invalidated_reports{}, report_copies{};
     u32 count{};
     bool drawing{}, predicate_set{}, idle_draw{};
-    bool preserve_query_draw_state{};
-    u64 query_draws{}, occlusion_draws{}, pipeline_draws{}, stream_output_draws{};
-    u64 preserved_draw_states{}, full_state_invalidations{}, root_argument_invalidations{};
-    u64 helper_state_invalidations{};
     // EQUAL_ZERO skips commands when the predicate is zero; NOT_EQUAL_ZERO inverts that.
     D3D12_PREDICATION_OP predicate_op{D3D12_PREDICATION_OP_EQUAL_ZERO};
     // Pipeline statistics are recorded only once the guest has read one of those counters.
@@ -651,16 +645,6 @@ QueryCacheRuntime::QueryCacheRuntime(Context& context, Tegra::MaxwellDeviceMemor
         if (impl->batch_destination_resources.contains(resource.get()))
             impl->FlushBatch();
     };
-}
-void QueryCacheRuntime::Bind3DEngine(Tegra::Engines::Maxwell3D* engine, u64 application_title_id) {
-    impl->RequireClosed();
-    maxwell3d = engine;
-    // Latch per channel/session, never process-wide: an absent identity or unbind
-    // must not inherit a previous title's fast path. The title ID is public metadata.
-    const char* value = std::getenv("NXBOX_BOTW_FASTPATH");
-    const bool enabled = !value || std::strcmp(value, "0") != 0;
-    impl->preserve_query_draw_state =
-        engine && application_title_id == 0x01007EF00011E000ULL && enabled;
 }
 QueryCacheRuntime::~QueryCacheRuntime() {
     try {
@@ -703,15 +687,7 @@ std::string QueryCacheRuntime::VisibilityDiagnostics() const {
            " guest_query_writes=" + std::to_string(impl->completed_reports.load()) +
            " guest_query_invalidations=" + std::to_string(impl->invalidated_reports.load()) +
            " query_buffer_copies=" + std::to_string(impl->report_copies.load()) +
-           " pending_native_queries=" + std::to_string(impl->count) +
-           " query_draws=" + std::to_string(impl->query_draws) +
-           " query_occlusion_draws=" + std::to_string(impl->occlusion_draws) +
-           " query_pipeline_draws=" + std::to_string(impl->pipeline_draws) +
-           " query_so_draws=" + std::to_string(impl->stream_output_draws) +
-           " query_state_preserves=" + std::to_string(impl->preserved_draw_states) +
-           " query_state_invalidations=" + std::to_string(impl->full_state_invalidations) +
-           " query_root_invalidations=" + std::to_string(impl->root_argument_invalidations) +
-           " query_helper_invalidations=" + std::to_string(impl->helper_state_invalidations);
+           " pending_native_queries=" + std::to_string(impl->count);
 }
 void QueryCacheRuntime::FlushPendingReports(DAddr address, u64 size) {
     if (!size)
@@ -793,28 +769,20 @@ void QueryCacheRuntime::EndDraw() {
     context.Retain(impl->results);
     if (!impl->synchronous)
         context.Transition(impl->results, D3D12_RESOURCE_STATE_COPY_DEST);
-    // BeginQuery/EndQuery/ResolveQueryData and the private results-buffer barrier
-    // change no cached graphics state. Preserve it for BotW; retain the SM3DW
-    // terrain workaround (f1adbb814e) for all other/unknown titles. Compute helpers
-    // still invalidate before changing the PSO, compute roots and render targets.
-    // Existing probes remain available; FULL_INVALIDATE takes precedence.
+    // Removing this workaround regressed SM3DW terrain (f1adbb814e); no stale
+    // binding has been identified. Keep full invalidation by default. The opt-in
+    // probes isolate root-argument re-emission without changing query commands,
+    // predication or the results-buffer transition. FULL_INVALIDATE overrides both, and
+    // REBIND_ROOT_ARGUMENTS implies KEEP_RECORDED_STATE (alone it would test nothing).
     static const bool rebind_root_arguments =
         BisectEnabled("NXBOX_D3D12_QUERY_REBIND_ROOT_ARGUMENTS");
     static const bool keep_recorded_state =
         rebind_root_arguments || BisectEnabled("NXBOX_D3D12_QUERY_KEEP_RECORDED_STATE");
     static const bool full_invalidate = BisectEnabled("NXBOX_D3D12_QUERY_FULL_INVALIDATE");
-    ++impl->query_draws;
-    impl->occlusion_draws += draw.occlusion;
-    impl->pipeline_draws += draw.pipeline;
-    impl->stream_output_draws += draw.streams != 0;
-    if (full_invalidate || (!impl->preserve_query_draw_state && !keep_recorded_state)) {
-        ++impl->full_state_invalidations;
+    if (!keep_recorded_state || full_invalidate) {
         context.InvalidateRecordedState();
     } else if (rebind_root_arguments) {
-        ++impl->root_argument_invalidations;
         context.DrawState().ClearRootArguments();
-    } else {
-        ++impl->preserved_draw_states;
     }
     auto* commands = context.Commands();
     const auto end = [&](ID3D12QueryHeap* heap, D3D12_QUERY_TYPE type, u64 offset) {
@@ -1133,7 +1101,6 @@ void QueryCacheRuntime::SetGpuPredicate(DAddr address, D3D12_PREDICATION_OP op,
             // the shader constant rather than adding it to the root descriptor address.
             if (offset > UINT32_MAX)
                 throw std::out_of_range("Conditional rendering buffer offset exceeds uint32");
-            ++impl->helper_state_invalidations;
             context.InvalidateRecordedState();
             context.Transition(resource, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
             context.Transition(impl->gpu_counters, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);

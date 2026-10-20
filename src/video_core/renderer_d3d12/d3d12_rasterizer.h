@@ -4,8 +4,6 @@
 
 #pragma once
 
-#include <atomic>
-
 #include <map>
 #include <optional>
 #include <tuple>
@@ -300,8 +298,6 @@ private:
     bool compute_logged{};
     Tegra::GPU& m_gpu;
     AccelerateDMA m_accelerate_dma;
-    // Set when the title loads its disk resources; read on channel binds.
-    std::atomic<u64> active_title_id{0};
 };
 
 } // namespace D3D12
