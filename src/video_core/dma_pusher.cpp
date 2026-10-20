@@ -170,7 +170,18 @@ void DmaPusher::ProcessCommands(std::span<const CommandHeader> commands) {
                 dma_state.subchannel = command_header.subchannel;
                 dma_state.dma_word_offset =
                     u64(-s64(dma_state.dma_get)); // negate to set address as 0
-                CallMethod(command_header.arg_count);
+                if (frontend_fastpath && state_runs_fastpath &&
+                    dma_state.method >= non_puller_methods &&
+                    dma_state.method < MacroRegistersStart &&
+                    subchannel_type[dma_state.subchannel] == Engines::EngineTypes::Maxwell3D &&
+                    !subchannels[dma_state.subchannel]->execution_mask[dma_state.method]) {
+                    // Inline state has exactly the same deferred sink semantics as a
+                    // one-word increasing packet; no engine dispatch is needed.
+                    subchannels[dma_state.subchannel]->method_sink.emplace_back(
+                        dma_state.method, command_header.arg_count);
+                } else {
+                    CallMethod(command_header.arg_count);
+                }
                 dma_state.non_incrementing = true;
                 dma_increment_once = false;
                 break;
@@ -229,8 +240,13 @@ void DmaPusher::ProcessCommands(std::span<const CommandHeader> commands) {
                                    (std::min)(dma_state.method_count,
                                               MacroRegistersStart - dma_state.method))));
                 u32 amount = 0;
-                while (amount < limit && !engine->execution_mask[dma_state.method + amount])
-                    ++amount;
+                if (state_runs_fastpath) {
+                    // One lookup replaces a bitset test for every payload word.
+                    amount = (std::min)(limit, engine->GetRegisterWriteRunLength(dma_state.method));
+                } else {
+                    while (amount < limit && !engine->execution_mask[dma_state.method + amount])
+                        ++amount;
+                }
                 if (amount != 0) {
                     if (amount == 1) {
                         // A single register needs no range resize or zero initialization.
