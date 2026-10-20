@@ -51,6 +51,12 @@ int main() {
     assert(context.recording.calls.size() == 2);
     assert(context.recording.calls.back().size() == 1);
     assert(context.recording.calls.back()[0].UAV.pResource == nullptr);
+    // Batched report output is ordered by its COPY_SOURCE transition instead.
+    global_query = false;
+    QueryUavBarrier(context, counters, {});
+    assert(context.recording.calls.size() == 3);
+    assert(context.recording.calls.back().size() == 1);
+    assert(context.recording.calls.back()[0].UAV.pResource == counters->handle.Get());
 }
 """
         )

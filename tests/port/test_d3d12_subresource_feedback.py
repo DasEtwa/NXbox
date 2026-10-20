@@ -107,6 +107,7 @@ struct Context {
     std::vector<D3D12_RESOURCE_BARRIER> transition_barriers;
     CommandsMock* Commands() { return commands; }
     std::function<void()> on_retain;
+    std::function<void(const ResourcePtr&)> before_resource_use;
     void Retain(const ResourcePtr&) {
         Commands();
         if (on_retain) {

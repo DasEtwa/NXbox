@@ -689,7 +689,8 @@ void FrameProfile::EndFrame(bool presented) {
                                       "uniform_snapshot_requests",
                                       "uniform_snapshot_new_resources",
                                       "forced_submits_flush_draws",
-                                      "attachment_metadata_reuses"};
+                                      "attachment_metadata_reuses",
+                                      "query_batch_dispatches"};
         static_assert(names.size() == static_cast<size_t>(FramePhase::Count));
         static_assert(counters.size() == static_cast<size_t>(FrameCount::Count));
         const double elapsed = static_cast<double>(wall - start_wall);
@@ -1385,6 +1386,8 @@ u64 Context::Submit(FrameCount reason) {
                 flag.store(true, std::memory_order_release);
         }
     } failure_flag{submit_failed};
+    if (before_submit)
+        before_submit();
     const FrameProfile::Scope profile_submit{profile, FramePhase::Submit};
     if (deferred) {
         try {
@@ -1497,6 +1500,8 @@ constexpr bool ShaderReadStateCovers(D3D12_RESOURCE_STATES before, D3D12_RESOURC
 void Context::Transition(const ResourcePtr& resource, D3D12_RESOURCE_STATES state) {
     if (!resource)
         throw std::invalid_argument("D3D12 null resource");
+    if (before_resource_use)
+        before_resource_use(resource);
     Retain(resource);
     if (!resource->sub_states.empty()) {
         const std::pair<ResourcePtr, D3D12_RESOURCE_STATES> use{resource, state};
@@ -1678,6 +1683,10 @@ void Context::GlobalUavBarrier() {
     profile.Count(FrameCount::Barriers);
 }
 void Context::TransitionBatch(std::span<const std::pair<ResourcePtr, D3D12_RESOURCE_STATES>> uses) {
+    if (before_resource_use) {
+        for (const auto& use : uses)
+            before_resource_use(use.first);
+    }
     // Start/retire recording before reading tracked states: completion callbacks
     // can themselves record transitions. Keep all intermediate transitions ordered.
     auto* list = Commands();

@@ -87,7 +87,7 @@ struct QueryCacheRuntime {
     void EnableCounter(QueryType,bool) {}
     void ResetCounter(QueryType) {}
     struct CounterResult { u64 value; StagingBufferRef result; };
-    CounterResult ReadCounter(QueryType,u32) {
+    CounterResult ReadCounter(QueryType,u32,VAddr,u32) {
         ++next;
         if (!gpu) return {next, {}};
         auto buffer = std::make_shared<u64>(next);

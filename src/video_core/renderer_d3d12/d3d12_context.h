@@ -195,6 +195,7 @@ enum class FrameCount : size_t {
     UniformSnapshotNewResources,
     ForcedSubmitFlushDraws,
     AttachmentMetadataReuses,
+    QueryBatchDispatches,
     Count
 };
 // Monotonic CPU samples, independent of the host clock API, for exclusive phases.
@@ -510,6 +511,9 @@ public:
             profile.Count(FrameCount::RedundantStateSkips);
         return changed;
     }
+    // Recording-thread producers must materialize deferred work before sealing a list.
+    std::function<void()> before_submit;
+    std::function<void(const ResourcePtr&)> before_resource_use;
     u64 Submit(FrameCount reason = FrameCount::ForcedSubmitOther);
     // Between draws: submits the open list once it holds NXBOX_D3D12_FLUSH_DRAWS recorded draws.
     // Returns true when it did, so the caller can wake the fencing thread like any other submit.

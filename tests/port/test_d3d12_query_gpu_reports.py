@@ -57,14 +57,18 @@ class GpuQueryReports(unittest.TestCase):
         copy = function_body(source, "void QueryCacheRuntime::CopyValue(")
         self.assertIn("ObtainBufferOperation::MarkAsWritten", copy)
 
-    def test_counter_reports_never_copy_to_guest_buffers(self):
+    def test_reports_keep_snapshots_and_batch_guest_writes(self):
         source = (D3D12 / "d3d12_query_cache.cpp").read_text()
         write = function_body(source, "size_t WriteCounter(")
         read = function_body(source, "QueryCacheRuntime::ReadCounter(")
         self.assertNotIn("WriteCounterReport", source)
         self.assertNotIn("SyncValues", write)
         self.assertNotIn("CopyValue", read)
-        self.assertNotIn("ObtainCPUBuffer", read)
+        batch = function_body(read, "if (impl->batch_queries")
+        self.assertIn("ObtainCPUBuffer", batch)
+        self.assertIn("ObtainBufferOperation::MarkAsWritten", batch)
+        self.assertIn("batch_destinations.push_back", batch)
+        self.assertIn("result.mapped_span.subspan(offset, 8)", batch)
         self.assertIn("CopyBufferRegion(result.buffer->handle.Get()", read)
         self.assertIn("FrameCount::GpuResolvedQueryReports", read)
         compare = function_body(source, "bool QueryCacheRuntime::CompareConditional(")

@@ -36,7 +36,9 @@ struct Cache {
     void DownloadMemory(u64,u64) { guest=value; }
     void FlushRegion(u64,u64) { guest=value; }
 };
+struct QueryRuntime { void FlushPendingReports(u64,u64) {} };
 struct RasterizerD3D12 {
+    QueryRuntime query_runtime;
     bool OnGpuPipeline() const { return false; }
     template<class F> auto RunGpuPipeline(F&& function) { return function(); }
     Cache texture_cache{{},1},buffer_cache{{},2},query_cache{{},42};
@@ -99,7 +101,9 @@ struct Cache {
     }
     void InvalidateRegion(u64,u64) { ++writes; }
 };
+struct QueryRuntime { void FlushPendingReports(u64,u64) {} };
 struct RasterizerD3D12 {
+    QueryRuntime query_runtime;
     bool OnGpuPipeline() const { return false; }
     template<class F> auto RunGpuPipeline(F&& function) { return function(); }
     Cache buffer_cache,texture_cache,pipeline;

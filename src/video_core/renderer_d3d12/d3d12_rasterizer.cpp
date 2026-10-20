@@ -3647,6 +3647,7 @@ void RasterizerD3D12::FlushRegion(DAddr addr, u64 size, VideoCommon::CacheType w
     if (OnGpuPipeline())
         return RunGpuPipeline([&] { return FlushRegion(addr, size, which); });
 
+    query_runtime.FlushPendingReports(addr, size);
     if (!addr || !size)
         return;
     if (True(which & VideoCommon::CacheType::TextureCache)) {
@@ -3681,6 +3682,7 @@ void RasterizerD3D12::InvalidateRegion(DAddr addr, u64 size, VideoCommon::CacheT
     if (OnGpuPipeline())
         return RunGpuPipeline([&] { return InvalidateRegion(addr, size, which); });
 
+    query_runtime.FlushPendingReports(addr, size);
     if (!addr || !size)
         return;
     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
@@ -3696,6 +3698,9 @@ void RasterizerD3D12::InvalidateRegion(DAddr addr, u64 size, VideoCommon::CacheT
 void RasterizerD3D12::InnerInvalidation(std::span<const std::pair<DAddr, std::size_t>> sequences) {
     if (OnGpuPipeline())
         return RunGpuPipeline([&] { return InnerInvalidation(sequences); });
+
+    for (const auto& [addr, size] : sequences)
+        query_runtime.FlushPendingReports(addr, size);
 
     // FlushCaching drains guest inline writes, even when CPU inner invalidation is skipped.
     // Match Vulkan: make those bytes CPU-owned before the next buffer synchronization.
@@ -3737,6 +3742,7 @@ void RasterizerD3D12::OnCacheInvalidation(DAddr addr, u64 size) {
     if (OnGpuPipeline())
         return RunGpuPipeline([&] { return OnCacheInvalidation(addr, size); });
 
+    query_runtime.FlushPendingReports(addr, size);
     // Gathering cached CPU stores is not an explicit guest query overwrite.
     // Keep pending reports alive, as the OpenGL/Vulkan backends do.
     InvalidateRegion(addr, size,
@@ -3777,6 +3783,7 @@ void RasterizerD3D12::UnmapMemory(DAddr addr, u64 size) {
     if (OnGpuPipeline())
         return RunGpuPipeline([&] { return UnmapMemory(addr, size); });
 
+    query_runtime.FlushPendingReports(addr, size);
     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
     default_pipeline_cache->InvalidateRegion(addr, size);
     query_cache.InvalidateRegion(addr, size);
