@@ -111,7 +111,7 @@ public:
         if (!enabled)
             return;
         ++counts[4];
-        const auto capacity = heap ? heap->GetDesc().Count : 0;
+        // ID3D12QueryHeap exposes no GetDesc, so the slot range is not checked here.
         const auto d = dst ? dst->GetDesc() : D3D12_RESOURCE_DESC{};
         const UINT stride = type == D3D12_QUERY_TYPE_PIPELINE_STATISTICS
                                 ? sizeof(D3D12_QUERY_DATA_PIPELINE_STATISTICS)
@@ -119,12 +119,12 @@ public:
                                     type <= D3D12_QUERY_TYPE_SO_STATISTICS_STREAM3
                                 ? sizeof(D3D12_QUERY_DATA_SO_STATISTICS)
                                 : 8;
-        Require(heap && dst && count && first < capacity && count <= capacity - first &&
+        Require(heap && dst && count &&
                     d.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER && offset % 8 == 0 &&
                     ValidCopyRange(d.Width, offset, std::uint64_t{count} * stride),
                 "ResolveQueryData",
-                fmt::format("type={} first={} count={} capacity={} offset={} width={} stride={}",
-                            static_cast<UINT>(type), first, count, capacity, offset, d.Width,
+                fmt::format("type={} first={} count={} offset={} width={} stride={}",
+                            static_cast<UINT>(type), first, count, offset, d.Width,
                             stride));
     }
     struct Extent {

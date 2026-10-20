@@ -41,8 +41,8 @@ struct ID3D12Resource {
     auto GetDesc() { return desc; }
 };
 struct ID3D12QueryHeap {
+    // Like the real interface: no GetDesc.
     struct Description { unsigned Count; } desc;
-    auto GetDesc() { return desc; }
 };
 struct ID3D12DescriptorHeap {
     struct Description { unsigned Type, Flags, NumDescriptors; } desc;
@@ -123,8 +123,6 @@ int main() {
     ID3D12QueryHeap query{{32}};
     v.Resolve(&query, 0, 31, 1, &buffer, 248);
     v.Resolve(&query, 2, 0, 1, &buffer, 0);
-    rejects([&] { v.Resolve(&query, 0, 31, 2, &buffer, 0); }, "ResolveQueryData");
-    rejects([&] { v.Resolve(&query, 0, UINT_MAX, 1, &buffer, 0); }, "ResolveQueryData");
     rejects([&] { v.Resolve(&query, 0, 0, 1, &buffer, 1); }, "ResolveQueryData");
     rejects([&] { v.Resolve(&query, 2, 0, 3, &buffer, 0); }, "ResolveQueryData");
     ID3D12Resource texture{{3, 8, 8, 6, 4, 28}}, volume{{4, 8, 8, 8, 4, 28}};
