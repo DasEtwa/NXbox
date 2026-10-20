@@ -671,6 +671,17 @@ constexpr void ApplyFramebufferFormats(GraphicsPsoState& state, const Framebuffe
         state.depth_enable = state.depth_write = state.stencil_enable = state.depth_bounds = 0;
 }
 
+// The native input layout maps attribute indices to IA slots, independently of
+// guest stream indices. Keep holes and zero-reading inputs inside the prefix.
+constexpr std::uint32_t VertexBufferBindingCount(const GraphicsPsoState& state) {
+    for (std::size_t i = state.attributes.size(); i > 0; --i) {
+        const auto& attribute = state.attributes[i - 1];
+        if (attribute.enabled && attribute.dxgi)
+            return static_cast<std::uint32_t>(i);
+    }
+    return 0;
+}
+
 // Only shader reads enter the layout. Missing attributes use a free slot with stride zero.
 constexpr void ApplyVertexReads(GraphicsPsoState& state, std::uint32_t reads) {
     std::array<bool, kNumVertexAttributes> used{};

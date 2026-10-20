@@ -1194,7 +1194,6 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         std::fill(zero_vertex_buffer->mapped.begin(), zero_vertex_buffer->mapped.end(), u8{0});
     }
     context.Retain(zero_vertex_buffer);
-    u32 num_vertex_views = static_cast<u32>(vertex_views.size());
     const GraphicsPipeline* const native_pipeline = pipeline->AsNative();
     if (!native_pipeline) {
         SkipDraw("vertex layout unavailable for native pipeline");
@@ -1260,9 +1259,18 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     static const bool quad_whole_stream = BisectEnabled("NXBOX_D3D12_QUAD_WHOLE_STREAM");
     const bool quad_draw = guest_draw.topology == Maxwell::PrimitiveTopology::Quads;
     const bool whole_stream = is_indexed || (quad_whole_stream && quad_draw);
-    for (u32 i = 0; i < Pso::kNumVertexAttributes; ++i) {
+    static const bool vertex_binding_prefix =
+        !BisectEnabled("NXBOX_D3D12_NO_VERTEX_BINDING_PREFIX");
+    // Slots above the input layout are unread. A later, wider layout rebuilds
+    // its entire prefix; RecordedArray also compares the count when rebinding.
+    // Keep the complete array for diagnostics that inspect unused stream zero.
+    const u32 num_vertex_views = vertex_binding_prefix && !draw_trace_enabled
+                                     ? Pso::VertexBufferBindingCount(native_pipeline->State())
+                                     : static_cast<u32>(vertex_views.size());
+    const auto zero_vertex_address = zero_vertex_buffer->handle->GetGPUVirtualAddress();
+    for (u32 i = 0; i < num_vertex_views; ++i) {
         const auto& attribute = native_pipeline->State().attributes[i];
-        vertex_views[i] = {zero_vertex_buffer->handle->GetGPUVirtualAddress(), 65536, 0};
+        vertex_views[i] = {zero_vertex_address, 65536, 0};
         if (trace_vertex_bytes)
             trace_vertex_resources[i] = zero_vertex_buffer;
         if (!attribute.enabled || attribute.enabled == 2)
