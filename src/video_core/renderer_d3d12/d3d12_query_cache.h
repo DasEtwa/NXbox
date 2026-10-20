@@ -41,9 +41,9 @@ public:
     QueryCacheRuntime(Context& context, Tegra::MaxwellDeviceMemoryManager& device_memory,
                       BufferCache& buffer_cache, TransformFeedback& transform_feedback);
     ~QueryCacheRuntime();
-    void Bind3DEngine(Tegra::Engines::Maxwell3D* engine) {
-        maxwell3d = engine;
-    }
+    // Pass the active application identity on every channel bind, including when disk
+    // cache loading is skipped. Unknown identity preserves the conservative query path.
+    void Bind3DEngine(Tegra::Engines::Maxwell3D* engine, u64 application_title_id = 0);
     template <typename Func>
     void View3DRegs(Func&& func) {
         if (maxwell3d) {

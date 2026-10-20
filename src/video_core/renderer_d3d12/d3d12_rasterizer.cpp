@@ -4091,6 +4091,7 @@ void RasterizerD3D12::LoadDiskResources(u64 title_id, std::stop_token stop_loadi
     if (OnGpuPipeline())
         return RunGpuPipeline([&] { return LoadDiskResources(title_id, stop_loading, callback); });
 
+    active_title_id.store(title_id, std::memory_order_relaxed);
     default_pipeline_cache->LoadDiskResources(title_id, stop_loading, callback);
 }
 void RasterizerD3D12::LoadDiskResourcesWithPreload(
@@ -4144,7 +4145,7 @@ void RasterizerD3D12::BindChannel(Tegra::Control::ChannelState& channel) {
     texture_cache.BindToChannel(channel.bind_id);
     default_pipeline_cache->BindToChannel(channel.bind_id);
     query_cache.BindToChannel(channel.bind_id);
-    query_runtime.Bind3DEngine(maxwell3d);
+    query_runtime.Bind3DEngine(maxwell3d, active_title_id.load(std::memory_order_relaxed));
 }
 void RasterizerD3D12::ReleaseChannel(s32 channel_id) {
     if (OnGpuPipeline()) {
