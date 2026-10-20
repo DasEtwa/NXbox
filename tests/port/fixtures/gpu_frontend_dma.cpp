@@ -23,6 +23,7 @@ struct System {};
 namespace Engines {
 enum class EngineTypes { Maxwell3D, Other };
 struct Engine {
+    virtual ~Engine() = default;
     std::vector<std::pair<u32, u32>> events;
     u64 current_dma_segment{};
     std::bitset<65535> execution_mask;
@@ -32,18 +33,19 @@ struct Engine {
         events.insert(events.end(), method_sink.begin(), method_sink.end());
         method_sink.clear();
     }
-    void CallMethod(Core::System&, u32 method, u32 value, bool last) {
+    virtual void CallMethod(Core::System&, u32 method, u32 value, bool last) {
         events.emplace_back(method, value);
         if (method < 64 || method >= 80)
             effects.emplace_back(method, value, last, current_dma_segment);
     }
-    void CallMultiMethod(Core::System& system, u32 method, const u32* values, u32 count,
-                         u32 pending) {
+    virtual void CallMultiMethod(Core::System& system, u32 method, const u32* values, u32 count,
+                                 u32 pending) {
         for (u32 i = 0; i < count; ++i)
             CallMethod(system, method, values[i], pending - i <= 1);
     }
 };
-struct Maxwell3D : Engine {
+struct Maxwell3D final : Engine {
+    using Engine::CallMultiMethod;
     struct Regs {
         u32 padding[64];
         struct {
