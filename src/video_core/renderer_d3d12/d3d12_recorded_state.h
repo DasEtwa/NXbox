@@ -8,7 +8,34 @@
 #include <cstring>
 #include <type_traits>
 
+#include "video_core/renderer_d3d12/d3d12_record_args.h"
+
 namespace D3D12 {
+struct RecordedRootBinding {
+    std::uint64_t address;
+    std::uint32_t parameter;
+    std::uint32_t table;
+};
+
+// Snapshot only changed bindings into one stream command. Root arguments contain
+// GPU addresses, not COM objects; resource/heap lifetimes stay with the submission.
+// Target is dependent so the same replay runs against host test command lists.
+template <class Target, class Stream>
+void RecordGraphicsRootBindings(Stream& stream, const RecordedRootBinding* bindings, size_t count) {
+    if (!count)
+        return;
+    EncodeCall<[](void* target, const RecordedRootBinding* values, size_t size) {
+        auto* const list = static_cast<Target*>(target)->list;
+        for (size_t i = 0; i < size; ++i) {
+            const auto& binding = values[i];
+            if (binding.table)
+                list->SetGraphicsRootDescriptorTable(binding.parameter, {binding.address});
+            else
+                list->SetGraphicsRootConstantBufferView(binding.parameter, binding.address);
+        }
+    }>(stream, Snapshot(bindings, count), count);
+}
+
 // Compare object representations: floating-point state must preserve signed zero
 // and NaN payloads. Only use this with initialized, trivially copyable API values.
 template <class T>

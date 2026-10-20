@@ -1926,9 +1926,19 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     const auto topology = converted_indices ? converted_indices->topology : pipeline->Topology();
     if (context.RecordState(recorded.topology.Update(topology)))
         commands->IASetPrimitiveTopology(topology);
+    static const bool root_binding_batch = !BisectEnabled("NXBOX_D3D12_NO_ROOT_BINDING_BATCH");
+    const bool batch_root_bindings = commands->stream && root_binding_batch;
+    // At most 64 root parameters fit in a D3D12 root signature. Leave unused
+    // scratch uninitialized; only populated entries are copied into the stream.
+    std::array<RecordedRootBinding, 64> root_bindings;
+    size_t root_binding_count = 0;
     const auto bind_table = [&](UINT parameter, D3D12_GPU_DESCRIPTOR_HANDLE handle) {
-        if (context.RecordState(recorded.root_args.tables.Update(parameter, handle.ptr)))
-            commands->SetGraphicsRootDescriptorTable(parameter, handle);
+        if (context.RecordState(recorded.root_args.tables.Update(parameter, handle.ptr))) {
+            if (batch_root_bindings)
+                root_bindings[root_binding_count++] = {handle.ptr, parameter, true};
+            else
+                commands->SetGraphicsRootDescriptorTable(parameter, handle);
+        }
     };
     if (!root_cbvs)
         bind_table(RootCbvTable, cbv_table.gpu);
@@ -1939,10 +1949,18 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     for (UINT i = 0; i < root_cbv_addresses.size(); ++i) {
         if (context.RecordState(
                 recorded.root_args.cbvs.Update(kFirstRootCbv + i, root_cbv_addresses[i]))) {
-            commands->SetGraphicsRootConstantBufferView(kFirstRootCbv + i, root_cbv_addresses[i]);
+            if (batch_root_bindings)
+                root_bindings[root_binding_count++] = {root_cbv_addresses[i], kFirstRootCbv + i,
+                                                       false};
+            else
+                commands->SetGraphicsRootConstantBufferView(kFirstRootCbv + i,
+                                                            root_cbv_addresses[i]);
             context.Profile().Count(FrameCount::RootCbvBinds);
         }
     }
+    if (batch_root_bindings)
+        RecordGraphicsRootBindings<RecordingTarget>(*commands->stream, root_bindings.data(),
+                                                    root_binding_count);
 
     const std::array<u64, 4> target_key{num_rts, num_rts ? rtv_base.ptr : 0,
                                         has_depth ? dsv_handle.ptr : 0, has_depth ? 1u : 0u};
