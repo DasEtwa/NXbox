@@ -84,11 +84,11 @@ private:
 // and scope bookkeeping on every register write. Coarse exclusive phases remain on.
 inline bool MethodProfilingEnabled() {
     // Latch after launcher environment overrides have loaded, not at static init.
-    static const bool enabled = [] {
+    static const bool method_profiling = [] {
         const char* value = std::getenv("NXBOX_GPU_METHOD_PROFILE");
         return value && value[0] == '1' && value[1] == '\0';
     }();
-    return enabled;
+    return method_profiling;
 }
 // Recording-thread method classes. Time one call in 64 to keep clock reads out
 // of the per-register hot path; counts/units are exact, time is an estimate.
