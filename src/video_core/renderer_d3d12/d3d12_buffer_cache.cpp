@@ -335,8 +335,9 @@ void BufferCacheRuntime::ClearBuffer(ResourcePtr dst, u32 offset, size_t size, u
         CopyBuffer(dst, staging.buffer, std::span{&copy, 1}, true);
         offset += static_cast<u32>(count);
         size -= count;
-        // Prevent a single large clear from exhausting the staging ring.
-        if (size)
+        // Request() already retires pages and finishes at the ring's bounded capacity.
+        // Finishing every MiB serializes even clears that fit in a single upload page.
+        if (size && BisectEnabled("NXBOX_D3D12_SYNC_BUFFER_CLEARS"))
             context.Finish(FrameCount::ForcedSubmitBufferClear);
     }
 }
