@@ -131,3 +131,136 @@ The requested `python3 -m unittest discover -s tests/port` run completed with
 import errors (`test_button_layout`, `test_xbox_button_icons`). The focused
 19-case run includes the later-added fatal frame-walk test. `git diff --check`
 and Ruff checking of the new test file passed. Changes are uncommitted.
+
+## Follow-up: `r-stray` wait-diagnostics capture
+
+Read-only evidence: `/Users/miguel/.local/share/nxbox/artifacts/compat-2026-10-18/r-stray/`
+(`diag.txt`, `eden.txt`, `crash.txt`, and both screenshots). Line references below
+refer to those files, not the earlier `u-stray` run. This capture narrows the
+investigation but **does not identify the root cause or the responsible
+signaller**. No emulator behavior change is justified by the evidence alone.
+
+### What actually remains active
+
+`diag.txt:2460` is the first snapshot after presentation stops:
+`sampled_ms=92223449`, 84 entries, `dropped=0`. All 18 stall snapshots through
+`diag.txt:5117` (`sampled_ms=92308506`) have **zero active service, fence,
+NV-event, or syncpoint entries and zero active SendSyncRequest (SVC 33) entries**.
+This rules out a persistent wait *inside those instrumented scopes*, not an
+uninstrumented lock or guest userspace polling loop.
+
+Several guest threads do remain in SVC **28 decimal / 0x1c,
+WaitProcessWideKeyAtomic**, with an infinite timeout. Examples from the first
+stall snapshot:
+
+| Guest TID | Mutex address (x0) | Condition-variable key (x1) | Tag (x2) | Host entry ms | Age at first snapshot |
+| --- | --- | --- | --- | --- | --- |
+| `0x55` | `0x11c0b59d0c` | `0x11c0b59d10` | `0x1601d8` | 92213519 | 9930 ms |
+| `0x56` | `0x11c0b59cdc` | `0x11c0b59ce0` | `0x1681d7` | 92213486 | 9963 ms |
+| `0x66` | `0x11c0b59e8c` | `0x11c0b59e90` | `0x2401bd` | 92213497 | 9952 ms |
+| `0x6a` | `0x11c0bf5d9c` | `0x11c0bf5da0` | `0x2a01b1` | 92213496 | 9953 ms |
+| `0x79` | `0x11c0b59e2c` | `0x11c0b59e30` | `0x3581a0` | 92213521 | 9928 ms |
+
+Sources: `diag.txt:2470-2471,2489,2496,2515`. Each listed token is unchanged in
+the final snapshot: these calls have not returned after approximately 95 s.
+The last completed sleep before the first fatal ends at host ms 92238936
+(`eden.txt:1435`), placing the listed waits at approximately **25.4 s old at
+the fatal**. That is an age at the fault, not a completed wait duration.
+There are other long-lived condition-variable waits, including ones predating
+the stall; the table does not establish which thread is the critical consumer.
+
+The ABI and `svc_condition_variable.cpp` identify these as guest condition
+variables, not NV event handles, syncpoint IDs, or native fence ticks. A guest
+caller of `SignalProcessWideKey` on the matching key normally wakes them;
+mutex reacquisition can also be involved. Neither the caller's identity nor the
+mutex word/owner or signal history is in this capture. The last `nvdrv` service
+calls for TIDs `0x66` and `0x6a` were IPC command 1 (Ioctl1), completed in 0 ms
+(`diag.txt:2500-2501`). No ioctl selector is retained in these service rows.
+Adjacency is insufficient to call these condition variables NV waits.
+
+### Native progress and the missing retirement observation
+
+`diag.txt:2397,2459` and every later progress row retain:
+
+- Decode queued/dispatched/started/completed/uploaded: **221 each**, cancelled 0.
+  `decode_ticks=1636`. There is no outstanding decode in these totals.
+- Sealed/submitted tick **37410**, last observed completion **37408**. Both final
+  lists were acknowledged by the recorder. Completion is an observation made by
+  emulator collection/wait code, not an independent hardware poll.
+- Syncpoints queued/signalled **19676/19675**; queries queued/written/invalidated
+  **58093/58014/0**. One increment and 79 report callbacks are unretired, but
+  aggregate counters contain neither their IDs/thresholds/addresses nor the
+  native tick to which each belongs.
+- NV events armed/signalled/cancelled **72/70/2**: no outstanding recorded arm.
+
+The fencing host thread is TID **2892 / 0xb4c** (`THREAD_PROFILE`). Its last
+native fence wait (`diag.txt:2488`) targets **0x9220 / 37408**, begins at host
+ms **92213499**, lasts **2 ms**, and is **completed**. The GPU host thread
+TID **4612 / 0x1204** last completed `recorder timestamp reuse` for
+**0x9212 / 37394** in 0 ms (`diag.txt:2490`). All later snapshots retain these
+completed entries. There is no recorded long native fence wait to blame.
+
+The last recorded NV event on syncpoint **1**, threshold **0x4c6d / 19565**,
+timeout **100**, event slot **0**, minimum at arm **0x4c6c / 19564**, completed
+in **1 ms** (`diag.txt:2497`). The recorded host wait on syncpoint **3**,
+threshold **0x141**, observed **0x145**, completed in 0 ms (`diag.txt:2542`).
+Neither is an outstanding dependency at the fatal.
+
+`D3D12::FenceManager::SignalSyncPoint` delegates host signalling to
+`VideoCommon::FenceManager::ReleaseThreadFunc`. After `WaitFence` returns,
+that thread calls `PopAsyncFlushes`, runs guest callbacks, and pushes the fence
+into the destruction ring. Those steps, including acquisition of cache locks,
+are **outside** the native `WaitSubmitted` diagnostic scope. Consequently the
+completed tick-37408 wait does not tell us whether the fencing thread is idle,
+blocked in cache retirement, or blocked in a callback. Its 0% CPU usage does
+not distinguish those cases. The same limitation applies to the GPU thread's
+uninstrumented locks. No stack dump in these artifacts resolves this gap.
+
+### Fatal thread and clock domains
+
+The first fatal is at **133.871731 s**, TID **0x54**, PC **0x80c45fe0**,
+LR **0x80c460d0**, writing **0xe0000002** to address **3**
+(`eden.txt:1247-1282,1437-1441`). The frame-record return PCs are
+`0x80be53fc`, `0x86efa7a0`, and `0x86f006a4`; no guest symbols or instruction
+bytes for these callers are supplied. These addresses do not identify a named
+UE4 subsystem by themselves.
+
+The retained 128 SVC records are all completed **SleepThread(500000000 ns)**
+calls from PC **0x86f27734**, LR **0x80c46108**, covering host ms
+**92174495..92238936** (`eden.txt:1307-1435`). More decisively, the *same loop*
+already appears in `diag.txt:260,497,613`, before sustained gameplay. This
+thread is not shown entering a 25-second blocking SVC when presentation stops.
+A watchdog is a plausible interpretation, not a decoded identification.
+Increasing its timeout or force-signalling a guest condition variable would
+hide a symptom without identifying the producer failure.
+
+Do not directly subtract `GAME_PRESENT tick_ms` / crash heartbeat `tick_ms`
+from `WAIT_SNAPSHOT sampled_ms` or SVC `entered_ms`: the former uses Windows
+`GetTickCount64`, the latter `steady_clock`. Their origins differ by about
+51 seconds in this run. Wait ages and durations above use the recorder's clock
+only. `GAME_PRESENT` windows go from 112 frames (`diag.txt:2336`) to 1
+(`2398`) to 0 (`2545`). The 190-second screenshot retains a scene with the cat;
+it supplies no fatal message. Heartbeats report no device loss.
+
+### What is required to establish a fix
+
+The missing link is the producer of the guest condition-variable/polling wait
+and the current operation of the host GPU/fencing threads. A host stack dump
+during the freeze would distinguish cache-lock/callback retirement from an idle
+queue. Exact guest executable bytes/symbols and current peer-thread PCs/stacks
+would identify the waiting game subsystem and its producer. Alternatively,
+diagnostics must cover fence publication, cache retirement, guest callbacks,
+and forced drains, and retain resolved guest wait objects plus condition-variable
+signal/ownership history. Repeating this build's counters alone will not supply
+those missing relationships.
+
+The capture does not establish a renderer, audio, filesystem, nvdrv, timer, or
+kernel-threading defect. No root-cause patch or root-cause regression test is
+claimed for this follow-up; an invented signaller or synthetic test of a guessed
+failure would not close the evidence chain.
+
+Follow-up validation: `python3 -m unittest discover -s tests/port` ran **894
+tests in 395.641 s**, with **zero failures, 44 skips, and two environmental
+`fontTools` import errors** (`test_button_layout`, `test_xbox_button_icons`).
+`git diff --check` passed. Only this report was changed; no console replay,
+emulator patch, new regression test, or commit was made.
