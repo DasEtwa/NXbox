@@ -20,6 +20,7 @@
 #include "video_core/renderer_d3d12/d3d12_index_converter.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_iface.h"
 #include "video_core/renderer_d3d12/d3d12_query_cache.h"
+#include "video_core/renderer_d3d12/d3d12_render_area.h"
 #include "video_core/renderer_d3d12/d3d12_texture_cache.h"
 #include "video_core/renderer_d3d12/d3d12_transform_feedback.h"
 
@@ -182,6 +183,16 @@ private:
                                             const Pso::FramebufferFormats& formats, u32 width,
                                             u32 height, const IGraphicsPipeline& pipeline,
                                             bool rescaled);
+    // Snapshot identity includes views, draw-buffer mapping and framebuffer size. Holding
+    // the snapshot prevents pointer reuse after eviction; rt_control.count is separate.
+    struct DrawAttachments {
+        std::shared_ptr<Framebuffer::Attachments> snapshot;
+        u32 guest_rts{};
+        Pso::FramebufferFormats formats{};
+        std::array<ImageView*, VideoCommon::NUM_RT> colors{};
+        bool area_valid{};
+        AttachmentExtent area{}, matching_extent{};
+    } draw_attachments;
     StateInputCache<GraphicsStateInputs> attachment_inputs;
     Pso::GraphicsPsoState cached_attachment_state{};
     StateInputCache<DynamicStateInputs> dynamic_inputs;

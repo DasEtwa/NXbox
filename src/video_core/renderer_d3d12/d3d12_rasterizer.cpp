@@ -642,73 +642,88 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         return;
     const auto framebuffer_snapshot = cached_framebuffer->Snapshot();
     auto* const framebuffer = framebuffer_snapshot.get();
-    Pso::FramebufferFormats formats{};
-    u32 attachment_samples = 0;
-    const auto accept_attachment = [&](const ImageView& view, bool depth) {
-        const auto& resource = view.BorrowImageHandle();
-        if (!resource)
-            return false;
-        const auto& desc = view.ResourceDescription();
-        const auto required = depth ? D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL
-                                    : D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
-        if (!(desc.Flags & required)) {
-            view.LogUnsupported(depth ? "depth attachment lacks ALLOW_DEPTH_STENCIL"
-                                      : "color attachment lacks ALLOW_RENDER_TARGET");
-            return false;
-        }
-        if (desc.SampleDesc.Quality != 0 ||
-            (attachment_samples && attachment_samples != desc.SampleDesc.Count)) {
-            view.LogUnsupported(
-                fmt::format("attachment sample mismatch: bound={} count={} quality={}",
-                            attachment_samples, desc.SampleDesc.Count, desc.SampleDesc.Quality));
-            return false;
-        }
-        attachment_samples = desc.SampleDesc.Count;
-        formats.sample_count = static_cast<u8>(attachment_samples);
-        return true;
-    };
-    std::array<ImageView*, VideoCommon::NUM_RT> color_views{};
+    static const bool cache_draw_metadata = !BisectEnabled("NXBOX_D3D12_NO_DRAW_FASTPATHS");
     const u32 guest_rts = std::min<u32>(regs.rt_control.count, VideoCommon::NUM_RT);
-    for (u32 slot = 0; slot < guest_rts; ++slot) {
-        auto* view = framebuffer->Color(framebuffer->DrawBuffer(slot));
-        if (view && !accept_attachment(*view, false)) {
-            SkipDraw("unsupported attachment or mismatched sample counts");
+    ImageView* const depth_view = framebuffer->Depth();
+    const bool has_depth = depth_view && depth_view->BorrowImageHandle();
+    const bool reuse_draw_attachments = cache_draw_metadata &&
+                                        draw_attachments.snapshot == framebuffer_snapshot &&
+                                        draw_attachments.guest_rts == guest_rts;
+    Pso::FramebufferFormats formats = draw_attachments.formats;
+    std::array<ImageView*, VideoCommon::NUM_RT> color_views = draw_attachments.colors;
+    if (!reuse_draw_attachments) {
+        formats = {};
+        color_views = {};
+        u32 attachment_samples = 0;
+        const auto accept_attachment = [&](const ImageView& view, bool depth) {
+            const auto& resource = view.BorrowImageHandle();
+            if (!resource)
+                return false;
+            const auto& desc = view.ResourceDescription();
+            const auto required = depth ? D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL
+                                        : D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+            if (!(desc.Flags & required)) {
+                view.LogUnsupported(depth ? "depth attachment lacks ALLOW_DEPTH_STENCIL"
+                                          : "color attachment lacks ALLOW_RENDER_TARGET");
+                return false;
+            }
+            if (desc.SampleDesc.Quality != 0 ||
+                (attachment_samples && attachment_samples != desc.SampleDesc.Count)) {
+                view.LogUnsupported(fmt::format(
+                    "attachment sample mismatch: bound={} count={} quality={}", attachment_samples,
+                    desc.SampleDesc.Count, desc.SampleDesc.Quality));
+                return false;
+            }
+            attachment_samples = desc.SampleDesc.Count;
+            formats.sample_count = static_cast<u8>(attachment_samples);
+            return true;
+        };
+        for (u32 slot = 0; slot < guest_rts; ++slot) {
+            auto* view = framebuffer->Color(framebuffer->DrawBuffer(slot));
+            if (view && !accept_attachment(*view, false)) {
+                SkipDraw("unsupported attachment or mismatched sample counts");
+                return;
+            }
+            if (view && view->BorrowImageHandle()) {
+                // Only overlapping RTV subresources conflict. Distinct mips/layers
+                // of one resource remain legal independent color attachments.
+                bool duplicate = false;
+                const auto& resource_desc = view->ResourceDescription();
+                for (u32 previous = 0; previous < slot; ++previous) {
+                    const auto* prior = color_views[previous];
+                    if (!prior || prior->BorrowImageHandle() != view->BorrowImageHandle())
+                        continue;
+                    const bool same_mip = resource_desc.SampleDesc.Count > 1 ||
+                                          prior->range.base.level == view->range.base.level;
+                    duplicate |= same_mip &&
+                                 (resource_desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D ||
+                                  Pso::RenderTargetLayersOverlap(
+                                      static_cast<u32>(prior->range.base.layer),
+                                      static_cast<u32>(prior->range.extent.layers),
+                                      static_cast<u32>(view->range.base.layer),
+                                      static_cast<u32>(view->range.extent.layers)));
+                }
+                if (!duplicate) {
+                    color_views[slot] = view;
+                    formats.colors[slot] = static_cast<u32>(view->Description().Format);
+                }
+            }
+        }
+        if (depth_view && !accept_attachment(*depth_view, true)) {
+            SkipDraw("unsupported depth attachment or mismatched sample counts");
             return;
         }
-        if (view && view->BorrowImageHandle()) {
-            // Only overlapping RTV subresources conflict. Distinct mips/layers
-            // of one resource remain legal independent color attachments.
-            bool duplicate = false;
-            const auto& resource_desc = view->ResourceDescription();
-            for (u32 previous = 0; previous < slot; ++previous) {
-                const auto* prior = color_views[previous];
-                if (!prior || prior->BorrowImageHandle() != view->BorrowImageHandle())
-                    continue;
-                const bool same_mip = resource_desc.SampleDesc.Count > 1 ||
-                                      prior->range.base.level == view->range.base.level;
-                duplicate |=
-                    same_mip &&
-                    (resource_desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D ||
-                     Pso::RenderTargetLayersOverlap(static_cast<u32>(prior->range.base.layer),
-                                                    static_cast<u32>(prior->range.extent.layers),
-                                                    static_cast<u32>(view->range.base.layer),
-                                                    static_cast<u32>(view->range.extent.layers)));
-            }
-            if (!duplicate) {
-                color_views[slot] = view;
-                formats.colors[slot] = static_cast<u32>(view->Description().Format);
-            }
-        }
+        if (has_depth)
+            formats.depth = static_cast<u32>(DsvFormat(depth_view->Description().Format));
+        draw_attachments.snapshot = framebuffer_snapshot;
+        draw_attachments.guest_rts = guest_rts;
+        draw_attachments.formats = formats;
+        draw_attachments.colors = color_views;
+        draw_attachments.area_valid = false;
     }
-    ImageView* const depth_view = framebuffer->Depth();
-    if (depth_view && !accept_attachment(*depth_view, true)) {
-        SkipDraw("unsupported depth attachment or mismatched sample counts");
-        return;
-    }
-    const bool has_depth = depth_view && depth_view->BorrowImageHandle();
-    if (has_depth)
-        formats.depth = static_cast<u32>(DsvFormat(depth_view->Description().Format));
     Pso::GraphicsPsoState attachment_state{};
+    if (reuse_draw_attachments)
+        context.Profile().Count(FrameCount::AttachmentMetadataReuses);
     Pso::ApplyFramebufferFormats(attachment_state, formats);
     const u32 num_rts = attachment_state.num_render_targets;
     {
@@ -774,39 +789,47 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
                                 std::max(1u, desc.Height >> mip),
                                 static_cast<u32>(view.range.extent.layers)};
     };
-    AttachmentExtent render_area{16384, 16384, 2048};
-    bool has_attachment = false;
-    for (const auto* color : color_views) {
-        if (color) {
-            render_area = IntersectAttachments(render_area, extent(*color));
+    AttachmentExtent render_area = draw_attachments.area;
+    AttachmentExtent matching_extent = draw_attachments.matching_extent;
+    if (!cache_draw_metadata || !draw_attachments.area_valid) {
+        render_area = {16384, 16384, 2048};
+        bool has_attachment = false;
+        for (const auto* color : color_views) {
+            if (color) {
+                render_area = IntersectAttachments(render_area, extent(*color));
+                has_attachment = true;
+            }
+        }
+        if (has_depth) {
+            render_area = IntersectAttachments(render_area, extent(*depth_view));
             has_attachment = true;
         }
-    }
-    if (has_depth) {
-        render_area = IntersectAttachments(render_area, extent(*depth_view));
-        has_attachment = true;
-    }
-    if (!has_attachment) {
-        const auto size = framebuffer->Size();
-        render_area = {size.width, size.height, 1};
-    }
-    if (!render_area.width || !render_area.height || !render_area.layers)
-        return;
-    D3D12_RESOURCE_DIMENSION attachment_dimension =
-        has_depth ? depth_view->ResourceDescription().Dimension : D3D12_RESOURCE_DIMENSION_UNKNOWN;
-    for (const auto* color : color_views) {
-        if (!color)
-            continue;
-        const auto dimension = color->ResourceDescription().Dimension;
-        if (attachment_dimension != D3D12_RESOURCE_DIMENSION_UNKNOWN &&
-            dimension != attachment_dimension) {
-            SkipDraw("mismatched attachment resource types");
-            return;
+        if (!has_attachment) {
+            const auto size = framebuffer->Size();
+            render_area = {size.width, size.height, 1};
         }
-        attachment_dimension = dimension;
+        if (!render_area.width || !render_area.height || !render_area.layers)
+            return;
+        D3D12_RESOURCE_DIMENSION attachment_dimension =
+            has_depth ? depth_view->ResourceDescription().Dimension
+                      : D3D12_RESOURCE_DIMENSION_UNKNOWN;
+        for (const auto* color : color_views) {
+            if (!color)
+                continue;
+            const auto dimension = color->ResourceDescription().Dimension;
+            if (attachment_dimension != D3D12_RESOURCE_DIMENSION_UNKNOWN &&
+                dimension != attachment_dimension) {
+                SkipDraw("mismatched attachment resource types");
+                return;
+            }
+            attachment_dimension = dimension;
+        }
+        matching_extent = MatchingAttachmentExtent(
+            render_area, has_depth ? extent(*depth_view) : render_area, has_depth);
+        draw_attachments.area = render_area;
+        draw_attachments.matching_extent = matching_extent;
+        draw_attachments.area_valid = true;
     }
-    const auto matching_extent = MatchingAttachmentExtent(
-        render_area, has_depth ? extent(*depth_view) : render_area, has_depth);
     std::array<ResourcePtr, VideoCommon::NUM_RT> color_resources{};
     struct ColorCopy {
         BlitSurface original;

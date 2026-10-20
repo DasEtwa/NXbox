@@ -194,6 +194,7 @@ enum class FrameCount : size_t {
     UniformSnapshotRequests,
     UniformSnapshotNewResources,
     ForcedSubmitFlushDraws,
+    AttachmentMetadataReuses,
     Count
 };
 // Monotonic CPU samples, independent of the host clock API, for exclusive phases.
@@ -519,6 +520,7 @@ public:
     void LogInfoQueue() noexcept;
     void Wait(u64 tick, std::string_view site = "other");
     bool IsFree(u64 tick) const;
+    u64 CompletedTick() const;
     // Recording thread: include pending commands without forcing a queue submission.
     u64 PendingFenceTick() const {
         return recording ? CurrentTick() : LastSealedTick();

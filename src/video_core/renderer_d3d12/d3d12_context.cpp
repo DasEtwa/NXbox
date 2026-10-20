@@ -681,7 +681,8 @@ void FrameProfile::EndFrame(bool presented) {
                                       "staging_new_resources",
                                       "uniform_snapshot_requests",
                                       "uniform_snapshot_new_resources",
-                                      "forced_submits_flush_draws"};
+                                      "forced_submits_flush_draws",
+                                      "attachment_metadata_reuses"};
         static_assert(names.size() == static_cast<size_t>(FramePhase::Count));
         static_assert(counters.size() == static_cast<size_t>(FrameCount::Count));
         const double elapsed = static_cast<double>(wall - start_wall);
@@ -1158,6 +1159,14 @@ bool Context::IsFree(u64 tick) const {
         throw std::runtime_error("D3D12 fence returned UINT64_MAX with S_OK removed reason");
     }
     return (!deferred || LastSubmittedTick() >= tick) && completed >= tick;
+}
+u64 Context::CompletedTick() const {
+    const auto completed = fence->GetCompletedValue();
+    if (completed == UINT64_MAX) {
+        Check(device->GetDeviceRemovedReason(), "GetCompletedValue device removed", device.Get());
+        throw std::runtime_error("D3D12 fence returned UINT64_MAX with S_OK removed reason");
+    }
+    return deferred ? std::min(completed, LastSubmittedTick()) : completed;
 }
 void Context::Wait(u64 tick, std::string_view site) {
     if (deferred)
@@ -1954,15 +1963,22 @@ void StagingRing::Collect(bool trim) {
     const FrameProfile::Scope profile_collect{context.Profile(), FramePhase::StagingCollect};
     context.Profile().Count(FrameCount::StagingCollections);
     context.Collect();
+    // One conservative completion snapshot per sweep, rather than a fence/recorder
+    // poll for every page. A newly completed page can wait until the next sweep.
+    static const bool draw_fastpaths = !BisectEnabled("NXBOX_D3D12_NO_DRAW_FASTPATHS");
+    const u64 completed = draw_fastpaths ? context.CompletedTick() : 0;
+    const auto is_free = [&](u64 tick) {
+        return draw_fastpaths ? tick <= completed : context.IsFree(tick);
+    };
     if (trim) {
         // Fence completion alone is insufficient: mapped spans and uniform caches
         // may still own a CPU lease. Only the ring's last reference can be dropped.
-        std::erase_if(pages, [this](const Page& page) {
-            return context.IsFree(page.tick) && page.resource.use_count() == 1;
+        std::erase_if(pages, [&is_free](const Page& page) {
+            return is_free(page.tick) && page.resource.use_count() == 1;
         });
     }
     for (auto& page : pages) {
-        if (context.IsFree(page.tick) && page.resource.use_count() == 1)
+        if (is_free(page.tick) && page.resource.use_count() == 1)
             page.cursor = 0;
     }
 }
