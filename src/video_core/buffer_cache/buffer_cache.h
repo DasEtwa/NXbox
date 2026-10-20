@@ -1547,7 +1547,9 @@ void BufferCache<P>::UpdateStorageBuffers(size_t stage) {
         Binding& binding = channel_state->storage_buffers[stage][index];
         bool resolved = false;
         if constexpr (requires { runtime.BindingCacheEnabled(); }) {
-            resolved = runtime.BindingCacheEnabled() && binding.buffer_id != NULL_BUFFER_ID;
+            // Fresh bindings and DeleteBuffer use an invalid SlotId, not the null-buffer slot.
+            resolved = runtime.BindingCacheEnabled() && binding.buffer_id &&
+                       binding.buffer_id != NULL_BUFFER_ID;
         }
         if (!resolved) {
             binding.buffer_id = FindBuffer(binding.device_addr, binding.size, false);
