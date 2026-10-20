@@ -100,6 +100,13 @@ public:
     // A descriptor is still read each use. Only its resolved ID avoids a hash lookup.
     std::array<std::vector<ImageViewId>, 2> indexed_image_view_ids;
 
+    struct ResolvedSampler {
+        u32 index = (std::numeric_limits<u32>::max)();
+        SamplerId id{};
+    };
+    // Bounded, channel-local caches; descriptor Read remains the content/generation authority.
+    std::array<std::array<ResolvedSampler, 64>, 2> resolved_samplers{};
+
     TextureCacheGPUMap* gpu_page_table = nullptr;
     TextureCacheGPUMap* sparse_page_table = nullptr;
 };
@@ -440,6 +447,8 @@ private:
     /// Synchronize image aliases, copying data if needed
     void SynchronizeAliases(ImageId image_id);
 
+    void InvalidateAliasSync(ImageBase& image) noexcept;
+
     /// Prepare an image view to be used
     void PrepareImageView(ImageViewId image_view_id, bool is_modification, bool invalidate);
 
@@ -477,6 +486,15 @@ private:
     std::deque<TextureCacheGPUMap> gpu_page_table_storage;
 
     bool texture_cache_fastpath = false;
+    const bool alias_sync_fastpath = [] {
+        const char* value = std::getenv("NXBOX_TEXTURE_ALIAS_SYNC_FASTPATH");
+        return !value || value[0] != '0' || value[1] != '\0';
+    }();
+    u64 alias_sync_generation = 1;
+    const bool sampler_slot_fastpath = [] {
+        const char* value = std::getenv("NXBOX_TEXTURE_SAMPLER_SLOT_FASTPATH");
+        return !value || value[0] != '0' || value[1] != '\0';
+    }();
     const bool draw_state_fastpath = [] {
         const char* value = std::getenv("NXBOX_TEXTURE_DRAW_STATE_FASTPATH");
         return !value || value[0] != '0' || value[1] != '\0';

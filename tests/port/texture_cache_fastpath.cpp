@@ -30,6 +30,8 @@ struct Image {
     int flags = 4;
     std::vector<int> aliased_images;
     int lru_index = 0;
+    u64 alias_sync_frame_tick = std::numeric_limits<u64>::max();
+    u64 alias_sync_generation = 0;
 };
 struct ImageViewBase {
     unsigned image_id = 0;
@@ -88,6 +90,8 @@ struct TextureCache {
     int memory = 0;
     int* gpu_memory = &memory;
     bool texture_cache_fastpath = true;
+    bool alias_sync_fastpath = true;
+    u64 alias_sync_generation = 1;
     u64 frame_tick = 0;
     std::array<ImageViewBase, 4> slot_image_views{};
     std::array<Image, 4> slot_images{};
