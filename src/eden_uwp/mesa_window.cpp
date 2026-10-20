@@ -65,6 +65,10 @@ void LoadRuntimeEnvironment() {
         _putenv_s("NXBOX_PASS_DUMP_DIR", pass_dir.c_str());
         Diagnostic("PASS_DUMP dir=" + pass_dir);
     }
+}
+HMODULE loader_library = nullptr;
+// Separate from LoadRuntimeEnvironment so the settings harnesses can compile that one alone.
+void PreparePassDumpDirectory() {
     if (const char* capture_frame = std::getenv("NXBOX_PASS_DUMP_FRAME")) {
         const char* capture_directory = std::getenv("NXBOX_PASS_DUMP_DIR");
         if (capture_directory && *capture_directory) {
@@ -79,7 +83,6 @@ void LoadRuntimeEnvironment() {
         }
     }
 }
-HMODULE loader_library = nullptr;
 void* ResolveGL(const char* name) {
     auto address = GetProcAddress(loader_library, name);
     if (!address) {
@@ -340,6 +343,7 @@ MesaWindow::MesaWindow(const CoreWindow& window_, u32 width, u32 height) : windo
     // Load before choosing a graphics API: the native path must never load Mesa or create WGL.
     LoadRuntimeEnvironment();
     StartThreadProfiler();
+    PreparePassDumpDirectory();
     const char* override_value = std::getenv("NXBOX_RENDERER");
     // D3D12 is the default: Eden's default backend is Vulkan, which the Xbox does not have, and
     // the Mesa OpenGL path renders several games black. Only an explicit OpenGL choice (setting
