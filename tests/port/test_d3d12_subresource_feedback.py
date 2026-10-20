@@ -40,6 +40,8 @@ inline constexpr unsigned D3D12_RESOURCE_STATE_RENDER_TARGET = 4;
 inline constexpr unsigned D3D12_RESOURCE_STATE_UNORDERED_ACCESS = 8;
 inline constexpr unsigned D3D12_RESOURCE_STATE_STREAM_OUT = 256;
 inline constexpr unsigned D3D12_RESOURCE_STATE_COPY_DEST = 1024;
+inline constexpr unsigned D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE = 64;
+inline constexpr unsigned D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE = 128;
 inline constexpr unsigned SrvState = 64 | 128;
 inline constexpr unsigned D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES = ~0u;
 inline constexpr unsigned D3D12_RESOURCE_BARRIER_TYPE_TRANSITION = 0;
@@ -118,6 +120,10 @@ struct Context {
     void TransitionSubresources(const ResourcePtr&, std::span<const u32>, D3D12_RESOURCE_STATES);
 };
 """
+MOCK += function(
+    (NATIVE / "d3d12_context.cpp").read_text(), "constexpr bool ShaderReadStateCovers("
+)
+
 DRIVER = r"""
 int main() {
     Context context;

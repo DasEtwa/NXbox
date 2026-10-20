@@ -81,7 +81,7 @@ public:
 
 private:
     void Bind(const ComputeBindings& bindings);
-    void UavBarrier();
+    void UavBarrier(const ComputeBindings& bindings);
     Context& context;
     ComPtr<ID3D12CommandSignature> indirect_signature;
 };
