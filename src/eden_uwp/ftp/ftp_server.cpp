@@ -73,7 +73,7 @@ struct Session : std::enable_shared_from_this<Session> {
     StreamSocket data{nullptr};
     StreamSocketListener passive{nullptr};
     fs::path root;
-    fs::path external;
+    std::vector<fs::path> externals;
     std::string password;
     std::string ip;
     std::string peer;
@@ -126,8 +126,8 @@ struct Session : std::enable_shared_from_this<Session> {
         fs::path result;
         if (alias == "interno")
             result = root;
-        else if (alias == "hd" && !external.empty())
-            result = external;
+        else if (const auto index = ExternalAliasIndex(alias); index && *index < externals.size())
+            result = externals[*index];
         else
             throw std::runtime_error("root unavailable");
         const auto tail = slash == std::string::npos ? std::string{} : relative.substr(slash + 1);
@@ -286,9 +286,11 @@ struct Session : std::enable_shared_from_this<Session> {
                     bytes += line.size();
                 };
                 if (relative.empty()) {
-                    for (const auto* alias : {"interno", "hd"}) {
-                        if (std::string_view(alias) == "hd" && external.empty())
-                            continue;
+                    std::vector<std::string> aliases{"interno"};
+                    for (std::size_t index = 0; index < externals.size(); ++index)
+                        aliases.push_back(ExternalAlias(index));
+                    for (const auto& alias_name : aliases) {
+                        const char* alias = alias_name.c_str();
                         std::string line;
                         if (verb == "NLST")
                             line = std::string(alias) + "\r\n";
@@ -607,11 +609,12 @@ bool Server::Start(const fs::path& local_state) {
         fs::create_directories(local_state / "eden" / "keys");
         fs::create_directories(local_state / "firmware");
         const auto game_folders = ExternalGameFolders();
-        const fs::path external =
-            game_folders.empty() ? fs::path{} : game_folders.front().parent_path();
+        std::vector<fs::path> externals;
+        for (const auto& folder : game_folders)
+            externals.push_back(folder.parent_path());
         StreamSocketListener listener;
         const std::weak_ptr<State> weak = state_;
-        listener.ConnectionReceived([weak, local_state, external](const auto&, const auto& args) {
+        listener.ConnectionReceived([weak, local_state, externals](const auto&, const auto& args) {
             const auto owner = weak.lock();
             const auto socket = args.Socket();
             if (!owner) {
@@ -634,7 +637,7 @@ bool Server::Start(const fs::path& local_state) {
             auto session = std::make_shared<Session>();
             session->control = socket;
             session->root = local_state;
-            session->external = external;
+            session->externals = externals;
             session->ip = owner->ip;
             session->password = owner->password;
             session->changes = owner->changes;

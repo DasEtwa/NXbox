@@ -57,4 +57,9 @@ int main() {
     assert(InGames("interno/games/test.nsp"));
     assert(InGames("hd/GAMES/test.nsp"));
     assert(!InGames("hd/firmware/test.nca"));
+    assert(InGames("hd2/games/test.nsp"));
+    assert(!InGames("hd10/games/test.nsp"));
+    assert(ExternalAliasIndex("hd") == 0 && ExternalAliasIndex("hd2") == 1);
+    assert(!ExternalAliasIndex("hd1") && !ExternalAliasIndex("interno"));
+    assert(ExternalAlias(0) == "hd" && ExternalAlias(1) == "hd2");
 }
