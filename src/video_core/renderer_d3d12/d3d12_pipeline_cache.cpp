@@ -102,6 +102,20 @@ std::chrono::milliseconds PsoWaitBudget() {
     return budget;
 }
 
+bool FrameBoundedPsoEnabled() {
+    // Opt in: timing out protected one-time draws sooner can leave persistent textures missing.
+    static const bool enabled = BisectEnabled("NXBOX_D3D12_PSO_FRAME_BUDGET");
+    return enabled;
+}
+
+size_t RuntimePsoThreads() {
+    // Each worker owns its DXC instance/cache. Keep the existing two-worker memory footprint
+    // unless the third parallel compiler is explicitly requested.
+    static const size_t count =
+        RuntimePsoThreadCount(BisectEnabled("NXBOX_D3D12_PSO_PARALLEL_DXC"));
+    return count;
+}
+
 // Shared by foreground requests and the disk warmup coordinator. `pool_idle` admits the compile
 // anyway: memory held elsewhere can keep the headroom below the threshold for good, and deferring
 // every key would then skip its draws forever. One compile at a time still makes progress.
@@ -1314,6 +1328,15 @@ void PipelineCache::RecordGraphicsDraw(u64 frame) {
     rt_draw_history.Record(rt0.Address(), frame);
 }
 
+void PipelineCache::TickFrame() {
+    std::scoped_lock lock{pipeline_mutex};
+    pso_frame_budget.Reset();
+}
+
+std::chrono::steady_clock::duration PipelineCache::PendingPsoWaitBudget() {
+    return FrameBoundedPsoEnabled() ? pso_frame_budget.Remaining(PsoWaitBudget()) : PsoWaitBudget();
+}
+
 IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(const Pso::FramebufferFormats& formats,
                                                           bool is_indexed, u64 frame) try {
     const FrameProfile::Scope profile_lookup{context.Profile(), FramePhase::PipelineLookup};
@@ -1522,7 +1545,7 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(const Pso::Framebuffer
     if (AsyncPsoEnabled()) {
         try {
             if (!async)
-                async = std::make_unique<AsyncCache>();
+                async = std::make_unique<AsyncCache>(RuntimePsoThreads());
             const u64 request_hash = Pso::HashBytes(&request, sizeof(request));
             if (CheckStalled(request, request_hash)) {
                 StoreGuestGraphics(request, nullptr);
@@ -1621,7 +1644,7 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(const Pso::Framebuffer
                 static const bool trace_wait = BisectEnabled("NXBOX_D3D12_PSO_TRACE");
                 const auto wait_start = trace_wait ? std::chrono::steady_clock::now()
                                                    : std::chrono::steady_clock::time_point{};
-                const auto settled = async->WaitFor(request, PsoWaitBudget());
+                const auto settled = async->WaitFor(request, PendingPsoWaitBudget());
                 // A request the full pool did not admit was never waited for; keep its one
                 // wait for a frame where it is queued.
                 if (settled.status == AsyncCache::Status::Missing)
@@ -1832,7 +1855,7 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() try {
     if (AsyncPsoEnabled()) {
         try {
             if (!async)
-                async = std::make_unique<AsyncCache>();
+                async = std::make_unique<AsyncCache>(RuntimePsoThreads());
             GraphicsPipelineKey async_key{};
             async_key.stage_hashes[0] = request;
             async_key.state.sample_count =
@@ -1880,7 +1903,8 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() try {
                 std::shared_ptr<Shader::Environment> snapshot{live.Snapshot()};
                 Microsoft::WRL::ComPtr<ID3D12Device> device{context.Device()};
                 std::shared_ptr<ComputeTranslation> prepared;
-                if (SkipGlobalFallbackComputeEnabled()) {
+                const bool skip_global_fallback = SkipGlobalFallbackComputeEnabled();
+                if (skip_global_fallback && !FrameBoundedPsoEnabled()) {
                     try {
                         prepared = std::make_shared<ComputeTranslation>(device.Get(), *snapshot);
                     } catch (...) {
@@ -1901,7 +1925,7 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() try {
                 if (disk)
                     disk->RememberFirstUse(RequestBytes(async_key));
                 auto job = [device, disk_cache = disk.get(), snapshot, prepared,
-                            shader_hash = shader->unique_hash, request] {
+                            skip_global_fallback, shader_hash = shader->unique_hash, request] {
                     SetThreadDescription(GetCurrentThread(), L"D3D12 PSO compiler");
                     static const bool trace = BisectEnabled("NXBOX_D3D12_PSO_TRACE");
                     const auto trace_start = trace ? std::chrono::steady_clock::now()
@@ -1921,6 +1945,12 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() try {
                     auto& translation = translated->translation;
                     auto& program = translated->program;
                     mark("translated");
+                    if (SkipGlobalFallbackCompute(skip_global_fallback, true,
+                                                  program.info.uses_global_memory)) {
+                        ReportGlobalFallbackSkip(request);
+                        // The pool publishes the same stable failure as foreground rejection.
+                        throw std::runtime_error("Global memory fallback");
+                    }
                     const auto source =
                         Shader::Backend::HLSL::EmitHLSL(translation.profile, program);
                     DumpGraphicsHlsl(shader_hash, Shader::Stage::Compute, source);
@@ -1976,7 +2006,7 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() try {
                 static const bool trace_wait = BisectEnabled("NXBOX_D3D12_PSO_TRACE");
                 const auto wait_start = trace_wait ? std::chrono::steady_clock::now()
                                                    : std::chrono::steady_clock::time_point{};
-                const auto settled = async->WaitFor(async_key, PsoWaitBudget());
+                const auto settled = async->WaitFor(async_key, PendingPsoWaitBudget());
                 // A request the full pool did not admit was never waited for; keep its one
                 // wait for a frame where it is queued.
                 if (settled.status == AsyncCache::Status::Missing)
@@ -2141,7 +2171,7 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
         return;
     }
     if (async_warmup && !async)
-        async = std::make_unique<AsyncCache>();
+        async = std::make_unique<AsyncCache>(RuntimePsoThreads());
     // Background callbacks own only this state, never frontend loading-scope captures.
     struct PreloadProgress {
         std::mutex mutex;
@@ -2158,7 +2188,8 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
         PrewarmPhases phases;
     };
     const auto stats = std::make_shared<WarmupStats>();
-    const size_t warmup_threads = async_warmup ? (preload ? PrewarmThreads() : 2) : 1;
+    const size_t warmup_threads =
+        async_warmup ? (preload ? PrewarmThreads() : RuntimePsoThreads()) : 1;
     const auto report = [stats, warmup_threads](std::string_view status) {
         const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                             std::chrono::steady_clock::now() - stats->start)
@@ -2177,7 +2208,7 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
     // Scope exit also restores it on cancellation, skip-wait and callback/startup exceptions.
     SCOPE_EXIT {
         if (preload)
-            async->SetWorkerTarget(2);
+            async->SetWorkerTarget(RuntimePsoThreads());
     };
     if (preload) {
         const size_t threads = PrewarmThreads();
@@ -2326,7 +2357,7 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
          warmup_pool = preload ? async.get() : nullptr](const DiskWarmupProgress& progress) {
             if (warmup_pool && (progress.stage == DiskWarmupStage::Cancelled ||
                                 progress.stage == DiskWarmupStage::Failed))
-                warmup_pool->SetWorkerTarget(2);
+                warmup_pool->SetWorkerTarget(RuntimePsoThreads());
             if (preload) {
                 std::scoped_lock guard{preload->mutex};
                 preload->progress = progress;
@@ -2378,7 +2409,7 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
             if (finished && pending == 0) {
                 disk->WaitWarmup();
                 report("complete");
-                async->SetWorkerTarget(2);
+                async->SetWorkerTarget(RuntimePsoThreads());
                 if (callback)
                     callback(VideoCore::LoadCallbackStage::Complete, built, progress.total);
                 return;

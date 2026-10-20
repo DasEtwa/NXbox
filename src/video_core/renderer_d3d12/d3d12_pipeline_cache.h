@@ -23,6 +23,7 @@
 #include "video_core/renderer_d3d12/d3d12_dxc.h"
 #include "video_core/renderer_d3d12/d3d12_graphics_pipeline.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_iface.h"
+#include "video_core/renderer_d3d12/d3d12_pso_frame_budget.h"
 #include "video_core/renderer_d3d12/d3d12_pso_tables.h"
 #include "video_core/renderer_d3d12/d3d12_root_signature.h"
 #include "video_core/shader_cache.h"
@@ -73,6 +74,7 @@ public:
     IGraphicsPipeline* CurrentGraphicsPipeline(const Pso::FramebufferFormats& formats,
                                                bool is_indexed, u64 frame) override;
     void RecordGraphicsDraw(u64 frame) override;
+    void TickFrame();
     ComputePipeline* CurrentComputePipeline();
     void LoadDiskResources(u64 title_id, std::stop_token stop_loading,
                            const VideoCore::DiskResourceLoadCallback& callback,
@@ -113,6 +115,7 @@ private:
     const CachedFeature<D3D12_FEATURE_DATA_FORMAT_SUPPORT>& QueryFormatSupport(DXGI_FORMAT format);
     void InvalidateLastGraphicsPipeline();
     void StoreGuestGraphics(const GraphicsPipelineKey& request, GraphicsPipeline* pipeline);
+    std::chrono::steady_clock::duration PendingPsoWaitBudget();
     IGraphicsPipeline* RememberGraphicsPipeline(const GraphicsPipelineKey& request,
                                                 IGraphicsPipeline* pipeline);
 
@@ -133,6 +136,7 @@ private:
     std::unique_ptr<AsyncCache> async;
     /// Requests that already spent their one bounded wait for an async PSO.
     std::unordered_set<u64> pso_waited;
+    PsoFrameBudget pso_frame_budget;
     RenderTargetDrawHistory rt_draw_history;
     std::unordered_set<GraphicsPipelineKey, GraphicsPipelineKeyHash> prewarmed_graphics;
     std::unordered_set<u64> prewarmed_compute;
