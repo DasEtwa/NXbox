@@ -119,6 +119,12 @@ enum class JitEvent {
     RangeBytes,
     ClearRequests,
     CacheClears,
+    CapacityClears,
+    ExplicitClears,
+    RangeBatches,
+    FastmemFaults,
+    FastmemInvalidations,
+    DiskStale,
     ClearBlocks,
     RangeBlocks,
     EmptyInvalidations,
@@ -129,6 +135,9 @@ enum class JitEvent {
     NewKey,
     RepeatKey,
     UnknownKey,
+    SampledNewKey,
+    SampledRepeatKey,
+    SampledUnknownKey,
     InstructionInvalidations,
     PageTableInvalidations,
     ProtectBytes,
@@ -162,10 +171,13 @@ inline std::uint64_t TakeJit(JitEvent event) {
 }
 
 // Latest sample per processor ID, in bytes, including the prelude. Not reset per window.
+// Peak is the lifetime high-water mark in that slot; compiled is a window delta.
 // Multiple processes on a core share a slot; this is not a sum of their allocations.
 struct JitCache {
     std::atomic<std::uint64_t> used{0};
     std::atomic<std::uint64_t> capacity{0};
+    std::atomic<std::uint64_t> peak{0};
+    std::atomic<std::uint64_t> compiled{0};
 };
 
 inline auto& JitCaches() {
@@ -174,11 +186,20 @@ inline auto& JitCaches() {
 }
 
 inline void SampleJitCache([[maybe_unused]] std::size_t core, [[maybe_unused]] std::uint64_t used,
-                           [[maybe_unused]] std::uint64_t capacity) {
+                           [[maybe_unused]] std::uint64_t capacity,
+                           [[maybe_unused]] bool compilation = false) {
 #if NXBOX_STALL_PROFILE
     if (core < JitCaches().size()) {
-        JitCaches()[core].used.store(used, std::memory_order_relaxed);
-        JitCaches()[core].capacity.store(capacity, std::memory_order_relaxed);
+        auto& cache = JitCaches()[core];
+        cache.used.store(used, std::memory_order_relaxed);
+        cache.capacity.store(capacity, std::memory_order_relaxed);
+        auto peak = cache.peak.load(std::memory_order_relaxed);
+        while (used > peak &&
+               !cache.peak.compare_exchange_weak(peak, used, std::memory_order_relaxed)) {
+        }
+        if (compilation) {
+            cache.compiled.fetch_add(1, std::memory_order_relaxed);
+        }
     }
 #endif
 }
