@@ -1191,14 +1191,22 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     bool invalid_states = false;
     bool readonly_depth = false;
     state_scratch.clear();
+    static const bool resource_state_index = [] {
+        const char* value = std::getenv("NXBOX_D3D12_RESOURCE_STATE_INDEX");
+        return !value || std::strcmp(value, "0") != 0;
+    }();
+    if (resource_state_index)
+        draw_resource_index.Reset();
     std::vector<std::pair<ResourcePtr, std::vector<u32>>> sampled_subresources;
     const auto need = [this, &invalid_states](const ResourcePtr& resource,
                                               D3D12_RESOURCE_STATES state) {
         if (!resource)
             return;
-        for (auto& [known, known_state] : state_scratch) {
-            if (known != resource)
-                continue;
+        const auto index = resource_state_index
+                               ? draw_resource_index.FindOrInsert(resource.get(), state_scratch)
+                               : DrawResourceIndex<>::FindLinear(resource.get(), state_scratch);
+        if (index != state_scratch.size()) {
+            auto& known_state = state_scratch[index].second;
             constexpr u32 WriteStates =
                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS | D3D12_RESOURCE_STATE_RENDER_TARGET |
                 D3D12_RESOURCE_STATE_DEPTH_WRITE | D3D12_RESOURCE_STATE_STREAM_OUT;
