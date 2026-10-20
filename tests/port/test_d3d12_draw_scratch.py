@@ -8,11 +8,17 @@ import unittest
 from pathlib import Path
 
 from test_d3d12_subresource_feedback import function
+from test_d3d12_command_validation import FMT
 
 ROOT = Path(__file__).resolve().parents[2]
 NATIVE = ROOT / "src/video_core/renderer_d3d12"
 
-MOCK = r"""
+MOCK = (
+    FMT.replace("#pragma once", "")
+    + r"""
+#include "video_core/renderer_d3d12/d3d12_descriptor.h"
+using D3D12::DescriptorSources;
+using D3D12::BoundHandleTableCache;
 #include <array>
 #include <cassert>
 #include <cstdint>
@@ -25,24 +31,56 @@ using u8 = std::uint8_t;
 using u32 = std::uint32_t;
 using u64 = std::uint64_t;
 using ResourcePtr = std::shared_ptr<int>;
-bool BisectEnabled(const char*) { return false; }
+bool validation_enabled = false;
+bool BisectEnabled(const char* name) {
+    return validation_enabled && std::strcmp(name, "NXBOX_D3D12_VALIDATE_COMMANDS") == 0;
+}
+std::string diagnostic;
+void Diagnostic(const std::string& text) { diagnostic = text; }
 """
+)
 ALLOCATOR = r"""
-enum class FrameCount { DescriptorTableReuses };
+enum class FrameCount { DescriptorTableReuses, DescriptorCopies, DescriptorCopyCalls };
+enum class FramePhase { DescriptorWrites };
+struct FrameProfile { struct Scope { template<class T> Scope(T&, FramePhase) {} }; };
+struct D3D12_CPU_DESCRIPTOR_HANDLE { std::uintptr_t ptr{}; };
 constexpr int D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER = 0;
 constexpr int D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV = 1;
 struct DescriptorTable {
     u32 first = 0;
+    D3D12_CPU_DESCRIPTOR_HANDLE cpu{};
     u32 Slot(u32 index) const { return first + index; }
 };
 struct Context {
     u64 tick = 1;
-    unsigned reuses = 0;
+    unsigned reuses = 0, copies = 0;
     u64 CurrentTick() const { return tick; }
     Context& Profile() { return *this; }
-    void Count(FrameCount) { ++reuses; }
+    void Count(FrameCount count, u64 = 1) {
+        if (count == FrameCount::DescriptorTableReuses) ++reuses;
+    }
+    Context* Device() { return this; }
+    void CopyDescriptors(int, const D3D12_CPU_DESCRIPTOR_HANDLE*, const u32*, u32,
+                         const D3D12_CPU_DESCRIPTOR_HANDLE*, const u32*, int) { ++copies; }
+
 };
+void TraceApiCall(Context*, const char*, void*, const void*, std::size_t) {}
 struct D3D12DescriptorAllocator {
+    bool descriptor_fastpath = false;
+    bool handle_table_reuse = false;
+    std::array<BoundHandleTableCache<DescriptorTable>, 2> handle_table_cache;
+    bool descriptor_table_cache = false;
+    struct DescriptorKeyHash {
+        size_t operator()(const DescriptorKey& key) const { return key.kind; }
+    };
+    struct CachedDrawTable {
+        DescriptorTable table;
+        std::vector<ResourcePtr> resources;
+    };
+    std::array<D3D12::DescriptorSetCache<DescriptorKey, CachedDrawTable, DescriptorKeyHash>, 2>
+        draw_table_cache;
+    struct Cache { u64 generation = 1; } view_cache, sampler_cache;
+    void RefreshCaches() {}
     struct CopyBatch {};
     struct PreviousDrawTable {
         u64 tick = 0;
@@ -57,11 +95,32 @@ struct D3D12DescriptorAllocator {
     void WriteCached(int, const ResourcePtr&, u32, const void*, u32, u32, CopyBatch*) { ++writes; }
     void FlushCopies(int, CopyBatch&) {}
     bool CanReuseDrawTable(const DescriptorPlan&, bool = false) const;
+    bool CanReusePreviousDrawTable(const DescriptorPlan&, bool) const;
+    const DescriptorTable* FindHandleDrawTable(const DescriptorPlan&, bool) const;
+    const CachedDrawTable* FindCachedDrawTable(const DescriptorPlan&, bool) const;
+    void RememberDrawTable(const DescriptorPlan&, DescriptorTable, bool);
     DescriptorTable FinishDrawTable(DescriptorPlan&, bool = false);
 };
 """
 DRIVER = r"""
 int main() {
+    // Production Reset must mark every slot unwritten, including retained keys.
+    validation_enabled = true;
+    D3D12DescriptorAllocator validation_allocator;
+    DescriptorPlan checked{{0, 1, 0}};
+    checked.keys[0].kind = 1;
+    checked.initialized[0] = 1;
+    checked.Reset({0, 1, 0});
+    assert(checked.keys[0].kind == 1 && checked.initialized[0] == 0);
+    bool rejected = false;
+    try { validation_allocator.FinishDrawTable(checked); }
+    catch (const std::invalid_argument&) { rejected = true; }
+    assert(rejected && validation_allocator.allocations == 0);
+    assert(diagnostic.find("unwritten_slot") != std::string::npos);
+    checked.initialized[0] = 1;
+    validation_allocator.FinishDrawTable(checked);
+    assert(validation_allocator.allocations == 1);
+    validation_enabled = false;
     D3D12DescriptorAllocator allocator;
     DescriptorPlan plan{{0, 0, 0}};
     auto resource = std::make_shared<int>(42);
@@ -121,6 +180,85 @@ int main() {
     allocator.FinishDrawTable(plan, true);
     plan.resources.clear();
     assert(lifetime.expired());
+    // Execute the production bulk-copy branch, then prove that an identical
+    // source array reuses only within its recording tick.
+    D3D12DescriptorAllocator fast;
+    fast.descriptor_fastpath = true;
+    auto sources = [&] {
+        plan.Reset({1, 2, 1});
+        plan.sources.generation = 1;
+        for (u32 i = 0; i < 4; ++i) plan.sources.handles[i] = i + 10;
+    };
+    sources();
+    fast.FinishDrawTable(plan);
+    assert(fast.context.copies == 1 && fast.writes == 0);
+    sources();
+    assert(fast.CanReuseDrawTable(plan));
+    fast.FinishDrawTable(plan);
+    assert(fast.context.copies == 1);
+    ++fast.context.tick;
+    assert(!fast.CanReuseDrawTable(plan));
+    fast.FinishDrawTable(plan);
+    assert(fast.context.copies == 2);
+    // Nonconsecutive handle sets use the production bounded cache, with the
+    // semantic map disabled. A changed CPU generation forces fresh GPU tables.
+    D3D12DescriptorAllocator handles;
+    handles.descriptor_fastpath = true;
+    handles.handle_table_reuse = true;
+    auto handle_build = [&](u32 kind, bool sampler = false) {
+        prepare(kind, {0, 1, 0});
+        plan.sources.generation = handles.view_cache.generation;
+        plan.sources.handles[0] = kind + 10;
+        return handles.FinishDrawTable(plan, sampler).first;
+    };
+    const auto handle_first = handle_build(1);
+    assert(handle_build(2) != handle_first);
+    assert(handle_build(1) == handle_first);
+    assert(handles.allocations == 2 && handles.context.copies == 2);
+    ++handles.view_cache.generation;
+    assert(handle_build(1) != handle_first);
+    const auto generation_first = handle_build(1);
+    ++handles.context.tick;
+    assert(handle_build(1) != generation_first);
+    assert(handles.allocations == 4);
+    assert(handle_build(1, true) != handle_first);
+    // Run both production copy branches with the set cache enabled. Revisited
+    // tables must avoid allocation/writes; submissions and heap domains cannot alias.
+    for (bool bulk : {false, true}) {
+        D3D12DescriptorAllocator cached;
+        cached.descriptor_table_cache = true;
+        cached.descriptor_fastpath = bulk;
+        auto build = [&](u32 kind, bool sampler = false) {
+            prepare(kind, {0, 1, 0});
+            plan.sources.generation = 1;
+            plan.sources.handles[0] = kind + 10;
+            return cached.FinishDrawTable(plan, sampler).first;
+        };
+        const auto first_table = build(1);
+        assert(build(2) != first_table);
+        prepare(1, {0, 1, 0});
+        plan.sources.generation = 1;
+        plan.sources.handles[0] = 11;
+        assert(cached.CanReuseDrawTable(plan));
+        assert(cached.FinishDrawTable(plan).first == first_table);
+        assert(build(1) == first_table); // Cache hit warms the previous-table fast path.
+        assert(cached.allocations == 2);
+        assert((bulk ? cached.context.copies : cached.writes) == 2);
+        assert(build(1, true) != first_table);
+        ++cached.context.tick; // Reserve submitted after its optimistic reuse check.
+        assert(build(1) != first_table);
+        assert(cached.allocations == 4);
+        // Recycling CPU sources does not invalidate immutable GPU descriptors.
+        ++cached.view_cache.generation;
+        assert(build(2) != first_table);
+        const auto new_first = build(1);
+        assert(cached.allocations == 5);
+        assert(build(1) == new_first);
+        for (auto& domain : cached.draw_table_cache) domain.Clear();
+        for (auto& previous : cached.previous_draw_tables) previous.tick = 0;
+        assert(build(1) != new_first);
+        assert(cached.allocations == 6);
+    }
 }
 """
 
@@ -136,6 +274,10 @@ class DrawScratchTests(unittest.TestCase):
             function(source, signature)
             for signature in (
                 "bool D3D12DescriptorAllocator::CanReuseDrawTable(",
+                "bool D3D12DescriptorAllocator::CanReusePreviousDrawTable(",
+                "const DescriptorTable* D3D12DescriptorAllocator::FindHandleDrawTable(",
+                "const D3D12DescriptorAllocator::CachedDrawTable* D3D12DescriptorAllocator::FindCachedDrawTable(",
+                "void D3D12DescriptorAllocator::RememberDrawTable(",
                 "DescriptorTable D3D12DescriptorAllocator::FinishDrawTable(",
             )
         )
@@ -147,6 +289,9 @@ class DrawScratchTests(unittest.TestCase):
                 [
                     "clang++",
                     "-std=c++20",
+                    "-I",
+                    str(ROOT / "src"),
+                    "-fsanitize=address,undefined",
                     "-Wall",
                     "-Wextra",
                     "-Werror",

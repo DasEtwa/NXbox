@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: Copyright 2026 NSPX
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "common/nxbox_wait_diag.h"
 #include "eden_uwp/firmware.h"
 #include "eden_uwp/game_session.h"
 #include "eden_uwp/shader_share.h"
@@ -32,6 +33,7 @@
 #include <winrt/Windows.System.h>
 
 #include <fmt/format.h>
+#include "common/cpu_features.h"
 #include "common/fs/file.h"
 #include "common/fs/fs.h"
 #include "common/host_memory.h"
@@ -43,6 +45,8 @@
 #include "common/settings.h"
 #include "common/sparse_memory.h"
 #include "core/core.h"
+#include "core/core_timing.h"
+#include "core/hle/service/vi/vblank_timing.h"
 #include "core/cpu_manager.h"
 #include "core/file_sys/nsz.h"
 #include "core/file_sys/registered_cache.h"
@@ -66,6 +70,7 @@
 #include "eden_uwp/crash_logger.h"
 #include "eden_uwp/diagnostic.h"
 #include "eden_uwp/diagnostic_report.h"
+#include "eden_uwp/error_applet.h"
 #include "eden_uwp/game_download.h"
 #include "eden_uwp/gamepad.h"
 #include "eden_uwp/home_ui_settings.h"
@@ -74,8 +79,10 @@
 #include "eden_uwp/renderer_settings.h"
 #include "eden_uwp/save_sync.h"
 #include "eden_uwp/setup_ui.h"
+#include "eden_uwp/timing_probe.h"
 #include "eden_uwp/title_settings.h"
 #include "eden_uwp/ui/accounts_screen.h"
+#include "eden_uwp/ui/error_overlay.h"
 #include "eden_uwp/ui/input.h"
 #include "eden_uwp/ui/launch_screen.h"
 #include "eden_uwp/ui/library.h"
@@ -104,6 +111,7 @@ void FlushDeviceApiRing() {
 
 // Host UI requests are exchanged between the dispatcher and the session worker.
 struct SessionUi {
+    std::shared_ptr<ErrorDisplay> errors = std::make_shared<ErrorDisplay>();
     std::atomic<bool> overlay_open{false};
     std::atomic<bool> guest_home_request{false};
     std::atomic<bool> return_home{false};
@@ -219,6 +227,28 @@ bool StreamNszToNsp(const std::string& url, std::filesystem::path& target,
     return true;
 }
 
+// A removable drive can come back under another letter (the console swapped E: and F: after a
+// reset): find the same NXbox\games\... file on the drives present now.
+std::optional<std::filesystem::path> FindOnRemovableDrives(const std::filesystem::path& missing) {
+    const std::wstring text = missing.wstring();
+    std::wstring lower = text;
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+                   [](wchar_t c) { return c < 128 ? static_cast<wchar_t>(std::tolower(c)) : c; });
+    constexpr std::wstring_view marker = L"\\nxbox\\games\\";
+    const auto at = lower.find(marker);
+    if (at == std::wstring::npos) {
+        return std::nullopt;
+    }
+    const std::filesystem::path tail{text.substr(at + marker.size())};
+    for (const auto& folder : ExternalGameFolders()) {
+        const auto candidate = folder / tail;
+        if (candidate != missing && Common::FS::IsFile(candidate)) {
+            return candidate;
+        }
+    }
+    return std::nullopt;
+}
+
 std::string ResolveGamePath(const std::string& bundled, bool chosen_in_library) {
     namespace fs = std::filesystem;
     const fs::path local(
@@ -278,6 +308,12 @@ std::string ResolveGamePath(const std::string& bundled, bool chosen_in_library) 
     // A big game from NXbox Pack is on the console as parts until its first launch.
     SplitUpload::JoinSplitUploads(target.parent_path(),
                                   [](const std::string& line) { Diagnostic(line); });
+    if (!Common::FS::IsFile(target)) {
+        if (const auto moved = FindOnRemovableDrives(target)) {
+            Diagnostic("GAME_MOVED " + target.string() + " -> " + moved->string());
+            target = *moved;
+        }
+    }
     if (!Common::FS::IsFile(target)) {
         Diagnostic("GAME_MISSING " + target.string());
         return bundled;
@@ -837,6 +873,11 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
     std::atomic<bool> guest_exited{false};
     Core::System system{};
     system.Initialize();
+    Service::AM::Frontend::FrontendAppletSet frontend_applets;
+    frontend_applets.error = std::make_unique<ErrorApplet>(session_ui.errors);
+    system.GetFrontendAppletHolder().SetFrontendAppletSet(std::move(frontend_applets));
+    // Discard callbacks while the system and its guest applets are still alive.
+    SCOPE_EXIT { session_ui.errors->Clear(); };
     memory_stage("initialized");
     system.ApplySettings();
     system.RegisterExitCallback([&] { guest_exited.store(true, std::memory_order_release); });
@@ -953,6 +994,17 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
                            Settings::values.use_asynchronous_shaders.GetValue(),
                            NxboxUpload::ForceAstcSync(),
                            Settings::values.use_reactive_flushing.GetValue()));
+    Diagnostic(fmt::format(
+        "TIMING_POLICY use_multi_core={} use_speed_limit={} speed_limit={} "
+        "fast_cpu_time={} sync_core_speed={} use_vsync={} use_video_framerate={} sink_id={} "
+        "native_clock={} button_layout={}",
+        Settings::values.use_multi_core.GetValue(), Settings::values.use_speed_limit.GetValue(),
+        Settings::SpeedLimit(), static_cast<int>(Settings::values.cpu_clock.GetValue()),
+        Settings::values.sync_core_speed.GetValue(),
+        static_cast<int>(Settings::values.vsync_mode.GetValue()),
+        Settings::values.use_video_framerate.GetValue(),
+        static_cast<int>(Settings::values.sink_id.GetValue()), Common::g_wall_clock.IsNative(),
+        Settings::values.button_layout.GetValue()));
     system.GetUserChannel().clear();
     Diagnostic("GAME_LOADING");
     // Same parameters the desktop frontend uses to boot an application. With a zeroed applet id the
@@ -985,9 +1037,22 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
     const auto result = system.Load(window, path, parameters);
     memory_stage("after_load");
     if (result != Core::SystemResultStatus::Success) {
-        launch_status.missing_exefs.store(
-            result == Core::SystemResultStatus(u32(Core::SystemResultStatus::ErrorLoader) +
-                                               u32(Loader::ResultStatus::ErrorNoExeFS)));
+        auto problem = LibraryContent::Problem::None;
+        const auto status = static_cast<u32>(result);
+        const auto loader_base = static_cast<u32>(Core::SystemResultStatus::ErrorLoader);
+        if (status >= loader_base)
+            problem = LibraryContent::LoadProblem(
+                static_cast<Loader::ResultStatus>(status - loader_base));
+        if (result == Core::SystemResultStatus::ErrorSystemFiles ||
+            result == Core::SystemResultStatus::ErrorSharedFont)
+            problem = LibraryContent::Problem::MissingFirmware;
+        // Refine ambiguous no-ExeFS/no-RomFS results using actual CNMT content, never the filename.
+        if (!boot_firmware_applet && problem != LibraryContent::Problem::MissingKeys) {
+            const auto content_problem = Ui::LibraryFileProblem(std::filesystem::u8path(path));
+            if (content_problem != LibraryContent::Problem::None)
+                problem = content_problem;
+        }
+        launch_status.failure.store(LibraryContent::Label(problem));
         launch_status.phase.store(Ui::LaunchPhase::Failed);
         if (boot_mii_edit)
             Diagnostic("MII_EDIT_BOOT failed: load status=" +
@@ -1013,6 +1078,7 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
     SCOPE_EXIT {
         FlushDeviceApiRing();
         void(system.Pause());
+        session_ui.errors->Clear();
         system.ShutdownMainProcess();
         Diagnostic("GAME_STOPPED");
     };
@@ -1165,6 +1231,17 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
     int stall_dumps = 0;
     int idle_windows = 0;
     const auto started_at = std::chrono::steady_clock::now();
+    TimingProbe timing_probe;
+    const auto timing_now = [] {
+        return std::chrono::duration_cast<std::chrono::nanoseconds>(
+                   std::chrono::steady_clock::now().time_since_epoch())
+            .count();
+    };
+    const auto reset_timing_probe = [&] {
+        timing_probe.Reset(timing_now(), Common::g_wall_clock.GetCNTPCT(),
+                           system.CoreTiming().GetClockTicks());
+    };
+    reset_timing_probe();
     SCOPE_EXIT {
         lifecycle.CompleteDeferral();
     };
@@ -1226,14 +1303,18 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
             paused = false;
             measured_at = std::chrono::steady_clock::now();
             measured_frames = window.FrameCount();
+            reset_timing_probe();
             Diagnostic("GAME_RESUMED");
         }
         if (paused) {
             std::this_thread::sleep_for(std::chrono::milliseconds(8));
             continue;
         }
+        timing_probe.Poll(timing_now());
+        session_ui.errors->CompleteDismissed();
         gamepad->Poll(*controller, system.HIDCore().GetSupportedStyleTag(),
-                      session_ui.overlay_open.load(std::memory_order_acquire));
+                      session_ui.overlay_open.load(std::memory_order_acquire) ||
+                          session_ui.errors->Pending());
         switch (gamepad->HomeCombo()) {
         case HomeComboAction::Prompt:
             Diagnostic("HOME_COMBO action=Prompt");
@@ -1287,7 +1368,80 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
         }
         const auto elapsed = std::chrono::duration<double>(now - measured_at).count();
         if (elapsed >= 5.0) {
+            const auto timing_sample =
+                timing_probe.Read(timing_now(), Common::g_wall_clock.GetCNTPCT(),
+                                  system.CoreTiming().GetClockTicks());
+            Diagnostic(fmt::format("GAME_TIMING wall_ms={:.1f} clock_mhz={:.4f} guest_mhz={:.4f} "
+                                   "polls={} max_poll_gap_ms={:.1f} overlay_open={}",
+                                   timing_sample.wall_ms, timing_sample.clock_mhz,
+                                   timing_sample.guest_mhz, timing_sample.polls,
+                                   timing_sample.max_poll_gap_ms,
+                                   session_ui.overlay_open.load(std::memory_order_acquire)));
+            reset_timing_probe();
+            if (Service::VI::VblankProfileEnabled()) {
+                const auto vblank = Service::VI::vblank_timing.ReadAndReset();
+                Diagnostic(fmt::format(
+                    "VI_TIMING independent={} ticks={} signals={} compositions={} "
+                    "late_max_ms={:.3f} signal_gap_max_ms={:.3f} compose_ms={:.3f} "
+                    "compose_max_ms={:.3f} swap_negative={} swap_0={} swap_1={} swap_2={} "
+                    "swap_3={} swap_4={} swap_extended={}",
+                    Service::VI::IndependentVsyncEnabled() && system.IsMulticore(), vblank.ticks,
+                    vblank.signals, vblank.compositions, vblank.late_ns_max / 1e6,
+                    vblank.signal_gap_ns_max / 1e6, vblank.compose_ns / 1e6,
+                    vblank.compose_ns_max / 1e6, vblank.intervals[0], vblank.intervals[1],
+                    vblank.intervals[2], vblank.intervals[3], vblank.intervals[4],
+                    vblank.intervals[5], vblank.intervals[6]));
+            }
             const auto frames = window.FrameCount();
+            if (NxboxWait::Enabled()) {
+                // Only atomics and recorder-owned copies: never enqueue a GPU task here.
+                std::string progress = "WAIT_PROGRESS";
+                for (size_t i = 0; i < NxboxWait::counters.size(); ++i) {
+                    progress += fmt::format(" {}={}", NxboxWait::CounterNames[i],
+                                            NxboxWait::counters[i].load(std::memory_order_relaxed));
+                }
+                Diagnostic(progress);
+                const auto pending = NxboxWait::Pending().Read();
+                const auto pending_ms = NxboxWait::NowMs();
+                for (size_t kind = 0; kind < NxboxWait::PendingNames.size(); ++kind) {
+                    u64 count{}, oldest_ms{};
+                    for (const auto& entry : pending.entries) {
+                        if (static_cast<size_t>(entry.kind) != kind)
+                            continue;
+                        ++count;
+                        oldest_ms = std::max(oldest_ms, pending_ms - entry.began_ms);
+                        if (frames == measured_frames) {
+                            Diagnostic(fmt::format(
+                                "WAIT_PENDING kind={} token={} key={:#x} tick={} age_ms={}",
+                                NxboxWait::PendingNames[kind], entry.token, entry.key, entry.tick,
+                                pending_ms - entry.began_ms));
+                        }
+                    }
+                    Diagnostic(fmt::format("WAIT_PENDING_SUMMARY sampled_ms={} kind={} count={} "
+                                           "oldest_age_ms={} dropped={}",
+                                           pending_ms, NxboxWait::PendingNames[kind], count,
+                                           oldest_ms, pending.dropped));
+                }
+                if (frames == measured_frames) {
+                    const auto snapshot = NxboxWait::recorder.Read();
+                    const auto sampled_ms = NxboxWait::NowMs();
+                    Diagnostic(fmt::format("WAIT_SNAPSHOT sampled_ms={} entries={} dropped={}",
+                                           sampled_ms, snapshot.entries.size(), snapshot.dropped));
+                    for (const auto& entry : snapshot.entries) {
+                        Diagnostic(fmt::format(
+                            "WAIT_ENTRY kind={} key={:#x} token={} label={} active={} "
+                            "age_ms={} duration_ms={} pc={:#x} lr={:#x} result={:#x} "
+                            "args={:#x},{:#x},{:#x},{:#x},{:#x},{:#x},{:#x},{:#x}",
+                            NxboxWait::KindNames[static_cast<size_t>(entry.kind)], entry.key,
+                            entry.token, entry.label.data(), !entry.ended_ms,
+                            sampled_ms - entry.began_ms,
+                            (entry.ended_ms ? entry.ended_ms : sampled_ms) - entry.began_ms,
+                            entry.pc, entry.lr, entry.result, entry.args[0], entry.args[1],
+                            entry.args[2], entry.args[3], entry.args[4], entry.args[5],
+                            entry.args[6], entry.args[7]));
+                    }
+                }
+            }
             const auto stats = system.GetAndResetPerfStats();
             Diagnostic(fmt::format("GAME_PRESENT frames={} seconds={:.3f} fps={:.2f} "
                                    "game_fps={:.2f} system_fps={:.2f} "
@@ -1429,11 +1583,17 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
             }
             // Brackets distinguish raw counts/bytes from duration triples and let existing
             // duration-only stall-report.py readers ignore these fields.
-            constexpr std::array<std::pair<NxboxStall::JitEvent, const char*>, 17> jit_events{{
+            constexpr std::array<std::pair<NxboxStall::JitEvent, const char*>, 32> jit_events{{
                 {NxboxStall::JitEvent::RangeCalls, "jit_inv_calls"},
                 {NxboxStall::JitEvent::RangeBytes, "jit_inv_bytes"},
                 {NxboxStall::JitEvent::ClearRequests, "jit_clear_req"},
                 {NxboxStall::JitEvent::CacheClears, "jit_clears"},
+                {NxboxStall::JitEvent::CapacityClears, "jit_clear_capacity"},
+                {NxboxStall::JitEvent::ExplicitClears, "jit_clear_explicit"},
+                {NxboxStall::JitEvent::RangeBatches, "jit_range_batches"},
+                {NxboxStall::JitEvent::FastmemFaults, "jit_fastmem_faults"},
+                {NxboxStall::JitEvent::FastmemInvalidations, "jit_fastmem_inv"},
+                {NxboxStall::JitEvent::DiskStale, "jit_disk_stale"},
                 {NxboxStall::JitEvent::ClearBlocks, "jit_clear_blocks"},
                 {NxboxStall::JitEvent::RangeBlocks, "jit_range_blocks"},
                 {NxboxStall::JitEvent::EmptyInvalidations, "jit_inv_empty"},
@@ -1444,18 +1604,32 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
                 {NxboxStall::JitEvent::NewKey, "jit_key_new"},
                 {NxboxStall::JitEvent::RepeatKey, "jit_key_repeat"},
                 {NxboxStall::JitEvent::UnknownKey, "jit_key_unknown"},
+                {NxboxStall::JitEvent::SampledNewKey, "jit_sample64_new"},
+                {NxboxStall::JitEvent::SampledRepeatKey, "jit_sample64_repeat"},
+                {NxboxStall::JitEvent::SampledUnknownKey, "jit_sample64_unknown"},
                 {NxboxStall::JitEvent::InstructionInvalidations, "jit_ic"},
                 {NxboxStall::JitEvent::PageTableInvalidations, "jit_pt"},
                 {NxboxStall::JitEvent::ProtectBytes, "jit_protect_bytes"},
+                {NxboxStall::JitEvent::GuestCodeReads, "jit_guest_code_reads"},
+                {NxboxStall::JitEvent::IrInstructions, "jit_ir_insts"},
+                {NxboxStall::JitEvent::HostBytes, "jit_host_bytes"},
+                {NxboxStall::JitEvent::RegAllocLookups, "jit_ra_lookups"},
+                {NxboxStall::JitEvent::RegAllocProbes, "jit_ra_probes"},
+                {NxboxStall::JitEvent::RegAllocReleases, "jit_ra_releases"},
             }};
             for (const auto& [event, name] : jit_events) {
                 stall_line += fmt::format(" {}=[{}]", name, NxboxStall::TakeJit(event));
             }
             for (std::size_t core = 0; core < NxboxStall::JitCaches().size(); ++core) {
-                const auto& cache = NxboxStall::JitCaches()[core];
+                auto& cache = NxboxStall::JitCaches()[core];
                 stall_line += fmt::format(" jit_cache{}=[{}/{}]", core,
                                           cache.used.load(std::memory_order_relaxed),
                                           cache.capacity.load(std::memory_order_relaxed));
+                stall_line += fmt::format(" jit_cache_peak{}=[{}] jit_compiled{}=[{}]", core,
+                                          cache.peak.load(std::memory_order_relaxed), core,
+                                          cache.compiled.exchange(0, std::memory_order_relaxed));
+                stall_line += fmt::format(" jit_clear_total{}=[{}]", core,
+                                          cache.clears.load(std::memory_order_relaxed));
             }
             Diagnostic(stall_line);
 #endif
@@ -1518,6 +1692,10 @@ bool FindLibraryGame(const winrt::Windows::UI::Core::CoreWindow& window,
     for (const Ui::GameEntry& game : scan.Take()) {
         if (_stricmp(game.title_id.c_str(), title_id.c_str()) != 0) {
             continue;
+        }
+        if (game.incomplete) {
+            status.failure.store(LibraryContent::Label(game.problem));
+            return false;
         }
         choice.path = winrt::to_string(game.path.wstring());
         choice.title_id = game.title_id;
@@ -1715,7 +1893,8 @@ static void RunGameViewSession(const winrt::Windows::UI::Core::CoreWindow& windo
                              closed)) {
             if (!closed.load()) {
                 Diagnostic("PROTOCOL_GAME_NOT_FOUND " + protocol_title);
-                show_failure(Ui::Text::LaunchMissing);
+                const auto failure = launch_status.failure.load();
+                show_failure(failure == Ui::Text::LaunchFailed ? Ui::Text::LaunchMissing : failure);
             }
             return;
         }
@@ -1936,6 +2115,18 @@ static void RunGameViewSession(const winrt::Windows::UI::Core::CoreWindow& windo
         window.Dispatcher().ProcessEvents(CoreProcessEventsOption::ProcessAllIfPresent);
         if (closed.load())
             SaveSync::CancelSync();
+        if (session_ui.errors->Current().has_value() &&
+            !session_ui.return_home.load(std::memory_order_acquire) && !closed.load()) {
+            try {
+                Ui::RunErrorOverlay(window, *session_ui.errors, closed, session_ui.return_home);
+            } catch (const winrt::hresult_error& error) {
+                Diagnostic("ERROR_OVERLAY_FAILED " + winrt::to_string(error.message()));
+                session_ui.errors->Close();
+            } catch (const std::exception& error) {
+                Diagnostic(std::string("ERROR_OVERLAY_FAILED ") + error.what());
+                session_ui.errors->Close();
+            }
+        }
         if (session_ui.overlay_open.load(std::memory_order_acquire) &&
             !session_ui.return_home.load(std::memory_order_acquire) && !closed.load()) {
             try {
@@ -1967,13 +2158,15 @@ static void RunGameViewSession(const winrt::Windows::UI::Core::CoreWindow& windo
         Sleep(1);
     }
     worker.join();
-    // A failed launch says why. From the library it then goes back to the library: it used to
-    // close the app with no message, which players reported as a crash.
+    // A failed launch says why, then goes back to the library: it used to close the app with no
+    // message, which players reported as a crash. Home, Mii and the official startup return too;
+    // the next pass shows the library instead of booting them again. Only a protocol launch,
+    // which another app asked for, ends here.
     const bool failed = launch_status.phase.load() == Ui::LaunchPhase::Failed;
-    return_home = session_ui.return_home.load() && !closed.load() && !(failed && protocol_launch);
+    return_home = session_ui.return_home.load() && !closed.load() && !failed;
     if (failed && !closed.load()) {
-        show_failure(launch_status.missing_exefs.load() ? Ui::Text::LaunchNeedsUpdate
-                                                        : Ui::Text::LaunchFailed);
+        show_failure(launch_status.failure.load());
+        return_home = !protocol_launch && !closed.load();
     }
 }
 

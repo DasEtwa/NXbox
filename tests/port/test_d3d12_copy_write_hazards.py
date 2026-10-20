@@ -62,7 +62,7 @@ class CopyWriteHazards(unittest.TestCase):
     def test_tracking_is_scoped_to_recording(self):
         submit = function_body(self.context, "u64 Context::Submit(")
         self.assertRegex(submit, r"work\.clear\(\);\s*copy_writes\.clear\(\);")
-        commands = function_body(self.context, "ID3D12GraphicsCommandList* Context::Commands(")
+        commands = function_body(self.context, "CommandFacade* Context::Commands(")
         self.assertLess(commands.index("commands->Reset("), commands.index("copy_writes.clear();"))
         self.assertLess(commands.index("copy_writes.clear();"), commands.index("recording = true;"))
 
@@ -128,7 +128,21 @@ class CopyWriteHazards(unittest.TestCase):
                     )
                 # The optional byte trace has its own disjoint readback slots.
                 trace_copies = source.count("commands->CopyBufferRegion(")
-                self.assertEqual(trace_copies, 1 if filename == "d3d12_rasterizer.cpp" else 0)
+                if filename == "d3d12_query_cache.cpp":
+                    self.assertEqual(trace_copies, 2)
+                    batch_guards = (
+                        "batch_readback.buffer, batch_readback.offset, batch_reports * 8",
+                        "target.resource, target.offset, target.size",
+                    )
+                    batch_copies = list(re.finditer(r"commands->CopyBufferRegion\(", source))
+                    for copy, argument in zip(batch_copies, batch_guards):
+                        self.assertTrue(
+                            source[: copy.start()]
+                            .rstrip()
+                            .endswith(f"BeforeCopyWrite({argument});")
+                        )
+                else:
+                    self.assertEqual(trace_copies, 1 if filename == "d3d12_rasterizer.cpp" else 0)
 
     def test_texture_downloads_guard_buffer_footprints(self):
         source = re.sub(r"\s+", " ", (D3D12 / "d3d12_texture_cache.cpp").read_text())

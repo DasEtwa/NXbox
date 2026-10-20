@@ -12,6 +12,7 @@
 #include "common/gpu_thread_profile.h"
 
 #include <fstream>
+#include <type_traits>
 #include <variant>
 
 #ifdef ARCHITECTURE_x86_64
@@ -786,13 +787,17 @@ void MacroJITx64Impl::Compile_ALU(Core::System& system, Macro::Opcode opcode) {
     const bool valid_operation = !is_a_zero && !is_b_zero;
     [[maybe_unused]] const bool is_move_operation = !is_a_zero && is_b_zero;
     const bool has_zero_register = is_a_zero || is_b_zero;
-    const bool no_zero_reg_skip = opcode.alu_operation == Macro::ALUOperation::AddWithCarry ||
-                                  opcode.alu_operation == Macro::ALUOperation::SubtractWithBorrow;
+    const bool zero_reg_skip =
+        optimizer.zero_reg_skip && !is_a_zero && is_b_zero &&
+        (opcode.alu_operation == Macro::ALUOperation::Xor ||
+         opcode.alu_operation == Macro::ALUOperation::Or ||
+         (optimizer.can_skip_carry && (opcode.alu_operation == Macro::ALUOperation::Add ||
+                                       opcode.alu_operation == Macro::ALUOperation::Subtract)));
 
     Xbyak::Reg32 src_a;
     Xbyak::Reg32 src_b;
 
-    if (!optimizer.zero_reg_skip || no_zero_reg_skip) {
+    if (!zero_reg_skip) {
         src_a = Compile_GetRegister(opcode.src_a, RESULT);
         src_b = Compile_GetRegister(opcode.src_b, eax);
     } else {
@@ -808,7 +813,7 @@ void MacroJITx64Impl::Compile_ALU(Core::System& system, Macro::Opcode opcode) {
 
     switch (opcode.alu_operation) {
     case Macro::ALUOperation::Add:
-        if (optimizer.zero_reg_skip) {
+        if (zero_reg_skip) {
             if (valid_operation) {
                 add(src_a, src_b);
             }
@@ -826,7 +831,7 @@ void MacroJITx64Impl::Compile_ALU(Core::System& system, Macro::Opcode opcode) {
         setc(byte[STATE + offsetof(JITState, carry_flag)]);
         break;
     case Macro::ALUOperation::Subtract:
-        if (optimizer.zero_reg_skip) {
+        if (zero_reg_skip) {
             if (valid_operation) {
                 sub(src_a, src_b);
                 has_emitted = true;
@@ -845,7 +850,7 @@ void MacroJITx64Impl::Compile_ALU(Core::System& system, Macro::Opcode opcode) {
         setc(byte[STATE + offsetof(JITState, carry_flag)]);
         break;
     case Macro::ALUOperation::Xor:
-        if (optimizer.zero_reg_skip) {
+        if (zero_reg_skip) {
             if (valid_operation) {
                 xor_(src_a, src_b);
             }
@@ -854,7 +859,7 @@ void MacroJITx64Impl::Compile_ALU(Core::System& system, Macro::Opcode opcode) {
         }
         break;
     case Macro::ALUOperation::Or:
-        if (optimizer.zero_reg_skip) {
+        if (zero_reg_skip) {
             if (valid_operation) {
                 or_(src_a, src_b);
             }
@@ -863,7 +868,7 @@ void MacroJITx64Impl::Compile_ALU(Core::System& system, Macro::Opcode opcode) {
         }
         break;
     case Macro::ALUOperation::And:
-        if (optimizer.zero_reg_skip) {
+        if (zero_reg_skip) {
             if (!has_zero_register) {
                 and_(src_a, src_b);
             }
@@ -872,7 +877,7 @@ void MacroJITx64Impl::Compile_ALU(Core::System& system, Macro::Opcode opcode) {
         }
         break;
     case Macro::ALUOperation::AndNot:
-        if (optimizer.zero_reg_skip) {
+        if (zero_reg_skip) {
             if (!is_a_zero) {
                 not_(src_b);
                 and_(src_a, src_b);
@@ -883,7 +888,7 @@ void MacroJITx64Impl::Compile_ALU(Core::System& system, Macro::Opcode opcode) {
         }
         break;
     case Macro::ALUOperation::Nand:
-        if (optimizer.zero_reg_skip) {
+        if (zero_reg_skip) {
             if (!is_a_zero) {
                 and_(src_a, src_b);
                 not_(src_a);
@@ -927,7 +932,7 @@ void MacroJITx64Impl::Compile_AddImmediate(Core::System& system, Macro::Opcode o
         }
     } else {
         auto result = Compile_GetRegister(opcode.src_a, RESULT);
-        if (opcode.immediate > 2) {
+        if (opcode.immediate >= 2) {
             add(result, opcode.immediate);
         } else if (opcode.immediate == 1) {
             inc(result);
@@ -983,7 +988,7 @@ void MacroJITx64Impl::Compile_Read(Core::System& system, Macro::Opcode opcode) {
         }
     } else {
         auto result = Compile_GetRegister(opcode.src_a, RESULT);
-        if (opcode.immediate > 2) {
+        if (opcode.immediate >= 2) {
             add(result, opcode.immediate);
         } else if (opcode.immediate == 1) {
             inc(result);
@@ -1364,36 +1369,21 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
             maxwell3d.RefreshParameters();
         }
 
-        if (auto program = std::get_if<HLE_DrawArraysIndirect>(&cached))
-            return program->Execute(system, maxwell3d, parameters, method);
-        if (auto program = std::get_if<HLE_DrawIndexedIndirect>(&cached))
-            return program->Execute(system, maxwell3d, parameters, method);
-        if (auto program = std::get_if<HLE_MultiDrawIndexedIndirectCount>(&cached))
-            return program->Execute(system, maxwell3d, parameters, method);
-        if (auto program = std::get_if<HLE_MultiLayerClear>(&cached))
-            return program->Execute(system, maxwell3d, parameters, method);
-        if (auto program = std::get_if<HLE_C713C83D8F63CCF3>(&cached))
-            return program->Execute(system, maxwell3d, parameters, method);
-        if (auto program = std::get_if<HLE_D7333D26E0A93EDE>(&cached))
-            return program->Execute(system, maxwell3d, parameters, method);
-        if (auto program = std::get_if<HLE_BindShader>(&cached))
-            return program->Execute(system, maxwell3d, parameters, method);
-        if (auto program = std::get_if<HLE_SetRasterBoundingBox>(&cached))
-            return program->Execute(system, maxwell3d, parameters, method);
-        if (auto program = std::get_if<HLE_ClearConstBuffer>(&cached))
-            return program->Execute(system, maxwell3d, parameters, method);
-        if (auto program = std::get_if<HLE_ClearMemory>(&cached))
-            return program->Execute(system, maxwell3d, parameters, method);
-        if (auto program = std::get_if<HLE_TransformFeedbackSetup>(&cached))
-            return program->Execute(system, maxwell3d, parameters, method);
-        if (auto program = std::get_if<HLE_DrawIndirectByteCount>(&cached))
-            return program->Execute(system, maxwell3d, parameters, method);
-        if (auto program = std::get_if<MacroInterpreterImpl>(&cached))
-            return program->Execute(system, maxwell3d, parameters, method);
-        if (auto program = std::get_if<std::unique_ptr<DynamicCachedMacro>>(&cached))
-            return program->get()->Execute(system, maxwell3d, parameters, method);
-
-        UNREACHABLE();
+        // Dispatch by variant index once instead of testing every HLE alternative
+        // before reaching the interpreter/JIT (the last alternatives).
+        std::visit(
+            [&](auto& program) {
+                using Program = std::decay_t<decltype(program)>;
+                if constexpr (std::is_same_v<Program, std::monostate> ||
+                              std::is_same_v<Program, HLEMacro>) {
+                    UNREACHABLE();
+                } else if constexpr (std::is_same_v<Program, std::unique_ptr<DynamicCachedMacro>>) {
+                    program->Execute(system, maxwell3d, parameters, method);
+                } else {
+                    program.Execute(system, maxwell3d, parameters, method);
+                }
+            },
+            cached);
     };
     if (auto const it = macro_cache.find(method); it != macro_cache.end()) {
         execute_variant(it->second.program);

@@ -369,6 +369,20 @@ inline void Diagnostic(const std::string&) {}
                 header.parent.mkdir(parents=True, exist_ok=True)
                 header.write_text('#include "stubs.h"\n')
             source = temp / "native.cpp"
+            rasterizer_source = (
+                ROOT / "src/video_core/renderer_d3d12/d3d12_rasterizer.cpp"
+            ).read_text()
+            flush_body = rasterizer_source.split("void RasterizerD3D12::FlushCommands() {", 1)[1]
+            flush_body = flush_body.split("\n}", 1)[0]
+            flush_body = flush_body[flush_body.index("    // DispatchCalls") :]
+            flush_body = (
+                flush_body.replace("fence_manager.", "tail.")
+                .replace(
+                    "context.Submit(FrameCount::ForcedSubmitGuestFlush)",
+                    "tail_context.Submit(D3D12::FrameCount::ForcedSubmitGuestFence)",
+                )
+                .replace("    default_pipeline_cache->FlushDiskCache();", "")
+            )
             source.write_text(r"""
 #include <cassert>
 #include "common/gpu_thread_profile.h"
@@ -381,12 +395,47 @@ int main() {
     Settings::high = false;
     D3D12::Context context;
     D3D12::FenceManager manager(rasterizer, gpu, texture, buffer, query, context);
+    // A submitted query reduction is not enough: non-fence reports still need publication.
+    // Exercise the production FlushCommands body with no subsequent guest command/frame.
+    {
+        VideoCore::RasterizerInterface tail_rasterizer;
+        Tegra::GPU tail_gpu;
+        Cache tail_texture, tail_buffer, tail_query;
+        tail_texture.ready = tail_buffer.ready = tail_query.ready = true;
+        D3D12::Context tail_context;
+        D3D12::FenceManager tail(tail_rasterizer, tail_gpu, tail_texture, tail_buffer,
+                                 tail_query, tail_context);
+        tail_rasterizer.on_flush = [&] { __FLUSH_COMMANDS__ };
+        std::atomic<int> reports{};
+        for (int i = 0; i < 79; ++i) {
+            tail.SyncOperation([&] {
+                assert(tail_query.pops == 1); // Readback retirement precedes guest writes.
+                ++reports;
+            });
+        }
+        // Reproduce the old path: hardware completes but no fence owns these callbacks.
+        tail_context.Submit(D3D12::FrameCount::ForcedSubmitGuestFence);
+        tail_context.Complete();
+        assert(reports == 0 && tail_query.commits == 0 && tail.PendingGuestCallbacks() == 79);
+        __FLUSH_COMMANDS__
+        tail_context.Complete();
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (tail.PendingGuestCallbacks() && std::chrono::steady_clock::now() < deadline)
+            std::this_thread::yield();
+        assert(reports == 79 && tail.PendingGuestCallbacks() == 0);
+        assert(tail_query.commits == 1 && tail_query.pops == 1);
+        // An empty boundary must not create another cache batch or native submission.
+        const auto submits = tail_context.submitted.load();
+        __FLUSH_COMMANDS__
+        assert(tail_context.submitted == submits && tail_query.commits == 1);
+    }
     // SignalFence flushes under the fence lock when batching is off; the hook must not lock.
     rasterizer.on_flush = [&] { manager.NotifyDeferredSubmit(); };
     if (D3D12::BisectEnabled("NXBOX_D3D12_FENCE_BATCHING")) {
-        // Eight guest fences share the pending command-list tick. The producer never waits.
+        // DBSZ logs ~42 guest fences/frame. They share one tick without a producer wait.
+        constexpr int fences_per_frame = 42;
         std::atomic<int> callbacks{};
-        for (int i = 0; i < 8; ++i) {
+        for (int i = 0; i < fences_per_frame; ++i) {
             manager.SignalSyncPoint(7);
             manager.SignalFence([&, i] {
                 assert(context.completed >= 1);
@@ -400,14 +449,14 @@ int main() {
             std::this_thread::yield();
         assert(context.submission_checks > 0 && context.waits == 0);
         assert(context.submitted == 0 && context.completed == 0);
-        assert(gpu.host.sync.guest == 8 && gpu.host.sync.host == 0 && callbacks == 0);
+        assert(gpu.host.sync.guest == fences_per_frame && gpu.host.sync.host == 0 && callbacks == 0);
         // Command-list end / present submits once; completion needs no new guest commands.
         context.Submit(D3D12::FrameCount::ForcedSubmitGuestFence);
         context.Complete();
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-        while (callbacks != 8 && std::chrono::steady_clock::now() < deadline)
+        while (callbacks != fences_per_frame && std::chrono::steady_clock::now() < deadline)
             std::this_thread::yield();
-        assert(callbacks == 8 && gpu.host.sync.host == 8 && context.submitted == 1);
+        assert(callbacks == fences_per_frame && gpu.host.sync.host == fences_per_frame && context.submitted == 1);
         // A real guest wait must submit pending work before sleeping on the drain marker.
         context.RecordWork();
         manager.SignalSyncPoint(7);
@@ -419,7 +468,7 @@ int main() {
             context.Complete();
         });
         manager.WaitPendingFences(true);
-        assert(gpu.host.sync.host == 9 && context.submitted == 2);
+        assert(gpu.host.sync.host == fences_per_frame + 1 && context.submitted == 2);
         assert(texture.commits == texture.pops && buffer.commits == buffer.pops);
         assert(query.commits == query.pops);
         // Fences with no new recording reuse the completed tick and need no empty submit.
@@ -504,6 +553,7 @@ int main() {
 
 }
 """)
+            source.write_text(source.read_text().replace("__FLUSH_COMMANDS__", flush_body))
             binary = temp / "native"
             result = subprocess.run(
                 [

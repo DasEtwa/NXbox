@@ -10,7 +10,7 @@ namespace Service::AM {
 
 IStorageAccessor::IStorageAccessor(Core::System& system_,
                                    std::shared_ptr<LibraryAppletStorage> impl)
-    : ServiceFramework{system_, "IStorageAccessor"}, m_impl{std::move(impl)} {
+    : PollingServiceFramework{system_, "IStorageAccessor"}, m_impl{std::move(impl)} {
     static const FunctionInfo functions[] = {
         {0, D<&IStorageAccessor::GetSize>, "GetSize"},
         {10, D<&IStorageAccessor::Write>, "Write"},
@@ -40,7 +40,7 @@ Result IStorageAccessor::Read(OutBuffer<BufferAttr_HipcAutoSelect> out_buffer, s
 
 ITransferStorageAccessor::ITransferStorageAccessor(Core::System& system_,
                                                    std::shared_ptr<LibraryAppletStorage> impl)
-    : ServiceFramework{system_, "ITransferStorageAccessor"}, m_impl{std::move(impl)} {
+    : PollingServiceFramework{system_, "ITransferStorageAccessor"}, m_impl{std::move(impl)} {
     static const FunctionInfo functions[] = {
         {0, D<&ITransferStorageAccessor::GetSize>, "GetSize"},
         {1, D<&ITransferStorageAccessor::GetHandle>, "GetHandle"},

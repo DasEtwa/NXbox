@@ -36,7 +36,11 @@ struct Cache {
     void DownloadMemory(u64,u64) { guest=value; }
     void FlushRegion(u64,u64) { guest=value; }
 };
+struct QueryRuntime { void FlushPendingReports(u64,u64) {} };
 struct RasterizerD3D12 {
+    QueryRuntime query_runtime;
+    bool OnGpuPipeline() const { return false; }
+    template<class F> auto RunGpuPipeline(F&& function) { return function(); }
     Cache texture_cache{{},1},buffer_cache{{},2},query_cache{{},42};
     void FlushRegion(DAddr,u64,VideoCommon::CacheType);
 };
@@ -78,6 +82,7 @@ u64 AlignDown(u64 a,u64 b) { return a/b*b; }
 u64 AlignUp(u64 a,u64 b) { return (a+b-1)/b*b; }
 }
 namespace VideoCommon {
+namespace SubmissionTrace { template<class... Args> void Log(const char*, Args...) {} }
 enum class CacheType { BufferCache=1,TextureCache=2,ShaderCache=4,QueryCache=8 };
 CacheType operator|(CacheType a,CacheType b) { return CacheType(int(a)|int(b)); }
 }
@@ -97,7 +102,11 @@ struct Cache {
     }
     void InvalidateRegion(u64,u64) { ++writes; }
 };
+struct QueryRuntime { void FlushPendingReports(u64,u64) {} };
 struct RasterizerD3D12 {
+    QueryRuntime query_runtime;
+    bool OnGpuPipeline() const { return false; }
+    template<class F> auto RunGpuPipeline(F&& function) { return function(); }
     Cache buffer_cache,texture_cache,pipeline;
     Cache* default_pipeline_cache=&pipeline;
     int invalidated=0;
@@ -138,12 +147,13 @@ int main() {
         marker = "template <typename Traits>\nvoid QueryCacheBase<Traits>::CounterReport"
         method = marker + source.split(marker, 1)[1].split("template <typename Traits>", 1)[0]
         driver = DRIVER.replace(
-            "struct Runtime {};",
+            function_body(DRIVER, "struct Runtime") + ";",
             """struct Runtime {
                 int pending=0,written=0,invalidated=0;
-                void ReportPending() { ++pending; }
-                void ReportCompleted(bool bad) {
-                    assert(pending>0); --pending;
+                u64 sequence=0;
+                u64 ReportPending(VAddr) { ++pending; return ++sequence; }
+                void ReportCompleted(bool bad, u64 token) {
+                    assert(token==sequence && pending>0); --pending;
                     if(bad) ++invalidated; else ++written;
                 }
             };""",
@@ -217,6 +227,8 @@ struct FrameProfile {
     std::array<u64,static_cast<size_t>(FrameCount::Count)> counts{};
     u64 frames=0,fence_wall=0,start_wall=0,initial_cpu=0;
     std::atomic<u64> gpu_busy{};
+    u64 TakeRecorderCpu() { return 0; }
+    u64 recorder_waits{}, recorder_wait_ns{};
     std::unordered_map<u64,u64> transitions;
     std::unordered_map<std::string_view,std::pair<u64,u64>> waits;
     std::function<std::string()> guest_visibility;

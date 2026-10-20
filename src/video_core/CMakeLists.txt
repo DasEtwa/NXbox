@@ -97,6 +97,9 @@ add_library(video_core STATIC
     gpu_thread.h
     guest_memory.h
     invalidation_accumulator.h
+    shader_discovery.cpp
+    shader_discovery.h
+    shader_discovery_scanner.h
     memory_manager.cpp
     memory_manager.h
     present.h
@@ -500,7 +503,17 @@ if (WIN32 AND (ENABLE_D3D12 OR CMAKE_SYSTEM_NAME STREQUAL "WindowsStore"))
         renderer_d3d12/d3d12_rasterizer.h
         renderer_d3d12/backend_selection.h
         renderer_d3d12/d3d12_context.cpp
+        renderer_d3d12/d3d12_state_cache.h
+        renderer_d3d12/d3d12_state_tracker.h
+        renderer_d3d12/d3d12_state_tracker.cpp
+        renderer_d3d12/d3d12_command_validation.h
+        renderer_d3d12/d3d12_commands.h
+        renderer_d3d12/d3d12_record_args.h
+        renderer_d3d12/d3d12_record_descriptors.h
+        renderer_d3d12/d3d12_record_stream.h
+        renderer_d3d12/d3d12_recording_progress.h
         renderer_d3d12/d3d12_context.h
+        renderer_d3d12/d3d12_memory_budget.h
         renderer_d3d12/d3d12_completion.h
         renderer_d3d12/d3d12_fence_manager.cpp
         renderer_d3d12/d3d12_fence_manager.h

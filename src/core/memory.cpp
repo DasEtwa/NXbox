@@ -62,6 +62,8 @@ struct Memory::Impl {
             current_page_table->fastmem_arena = nullptr;
         }
 
+        current_page_table->InitializeJitPageTable();
+
 #ifdef __ANDROID__
         heap_tracker.emplace(system.DeviceMemory().buffer);
         host_buffer = std::addressof(*heap_tracker);
@@ -405,6 +407,7 @@ struct Memory::Impl {
         if (vaddr == 0 || !AddressSpaceContains(*current_page_table, vaddr, size)) {
             return;
         }
+        std::scoped_lock writer_lock{current_page_table->writer_mutex};
 
         if (current_page_table->fastmem_arena) {
             const auto perm{debug ? Common::MemoryPermission{}
@@ -432,6 +435,7 @@ struct Memory::Impl {
                     // Page is already marked.
                     break;
                 case Common::PageType::Memory:
+                    current_page_table->ClearJitPage(vaddr >> YUZU_PAGEBITS);
                     entry.MarkDebug(pointer, block);
                     break;
                 default:
@@ -448,7 +452,8 @@ struct Memory::Impl {
                     // Don't mess with already non-debug or rasterizer memory.
                     break;
                 case Common::PageType::DebugMemory: {
-                    entry.Store(false, Common::PageType::Memory, block, pointer);
+                    current_page_table->StorePage(vaddr >> YUZU_PAGEBITS, false,
+                                                  Common::PageType::Memory, block, pointer);
                     break;
                 }
                 default:
@@ -462,6 +467,7 @@ struct Memory::Impl {
         if (vaddr == 0 || !AddressSpaceContains(*current_page_table, vaddr, size)) {
             return;
         }
+        std::scoped_lock writer_lock{current_page_table->writer_mutex};
 
         if (current_page_table->fastmem_arena) {
             Common::MemoryPermission perm{};
@@ -493,6 +499,7 @@ struct Memory::Impl {
                     break;
                 case Common::PageType::DebugMemory:
                 case Common::PageType::Memory:
+                    current_page_table->ClearJitPage(vaddr >> YUZU_PAGEBITS);
                     entry.MarkRasterizerCached();
                     break;
                 case Common::PageType::RasterizerCachedMemory:
@@ -519,9 +526,11 @@ struct Memory::Impl {
                         // It's possible that this function has been called while updating the
                         // pagetable after unmapping a VMA. In that case the underlying VMA will no
                         // longer exist, and we should just leave the pagetable entry blank.
-                        entry.Store(false, Common::PageType::Unmapped, block, 0);
+                        current_page_table->StorePage(vaddr >> YUZU_PAGEBITS, false,
+                                                      Common::PageType::Unmapped, block, 0);
                     } else {
-                        entry.Store(false, Common::PageType::Memory, block, ptr);
+                        current_page_table->StorePage(vaddr >> YUZU_PAGEBITS, false,
+                                                      Common::PageType::Memory, block, ptr);
                     }
                     break;
                 }
@@ -544,6 +553,7 @@ struct Memory::Impl {
     void MapPages(Common::PageTable& page_table, Common::ProcessAddress base_address, u64 size,
                   Common::PhysicalAddress target, Common::PageType type) {
         auto base = GetInteger(base_address);
+        std::scoped_lock writer_lock{page_table.writer_mutex};
 
         LOG_DEBUG(HW_Memory, "Mapping {:016X} onto {:016X}-{:016X}", GetInteger(target),
                   base * YUZU_PAGESIZE, (base + size) * YUZU_PAGESIZE);
@@ -555,6 +565,8 @@ struct Memory::Impl {
             ASSERT_MSG(type != Common::PageType::Memory,
                        "Mapping memory page without a pointer @ {:016x}", base * YUZU_PAGESIZE);
 
+            // Keep JIT storage committed: generated readers may still be loading it.
+            page_table.ClearJitRegion(base, end);
             page_table.entries.ZeroRegion(base, end);
         } else {
             auto current_block = block_count.fetch_add(1, std::memory_order_relaxed);
@@ -563,9 +575,7 @@ struct Memory::Impl {
             page_table.entries.CommitRegion(base, end);
             while (base != end) {
                 auto host_ptr = reinterpret_cast<u64>(system.DeviceMemory().GetPointer<u8>(target)) - (base << YUZU_PAGEBITS);;
-                auto& entry = page_table.entries.GetUnchecked(base);
-
-                entry.Store(false, type, current_block, host_ptr);
+                page_table.StorePage(base, false, type, current_block, host_ptr);
                 ASSERT_MSG(page_table.entries[base].Pointer(),
                            "memory mapping base yield a nullptr within the table");
 
@@ -647,6 +657,32 @@ struct Memory::Impl {
             LOG_ERROR(HW_Memory, "NXBOX FAULT REG x{}={:#018x}", i, ctx.r[i]);
         }
         LOG_ERROR(HW_Memory, "NXBOX FAULT REG x29={:#018x} x30={:#018x}", ctx.fp, ctx.lr);
+        // Recover callers of a deliberate fatal write, not just the crash helper's PC.
+        // Read each byte silently: malformed guest frame pointers must not recurse into faults.
+        u64 frame = ctx.fp;
+        for (size_t depth = 0; depth < 16; ++depth) {
+            if (frame < ctx.sp || (frame & 15) || frame > UINT64_MAX - 15) {
+                break;
+            }
+            std::array<u64, 2> saved{};
+            bool mapped = true;
+            for (size_t byte = 0; byte < 16; ++byte) {
+                const auto* ptr = GetPointerSilent(frame + byte);
+                if (!ptr) {
+                    mapped = false;
+                    break;
+                }
+                saved[byte / 8] |= u64(*ptr) << (8 * (byte % 8));
+            }
+            LOG_ERROR(HW_Memory,
+                      "NXBOX FAULT FRAME depth={} fp={:#018x} mapped={} next_fp={:#018x} "
+                      "return_pc={:#018x}",
+                      depth, frame, mapped, saved[0], saved[1]);
+            if (!mapped || saved[0] <= frame || saved[0] - frame > 1024 * 1024) {
+                break;
+            }
+            frame = saved[0];
+        }
         // Silent byte reads avoid recursion and handle page boundaries independently.
         // Each word is an AArch64 instruction; a missing byte invalidates the whole word.
         for (s64 offset = -32; offset < 64; offset += 4) {
@@ -674,9 +710,10 @@ struct Memory::Impl {
                 const auto& entry = history.entries[i % history.entries.size()];
                 LOG_ERROR(HW_Memory,
                           "NXBOX FAULT SVC sequence={} number={:#x} input_x0={:#x} "
-                          "output_x0={:#x} output_x1={:#x} completed={}",
+                          "output_x0={:#x} output_x1={:#x} completed={} entered_ms={} "
+                          "finished_ms={} pc={:#x} lr={:#x}",
                           i, entry.number, entry.input_x0, entry.output_x0, entry.output_x1,
-                          entry.completed);
+                          entry.completed, entry.entered_ms, entry.finished_ms, entry.pc, entry.lr);
             }
         }
         LOG_ERROR(HW_Memory, "NXBOX FAULT END");

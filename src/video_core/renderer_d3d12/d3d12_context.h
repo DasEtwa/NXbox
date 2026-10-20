@@ -11,16 +11,18 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
 #include "common/gpu_thread_profile.h"
 #include "video_core/renderer_d3d12/d3d12_flush_policy.h"
+#include "video_core/renderer_d3d12/d3d12_memory_budget.h"
+#include "video_core/renderer_d3d12/d3d12_recording_progress.h"
 
 namespace D3D12 {
 enum class FramePhase : size_t {
@@ -192,6 +194,8 @@ enum class FrameCount : size_t {
     UniformSnapshotRequests,
     UniformSnapshotNewResources,
     ForcedSubmitFlushDraws,
+    AttachmentMetadataReuses,
+    QueryBatchDispatches,
     Count
 };
 // Monotonic CPU samples, independent of the host clock API, for exclusive phases.
@@ -370,6 +374,7 @@ private:
 
 #include "common/common_types.h"
 #include "video_core/renderer_d3d12/d3d12_recorded_state.h"
+#include "video_core/renderer_d3d12/d3d12_state_tracker.h"
 
 namespace D3D12 {
 using Microsoft::WRL::ComPtr;
@@ -392,6 +397,14 @@ struct MemoryBudget {
 };
 struct Resource {
     ComPtr<ID3D12Resource> handle;
+    // Resource handles/descriptions are immutable. The recording thread warms this
+    // inline cache once, including resources obtained outside CreateResource (swapchain).
+    const D3D12_RESOURCE_DESC& Description() const {
+        if (!description)
+            description = handle->GetDesc();
+        return *description;
+    }
+    mutable std::optional<D3D12_RESOURCE_DESC> description;
     D3D12_RESOURCE_STATES state{};
     // Empty means uniform; otherwise state is superseded by per-subresource states.
     std::vector<D3D12_RESOURCE_STATES> sub_states;
@@ -400,6 +413,8 @@ struct Resource {
     std::shared_ptr<MemoryBudget> budget;
     u64 allocation_size{};
     u64 content_version{};
+    // Only the recording thread reads/writes this stamp; batches own the actual lease.
+    u64 retained_generation{};
     // Recording tick of the last copy into this resource; copy hazards span command lists.
     u64 last_copy_tick{};
     ~Resource();
@@ -441,8 +456,15 @@ public:
     void Leave(std::size_t previous) override;
     // GPU execution time of submitted command lists, in 100 ns, added on completion.
     std::atomic<u64> gpu_busy{};
+    void BindRecorder(void* handle) {
+        recorder_thread = handle;
+    }
+    u64 TakeRecorderCpu();
+    u64 recorder_waits{}, recorder_wait_ns{};
 
 private:
+    void* recorder_thread{};
+    u64 recorder_initial_cpu{};
     bool OnOwner();
     void Switch(FramePhase phase);
     bool enabled{BisectEnabled("NXBOX_D3D12_FRAME_PROFILE")};
@@ -454,6 +476,10 @@ private:
     u64 initial_cpu{}, start_wall{}, fence_wall{}, frames{};
 };
 
+} // namespace D3D12
+#include "video_core/renderer_d3d12/d3d12_commands.h"
+namespace D3D12 {
+
 // One direct queue, bounded in-flight allocators. Every referenced resource is retained
 // until completion, including resources evicted from the shared caches.
 class Context {
@@ -462,14 +488,22 @@ public:
     ~Context();
     Context(const Context&) = delete;
     Context& operator=(const Context&) = delete;
-    ID3D12GraphicsCommandList* Commands();
+    CommandFacade* Commands();
+    void Acknowledge(u64 tick);
     // Every recording path outside the cached guest draw must invalidate before
     // recording. Resource barriers and predication do not change cached state.
+    // The state tracker's caches hold values computed from registers, not command-list state:
+    // re-emission is RecordState's job, so a new recording does not recompute them.
     void InvalidateRecordedState() {
         ++recording_generation;
     }
+    StateTracker& GraphicsStateTracker() {
+        return graphics_state_tracker;
+    }
     RecordedDrawState& DrawState() {
-        recorded_state.Refresh(recording_generation);
+        // Diagnostic fallback for comparing validity-only and full state resets.
+        static const bool full_state_reset = BisectEnabled("NXBOX_D3D12_FULL_STATE_RESET");
+        recorded_state.Refresh(recording_generation, full_state_reset);
         return recorded_state;
     }
     bool RecordState(bool changed) {
@@ -477,6 +511,9 @@ public:
             profile.Count(FrameCount::RedundantStateSkips);
         return changed;
     }
+    // Recording-thread producers must materialize deferred work before sealing a list.
+    std::function<void()> before_submit;
+    std::function<void(const ResourcePtr&)> before_resource_use;
     u64 Submit(FrameCount reason = FrameCount::ForcedSubmitOther);
     // Between draws: submits the open list once it holds NXBOX_D3D12_FLUSH_DRAWS recorded draws.
     // Returns true when it did, so the caller can wake the fencing thread like any other submit.
@@ -487,9 +524,10 @@ public:
     void LogInfoQueue() noexcept;
     void Wait(u64 tick, std::string_view site = "other");
     bool IsFree(u64 tick) const;
+    u64 CompletedTick() const;
     // Recording thread: include pending commands without forcing a queue submission.
     u64 PendingFenceTick() const {
-        return recording ? CurrentTick() : LastSubmittedTick();
+        return recording ? CurrentTick() : LastSealedTick();
     }
     u64 LastSubmittedTick() const {
         return submitted.load(std::memory_order_acquire);
@@ -503,7 +541,7 @@ public:
     void WaitSubmitted(u64 tick, std::string_view site = "other");
     void Collect();
     u64 CurrentTick() const {
-        return LastSubmittedTick() + 1;
+        return LastSealedTick() + 1;
     }
     void Transition(const ResourcePtr& resource, D3D12_RESOURCE_STATES state);
     // Color textures only: mip + layer * mip count (one plane; 3D has one layer).
@@ -546,6 +584,23 @@ public:
     }
 
 private:
+    u64 LastSealedTick() const {
+        return deferred ? sealed : LastSubmittedTick();
+    }
+    void InitializeLists();
+    void StartRecorder();
+    void RecorderBegin();
+    void RecorderSubmit(u64 tick);
+    u64 SealRecording(FrameCount reason);
+    void CheckRecorder();
+    bool deferred{};
+    u64 sealed{};
+    CommandFacade facade;
+    std::unique_ptr<RecordDescriptors> record_descriptors;
+    std::unique_ptr<RecordStream<>> stream;
+    std::thread recorder;
+    ComPtr<ID3D12GraphicsCommandList1> extended1;
+    ComPtr<ID3D12GraphicsCommandList8> extended8;
     bool typed_uav_load_additional_formats{};
     void CrossListCopyBarrier(Resource& resource, u64 tick, u64 offset, u64 size);
 #ifndef NXBOX_UWP
@@ -591,9 +646,11 @@ private:
     std::atomic<u64> submitted{};
     // Set when Submit throws, cleared by the next completed submission.
     std::atomic<bool> submit_failed{};
+    RecordingProgress recorder_progress{submitted, submit_failed};
     bool recording{};
     u64 recording_generation{};
     DrawFlushCadence flush_cadence{FlushDrawsKnob()};
+    StateTracker graphics_state_tracker;
     RecordedDrawState recorded_state;
     std::shared_ptr<MemoryBudget> budget = std::make_shared<MemoryBudget>();
     struct Batch {
@@ -605,7 +662,9 @@ private:
     std::deque<Batch> batches;
     void CompleteThrough(u64 tick);
     std::vector<ResourcePtr> retained;
-    std::unordered_set<Resource*> retained_ids;
+    // Stamp of the open recording for Retain; unique per recording, unlike recording_generation
+    // (which InvalidateRecordedState bumps many times inside one recording).
+    u64 retention_generation{};
     std::vector<std::function<void()>> completion;
 };
 class StagingRing {
@@ -613,7 +672,7 @@ public:
     StagingRing(Context& context, D3D12_HEAP_TYPE heap, std::function<void()> release_leases = {})
         : context{context}, heap{heap}, release_leases{std::move(release_leases)} {}
     StagingBufferRef Request(size_t size);
-    void Collect();
+    void Collect(bool trim = false);
 
 private:
     struct Page {

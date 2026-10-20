@@ -8,6 +8,7 @@
 #include "eden_uwp/mesa_window.h"
 #include "eden_uwp/renderer_settings.h"
 #include "eden_uwp/ui/renderer.h"
+#include "video_core/pass_dump.h"
 #include "video_core/renderer_d3d12/backend_selection.h"
 
 #include <algorithm>
@@ -34,6 +35,7 @@ void LoadRuntimeEnvironment() {
         "nxbox_env.txt";
     const bool async_shaders = RendererSettings::ReadAsyncShaders(env_file.parent_path());
     _putenv_s("NXBOX_D3D12_ASYNC_SHADERS", async_shaders ? "1" : "0");
+    _putenv_s("NXBOX_D3D12_FSR", RendererSettings::ReadFsr(env_file.parent_path()) ? "1" : "0");
     bool async_shaders_override = false;
     std::ifstream env_in(env_file);
     std::string line;
@@ -65,6 +67,22 @@ void LoadRuntimeEnvironment() {
     }
 }
 HMODULE loader_library = nullptr;
+// Separate from LoadRuntimeEnvironment so the settings harnesses can compile that one alone.
+void PreparePassDumpDirectory() {
+    if (const char* capture_frame = std::getenv("NXBOX_PASS_DUMP_FRAME")) {
+        const char* capture_directory = std::getenv("NXBOX_PASS_DUMP_DIR");
+        if (capture_directory && *capture_directory) {
+            try {
+                VideoCommon::PassDump::PrepareDirectory(capture_directory, capture_frame);
+                Diagnostic(std::string("PASS_DUMP ready frame=") + capture_frame +
+                           " dir=" + capture_directory);
+            } catch (const std::exception& error) {
+                Diagnostic(std::string("PASS_DUMP directory failed dir=") + capture_directory +
+                           " error=" + error.what());
+            }
+        }
+    }
+}
 void* ResolveGL(const char* name) {
     auto address = GetProcAddress(loader_library, name);
     if (!address) {
@@ -325,6 +343,7 @@ MesaWindow::MesaWindow(const CoreWindow& window_, u32 width, u32 height) : windo
     // Load before choosing a graphics API: the native path must never load Mesa or create WGL.
     LoadRuntimeEnvironment();
     StartThreadProfiler();
+    PreparePassDumpDirectory();
     const char* override_value = std::getenv("NXBOX_RENDERER");
     // D3D12 is the default: Eden's default backend is Vulkan, which the Xbox does not have, and
     // the Mesa OpenGL path renders several games black. Only an explicit OpenGL choice (setting

@@ -20,6 +20,7 @@ DRIVER = r"""
 #include <vector>
 using u64 = std::uint64_t;
 using u8 = std::uint8_t;
+bool BisectEnabled(const char*) { return false; }
 constexpr u64 Align(u64 size, u64 alignment) { return (size + alignment - 1) & ~(alignment - 1); }
 struct Resource {
     std::vector<u8> bytes;
@@ -47,6 +48,7 @@ struct Context {
     FrameProfile& Profile() { return profile; }
     std::vector<ResourcePtr> retained;
     bool IsFree(u64 value) const { return value <= completed; }
+    u64 CompletedTick() { ++fence_polls; return completed; }
     u64 CurrentTick() const { return tick; }
     void Collect() { ++fence_polls; }
     void Finish(FrameCount = FrameCount::ForcedSubmitStagingPressure) { ++finishes; completed = tick++; retained.clear(); }
@@ -63,7 +65,7 @@ struct StagingRing {
     int heap = 0;
     std::vector<Page> pages;
     std::function<void()> release_leases;
-    void Collect();
+    void Collect(bool trim = false);
     StagingBufferRef Request(size_t size);
 };
 __IMPLEMENTATION__
@@ -137,9 +139,32 @@ int main() {
         cache.push_back(sub.buffer);
         pressure_context.retained.push_back(sub.buffer);
     }
+    const int sweep_polls = pressure_context.fence_polls;
+    pressure.Collect();
+    assert(pressure_context.fence_polls == sweep_polls + 2); // Not one poll per page.
     auto recycled = pressure.Request(256);
     assert(cache.empty() && pressure_context.finishes == 1);
     assert(pressure_context.resources == 16 && recycled.offset == 0);
+    // Host pressure drops only completed, unleased pages, including oversized idle pages.
+    Context trim_context;
+    StagingRing trimming{trim_context};
+    auto pinned = trimming.Request(8 * mib);
+    auto idle = trimming.Request(16 * mib);
+    std::weak_ptr<Resource> idle_lifetime = idle.buffer;
+    idle = {};
+    trimming.Collect(true);
+    assert(trimming.pages.size() == 2); // Still in flight.
+    trim_context.Finish();
+    trimming.Collect();
+    assert(trimming.pages.size() == 2); // Keep reusable pages without pressure.
+    trimming.Collect(true);
+    assert(trimming.pages.size() == 1 && idle_lifetime.expired());
+    assert(trimming.pages.front().resource == pinned.buffer);
+    pinned = {};
+    trimming.Collect(true);
+    assert(trimming.pages.empty());
+    auto after_trim = trimming.Request(256);
+    assert(after_trim.offset == 0 && after_trim.mapped_span.size() == 256);
     bool rejected = false;
     try { ring.Request(0); } catch (const std::invalid_argument&) { rejected = true; }
     assert(rejected);
@@ -154,11 +179,11 @@ int main() {
 class D3D12StagingPressureTests(unittest.TestCase):
     def test_pressure_submits_before_reusing_completed_pages(self):
         context = (ROOT / "src/video_core/renderer_d3d12/d3d12_context.cpp").read_text()
-        implementation = context.split("void StagingRing::Collect()", 1)[1].split(
+        implementation = context.split("void StagingRing::Collect(bool trim)", 1)[1].split(
             "} // namespace D3D12", 1
         )[0]
         source_text = DRIVER.replace(
-            "__IMPLEMENTATION__", "void StagingRing::Collect()" + implementation
+            "__IMPLEMENTATION__", "void StagingRing::Collect(bool trim)" + implementation
         )
         with tempfile.TemporaryDirectory(prefix="nxbox-staging-pressure-") as folder:
             source = Path(folder) / "staging.cpp"

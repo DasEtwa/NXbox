@@ -8,6 +8,7 @@
 #include <fmt/format.h>
 #include "shader_recompiler/backend/hlsl/hlsl_vertex_semantic.h"
 
+#include "video_core/renderer_d3d12/d3d12_build_stats.h"
 #include "video_core/renderer_d3d12/d3d12_context.h"
 #include "video_core/renderer_d3d12/d3d12_graphics_pipeline.h"
 
@@ -73,7 +74,9 @@ void CreateDepthStencilPipeline(ID3D12Device* device,
     const D3D12_PIPELINE_STATE_STREAM_DESC description{sizeof(stream), &stream};
     if (profile)
         profile->Count(FrameCount::PsoCompiles);
-    CheckPipeline(device2->CreatePipelineState(&description, IID_PPV_ARGS(&pso)),
+    CheckPipeline(TimePsoDriver([&] {
+                      return device2->CreatePipelineState(&description, IID_PPV_ARGS(&pso));
+                  }),
                   "CreatePipelineState(advanced depth-stencil)", device, key);
 }
 
@@ -265,7 +268,9 @@ GraphicsPipeline::GraphicsPipeline(ID3D12Device* device, ComPtr<ID3D12RootSignat
     }
     if (profile)
         profile->Count(FrameCount::PsoCompiles);
-    CheckPipeline(device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&pso)),
+    CheckPipeline(TimePsoDriver([&] {
+                      return device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&pso));
+                  }),
                   "CreateGraphicsPipelineState", device, key);
 }
 

@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 NSPX
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cstdlib>
 #include <string_view>
 
 #include "shader_recompiler/backend/hlsl/emit_hlsl_instructions.h"
@@ -11,8 +12,22 @@
 
 namespace Shader::Backend::HLSL {
 namespace {
+// Match the renderer's exact "1" bisect semantics without a dependency on D3D12.
+bool BisectEnabled(const char* name) {
+    const char* value = std::getenv(name);
+    return value && std::string_view{value} == "1";
+}
+
 void Compare(EmitContext& ctx, IR::Inst& inst, std::string_view lhs, std::string_view rhs,
              std::string_view op, bool ordered) {
+    static const bool native_ordered = BisectEnabled("NXBOX_HLSL_NATIVE_ORDERED_COMPARE");
+    // HLSL's relational/equality operators already reject NaNs. Ordered != still needs
+    // explicit guards, and FP64 keeps its bit-based NaN helper. Opt in until Xbox DXC
+    // output and rendered comparisons have been checked on the console.
+    if (native_ordered && ordered && op != "!=" && inst.Arg(0).Type() != IR::Type::F64) {
+        ctx.AddU1("{}={}{}{};", inst, lhs, op, rhs);
+        return;
+    }
     const auto nan_op{ordered ? "&&!" : "||"};
     ctx.AddU1("{}={}{}{}"
               "{}{}({}){}{}({});",

@@ -9,21 +9,24 @@
 #pragma once
 
 #include <array>
+#include <bit>
 #include <functional>
 #include <optional>
+#include <utility>
+
+#include <boost/container/flat_set.hpp>
+#include <boost/container/static_vector.hpp>
+#include <boost/pool/pool_alloc.hpp>
 
 #include "boost/container/small_vector.hpp"
 #include "common/common_types.h"
-#include "dynarmic/backend/x64/xbyak.h"
-#include <boost/container/static_vector.hpp>
-#include <boost/container/flat_set.hpp>
-#include <boost/pool/pool_alloc.hpp>
-
+#include "common/nxbox_stall.h"
+#include "dynarmic/backend/x64/abi.h"
 #include "dynarmic/backend/x64/block_of_code.h"
 #include "dynarmic/backend/x64/hostloc.h"
-#include "dynarmic/backend/x64/stack_layout.h"
 #include "dynarmic/backend/x64/oparg.h"
-#include "dynarmic/backend/x64/abi.h"
+#include "dynarmic/backend/x64/stack_layout.h"
+#include "dynarmic/backend/x64/xbyak.h"
 #include "dynarmic/ir/cond.h"
 #include "dynarmic/ir/microinstruction.h"
 #include "dynarmic/ir/value.h"
@@ -201,8 +204,25 @@ public:
     void ReleaseStackSpace(BlockOfCode& code, const size_t stack_space) noexcept;
 
     inline void EndOfAllocScope() noexcept {
-        for (auto& iter : hostloc_info)
-            iter.ReleaseAll();
+        // Only locations accessed this instruction can hold locks or pending uses.
+        // Keep live values indexed separately: most blocks never use any spill slots.
+        for (size_t word = 0; word < dirty_locations.size(); ++word) {
+            auto dirty = std::exchange(dirty_locations[word], 0);
+            while (dirty) {
+                const auto bit = std::countr_zero(dirty);
+                const auto mask = u64{1} << bit;
+                auto& info = hostloc_info[word * 64 + bit];
+                info.ReleaseAll();
+                if (info.IsEmpty())
+                    live_locations[word] &= ~mask;
+                else
+                    live_locations[word] |= mask;
+                dirty &= dirty - 1;
+#if NXBOX_STALL_PROFILE
+                ++scope_releases;
+#endif
+            }
+        }
     }
     inline void AssertNoMoreUses() noexcept {
         ASSERT(std::all_of(hostloc_info.begin(), hostloc_info.end(), [](const auto& i) noexcept { return i.IsEmpty(); }));
@@ -213,6 +233,14 @@ public:
             hostloc_info[i].EmitVerboseDebuggingOutput(code, i);
     }
 #endif
+    void ReportProfile() const noexcept {
+#if NXBOX_STALL_PROFILE
+        NxboxStall::AddJit(NxboxStall::JitEvent::RegAllocLookups, value_lookups);
+        NxboxStall::AddJit(NxboxStall::JitEvent::RegAllocProbes, value_probes);
+        NxboxStall::AddJit(NxboxStall::JitEvent::RegAllocReleases, scope_releases);
+#endif
+    }
+
 private:
     friend struct Argument;
 
@@ -235,6 +263,7 @@ private:
 
     inline HostLocInfo& LocInfo(const HostLoc loc) noexcept {
         DEBUG_ASSERT(loc != HostLoc::RSP && loc != ABI_JIT_PTR);
+        dirty_locations[size_t(loc) / 64] |= u64{1} << (size_t(loc) % 64);
         return hostloc_info[size_t(loc)];
     }
     inline const HostLocInfo& LocInfo(const HostLoc loc) const noexcept {
@@ -247,6 +276,16 @@ private:
 
 //data
     alignas(64) std::array<HostLocInfo, NonSpillHostLocCount + SpillCount> hostloc_info;
+    // All HostLocInfo mutations go through mutable LocInfo, except scope release.
+    // Dirty bits are conservative candidates until scope exit refreshes the live bits.
+    static constexpr size_t LocationWords = (NonSpillHostLocCount + SpillCount + 63) / 64;
+    std::array<u64, LocationWords> live_locations{};
+    std::array<u64, LocationWords> dirty_locations{};
+#if NXBOX_STALL_PROFILE
+    mutable u64 value_lookups = 0;
+    mutable u64 value_probes = 0;
+    u64 scope_releases = 0;
+#endif
     std::bitset<32> gpr_order;
     std::bitset<32> xmm_order;
     size_t reserved_stack_space = 0;

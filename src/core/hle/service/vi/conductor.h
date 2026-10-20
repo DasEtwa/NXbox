@@ -6,7 +6,9 @@
 
 #pragma once
 
+#include <atomic>
 #include <memory>
+#include <mutex>
 #include "common/container/unordered_map.h"
 
 #include "common/common_types.h"
@@ -42,6 +44,7 @@ public:
 
 private:
     void ProcessVsync();
+    void SignalVsync();
     void VsyncThread(std::stop_token token);
     s64 GetNextTicks() const;
     s64 GetFramePeriodNs() const;
@@ -49,14 +52,16 @@ private:
 private:
     Core::System& m_system;
     Container& m_container;
+    const bool m_independent_vsync;
+    std::mutex m_vsync_lock;
     ::Common::unordered_map<u64, VsyncManager> m_vsync_managers;
     std::shared_ptr<Core::Timing::EventType> m_event;
     Common::Event m_signal;
     std::jthread m_thread;
 
 private:
-    s32 m_swap_interval = 1;
-    f32 m_compose_speed_scale = 1.0f;
+    std::atomic<s32> m_swap_interval{1};
+    std::atomic<f32> m_compose_speed_scale{1.0f};
 };
 
 } // namespace Service::VI

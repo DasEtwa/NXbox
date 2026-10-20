@@ -8,7 +8,7 @@
 
 #include "core/hle/service/am/am_types.h"
 #include "core/hle/service/cmif_types.h"
-#include "core/hle/service/service.h"
+#include "core/hle/service/am/polling_service.h"
 
 namespace Kernel {
 class KReadableEvent;
@@ -23,7 +23,7 @@ namespace Service::AM {
 
 struct Applet;
 
-class ISelfController final : public ServiceFramework<ISelfController> {
+class ISelfController final : public PollingServiceFramework<ISelfController> {
 public:
     explicit ISelfController(Core::System& system_, std::shared_ptr<Applet> applet,
                              Kernel::KProcess* process);

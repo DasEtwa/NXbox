@@ -456,12 +456,24 @@ HostLoc RegAlloc::SelectARegister(std::bitset<32> desired_locations) const noexc
 }
 
 std::optional<HostLoc> RegAlloc::ValueLocation(const IR::Inst* value) const noexcept {
-    for (size_t i = 0; i < hostloc_info.size(); i++)
-        if (hostloc_info[i].ContainsValue(value)) {
-            //for (size_t j = 0; j < hostloc_info.size(); ++j)
-            //    ASSERT((i == j || !hostloc_info[j].ContainsValue(value)) && "duplicate defs");
-            return HostLoc(i);
+#if NXBOX_STALL_PROFILE
+    ++value_lookups;
+#endif
+    // Dirty locations include definitions/moves since the last scope boundary.
+    // Freed entries may remain candidates until EndOfAllocScope; ContainsValue
+    // is still the authority, so aliases, last-use reuse and spills stay exact.
+    for (size_t word = 0; word < live_locations.size(); ++word) {
+        auto candidates = live_locations[word] | dirty_locations[word];
+        while (candidates) {
+            const size_t index = word * 64 + std::countr_zero(candidates);
+#if NXBOX_STALL_PROFILE
+            ++value_probes;
+#endif
+            if (hostloc_info[index].ContainsValue(value))
+                return HostLoc(index);
+            candidates &= candidates - 1;
         }
+    }
     return std::nullopt;
 }
 

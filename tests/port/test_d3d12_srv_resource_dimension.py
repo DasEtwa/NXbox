@@ -148,10 +148,11 @@ int main() {
             assert(allocator.written.ViewDimension == wanted);
         }
     }
+    // A 2D resource cannot back a 3D slot either: null SRV (Mario Party removed the device).
     for (int repeat = 0; repeat < 2; ++repeat) {
-        assert(allocator.WriteImageSrv({}, 0, view, D3D12_SRV_DIMENSION_TEXTURE3D));
-        assert(allocator.written_resource == view.resource);
-        assert(allocator.written.ViewDimension == D3D12_SRV_DIMENSION_TEXTURE2D);
+        assert(!allocator.WriteImageSrv({}, 0, view, D3D12_SRV_DIMENSION_TEXTURE3D));
+        assert(!allocator.written_resource);
+        assert(allocator.written.ViewDimension == D3D12_SRV_DIMENSION_TEXTURE3D);
     }
     // One diagnostic per dimension pair.
     assert(diagnostics == before_impossible + 3);
@@ -166,10 +167,11 @@ int main() {
     assert(!allocator.WriteImageSrv({}, 0, view, D3D12_SRV_DIMENSION_TEXTURECUBE, replacement));
     assert(!allocator.written_resource);
     assert(allocator.written.ViewDimension == D3D12_SRV_DIMENSION_TEXTURECUBE);
+    // A 3D replacement cannot back a cube slot either, while the 2D original could.
     replacement->handle->desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE3D;
-    assert(allocator.WriteImageSrv({}, 0, view, D3D12_SRV_DIMENSION_TEXTURECUBE, replacement));
-    assert(allocator.written_resource == replacement);
-    assert(allocator.written.ViewDimension == D3D12_SRV_DIMENSION_TEXTURE2D);
+    assert(!allocator.WriteImageSrv({}, 0, view, D3D12_SRV_DIMENSION_TEXTURECUBE, replacement));
+    assert(!allocator.written_resource);
+    assert(allocator.written.ViewDimension == D3D12_SRV_DIMENSION_TEXTURECUBE);
     view.resource.reset();
     assert(!allocator.WriteImageSrv({}, 0, view, D3D12_SRV_DIMENSION_TEXTURE3D));
     assert(!allocator.written_resource);

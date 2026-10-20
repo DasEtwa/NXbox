@@ -9,7 +9,7 @@
 #include "common/uuid.h"
 #include "core/hle/service/am/am_types.h"
 #include "core/hle/service/cmif_types.h"
-#include "core/hle/service/service.h"
+#include "core/hle/service/am/polling_service.h"
 
 namespace FileSys {
 enum class SaveDataType : u8;
@@ -24,7 +24,7 @@ namespace Service::AM {
 struct Applet;
 class IStorage;
 
-class IApplicationFunctions final : public ServiceFramework<IApplicationFunctions> {
+class IApplicationFunctions final : public PollingServiceFramework<IApplicationFunctions> {
 public:
     explicit IApplicationFunctions(Core::System& system_, std::shared_ptr<Applet> applet);
     ~IApplicationFunctions() override;

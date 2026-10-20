@@ -4,7 +4,7 @@
 #pragma once
 
 #include "core/hle/service/cmif_types.h"
-#include "core/hle/service/service.h"
+#include "core/hle/service/am/polling_service.h"
 #include "core/hle/service/am/service/overlay_functions.h"
 
 namespace Service::AM {
@@ -24,7 +24,7 @@ class ISelfController;
 class IWindowController;
 class WindowSystem;
 
-class IOverlayAppletProxy final : public ServiceFramework<IOverlayAppletProxy> {
+class IOverlayAppletProxy final : public PollingServiceFramework<IOverlayAppletProxy> {
 public:
     explicit IOverlayAppletProxy(Core::System& system_, std::shared_ptr<Applet> applet,
                                  Kernel::KProcess* process, WindowSystem& window_system);

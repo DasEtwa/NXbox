@@ -118,16 +118,28 @@ inline std::string ListLine(std::string_view name, bool directory, std::uint64_t
     return std::string(directory ? "drwxr-xr-x" : "-rw-r--r--") + " 1 nxbox nxbox " +
            std::to_string(size) + " " + date + " " + std::string(name) + "\r\n";
 }
+// External drives are listed as hd, hd2, hd3, ... in the order ExternalGameFolders returns them.
+inline std::optional<std::size_t> ExternalAliasIndex(std::string_view alias) {
+    if (alias == "hd")
+        return 0;
+    if (alias.size() == 3 && alias.starts_with("hd") && alias[2] >= '2' && alias[2] <= '9')
+        return static_cast<std::size_t>(alias[2] - '1');
+    return std::nullopt;
+}
+inline std::string ExternalAlias(std::size_t index) {
+    return index == 0 ? std::string("hd") : "hd" + std::to_string(index + 1);
+}
 inline bool InGames(std::string_view path) {
     std::string folded(path);
     std::transform(folded.begin(), folded.end(), folded.begin(), [](unsigned char letter) {
         return static_cast<char>(letter >= 'A' && letter <= 'Z' ? letter + ('a' - 'A') : letter);
     });
-    for (const auto prefix : {std::string_view("interno/"), std::string_view("hd/")})
-        if (folded.starts_with(prefix)) {
-            folded.erase(0, prefix.size());
-            break;
-        }
+    const auto slash = folded.find('/');
+    if (slash != std::string::npos) {
+        const std::string_view alias(folded.data(), slash);
+        if (alias == "interno" || ExternalAliasIndex(alias))
+            folded.erase(0, slash + 1);
+    }
     return folded == "games" || folded.starts_with("games/");
 }
 } // namespace EdenXbox::Ftp

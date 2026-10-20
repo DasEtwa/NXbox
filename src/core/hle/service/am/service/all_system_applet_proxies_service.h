@@ -7,7 +7,7 @@
 #pragma once
 
 #include "core/hle/service/cmif_types.h"
-#include "core/hle/service/service.h"
+#include "core/hle/service/am/polling_service.h"
 #include "core/hle/service/am/service/overlay_applet_proxy.h"
 
 namespace Service {
@@ -22,7 +22,7 @@ class ISystemAppletProxy;
 class WindowSystem;
 
 class IAllSystemAppletProxiesService final
-    : public ServiceFramework<IAllSystemAppletProxiesService> {
+    : public PollingServiceFramework<IAllSystemAppletProxiesService> {
 public:
     explicit IAllSystemAppletProxiesService(Core::System& system_, WindowSystem& window_system);
     ~IAllSystemAppletProxiesService() override;

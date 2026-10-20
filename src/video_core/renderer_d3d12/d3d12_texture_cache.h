@@ -43,6 +43,14 @@ public:
     void FreeDeferredStagingBuffer(StagingBufferRef& ref) {
         ref = {};
     }
+    bool TextureCacheFastpathEnabled() const {
+        // Opt in until console A/B captures verify correctness and cost.
+        static const bool enabled = BisectEnabled("NXBOX_D3D12_TEXTURE_CACHE_FASTPATH");
+        return enabled;
+    }
+    void ReportPassDump(const std::string& message) {
+        Diagnostic(message);
+    }
     void TickFrame();
     void FlushDeferredClear() {}
     u64 GetDeviceLocalMemory() const {
@@ -56,8 +64,9 @@ public:
     }
 #ifdef NXBOX_UWP
     void ApplyMemoryBudgetOverride(u64& expected, u64& critical) {
-        expected = 320ULL << 20;
-        critical = 448ULL << 20;
+        const auto thresholds = NativeTextureMemoryBudget(context.MemoryUsage());
+        expected = thresholds.expected;
+        critical = thresholds.critical;
     }
 #endif
     bool CanDownloadImage(const Image& image) const;
@@ -154,16 +163,15 @@ public:
     void DownloadMemory(std::span<const ResourcePtr> buffers, std::span<const size_t> offsets,
                         std::span<const VideoCommon::BufferImageCopy> copies);
     bool IsRescaled() const {
-        return false;
+        return True(flags & VideoCommon::ImageFlagBits::Rescaled);
     }
-    bool ScaleUp(bool = false) {
-        return false;
-    }
-    bool ScaleDown(bool = false) {
-        return false;
-    }
+    bool ScaleUp(bool ignore = false);
+    bool ScaleDown(bool ignore = false);
     ResourcePtr Handle() const {
         return resource;
+    }
+    ResourcePtr OriginalHandle() const {
+        return original_resource;
     }
     FormatInfo HostFormat() const {
         return host_format;
@@ -172,6 +180,9 @@ public:
     u64 allocation_tick{};
 
 private:
+    void BlitScale(const ResourcePtr& destination, const ResourcePtr& source);
+    ResourcePtr original_resource;
+    ResourcePtr scaled_resource;
     bool TransferConverted(const StagingBufferRef&, std::span<const VideoCommon::BufferImageCopy>,
                            bool download);
     void Transfer(const StagingBufferRef&, std::span<const VideoCommon::BufferImageCopy>,
@@ -191,7 +202,7 @@ public:
               const VideoCommon::ImageViewInfo&, GPUVAddr);
     ImageView(TextureCacheRuntime&, const VideoCommon::NullImageViewParams& params);
     bool IsRescaled() const {
-        return false;
+        return is_rescaled;
     }
     ResourcePtr ImageHandle() const {
         return resource;
@@ -210,6 +221,9 @@ public:
     const D3D12_SHADER_RESOURCE_VIEW_DESC& Description() const {
         return description;
     }
+    const D3D12_RESOURCE_DESC& ResourceDescription() const {
+        return resource->Description();
+    }
     // P3: texel-buffer views are bound by the buffer cache from these.
     GPUVAddr GpuAddr() const noexcept {
         return gpu_addr;
@@ -219,6 +233,7 @@ public:
     }
 
 private:
+    bool is_rescaled{};
     u32 buffer_size{};
     u32 sample_count{1};
     VideoCommon::ImageType image_type{VideoCommon::ImageType::e2D};
@@ -242,35 +257,55 @@ private:
 // descriptor allocator. Output slot i writes to Color(draw_buffers[i]).
 class Framebuffer {
 public:
+    // Heap-stable snapshots survive SlotVector relocation and framebuffer eviction while
+    // descriptor discovery is still in progress. Construct once, lease once per draw.
+    struct Attachments {
+        ImageView* Color(size_t rt_index) {
+            return colors[rt_index] ? &*colors[rt_index] : nullptr;
+        }
+        ImageView* Depth() {
+            return depth ? &*depth : nullptr;
+        }
+        u8 DrawBuffer(size_t slot) const {
+            return draw_buffers[slot];
+        }
+        VideoCommon::Extent2D Size() const {
+            return size;
+        }
+        std::array<std::optional<ImageView>, VideoCommon::NUM_RT> colors{};
+        std::optional<ImageView> depth;
+        std::array<u8, VideoCommon::NUM_RT> draw_buffers{};
+        VideoCommon::Extent2D size{};
+    };
     Framebuffer(TextureCacheRuntime&, std::span<ImageView*, VideoCommon::NUM_RT> color,
                 ImageView* depth, const VideoCommon::RenderTargets& key)
-        : draw_buffers{key.draw_buffers}, size{key.size} {
-        // SlotVector relocates views as descriptors are discovered. Own snapshots so the
-        // format key and RTV/DSV bindings keep referencing the same live resources.
-        for (size_t i = 0; i < colors.size(); ++i)
+        : attachments{std::make_shared<Attachments>()} {
+        attachments->draw_buffers = key.draw_buffers;
+        attachments->size = key.size;
+        for (size_t i = 0; i < attachments->colors.size(); ++i)
             if (color[i])
-                colors[i] = *color[i];
+                attachments->colors[i] = *color[i];
         if (depth)
-            this->depth = *depth;
+            attachments->depth = *depth;
+    }
+    const std::shared_ptr<Attachments>& Snapshot() const {
+        return attachments;
     }
     ImageView* Color(size_t rt_index) {
-        return colors[rt_index] ? &*colors[rt_index] : nullptr;
+        return attachments->Color(rt_index);
     }
     ImageView* Depth() {
-        return depth ? &*depth : nullptr;
+        return attachments->Depth();
     }
     u8 DrawBuffer(size_t slot) const {
-        return draw_buffers[slot];
+        return attachments->DrawBuffer(slot);
     }
     VideoCommon::Extent2D Size() const {
-        return size;
+        return attachments->Size();
     }
 
 private:
-    std::array<std::optional<ImageView>, VideoCommon::NUM_RT> colors{};
-    std::optional<ImageView> depth;
-    std::array<u8, VideoCommon::NUM_RT> draw_buffers{};
-    VideoCommon::Extent2D size{};
+    std::shared_ptr<Attachments> attachments;
 };
 struct TextureCacheParams {
     static constexpr bool ENABLE_VALIDATION = true;

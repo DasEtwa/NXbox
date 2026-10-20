@@ -432,6 +432,11 @@ struct System::Impl {
         core_timing.SyncPause(false);
         Network::CancelPendingSocketOperations();
         kernel.SuspendEmulation(true);
+        // JIT chunks stay committed through unmapping; sample after guest execution
+        // stops and before teardown releases the process and its page tables.
+        if (auto* process = kernel.ApplicationProcess()) {
+            process->GetPageTable().GetImpl().LogJitPageTableMemoryOnce();
+        }
         kernel.CloseServices();
         kernel.ShutdownCores();
         services.reset();

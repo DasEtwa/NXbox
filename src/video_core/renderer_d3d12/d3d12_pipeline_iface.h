@@ -43,18 +43,18 @@ public:
         return nullptr;
     }
     // Dwords for the NxboxRootConstants block (hlsl_root_constants.h layout). Called every
-    // draw. y_flip is true when the Maxwell viewport has a negative height: D3D12 cannot
-    // express that, so the vertex shader must negate clip-space Y.
+    // draw. The guest YDirection special register follows window origin, independently
+    // of the clip-space Y negation used to emulate signed viewports on D3D12.
     struct DrawInputs {
         u32 render_area_width{};
         u32 render_area_height{};
-        bool y_flip{};
+        bool lower_left_origin{};
     };
     virtual std::array<u32, 16> RootConstants(const DrawInputs& inputs) const {
         std::array<u32, 16> words{};
         words[0] = inputs.render_area_width;
         words[1] = inputs.render_area_height;
-        words[2] = inputs.y_flip ? 1u : 0u;
+        words[2] = inputs.lower_left_origin ? 1u : 0u;
         return words;
     }
 };
@@ -64,7 +64,9 @@ public:
     virtual ~IPipelineCache() = default;
     // Builds or looks up the pipeline for the current Maxwell3D state. nullptr skips the draw.
     virtual IGraphicsPipeline* CurrentGraphicsPipeline(const Pso::FramebufferFormats& formats,
-                                                       bool is_indexed) = 0;
+                                                       bool is_indexed, u64 frame) = 0;
+    // Called only after a draw into bound RT0 was recorded, including cache hits.
+    virtual void RecordGraphicsDraw(u64) {}
 };
 
 // Output slot i of the fragment shader writes color target draw_buffers[i]; the rasterizer

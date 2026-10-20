@@ -7,7 +7,7 @@
 #pragma once
 
 #include "core/hle/service/cmif_types.h"
-#include "core/hle/service/service.h"
+#include "core/hle/service/am/polling_service.h"
 
 namespace Service::AM {
 
@@ -15,7 +15,7 @@ class IApplicationAccessor;
 struct Applet;
 class WindowSystem;
 
-class IApplicationCreator final : public ServiceFramework<IApplicationCreator> {
+class IApplicationCreator final : public PollingServiceFramework<IApplicationCreator> {
 public:
     explicit IApplicationCreator(Core::System& system_, WindowSystem& window_system);
     ~IApplicationCreator() override;

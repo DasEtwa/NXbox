@@ -57,14 +57,18 @@ class GpuQueryReports(unittest.TestCase):
         copy = function_body(source, "void QueryCacheRuntime::CopyValue(")
         self.assertIn("ObtainBufferOperation::MarkAsWritten", copy)
 
-    def test_counter_reports_never_copy_to_guest_buffers(self):
+    def test_reports_keep_snapshots_and_batch_guest_writes(self):
         source = (D3D12 / "d3d12_query_cache.cpp").read_text()
         write = function_body(source, "size_t WriteCounter(")
         read = function_body(source, "QueryCacheRuntime::ReadCounter(")
         self.assertNotIn("WriteCounterReport", source)
         self.assertNotIn("SyncValues", write)
         self.assertNotIn("CopyValue", read)
-        self.assertNotIn("ObtainCPUBuffer", read)
+        batch = function_body(read, "if (impl->batch_queries")
+        self.assertIn("ObtainCPUBuffer", batch)
+        self.assertIn("ObtainBufferOperation::MarkAsWritten", batch)
+        self.assertIn("batch_destinations.push_back", batch)
+        self.assertIn("result.mapped_span.subspan(offset, 8)", batch)
         self.assertIn("CopyBufferRegion(result.buffer->handle.Get()", read)
         self.assertIn("FrameCount::GpuResolvedQueryReports", read)
         compare = function_body(source, "bool QueryCacheRuntime::CompareConditional(")
@@ -258,6 +262,22 @@ int main() {
     assert(total(TotalStreamingPrimitivesNeededMinusSucceeded,1)==0);
     Run(1,ZPassPixelCount); assert(Value(report,0)==0x1ffffffffULL);
     Run(2,ZPassPixelCount); Run(1,ZPassPixelCount); assert(Value(report,0)==0);
+    // Maxwell Conditional requires BOTH 32-bit words, not a nonzero uint64.
+    // Execute the production predicate shader with poisoned output and all lanes.
+    const auto saved_results = results.data;
+    const auto saved_counters = counters.data;
+    const auto saved_metadata = metadata.data;
+    for (uint low : {0u, 1u, 0x80000000u, 0xffffffffu}) {
+        for (uint high : {0u, 1u, 0x80000000u, 0xffffffffu}) {
+            results.Store2(0, {low, high});
+            report.Store2(0, {0xdeadbeef, 0xdeadbeef});
+            Run(3);
+            assert(Value(report, 0) == uint(low != 0 && high != 0));
+            assert(counters.data == saved_counters);
+            assert(metadata.data == saved_metadata);
+        }
+    }
+    results.data = saved_results;
     // Reset affects only its counter; uint2 addition/subtraction carries/borrows.
     first_slot=0; slot_count=1; results.Store2(0,{2,0}); Run(0);
     Run(1,ZPassPixelCount); assert(Value(report,0)==2);

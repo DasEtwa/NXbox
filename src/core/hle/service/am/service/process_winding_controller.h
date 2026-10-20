@@ -9,14 +9,14 @@
 #include "core/hle/service/am/service/storage.h"
 #include "core/hle/service/am/am_types.h"
 #include "core/hle/service/cmif_types.h"
-#include "core/hle/service/service.h"
+#include "core/hle/service/am/polling_service.h"
 
 namespace Service::AM {
 
 struct Applet;
 class ILibraryAppletAccessor;
 
-class IProcessWindingController final : public ServiceFramework<IProcessWindingController> {
+class IProcessWindingController final : public PollingServiceFramework<IProcessWindingController> {
 public:
     explicit IProcessWindingController(Core::System& system_, std::shared_ptr<Applet> applet_);
     ~IProcessWindingController() override;

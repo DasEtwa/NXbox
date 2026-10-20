@@ -69,11 +69,42 @@ uint2 Sample(uint type, uint stream, uint slot, uint4 flags) {
 [numthreads(32, 1, 1)]
 void main(uint3 id : SV_DispatchThreadID) {
     uint index = id.x;
+    if (operation == 3) {
+        // Maxwell Conditional tests two words independently, unlike native 64-bit predication.
+        if (index == 0) {
+            uint2 words = results.Load2(first_slot);
+            report.Store2(0, uint2(uint(words.x != 0 && words.y != 0), 0));
+        }
+        return;
+    }
     if (index >= TYPE_COUNT * 4) return;
     uint type = index / 4, stream = index % 4;
     uint offset = index * 8;
     uint baseline = TYPE_COUNT * 4 * 8 + offset;
-    if (operation == 0) {
+    if (operation == 4) {
+        // Each lane executes the original instruction order for one counter/stream.
+        // No cross-lane dependency, atomics or group synchronization is required.
+        uint2 total = counters.Load2(offset);
+        uint2 reset = counters.Load2(baseline);
+        for (uint command = 0; command < slot_count; ++command) {
+            uint address = first_slot + command * 32;
+            uint4 args = metadata.Load4(address);
+            uint4 target = metadata.Load4(address + 16);
+            if (args.x == 0) {
+                for (uint i = 0; i < args.z; ++i) {
+                    uint slot = args.y + i;
+                    total = Add(total, Sample(type, stream, slot,
+                                             metadata.Load4((slot % 256) * 16)));
+                }
+            } else if (args.x == 2 && type == args.w) {
+                reset = total;
+            } else if (args.x == 1 && type == args.w && stream == target.x) {
+                report.Store2(target.y * 8, Difference(total, reset));
+            }
+        }
+        counters.Store2(offset, total);
+        counters.Store2(baseline, reset);
+    } else if (operation == 0) {
         uint2 total = counters.Load2(offset);
         for (uint i = 0; i < slot_count; ++i)
             total = Add(total, Sample(type, stream, first_slot + i, metadata.Load4(i * 16)));

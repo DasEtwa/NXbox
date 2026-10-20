@@ -4,11 +4,12 @@
 // SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cstdlib>
+#include <ranges>
 #include "common/algorithm.h"
 #include "common/assert.h"
 #include "common/gpu_thread_profile.h"
 #include "common/logging.h"
-#include <ranges>
 #include "common/settings.h"
 #include "core/core.h"
 #include "video_core/engines/maxwell_3d.h"
@@ -16,6 +17,7 @@
 #include "video_core/guest_memory.h"
 #include "video_core/memory_manager.h"
 #include "video_core/renderer_base.h"
+#include "video_core/submission_trace.h"
 #include "video_core/textures/decoders.h"
 
 namespace Tegra::Engines {
@@ -64,6 +66,19 @@ void MaxwellDMA::CallMultiMethod(Core::System& system, u32 method, const u32* ba
 void MaxwellDMA::Launch() {
     LOG_TRACE(Render_OpenGL, "DMA copy {:#x} -> {:#x}", static_cast<GPUVAddr>(regs.offset_in), GPUVAddr(regs.offset_out));
 
+    if (VideoCommon::SubmissionTrace::Active()) {
+        VideoCommon::SubmissionTrace::Log(
+            "guest_dma src_gpu={:x} dst_gpu={:x} src_cpu={} dst_cpu={} bytes_per_line={} "
+            "lines={} multiline={} src_layout={} dst_layout={} src_pitch={} dst_pitch={} remap={}",
+            GPUVAddr(regs.offset_in), GPUVAddr(regs.offset_out),
+            memory_manager.GpuToCpuAddress(regs.offset_in).value_or(0),
+            memory_manager.GpuToCpuAddress(regs.offset_out).value_or(0), regs.line_length_in,
+            regs.line_count, regs.launch_dma.multi_line_enable != 0,
+            static_cast<u32>(regs.launch_dma.src_memory_layout.Value()),
+            static_cast<u32>(regs.launch_dma.dst_memory_layout.Value()), regs.pitch_in,
+            regs.pitch_out, regs.launch_dma.remap_enable != 0);
+    }
+
     // TODO(Subv): Perform more research and implement all features of this engine.
     const LaunchDMA& launch = regs.launch_dma;
     ASSERT(launch.interrupt_type == LaunchDMA::InterruptType::NONE);
@@ -101,12 +116,29 @@ void MaxwellDMA::Launch() {
         if (regs.launch_dma.remap_enable != 0 && is_const_a_dst) {
             const u32 component_size = regs.remap_const.component_size_minus_one + 1;
             ASSERT(component_size == 1 || component_size == 2 || component_size == 4);
-            if (component_size == 4) {
-                accelerate.BufferClear(regs.offset_out, regs.line_length_in, regs.remap_const.remap_consta_value);
-            }
+            const bool accelerated =
+                component_size == 4 && accelerate.BufferClear(regs.offset_out, regs.line_length_in,
+                                                              regs.remap_const.remap_consta_value);
             read_buffer.resize_destructive(regs.line_length_in * sizeof(u32));
             std::ranges::fill(std::span<u32>(reinterpret_cast<u32*>(read_buffer.data()), regs.line_length_in), regs.remap_const.remap_consta_value);
-            memory_manager.WriteBlockUnsafe(regs.offset_out, reinterpret_cast<u8*>(read_buffer.data()), static_cast<size_t>(regs.line_length_in) * component_size);
+            VideoCommon::SubmissionTrace::Log("guest_dma_clear dst_gpu={:x} elements={} "
+                                              "component_bytes={} value={:x} accelerated={}",
+                                              GPUVAddr(regs.offset_out), regs.line_length_in,
+                                              component_size, regs.remap_const.remap_consta_value,
+                                              accelerated);
+            const size_t size = static_cast<size_t>(regs.line_length_in) * component_size;
+            const bool invalidate_fills = [] {
+                const char* value = std::getenv("NXBOX_DMA_FILL_INVALIDATE");
+                return !value || value[0] != '0';
+            }();
+            if (accelerated || !invalidate_fills) {
+                // The accelerated buffer cache already owns these bytes; mirror guest RAM.
+                memory_manager.WriteBlockUnsafe(regs.offset_out, read_buffer.data(), size);
+            } else {
+                // A software fill is a guest-memory write. Invalidate cached textures/buffers
+                // so presentation and later bindings cannot keep their previous GPU pixels.
+                memory_manager.WriteBlock(regs.offset_out, read_buffer.data(), size);
+            }
         } else {
             memory_manager.FlushCaching();
             const auto convert_linear_2_blocklinear_addr = [](u64 address) {

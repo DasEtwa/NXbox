@@ -17,7 +17,7 @@
 namespace Service::AM {
     IOverlayAppletProxy::IOverlayAppletProxy(Core::System &system_, std::shared_ptr<Applet> applet,
                                              Kernel::KProcess *process, WindowSystem &window_system)
-        : ServiceFramework{system_, "IOverlayAppletProxy"},
+        : PollingServiceFramework{system_, "IOverlayAppletProxy"},
           m_window_system{window_system}, m_process{process}, m_applet{std::move(applet)} {
     // clang-format off
     static const FunctionInfo functions[] = {

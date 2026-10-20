@@ -74,7 +74,7 @@ public:
         Shader::Backend::HLSL::RootConstants constants;
         constants.render_area[0] = static_cast<float>(inputs.render_area_width);
         constants.render_area[1] = static_cast<float>(inputs.render_area_height);
-        constants.y_direction = inputs.y_flip ? -1.0f : 1.0f;
+        constants.y_direction = inputs.lower_left_origin ? -1.0f : 1.0f;
         std::array<u32, 16> words{};
         std::memcpy(words.data(), &constants, sizeof(words));
         return words;

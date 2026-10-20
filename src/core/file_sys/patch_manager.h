@@ -62,6 +62,10 @@ public:
                           const ContentProvider& content_provider_);
     ~PatchManager();
 
+    // Additional load directories, configured by the frontend before starting a game.
+    // Each contains <title-id>/<mod>/exefs or cheats. Earlier roots take precedence.
+    static void SetAdditionalModLoadRoots(std::vector<VirtualDir> roots);
+
     [[nodiscard]] u64 GetTitleID() const;
 
     // Currently tracked ExeFS patches:

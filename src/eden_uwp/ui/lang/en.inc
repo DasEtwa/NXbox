@@ -4,6 +4,8 @@
     {Text::InternetArtworkHint, L"Community backgrounds from LaunchBox."},
     {Text::NavLibrary, L"Library"}, {Text::NavSettings, L"Settings"}, {Text::ActionPlay, L"Play"},
     {Text::ActionMods, L"Mods"}, {Text::ActionDetails, L"Details"},
+    {Text::Resolution0_5X, L"0.5x"},
+    {Text::Resolution0_75X, L"0.75x"},
     {Text::ResolutionTitle, L"Resolution"}, {Text::Resolution1X, L"1x (720p/1080p)"},
     {Text::Resolution1_5X, L"1.5x"}, {Text::Resolution2X, L"2x"}, {Text::Resolution3X, L"3x (4K)"},
     {Text::ResolutionMemoryHint, L"Uses more memory: may be slower or close on heavy games."},
@@ -208,9 +210,6 @@
      L"to exit."},
     {Text::LaunchFailed,
      L"Could not start. Open NXbox to check the game and keys. Press B to exit."},
-    {Text::LaunchNeedsUpdate,
-     L"This file lacks the game's executable and needs the game's update. Put the update in the "
-     L"games folder, or use the full XCI or NSP. Press B to go back."},
     {Text::LaunchAppType,
      L"NXbox is installed as an App, limited to 1 GB of memory. In Dev Home select NXbox, View "
      L"details, and set App type to Game. Press B to exit."},
@@ -374,6 +373,7 @@
     {Text::AsyncShadersHint, L"The game doesn't freeze when a new effect appears; the effect may "
                              L"show up a split second later."},
     {Text::LaunchShaderPreload, L"Compiling shaders for a smoother experience"},
+    {Text::LaunchBackHint, L"Press B to go back"},
     {Text::LaunchShaderSkip, L"A Skip (new effects may still stutter)"},
 
     {Text::ButtonLayoutTitle, L"Confirm button"}, {Text::ButtonLayoutName, L"Confirm with A"},
@@ -396,7 +396,7 @@
 {Text::DeleteCancel, L"Cancel"},
 {Text::DeleteDone, L"Game files deleted."},
 {Text::DeleteFailed, L"Could not finish deleting. Check the game folders for remaining files."},
-{Text::IncompleteFile, L"Incomplete file: delete and download again"},
+{Text::IncompleteFile, L"File incomplete or corrupted: download it again"},
 {Text::DeleteDownloadBusy, L"Finish or cancel the shop downloads before deleting game files."},
     {Text::FtpServer, L"FTP server"},
     {Text::FtpHint,
@@ -413,3 +413,15 @@
     {Text::MoveConflict, L"A destination file already exists. Nothing was deleted."},
     {Text::MoveFailed, L"Move incomplete. Internal files are kept until all copies are verified."},
     {Text::MoveBusy, L"Finish downloads, turn off FTP and wait for the library scan before moving."},
+
+    {Text::UpdateWithoutBase, L"Update without the base game"},
+    {Text::DlcWithoutBase, L"DLC without the base game"},
+    {Text::LaunchMissingKeys,
+     L"Game keys are missing or incorrect. Import your prod.keys and title.keys in Settings."},
+
+    {Text::ErrorTitle, L"An error occurred"}, {Text::ErrorDismiss, L"Dismiss"},
+    {Text::ErrorScroll, L"Scroll"},
+
+    {Text::UpscalerTitle, L"Upscaler"}, {Text::UpscalerBilinear, L"Bilinear"},
+    {Text::UpscalerFsr, L"FSR 1"},
+    {Text::UpscalerHint, L"DirectX 12 upscaling for smaller frames. Applies on next launch."},

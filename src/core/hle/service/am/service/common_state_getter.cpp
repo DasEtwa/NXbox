@@ -19,7 +19,7 @@
 namespace Service::AM {
 
 ICommonStateGetter::ICommonStateGetter(Core::System& system_, std::shared_ptr<Applet> applet)
-    : ServiceFramework{system_, "ICommonStateGetter"}, m_applet{std::move(applet)} {
+    : PollingServiceFramework{system_, "ICommonStateGetter"}, m_applet{std::move(applet)} {
     // clang-format off
     static const FunctionInfo functions[] = {
         {0, D<&ICommonStateGetter::GetEventHandle>, "GetEventHandle"},

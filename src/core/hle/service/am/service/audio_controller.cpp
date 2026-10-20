@@ -10,7 +10,7 @@
 namespace Service::AM {
 
 IAudioController::IAudioController(Core::System& system_)
-    : ServiceFramework{system_, "IAudioController"} {
+    : PollingServiceFramework{system_, "IAudioController"} {
     // clang-format off
     static const FunctionInfo functions[] = {
         {0, D<&IAudioController::SetExpectedMasterVolume>, "SetExpectedMasterVolume"},

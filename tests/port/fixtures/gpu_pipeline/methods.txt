@@ -1,0 +1,35 @@
+# Controlled host contract recording, hexadecimal method/argument pairs.
+# This is not a BotW hardware capture. 200..206 are draw/CB/replacement state,
+# 300 submits a draw, 400 writes guest memory, 401..405 model sync boundaries.
+004 001
+200 000
+201 003
+202 001
+205 080
+206 002
+300 000
+004 002
+200 003
+201 006
+202 004
+300 000
+203 001
+203 007
+203 002
+300 000
+204 000
+400 02a
+300 000
+401 000
+205 100
+300 000
+402 000
+206 006
+300 000
+403 000
+201 000
+300 000
+404 000
+201 003
+300 000
+405 000

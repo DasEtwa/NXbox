@@ -2,6 +2,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Run disk cache serialization, invalidation and cancellable warmup on the host."""
 
+import os
+import shutil
+import struct
 import subprocess
 import tempfile
 import unittest
@@ -13,10 +16,125 @@ DRIVER = r"""
 #include <atomic>
 #include <fstream>
 #include <thread>
+#include <set>
+#include <iostream>
+#include <iterator>
+#include <cstdlib>
+#include <chrono>
+#include <sstream>
+#include <iomanip>
+#include <map>
+#include "video_core/renderer_d3d12/d3d12_pso_tables.h"
 #include "video_core/renderer_d3d12/d3d12_disk_pipeline_cache.h"
 using namespace D3D12;
 int main(int argc, char** argv) {
-    assert(argc == 2);
+    assert(argc >= 2);
+    if (argc == 3) {
+        const std::filesystem::path root = argv[1];
+        const std::string mode = argv[2];
+        DiskCacheIdentity identity{1, 2, 7, 4, 5, 6, 7, 8, 9};
+        if (mode == "no-flush" || mode == "hits-no-flush") {
+            // Deliberately leak and _Exit: neither Flush nor any destructor can save the order.
+            auto* cache = new DiskPipelineCache(root, 0x9876, identity);
+            if (mode == "no-flush") {
+                cache->RememberFirstUse(DiskBytes{9});
+                cache->RememberFirstUse(DiskBytes{3});
+                assert(cache->RememberPipeline({DiskRecordKind::Graphics, 1, {1}, {3}}));
+                assert(cache->RememberPipeline({DiskRecordKind::Graphics, 99, {2}, {9}}));
+            } else {
+                // Only a prewarmed hit this session: no new recipe build or clean teardown.
+                cache->RememberFirstUse(DiskBytes{3});
+            }
+            const auto sidecar = root / "d3d12_cache/0000000000009876/first-use-v7.txt";
+            for (unsigned i = 0; i < 500; ++i) {
+                std::ifstream file{sidecar};
+                const std::string log{std::istreambuf_iterator<char>{file}, {}};
+                const auto session = log.rfind("session\n");
+                const auto hash = Pso::HashBytes(mode == "no-flush" ? DiskBytes{9}.data() :
+                                                DiskBytes{3}.data(), 1);
+                std::ostringstream expected;
+                expected << "0 " << std::hex << std::setfill('0') << std::setw(16) << hash;
+                if (session != std::string::npos && log.find(expected.str(), session) != std::string::npos)
+                    std::_Exit(0);
+                std::this_thread::sleep_for(std::chrono::milliseconds{10});
+            }
+            std::_Exit(2);
+        }
+        if (mode == "verify-order" || mode == "verify-hits") {
+            DiskPipelineCache cache(root, 0x9876, identity);
+            std::vector<std::uint64_t> order;
+            cache.StartWarmup([&](const auto& record, auto) { order.push_back(record.key); return true; }, {});
+            cache.WaitWarmup();
+            assert((order == (mode == "verify-order" ? std::vector<std::uint64_t>{99, 1} :
+                                                        std::vector<std::uint64_t>{1, 99})));
+            return 0;
+        }
+        assert(mode == "migrate" || mode == "disabled");
+        const auto title = root / "d3d12_cache/0000000000001234";
+        const auto read = [](const auto& path) {
+            std::ifstream file{path, std::ios::binary};
+            return DiskBytes{std::istreambuf_iterator<char>{file}, {}};
+        };
+        const auto sample = read(std::filesystem::directory_iterator(title)->path());
+        const auto u32 = [&](std::size_t offset) {
+            return std::uint32_t{sample[offset]} | (std::uint32_t{sample[offset+1]} << 8) |
+                   (std::uint32_t{sample[offset+2]} << 16) | (std::uint32_t{sample[offset+3]} << 24);
+        };
+        identity = {u32(12), u32(16), mode == "migrate" ? 7u : 6u, u32(24), u32(28), u32(32), u32(36)};
+        // Recipes/DXIL are portable across driver versions and adapter LUIDs.
+        DiskPipelineCache cache(root, 0x1234, identity);
+        std::map<std::uint64_t, DiskBytes> dxil;
+        std::map<std::uint64_t, DiskPipelineRecord> originals;
+        for (const auto& item : std::filesystem::directory_iterator(title)) {
+            const auto bytes = read(item.path());
+            auto old = identity; old.schema_version = 6;
+            const auto record = DeserializeDiskRecord(bytes, old);
+            assert(record && !record->legacy);
+            if (record->kind == DiskRecordKind::Dxil) {
+                dxil.emplace(record->key, bytes);
+                assert(cache.FindDxil(record->key) == record->payload);
+                assert(read(item.path()) == bytes);
+            } else originals.emplace(record->key, *record);
+        }
+        std::set<DiskBytes> requests;
+        unsigned total{}, duplicates{}, compute{};
+        cache.StartWarmup([&](const auto& record, auto) {
+            ++total;
+            assert(record.prewarmed && record.legacy == (mode == "migrate"));
+            auto original = originals.at(record.key);
+            if (record.kind == DiskRecordKind::Graphics && mode == "migrate") {
+                assert(record.legacy_request_hash == Pso::HashBytes(original.request_key.data(), original.request_key.size()));
+                for (auto pair : {std::pair{&original.payload, 12u}, std::pair{&original.request_key, 48u}}) {
+                    Pso::GraphicsPsoState state;
+                    std::memcpy(&state, pair.first->data() + pair.second, sizeof(state));
+                    Pso::NormalizeGraphicsState(state);
+                    std::memcpy(pair.first->data() + pair.second, &state, sizeof(state));
+                }
+            } else if (record.kind == DiskRecordKind::Compute) ++compute;
+            assert(record.key == original.key && record.payload == original.payload &&
+                   record.request_key == original.request_key && record.runtime_data == original.runtime_data);
+            if (!requests.insert(record.request_key).second && mode == "migrate") {
+                ++duplicates;
+                assert(cache.DiscardLegacyDuplicate(record));
+            } else assert(cache.RememberPipeline(record));
+            return true;
+        }, {});
+        cache.WaitWarmup();
+        assert(total == originals.size() && total > 1000 && !dxil.empty() && compute > 0);
+        assert((mode == "migrate") == (duplicates > 0));
+        unsigned survivors{};
+        for (const auto& item : std::filesystem::directory_iterator(title)) {
+            if (item.path().extension() != ".graphics" && item.path().extension() != ".compute") continue;
+            const auto record = DeserializeDiskRecord(read(item.path()), identity);
+            assert(record && !record->legacy);
+            ++survivors;
+        }
+        assert(survivors == total - duplicates);
+        for (const auto& [key, bytes] : dxil) assert(cache.FindDxil(key));
+        std::cout << "schema-6 archive: recipes=" << total << " duplicates=" << duplicates
+                  << " survivors=" << survivors << " DXIL=" << dxil.size() << " preserved\n";
+        return 0;
+    }
     const std::filesystem::path root = argv[1];
     DiskCacheIdentity identity{1, 2, 3, 4, 5, 6, 7, 0x1122334455667788, 9};
     DiskPipelineRecord record{DiskRecordKind::Dxil, 0x0123456789abcdef, {0, 255, 1, 2}};
@@ -87,7 +205,7 @@ int main(int argc, char** argv) {
             case 7: ++stale.adapter_luid; break;
             case 8: ++stale.driver_version; break;
             }
-            const bool kept = n == 7 || (portable && n == 8);
+            const bool kept = n == 7 || (portable && n == 8) || (kind == DiskRecordKind::Dxil && n == 2);
             assert(DeserializeDiskRecord(bytes, stale).has_value() == kept);
         }
     }
@@ -98,6 +216,59 @@ int main(int argc, char** argv) {
         bool rejected = false;
         try { SerializeDiskRecord(identity, invalid); } catch (const std::invalid_argument&) { rejected = true; }
         assert(rejected);
+    }
+    // First-use order is captured before compilation and survives reverse completion.
+    {
+        DiskPipelineCache cache(root, 0x9876, identity);
+        cache.RememberFirstUse(DiskBytes{9});
+        cache.RememberFirstUse(DiskBytes{3});
+        cache.RememberFirstUse(DiskBytes{9});
+        assert(cache.RememberPipeline({DiskRecordKind::Graphics, 1, {1}, {3}}));
+        assert(cache.RememberPipeline({DiskRecordKind::Graphics, 99, {2}, {9}}));
+        // Flush runs at every guest submission: it must not rewrite the order file.
+        const auto stamps = [&] {
+            std::vector<std::pair<std::filesystem::path, std::filesystem::file_time_type>> out;
+            for (const auto& entry :
+                 std::filesystem::directory_iterator(root / "d3d12_cache/0000000000009876"))
+                out.emplace_back(entry.path(), entry.last_write_time());
+            std::sort(out.begin(), out.end());
+            return out;
+        };
+        const auto before = stamps();
+        cache.RememberFirstUse(DiskBytes{5});
+        assert(cache.Flush());
+        assert(stamps() == before);
+    }
+    {
+        DiskPipelineCache cache(root, 0x9876, identity);
+        std::vector<std::uint64_t> order;
+        cache.StartWarmup([&](const auto& item, auto) {
+            order.push_back(item.key);
+            return true;
+        }, {});
+        cache.WaitWarmup();
+        assert((order == std::vector<std::uint64_t>{99, 1}));
+    }
+    // Switching NXBOX_D3D12_PSO_NORMALIZE (schema 7 <-> 6) keeps the other setting's recipes.
+    {
+        auto normalized = identity, other = identity;
+        normalized.schema_version = 7;
+        other.schema_version = 6;
+        {
+            DiskPipelineCache cache(root, 0x5151, normalized);
+            assert(cache.RememberPipeline({DiskRecordKind::Graphics, 42, {1}, {7}}));
+        }
+        {
+            DiskPipelineCache cache(root, 0x5151, other);
+            unsigned seen{};
+            cache.StartWarmup([&](const auto&, auto) { return ++seen, true; }, {});
+            cache.WaitWarmup();
+            assert(seen == 0);
+        }
+        unsigned kept{};
+        for (const auto& entry : std::filesystem::directory_iterator(root / "d3d12_cache/0000000000005151"))
+            kept += entry.path().extension() == ".graphics";
+        assert(kept == 1);
     }
     const auto title = root / "d3d12_cache" / "0000000000001234";
     {
@@ -216,30 +387,61 @@ int main(int argc, char** argv) {
 
 
 class D3D12DiskPipelineCacheTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.temp = tempfile.TemporaryDirectory(prefix="nxbox-d3d12-disk-")
+        source = Path(cls.temp.name) / "disk.cpp"
+        cls.binary = Path(cls.temp.name) / "disk"
+        source.write_text(DRIVER)
+        subprocess.run(
+            [
+                "clang++",
+                "-std=c++20",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                "-fsanitize=address,undefined",
+                "-fno-omit-frame-pointer",
+                "-pthread",
+                "-I",
+                str(ROOT / "src"),
+                str(source),
+                str(ROOT / "src/video_core/renderer_d3d12/d3d12_disk_pipeline_cache.cpp"),
+                "-o",
+                str(cls.binary),
+            ],
+            check=True,
+        )
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.temp.cleanup()
+
     def test_serialization_and_warmup(self):
-        with tempfile.TemporaryDirectory(prefix="nxbox-d3d12-disk-") as temp:
-            source = Path(temp) / "disk.cpp"
-            binary = Path(temp) / "disk"
-            source.write_text(DRIVER)
+        subprocess.run([str(self.binary), self.temp.name], check=True, timeout=30)
+
+    def test_first_use_survives_exit_without_flush_and_prewarmed_only_hits(self):
+        order_root = str(Path(self.temp.name) / "no-flush")
+        for mode in ("no-flush", "verify-order", "hits-no-flush", "verify-hits"):
+            subprocess.run([str(self.binary), order_root, mode], check=True, timeout=30)
+        print("first-use order survives _Exit without Flush, including prewarmed-only hits")
+
+    def test_real_schema6_archive_migration_and_disabled_escape_hatch(self):
+        archive = os.environ.get("NXBOX_PSO_CENSUS_DIR")
+        if not archive:
+            self.skipTest("set NXBOX_PSO_CENSUS_DIR to the read-only c24 artifact folder")
+        for mode in ("migrate", "disabled"):
+            destination = Path(self.temp.name) / mode / "d3d12_cache/0000000000001234"
+            destination.mkdir(parents=True)
+            for source_file in (Path(archive) / "mk8d-orig").iterdir():
+                if (
+                    source_file.suffix in (".graphics", ".compute", ".dxil")
+                    and struct.unpack_from("<I", source_file.read_bytes(), 8)[0] == 3
+                ):
+                    shutil.copyfile(source_file, destination / source_file.name)
             subprocess.run(
-                [
-                    "clang++",
-                    "-std=c++20",
-                    "-Wall",
-                    "-Wextra",
-                    "-Werror",
-                    "-fsanitize=address,undefined",
-                    "-fno-omit-frame-pointer",
-                    "-pthread",
-                    "-I",
-                    str(ROOT / "src"),
-                    str(source),
-                    str(ROOT / "src/video_core/renderer_d3d12/d3d12_disk_pipeline_cache.cpp"),
-                    "-o",
-                    str(binary),
-                ],
+                [str(self.binary), str(Path(self.temp.name) / mode), mode],
                 check=True,
-                capture_output=True,
-                text=True,
+                timeout=120,
+                env={**os.environ, "NXBOX_D3D12_PSO_NORMALIZE": "0" if mode == "disabled" else "1"},
             )
-            subprocess.run([str(binary), temp], check=True, timeout=30)

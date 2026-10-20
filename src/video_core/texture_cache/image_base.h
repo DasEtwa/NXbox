@@ -7,6 +7,7 @@
 #pragma once
 
 #include <array>
+#include <limits>
 #include <optional>
 #include <vector>
 #include <boost/container/small_vector.hpp>
@@ -104,6 +105,9 @@ struct ImageBase {
     VAddr cpu_addr = 0;
     VAddr cpu_addr_end = 0;
 
+    // Valid only until a source alias is written, the frame changes, or image topology changes.
+    u64 alias_sync_frame_tick = (std::numeric_limits<u64>::max)();
+    u64 alias_sync_generation = 0;
     u64 modification_tick = 0;
     size_t lru_index = SIZE_MAX;
 

@@ -6,6 +6,8 @@
 
 #include <cstring>
 #include "common/gpu_thread_profile.h"
+#include "video_core/shader_discovery.h"
+#include "video_core/submission_trace.h"
 
 #include "common/algorithm.h"
 #include "common/assert.h"
@@ -45,18 +47,46 @@ void State::ProcessData(const u32 data, const bool is_last_call) {
         return;
     }
     ProcessData(inner_buffer);
+    if (VideoCommon::ShaderDiscovery::Enabled() && is_linear) {
+        for (size_t line = 0; line < regs.line_count; ++line) {
+            const size_t offset = line * size_t{regs.line_length_in};
+            if (offset > inner_buffer.size() || regs.line_length_in > inner_buffer.size() - offset)
+                break;
+            VideoCommon::ShaderDiscovery::OwnedUpload(
+                memory_manager.GetID(), regs.dest.Address() + line * regs.dest.pitch,
+                {inner_buffer.data() + offset, regs.line_length_in});
+        }
+    }
 }
 
 void State::ProcessData(const u32* data, size_t num_data) {
     const Common::GpuProfile::PhaseScope gpu_profile_scope{
         Common::GpuProfile::Phase::InlineToMemory};
     std::span<const u8> read_buffer(reinterpret_cast<const u8*>(data), num_data * sizeof(u32));
+    // Copy synchronously into bounded discovery storage; never retain a guest span.
+    if (VideoCommon::ShaderDiscovery::Enabled() && is_linear) {
+        for (size_t line = 0; line < regs.line_count; ++line) {
+            const size_t offset = line * size_t{regs.line_length_in};
+            if (offset > read_buffer.size() || regs.line_length_in > read_buffer.size() - offset)
+                break;
+            VideoCommon::ShaderDiscovery::OwnedUpload(
+                memory_manager.GetID(), regs.dest.Address() + line * regs.dest.pitch,
+                read_buffer.subspan(offset, regs.line_length_in), true);
+        }
+    }
     ProcessData(read_buffer);
 }
 
 void State::ProcessData(std::span<const u8> read_buffer) {
     const Common::GpuProfile::PhaseScope gpu_profile_scope{
         Common::GpuProfile::Phase::InlineToMemory};
+    if (VideoCommon::SubmissionTrace::Active()) {
+        VideoCommon::SubmissionTrace::Log(
+            "guest_i2m dst_gpu={:x} dst_cpu={} linear={} bytes_per_line={} lines={} "
+            "pitch={} payload_bytes={}",
+            regs.dest.Address(), memory_manager.GpuToCpuAddress(regs.dest.Address()).value_or(0),
+            is_linear, regs.line_length_in, regs.line_count, regs.dest.pitch, read_buffer.size());
+    }
     const GPUVAddr address{regs.dest.Address()};
     if (is_linear) {
         for (size_t line = 0; line < regs.line_count; ++line) {

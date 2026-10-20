@@ -8,7 +8,8 @@
 namespace Shader::Backend::HLSL {
 inline constexpr std::uint32_t ROOT_CONSTANT_DWORDS = 16;
 // b0, space1. Upload all 16 DWORDs, including reserved fields. Scaling masks
-// use the same per-stage descriptor indices as IsTextureScaled/IsImageScaled.
+// use per-stage texture descriptor indices and global UAV registers for images.
+// Graphics texture masks occupy reserved[stage]; compute uses texture_scaling_mask.
 struct RootConstants {
     float render_area[4]{0, 0, 1, 1};     // DWORD 0..3: guest render-area transform
     float resolution_down_factor{1};      // DWORD 4

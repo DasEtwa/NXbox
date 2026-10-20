@@ -67,13 +67,16 @@ inline bool IsDirectoryLogoPartition(const VirtualDir& pfs) {
 // After construction, use GetStatus to determine if the file is valid and ready to be used.
 class NCA : public ReadOnlyVfsDirectory {
 public:
-    explicit NCA(VirtualFile file, const NCA* base_nca = nullptr, bool allow_missing_base = false);
+    enum class ReadMode { Full, HeaderOnly };
+    explicit NCA(VirtualFile file, const NCA* base_nca = nullptr, bool allow_missing_base = false,
+                 ReadMode mode = ReadMode::Full);
     ~NCA() override;
 
     Loader::ResultStatus GetStatus() const;
     // False when the NCA header could not be read, so that the title ID and the content type are
     // not available either.
     bool HasValidHeader() const;
+    bool HasZeroSectionHeader() const;
 
     std::vector<VirtualFile> GetFiles() const override;
     std::vector<VirtualDir> GetSubdirectories() const override;

@@ -23,7 +23,7 @@ class DescriptorTableReuse(unittest.TestCase):
         cls.draw = body(cls.rasterizer, "void RasterizerD3D12::PrepareDraw(")
 
     def test_equality_uses_tick_sizes_and_full_slot_keys(self):
-        match = body(self.allocator, "bool D3D12DescriptorAllocator::CanReuseDrawTable(")
+        match = body(self.allocator, "bool D3D12DescriptorAllocator::CanReusePreviousDrawTable(")
         self.assertIn("previous.tick == context.CurrentTick()", match)
         self.assertIn("previous.plan.sizes == plan.sizes", match)
         self.assertIn("previous.plan.keys == plan.keys", match)
@@ -46,7 +46,7 @@ class DescriptorTableReuse(unittest.TestCase):
     def test_reuse_returns_before_allocation_and_copies(self):
         finish = body(self.allocator, "DescriptorTable D3D12DescriptorAllocator::FinishDrawTable(")
         reuse = finish[: finish.index("const u32 count")]
-        self.assertIn("if (CanReuseDrawTable(plan, sampler))", reuse)
+        self.assertIn("if (CanReusePreviousDrawTable(plan, sampler))", reuse)
         self.assertIn("return previous.table;", reuse)
         self.assertIn("FrameCount::DescriptorTableReuses", reuse)
         self.assertNotIn("Allocate", reuse.split("{", 1)[1])

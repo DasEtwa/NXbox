@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
 #include <chrono>
 #include <cmath>
@@ -17,6 +18,8 @@
 #include <tuple>
 #include <vector>
 #include <fmt/format.h>
+#include "video_core/renderer_d3d12/d3d12_build_stats.h"
+#include "video_core/shader_discovery.h"
 #ifdef NXBOX_UWP
 #include <winrt/Windows.System.h>
 #endif
@@ -26,6 +29,7 @@
 #include "common/fs/path_util.h"
 #include "common/logging.h"
 #include "common/scope_exit.h"
+#include "common/settings.h"
 #include "shader_recompiler/backend/hlsl/emit_hlsl.h"
 #include "shader_recompiler/frontend/maxwell/translate_program.h"
 #include "shader_recompiler/host_translate_info.h"
@@ -45,6 +49,26 @@
 
 namespace D3D12 {
 namespace {
+bool PipelineLookupFastpathEnabled() {
+    static const bool enabled = [] {
+        char value[2]{};
+        return !(GetEnvironmentVariableA("NXBOX_D3D12_PIPELINE_LOOKUP_FASTPATH", value,
+                                         sizeof(value)) == 1 &&
+                 value[0] == '0');
+    }();
+    return enabled;
+}
+
+// On by default: fewer cold-cache hitches in Odyssey and MK8D on Series X. =0 waits as before.
+bool RtHistoryEnabled() {
+    static const bool enabled = [] {
+        char value[2]{};
+        return !(GetEnvironmentVariableA("NXBOX_D3D12_PSO_WAIT_RT_HISTORY", value, sizeof(value)) ==
+                     1 &&
+                 value[0] == '0');
+    }();
+    return enabled;
+}
 
 // No hashing, allocation, locking or file IO unless explicitly enabled.
 void DumpGraphicsHlsl(u64 guest_hash, Shader::Stage stage, std::string_view source) {
@@ -96,6 +120,20 @@ std::chrono::milliseconds PsoWaitBudget() {
         return std::chrono::milliseconds{value ? std::strtol(value, nullptr, 10) : 5000};
     }();
     return budget;
+}
+
+bool FrameBoundedPsoEnabled() {
+    // Opt in: timing out protected one-time draws sooner can leave persistent textures missing.
+    static const bool enabled = BisectEnabled("NXBOX_D3D12_PSO_FRAME_BUDGET");
+    return enabled;
+}
+
+size_t RuntimePsoThreads() {
+    // Each worker owns its DXC instance/cache. Keep the existing two-worker memory footprint
+    // unless the third parallel compiler is explicitly requested.
+    static const size_t count =
+        RuntimePsoThreadCount(BisectEnabled("NXBOX_D3D12_PSO_PARALLEL_DXC"));
+    return count;
 }
 
 // Shared by foreground requests and the disk warmup coordinator. `pool_idle` admits the compile
@@ -666,11 +704,14 @@ std::string PipelineCache::ProfileSummary() {
         compute.size(), dxc.Size());
 }
 
-GraphicsPipeline& PipelineCache::GetGraphics(const Pso::GraphicsPsoState& state, u32 d3d_topology,
-                                             std::span<const StageInput> stages,
+GraphicsPipeline& PipelineCache::GetGraphics(const Pso::GraphicsPsoState& input_state,
+                                             u32 d3d_topology, std::span<const StageInput> stages,
                                              const GraphicsPipelineKey* request,
                                              std::span<const u8> runtime_data) {
     std::scoped_lock lock{pipeline_mutex};
+    auto state = input_state;
+    if (PsoNormalizeEnabled())
+        Pso::NormalizeGraphicsState(state);
     GraphicsPipelineKey key{};
     key.state = state;
     DescriptorCounts total;
@@ -694,6 +735,8 @@ GraphicsPipeline& PipelineCache::GetGraphics(const Pso::GraphicsPsoState& state,
     // Fragment occupies slot 5: folding topology after stage hashes prevents
     // its shader hash from overwriting the wrapper's IA topology identity.
     key.stage_hashes[5] = Pso::HashBytes(&d3d_topology, sizeof(d3d_topology), key.stage_hashes[5]);
+    if (disk && request)
+        disk->RememberFirstUse(RequestBytes(*request));
     if (const auto it = graphics.find(key); it != graphics.end()) {
         return *it->second;
     }
@@ -997,6 +1040,10 @@ std::shared_ptr<GraphicsPipeline> BuildAsyncGraphics(
     const u64 request_hash = Pso::HashBytes(&request, sizeof(request));
     // Async jobs that never return jam the worker pool; this shows the phase each one is stuck in.
     static const bool trace = BisectEnabled("NXBOX_D3D12_PSO_TRACE");
+    PsoBuildStats trace_stats;
+    std::optional<ScopedPsoBuildStats> collect;
+    if (trace)
+        collect.emplace(trace_stats);
     const auto compile_start =
         trace ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     const auto mark = [&](std::string_view phase) {
@@ -1118,6 +1165,8 @@ std::shared_ptr<GraphicsPipeline> BuildAsyncGraphics(
         }
     }
     Pso::ApplyVertexReads(state, vertex_reads);
+    if (PsoNormalizeEnabled())
+        Pso::NormalizeGraphicsState(state);
 
     thread_local DxcCache compiler;
     std::vector<StageProgram> compiled;
@@ -1147,6 +1196,11 @@ std::shared_ptr<GraphicsPipeline> BuildAsyncGraphics(
                                            native_key, recipe, stream_output.Description(state));
     pipeline->SetRootCbvs(UseRootCbvs(total.cbv));
     mark("done");
+    if (trace)
+        Diagnostic(fmt::format("PSO_BUILD_COST request={:016x} driver_builds={} dxc_ms={:.3f} "
+                               "root_signature_ms={:.3f} driver_ms={:.3f}",
+                               request_hash, trace_stats.driver_builds, trace_stats.dxc_us / 1000.0,
+                               trace_stats.root_us / 1000.0, trace_stats.driver_us / 1000.0));
     ReportSlowPso(native_key, native_start, signature.Get(), total, stages, compiled);
     if (feedback)
         pipeline->SetTransformFeedback(*feedback);
@@ -1170,10 +1224,28 @@ std::shared_ptr<GraphicsPipeline> BuildAsyncGraphics(
     return pipeline;
 }
 
+struct PrewarmPhases {
+    std::atomic<u64> dxil_disk_hits{}, dxil_disk_misses{}, dxil_memory_hits{};
+    std::atomic<u64> dxc_us{}, root_us{}, driver_us{}, driver_builds{}, built{}, failed{};
+};
+
 void BuildPrewarmedPipeline(ID3D12Device* device, DiskPipelineCache* disk,
                             const DiskPipelineRecord& record,
                             std::shared_ptr<GraphicsPipeline>& graphics,
-                            std::shared_ptr<ComputePipeline>& compute) {
+                            std::shared_ptr<ComputePipeline>& compute, PrewarmPhases& phases) {
+    PsoBuildStats dxc_stats;
+    const ScopedPsoBuildStats collect{dxc_stats};
+    bool success = false;
+    SCOPE_EXIT {
+        phases.dxil_disk_hits.fetch_add(dxc_stats.disk_hits, std::memory_order_relaxed);
+        phases.dxil_disk_misses.fetch_add(dxc_stats.disk_misses, std::memory_order_relaxed);
+        phases.dxil_memory_hits.fetch_add(dxc_stats.memory_hits, std::memory_order_relaxed);
+        phases.dxc_us.fetch_add(dxc_stats.dxc_us, std::memory_order_relaxed);
+        phases.root_us.fetch_add(dxc_stats.root_us, std::memory_order_relaxed);
+        phases.driver_us.fetch_add(dxc_stats.driver_us, std::memory_order_relaxed);
+        phases.driver_builds.fetch_add(dxc_stats.driver_builds, std::memory_order_relaxed);
+        (success ? phases.built : phases.failed).fetch_add(1, std::memory_order_relaxed);
+    };
     const auto decoded = ReadRecipe(record);
     const auto& stages = decoded.stages;
     const auto& state = decoded.state;
@@ -1237,6 +1309,7 @@ void BuildPrewarmedPipeline(ID3D12Device* device, DiskPipelineCache* disk,
     }
     // Native LoadOrCreate writes the recipe too; preserve its guest identity after replay.
     disk->RememberPipeline(record);
+    success = true;
 }
 } // namespace
 
@@ -1249,6 +1322,7 @@ PipelineCache::QueryFormatSupport(DXGI_FORMAT format) {
 
 void PipelineCache::InvalidateLastGraphicsPipeline() {
     last_graphics_pipeline = nullptr;
+    last_graphics_request_current = false;
 }
 
 void PipelineCache::StoreGuestGraphics(const GraphicsPipelineKey& request,
@@ -1263,102 +1337,227 @@ IGraphicsPipeline* PipelineCache::RememberGraphicsPipeline(const GraphicsPipelin
     if (pipeline) {
         last_graphics_request = request;
         last_graphics_pipeline = pipeline;
+        last_graphics_request_current = true;
+        // Profiling is fixed for the context lifetime; avoid hashing even on installation
+        // during normal gameplay.
+        last_graphics_prewarmed =
+            context.Profile().Enabled() && prewarmed_graphics.contains(request);
     }
     return pipeline;
 }
 
+void PipelineCache::RecordGraphicsDraw(u64 frame) {
+    if (!RtHistoryEnabled() || !maxwell3d || maxwell3d->regs.rt_control.count == 0)
+        return;
+    const auto& rt0 = maxwell3d->regs.rt[maxwell3d->regs.rt_control.Map(0)];
+    rt_draw_history.Record(rt0.Address(), frame);
+}
+
+void PipelineCache::TickFrame() {
+    std::scoped_lock lock{pipeline_mutex};
+    pso_frame_budget.Reset();
+}
+
+std::chrono::steady_clock::duration PipelineCache::PendingPsoWaitBudget() {
+    return FrameBoundedPsoEnabled() ? pso_frame_budget.Remaining(PsoWaitBudget()) : PsoWaitBudget();
+}
+
 IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(const Pso::FramebufferFormats& formats,
-                                                          bool is_indexed) try {
+                                                          bool is_indexed, u64 frame) try {
     const FrameProfile::Scope profile_lookup{context.Profile(), FramePhase::PipelineLookup};
     if (!maxwell3d)
         return nullptr;
     std::scoped_lock lock{pipeline_mutex};
-    if (const auto* reason = UnsupportedState(
-            maxwell3d->regs, static_cast<u32>(maxwell3d->draw_manager.draw_state.topology))) {
-        ReportUnsupported(reason);
-        return nullptr;
-    }
     SyncGuestHost();
     if (!RefreshStages(guest_hashes))
         return nullptr;
-    Pso::GraphicsPsoState state;
-    FillGraphicsState(*maxwell3d, state);
-    Pso::ApplyFramebufferFormats(state, formats);
-    if (!Pso::DsvHasStencil(state.dsv_format))
-        state.stencil_enable = 0;
-    if (state.stencil_enable & 2) {
-        const auto& options = QueryFeature(D3D12_FEATURE_D3D12_OPTIONS14, graphics_options14);
-        if (FAILED(options.result) ||
-            !options.data.IndependentFrontAndBackStencilRefMaskSupported) {
-            ReportUnsupported("stencil_back_ref/stencil_back_mask/stencil_back_func_mask differ; "
-                              "host lacks IndependentFrontAndBackStencilRefMaskSupported");
-            return nullptr;
-        }
-    }
-    if (state.depth_bounds) {
-        const auto& options = QueryFeature(D3D12_FEATURE_D3D12_OPTIONS2, graphics_options2);
-        if (FAILED(options.result) || !options.data.DepthBoundsTestSupported) {
-            ReportUnsupported("depth_bounds_enable/depth_bounds unsupported by host device");
-            return nullptr;
-        }
-    }
-    const u32 constant_factors = Pso::ConstantBlendFactors(state);
-    if (constant_factors & 2) {
-        const auto& options = QueryFeature(D3D12_FEATURE_D3D12_OPTIONS13, graphics_options13);
-        if (FAILED(options.result) || !options.data.AlphaBlendFactorSupported) {
-            if (constant_factors & 1) {
-                ReportUnsupported(
-                    "blend mixes constant-color and constant-alpha RGB factors; host lacks "
-                    "AlphaBlendFactorSupported and needs shader blend emulation");
-                return nullptr;
-            }
-            // The draw path replicates blend_color.a into RGB. No shader change
-            // is needed when RGB never consumes the original constant color.
-            Pso::EmulateConstantAlpha(state);
-        }
-    }
-    if (state.logic_enable || state.conservative_raster) {
-        const auto& options = QueryFeature(D3D12_FEATURE_D3D12_OPTIONS, graphics_options);
-        if (FAILED(options.result) || (state.logic_enable && !options.data.OutputMergerLogicOp) ||
-            (state.conservative_raster &&
-             options.data.ConservativeRasterizationTier ==
-                 D3D12_CONSERVATIVE_RASTERIZATION_TIER_NOT_SUPPORTED)) {
-            ReportUnsupported("logic_op/conservative_raster_enable unsupported by host device");
-            return nullptr;
-        }
-    }
-    if (state.logic_enable) {
-        std::optional<u8> mask;
-        for (size_t i = 0; i < formats.colors.size(); ++i) {
-            if (!formats.colors[i])
-                continue;
-            if (mask && *mask != state.blend[i].write_mask) {
-                ReportUnsupported(
-                    "logic_op with independent color_mask requires programmable blend emulation");
-                return nullptr;
-            }
-            mask = state.blend[i].write_mask;
-            const auto& support = QueryFormatSupport(static_cast<DXGI_FORMAT>(formats.colors[i]));
-            if (FAILED(support.result) ||
-                !(support.data.Support2 & D3D12_FORMAT_SUPPORT2_OUTPUT_MERGER_LOGIC_OP)) {
-                ReportUnsupported("logic_op RTV format lacks OUTPUT_MERGER_LOGIC_OP; requires "
-                                  "programmable blend emulation");
-                return nullptr;
-            }
-        }
-        if (mask)
-            state.blend[0].write_mask = *mask;
-    }
-    const auto topology = Pso::PrimitiveTopology(
-        static_cast<u32>(maxwell3d->draw_manager.draw_state.topology), state.patch_vertices);
-    GraphicsPipelineKey request{guest_hashes, state};
     const auto& regs = maxwell3d->regs;
+    if (VideoCommon::ShaderDiscovery::Enabled()) {
+        VideoCommon::ShaderDiscovery::Base(gpu_memory->GetID(), regs.program_region.Address(),
+                                           false);
+        for (unsigned slot = 0; slot < guest_hashes.size(); ++slot) {
+            if (guest_hashes[slot])
+                VideoCommon::ShaderDiscovery::Demand(gpu_memory->GetID(),
+                                                     regs.program_region.Address() +
+                                                         regs.pipelines[slot].offset,
+                                                     guest_hashes[slot], slot, false);
+        }
+    }
+    const GraphicsStateInputs inputs{
+        context.GraphicsStateTracker().Update(*maxwell3d),
+        guest_hashes,
+        formats,
+        static_cast<u32>(maxwell3d->draw_manager.draw_state.topology),
+        regs.zeta_enable,
+        is_indexed,
+        {regs.pipelines[2].enable != 0, regs.pipelines[3].enable != 0}};
+    const bool reuse = StateFastpathEnabled() && graphics_state_inputs.Matches(inputs);
+    // The tracker generation covers register writes; inputs also cover shader invalidation,
+    // framebuffer formats and draw topology. Do not copy, compare or hash the full key on hits.
+    // Verification still computes the reference key. Pending PSOs never install a pointer.
+    if (PipelineLookupFastpathEnabled() && !StateVerifyEnabled() && reuse &&
+        last_graphics_request_current && last_graphics_pipeline) {
+        if (context.Profile().Enabled() && last_graphics_prewarmed)
+            context.Profile().Count(FrameCount::PrewarmedPsoHits);
+        return last_graphics_pipeline;
+    }
+    Pso::GraphicsPsoState state;
+    Pso::TopologyInfo topology{};
+    GraphicsPipelineKey request{};
+    const auto compute_request = [&]() -> bool {
+        if (const auto* reason = UnsupportedState(
+                maxwell3d->regs, static_cast<u32>(maxwell3d->draw_manager.draw_state.topology))) {
+            ReportUnsupported(reason);
+            return false;
+        }
+        FillGraphicsState(*maxwell3d, state);
+        Pso::ApplyFramebufferFormats(state, formats);
+        if (!Pso::DsvHasStencil(state.dsv_format))
+            state.stencil_enable = 0;
+        if (state.stencil_enable & 2) {
+            const auto& options = QueryFeature(D3D12_FEATURE_D3D12_OPTIONS14, graphics_options14);
+            if (FAILED(options.result) ||
+                !options.data.IndependentFrontAndBackStencilRefMaskSupported) {
+                ReportUnsupported(
+                    "stencil_back_ref/stencil_back_mask/stencil_back_func_mask differ; "
+                    "host lacks IndependentFrontAndBackStencilRefMaskSupported");
+                return false;
+            }
+        }
+        if (state.depth_bounds) {
+            const auto& options = QueryFeature(D3D12_FEATURE_D3D12_OPTIONS2, graphics_options2);
+            if (FAILED(options.result) || !options.data.DepthBoundsTestSupported) {
+                ReportUnsupported("depth_bounds_enable/depth_bounds unsupported by host device");
+                return false;
+            }
+        }
+        const u32 constant_factors = Pso::ConstantBlendFactors(state);
+        if (constant_factors & 2) {
+            const auto& options = QueryFeature(D3D12_FEATURE_D3D12_OPTIONS13, graphics_options13);
+            if (FAILED(options.result) || !options.data.AlphaBlendFactorSupported) {
+                if (constant_factors & 1) {
+                    ReportUnsupported(
+                        "blend mixes constant-color and constant-alpha RGB factors; host lacks "
+                        "AlphaBlendFactorSupported and needs shader blend emulation");
+                    return false;
+                }
+                // The draw path replicates blend_color.a into RGB. No shader change
+                // is needed when RGB never consumes the original constant color.
+                Pso::EmulateConstantAlpha(state);
+            }
+        }
+        if (state.logic_enable || state.conservative_raster) {
+            const auto& options = QueryFeature(D3D12_FEATURE_D3D12_OPTIONS, graphics_options);
+            if (FAILED(options.result) ||
+                (state.logic_enable && !options.data.OutputMergerLogicOp) ||
+                (state.conservative_raster &&
+                 options.data.ConservativeRasterizationTier ==
+                     D3D12_CONSERVATIVE_RASTERIZATION_TIER_NOT_SUPPORTED)) {
+                ReportUnsupported("logic_op/conservative_raster_enable unsupported by host device");
+                return false;
+            }
+        }
+        if (state.logic_enable) {
+            std::optional<u8> mask;
+            for (size_t i = 0; i < formats.colors.size(); ++i) {
+                if (!formats.colors[i])
+                    continue;
+                if (mask && *mask != state.blend[i].write_mask) {
+                    ReportUnsupported("logic_op with independent color_mask requires programmable "
+                                      "blend emulation");
+                    return false;
+                }
+                mask = state.blend[i].write_mask;
+                const auto& support =
+                    QueryFormatSupport(static_cast<DXGI_FORMAT>(formats.colors[i]));
+                if (FAILED(support.result) ||
+                    !(support.data.Support2 & D3D12_FORMAT_SUPPORT2_OUTPUT_MERGER_LOGIC_OP)) {
+                    ReportUnsupported("logic_op RTV format lacks OUTPUT_MERGER_LOGIC_OP; requires "
+                                      "programmable blend emulation");
+                    return false;
+                }
+            }
+            if (mask)
+                state.blend[0].write_mask = *mask;
+        }
+        topology = Pso::PrimitiveTopology(
+            static_cast<u32>(maxwell3d->draw_manager.draw_state.topology), state.patch_vertices);
+        if (PsoNormalizeEnabled())
+            Pso::NormalizeGraphicsState(state);
+        request = GraphicsPipelineKey{guest_hashes, state};
+        u64 specialization = Pso::HashBytes(&regs.depth_mode, sizeof(regs.depth_mode));
+        specialization =
+            Pso::HashBytes(&regs.window_origin, sizeof(regs.window_origin), specialization);
+        specialization = Pso::HashBytes(&regs.viewport_scale_offset_enabled,
+                                        sizeof(regs.viewport_scale_offset_enabled), specialization);
+        const auto& viewport = regs.viewport_transform[0];
+        const bool positive_y = viewport.scale_y > 0;
+        specialization = Pso::HashBytes(&positive_y, sizeof(positive_y), specialization);
+        specialization =
+            Pso::HashBytes(&viewport.swizzle, sizeof(viewport.swizzle), specialization);
+        specialization = vertex_specialization_hash.Get(
+            regs.vertex_attrib_format.data(), sizeof(regs.vertex_attrib_format), specialization);
+        specialization =
+            Pso::HashBytes(&topology.topology, sizeof(topology.topology), specialization);
+        specialization =
+            Pso::HashBytes(&regs.provoking_vertex, sizeof(regs.provoking_vertex), specialization);
+        specialization =
+            Pso::HashBytes(&regs.mandated_early_z, sizeof(regs.mandated_early_z), specialization);
+        const auto alpha = Pso::AlphaTestSpecialization(
+            regs.alpha_test_enabled != 0,
+            Pso::ComparisonFunc(static_cast<u32>(regs.alpha_test_func)),
+            std::bit_cast<u32>(regs.alpha_test_ref));
+        specialization = Pso::HashBytes(alpha.data(), sizeof(alpha), specialization);
+        specialization = Pso::HashBytes(&regs.transform_feedback_enabled,
+                                        sizeof(regs.transform_feedback_enabled), specialization);
+        if (regs.transform_feedback_enabled) {
+            specialization =
+                Pso::HashBytes(regs.transform_feedback.controls.data(),
+                               sizeof(regs.transform_feedback.controls), specialization);
+            specialization = Pso::HashBytes(regs.stream_out_layout.data(),
+                                            sizeof(regs.stream_out_layout), specialization);
+        }
+        request.stage_hashes[0] =
+            Pso::HashBytes(&specialization, sizeof(specialization), request.stage_hashes[0]);
+        return true;
+    };
+    if (!reuse || StateVerifyEnabled()) {
+        // A new input set can miss or be unsupported. Keep the old key for the equality
+        // fallback, but never associate its pointer with a newly cached pending request.
+        last_graphics_request_current = false;
+        const bool supported = compute_request();
+        if (StateVerifyEnabled() && reuse) {
+            if (!supported) {
+                const bool was_supported = true;
+                StateVerifyMismatch("pipeline", &was_supported, &supported, sizeof(supported));
+            } else if (!(request == cached_graphics_request)) {
+                StateVerifyMismatch("pipeline", &cached_graphics_request, &request,
+                                    sizeof(request));
+            }
+        }
+        if (!supported) {
+            graphics_state_inputs.Invalidate();
+            return nullptr;
+        }
+        // Verify mode always uses the freshly computed result, including on a mismatch.
+        cached_graphics_request = request;
+        cached_topology = topology;
+        graphics_state_inputs.Store(inputs);
+    } else {
+        request = cached_graphics_request;
+        topology = cached_topology;
+        state = request.state;
+    }
     // Diagnostic (NXBOX_D3D12_PSO_SKIP_TRACE=1): one line per pipeline request the first time a
     // draw is dropped for it, to see which draws a skip rule drops.
     const auto trace_skip = [&](std::string_view why, u64 request_hash) {
         static const bool enabled = BisectEnabled("NXBOX_D3D12_PSO_SKIP_TRACE");
         static std::unordered_set<u64> traced; // GPU thread only
-        if (!enabled || !traced.insert(request_hash).second)
+        static const bool pso_trace = BisectEnabled("NXBOX_D3D12_PSO_TRACE");
+        static std::unordered_set<u64> traced_rt_history;
+        const bool history_reason = why == "rt_history";
+        if (!(enabled || (history_reason && pso_trace)) ||
+            !(history_reason ? traced_rt_history : traced).insert(request_hash).second)
             return;
         const auto& draw = maxwell3d->draw_manager.draw_state;
         const auto& rt0 = regs.rt[regs.rt_control.Map(0)];
@@ -1370,41 +1569,13 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(const Pso::Framebuffer
             static_cast<u32>(regs.rt_control.count), rt0.width, rt0.height,
             static_cast<u32>(rt0.format), rt0.Address(), regs.zeta_enable != 0));
     };
-    u64 specialization = Pso::HashBytes(&regs.depth_mode, sizeof(regs.depth_mode));
-    specialization =
-        Pso::HashBytes(&regs.window_origin, sizeof(regs.window_origin), specialization);
-    specialization = Pso::HashBytes(&regs.viewport_scale_offset_enabled,
-                                    sizeof(regs.viewport_scale_offset_enabled), specialization);
-    const auto& viewport = regs.viewport_transform[0];
-    const bool positive_y = viewport.scale_y > 0;
-    specialization = Pso::HashBytes(&positive_y, sizeof(positive_y), specialization);
-    specialization = Pso::HashBytes(&viewport.swizzle, sizeof(viewport.swizzle), specialization);
-    specialization = vertex_specialization_hash.Get(
-        regs.vertex_attrib_format.data(), sizeof(regs.vertex_attrib_format), specialization);
-    specialization = Pso::HashBytes(&topology.topology, sizeof(topology.topology), specialization);
-    specialization =
-        Pso::HashBytes(&regs.provoking_vertex, sizeof(regs.provoking_vertex), specialization);
-    specialization =
-        Pso::HashBytes(&regs.mandated_early_z, sizeof(regs.mandated_early_z), specialization);
-    const auto alpha = Pso::AlphaTestSpecialization(
-        regs.alpha_test_enabled != 0, Pso::ComparisonFunc(static_cast<u32>(regs.alpha_test_func)),
-        std::bit_cast<u32>(regs.alpha_test_ref));
-    specialization = Pso::HashBytes(alpha.data(), sizeof(alpha), specialization);
-    specialization = Pso::HashBytes(&regs.transform_feedback_enabled,
-                                    sizeof(regs.transform_feedback_enabled), specialization);
-    if (regs.transform_feedback_enabled) {
-        specialization = Pso::HashBytes(regs.transform_feedback.controls.data(),
-                                        sizeof(regs.transform_feedback.controls), specialization);
-        specialization = Pso::HashBytes(regs.stream_out_layout.data(),
-                                        sizeof(regs.stream_out_layout), specialization);
-    }
-    request.stage_hashes[0] =
-        Pso::HashBytes(&specialization, sizeof(specialization), request.stage_hashes[0]);
     // A counter only: skip the per-draw hash lookup unless profiling.
     if (context.Profile().Enabled() && prewarmed_graphics.contains(request))
         context.Profile().Count(FrameCount::PrewarmedPsoHits);
-    if (last_graphics_pipeline && request == last_graphics_request)
+    if (last_graphics_pipeline && request == last_graphics_request) {
+        last_graphics_request_current = true;
         return last_graphics_pipeline;
+    }
     if (const auto found = guest_graphics.find(request); found != guest_graphics.end()) {
         if (!found->second)
             context.Profile().Count(FrameCount::NegativeCacheHits);
@@ -1413,7 +1584,7 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(const Pso::Framebuffer
     if (AsyncPsoEnabled()) {
         try {
             if (!async)
-                async = std::make_unique<AsyncCache>();
+                async = std::make_unique<AsyncCache>(RuntimePsoThreads());
             const u64 request_hash = Pso::HashBytes(&request, sizeof(request));
             if (CheckStalled(request, request_hash)) {
                 StoreGuestGraphics(request, nullptr);
@@ -1425,6 +1596,8 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(const Pso::Framebuffer
                 entry = async->Lookup(request);
             if (entry.status == AsyncCache::Status::Ready) {
                 if (entry.prewarmed) {
+                    if (disk)
+                        disk->RememberFirstUse(RequestBytes(request));
                     prewarmed_graphics.insert(request);
                     context.Profile().Count(FrameCount::PrewarmedPsoHits);
                 }
@@ -1463,10 +1636,21 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(const Pso::Framebuffer
             const bool depth_tested = regs.zeta_enable != 0 && regs.depth_test_enable != 0;
             // NXBOX_D3D12_PSO_WAIT_DEPTH=1 restores the 1.0.5 rule for depth-tested draws.
             static const bool wait_depth = BisectEnabled("NXBOX_D3D12_PSO_WAIT_DEPTH");
-            const bool may_skip = CanSkipPendingGraphicsPso(
+            const bool old_may_skip = CanSkipPendingGraphicsPso(
                 skip_pending, draw_count, drawn_count, !wait_depth && depth_tested,
                 maxwell3d->regs.transform_feedback_enabled != 0);
+            const auto last_rt_draw = RtHistoryEnabled() && formats.colors[0] != 0
+                                          ? rt_draw_history.LastDrawFrame(
+                                                regs.rt[regs.rt_control.Map(0)].Address(), frame)
+                                          : std::nullopt;
+            const bool history_skip =
+                !old_may_skip && CanSkipPendingGraphicsPsoFromRtHistory(
+                                     skip_pending, RtHistoryEnabled(),
+                                     regs.transform_feedback_enabled != 0, frame, last_rt_draw);
+            const bool may_skip = old_may_skip || history_skip;
             if (entry.status == AsyncCache::Status::Missing && async->CanSubmit(!may_skip)) {
+                if (disk)
+                    disk->RememberFirstUse(RequestBytes(request));
                 GraphicsEnvironments live;
                 GetGraphicsEnvironments(live, guest_hashes);
                 auto snapshots =
@@ -1498,7 +1682,7 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(const Pso::Framebuffer
                 static const bool trace_wait = BisectEnabled("NXBOX_D3D12_PSO_TRACE");
                 const auto wait_start = trace_wait ? std::chrono::steady_clock::now()
                                                    : std::chrono::steady_clock::time_point{};
-                const auto settled = async->WaitFor(request, PsoWaitBudget());
+                const auto settled = async->WaitFor(request, PendingPsoWaitBudget());
                 // A request the full pool did not admit was never waited for; keep its one
                 // wait for a frame where it is queued.
                 if (settled.status == AsyncCache::Status::Missing)
@@ -1516,13 +1700,18 @@ IGraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(const Pso::Framebuffer
                         rt0.width, rt0.height, drawn_count, depth_tested));
                 }
                 if (settled.status == AsyncCache::Status::Ready) {
+                    if (settled.prewarmed && disk)
+                        disk->RememberFirstUse(RequestBytes(request));
                     StoreGuestGraphics(request, settled.result->graphics.get());
                     context.Profile().Count(FrameCount::PsoCompiles);
                     return settled.result->graphics.get();
                 }
             }
             context.Profile().Count(FrameCount::DrawsSkippedPendingPso);
-            trace_skip(may_skip ? "pending" : "wait_timeout", request_hash);
+            trace_skip(history_skip ? "rt_history"
+                       : may_skip   ? "pending"
+                                    : "wait_timeout",
+                       request_hash);
             return nullptr;
         } catch (const std::exception& error) {
             Diagnostic(fmt::format("D3D12 async graphics snapshot={:016x} failed={}",
@@ -1679,6 +1868,13 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() try {
     if (!shader)
         return nullptr;
     const auto& launch = kepler_compute->launch_description;
+    if (VideoCommon::ShaderDiscovery::Enabled()) {
+        VideoCommon::ShaderDiscovery::Base(gpu_memory->GetID(),
+                                           kepler_compute->regs.code_loc.Address(), true);
+        VideoCommon::ShaderDiscovery::Demand(
+            gpu_memory->GetID(), kepler_compute->regs.code_loc.Address() + launch.program_start,
+            shader->unique_hash, 0, true);
+    }
     const std::array<u32, 6> specialization{launch.block_dim_x,     launch.block_dim_y,
                                             launch.block_dim_z,     launch.shared_alloc,
                                             launch.local_pos_alloc, launch.local_crs_alloc};
@@ -1697,7 +1893,7 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() try {
     if (AsyncPsoEnabled()) {
         try {
             if (!async)
-                async = std::make_unique<AsyncCache>();
+                async = std::make_unique<AsyncCache>(RuntimePsoThreads());
             GraphicsPipelineKey async_key{};
             async_key.stage_hashes[0] = request;
             async_key.state.sample_count =
@@ -1713,6 +1909,8 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() try {
                 entry = async->Lookup(async_key);
             if (entry.status == AsyncCache::Status::Ready) {
                 if (entry.prewarmed) {
+                    if (disk)
+                        disk->RememberFirstUse(RequestBytes(async_key));
                     prewarmed_compute.insert(request);
                     context.Profile().Count(FrameCount::PrewarmedPsoHits);
                 }
@@ -1743,7 +1941,8 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() try {
                 std::shared_ptr<Shader::Environment> snapshot{live.Snapshot()};
                 Microsoft::WRL::ComPtr<ID3D12Device> device{context.Device()};
                 std::shared_ptr<ComputeTranslation> prepared;
-                if (SkipGlobalFallbackComputeEnabled()) {
+                const bool skip_global_fallback = SkipGlobalFallbackComputeEnabled();
+                if (skip_global_fallback && !FrameBoundedPsoEnabled()) {
                     try {
                         prepared = std::make_shared<ComputeTranslation>(device.Get(), *snapshot);
                     } catch (...) {
@@ -1761,8 +1960,10 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() try {
                         return nullptr;
                     }
                 }
+                if (disk)
+                    disk->RememberFirstUse(RequestBytes(async_key));
                 auto job = [device, disk_cache = disk.get(), snapshot, prepared,
-                            shader_hash = shader->unique_hash, request] {
+                            skip_global_fallback, shader_hash = shader->unique_hash, request] {
                     SetThreadDescription(GetCurrentThread(), L"D3D12 PSO compiler");
                     static const bool trace = BisectEnabled("NXBOX_D3D12_PSO_TRACE");
                     const auto trace_start = trace ? std::chrono::steady_clock::now()
@@ -1782,6 +1983,12 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() try {
                     auto& translation = translated->translation;
                     auto& program = translated->program;
                     mark("translated");
+                    if (SkipGlobalFallbackCompute(skip_global_fallback, true,
+                                                  program.info.uses_global_memory)) {
+                        ReportGlobalFallbackSkip(request);
+                        // The pool publishes the same stable failure as foreground rejection.
+                        throw std::runtime_error("Global memory fallback");
+                    }
                     const auto source =
                         Shader::Backend::HLSL::EmitHLSL(translation.profile, program);
                     DumpGraphicsHlsl(shader_hash, Shader::Stage::Compute, source);
@@ -1837,7 +2044,7 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() try {
                 static const bool trace_wait = BisectEnabled("NXBOX_D3D12_PSO_TRACE");
                 const auto wait_start = trace_wait ? std::chrono::steady_clock::now()
                                                    : std::chrono::steady_clock::time_point{};
-                const auto settled = async->WaitFor(async_key, PsoWaitBudget());
+                const auto settled = async->WaitFor(async_key, PendingPsoWaitBudget());
                 // A request the full pool did not admit was never waited for; keep its one
                 // wait for a frame where it is queued.
                 if (settled.status == AsyncCache::Status::Missing)
@@ -1851,6 +2058,8 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() try {
                         request, elapsed, static_cast<int>(settled.status), GetCurrentThreadId()));
                 }
                 if (settled.status == AsyncCache::Status::Ready) {
+                    if (settled.prewarmed && disk)
+                        disk->RememberFirstUse(RequestBytes(async_key));
                     guest_compute.emplace(request, settled.result->compute.get());
                     context.Profile().Count(FrameCount::PsoCompiles);
                     return settled.result->compute.get();
@@ -1865,6 +2074,11 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() try {
             guest_compute.emplace(request, nullptr);
             return nullptr;
         }
+    }
+    if (disk) {
+        GraphicsPipelineKey first_use_key{};
+        first_use_key.stage_hashes[0] = request;
+        disk->RememberFirstUse(RequestBytes(first_use_key));
     }
     context.Profile().Count(FrameCount::GuestPipelineMisses);
     try {
@@ -1938,6 +2152,7 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
     InvalidateLastGraphicsPipeline();
     async.reset();
     guest_graphics.clear();
+    rt_draw_history = {};
     prewarmed_graphics.clear();
     prewarmed_compute.clear();
     pso_waited.clear();
@@ -1945,7 +2160,15 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
     guest_compute.clear();
     graphics.clear();
     compute.clear();
-    const auto identity = DiskPipelineCache::QueryIdentity(context.Device(), {4, 2, 6});
+    // RescalingPass bakes the scale into shader instructions. Never prewarm another
+    // resolution's serialized HLSL/PSO under the same guest shader hash. 1x keeps the old
+    // identity so existing caches survive this update.
+    const auto resolution = Settings::values.resolution_setup.GetValue();
+    const u32 emitter_identity =
+        resolution == Settings::ResolutionSetup::Res1X ? 4u
+                                                       : 5u + (static_cast<u32>(resolution) << 16);
+    const auto identity = DiskPipelineCache::QueryIdentity(
+        context.Device(), {emitter_identity, 2, PsoNormalizeEnabled() ? 7u : 6u});
     if (!identity) {
         LOG_WARNING(Render, "D3D12 adapter identity unavailable; disk PSO reuse disabled");
         disk.reset();
@@ -1957,14 +2180,24 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
     disk = std::make_unique<DiskPipelineCache>(
         Common::FS::GetEdenPath(Common::FS::EdenPath::ShaderDir), title_id, *identity,
         context.Device());
-    stalled_path = Common::FS::GetEdenPath(Common::FS::EdenPath::ShaderDir) /
-                   fmt::format("{:016x}_d3d12_stalled_pso_v2.txt", title_id);
+    stalled_path =
+        Common::FS::GetEdenPath(Common::FS::EdenPath::ShaderDir) /
+        fmt::format("{:016x}_d3d12_stalled_pso_v{}.txt", title_id, PsoNormalizeEnabled() ? 3 : 2);
     {
         std::ifstream file{stalled_path};
         std::string line;
         while (std::getline(file, line))
             if (!line.empty())
                 stalled_requests.insert(std::strtoull(line.c_str(), nullptr, 16));
+    }
+    auto legacy_stalled = std::make_shared<std::unordered_set<u64>>();
+    if (PsoNormalizeEnabled()) {
+        const auto old_path = Common::FS::GetEdenPath(Common::FS::EdenPath::ShaderDir) /
+                              fmt::format("{:016x}_d3d12_stalled_pso_v2.txt", title_id);
+        std::ifstream file{old_path};
+        u64 hash{};
+        while (file >> std::hex >> hash)
+            legacy_stalled->insert(hash);
     }
     if (!stalled_requests.empty())
         Diagnostic(fmt::format("D3D12 skipping {} PSOs that stalled the driver before",
@@ -1976,7 +2209,7 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
         return;
     }
     if (async_warmup && !async)
-        async = std::make_unique<AsyncCache>();
+        async = std::make_unique<AsyncCache>(RuntimePsoThreads());
     // Background callbacks own only this state, never frontend loading-scope captures.
     struct PreloadProgress {
         std::mutex mutex;
@@ -1989,14 +2222,31 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
         async_warmup && wait_for_warmup ? std::make_shared<PreloadProgress>() : nullptr;
     struct WarmupStats {
         std::chrono::steady_clock::time_point start{std::chrono::steady_clock::now()};
-        size_t skipped{};
+        std::atomic<size_t> skipped{};
+        PrewarmPhases phases;
     };
     const auto stats = std::make_shared<WarmupStats>();
+    const size_t warmup_threads =
+        async_warmup ? (preload ? PrewarmThreads() : RuntimePsoThreads()) : 1;
+    const auto report = [stats, warmup_threads](std::string_view status) {
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - stats->start)
+                            .count();
+        const auto& p = stats->phases;
+        Diagnostic(fmt::format(
+            "D3D12_PSO_PREWARM status={} built={} skipped={} failed={} ms={} threads={} "
+            "dxil_disk_hits={} dxil_disk_misses={} dxil_memory_hits={} "
+            "dxc_ms={:.3f} root_signature_ms={:.3f} driver_ms={:.3f} driver_builds={}",
+            status, p.built.load(), stats->skipped.load(), p.failed.load(), ms, warmup_threads,
+            p.dxil_disk_hits.load(), p.dxil_disk_misses.load(), p.dxil_memory_hits.load(),
+            p.dxc_us.load() / 1000.0, p.root_us.load() / 1000.0, p.driver_us.load() / 1000.0,
+            p.driver_builds.load()));
+    };
     // Keep the raised target until submitted jobs settle, not just until disk enumeration ends.
     // Scope exit also restores it on cancellation, skip-wait and callback/startup exceptions.
     SCOPE_EXIT {
         if (preload)
-            async->SetWorkerTarget(2);
+            async->SetWorkerTarget(RuntimePsoThreads());
     };
     if (preload) {
         const size_t threads = PrewarmThreads();
@@ -2004,8 +2254,8 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
         async->SetWorkerTarget(threads);
     }
     disk->StartWarmup(
-        [this, async_warmup, stats, preload](const DiskPipelineRecord& record,
-                                             std::stop_token stop) {
+        [this, async_warmup, stats, preload, legacy_stalled](const DiskPipelineRecord& record,
+                                                             std::stop_token stop) {
             if (stop.stop_requested())
                 return false;
             try {
@@ -2022,6 +2272,15 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
                                          : request.stage_hashes[0];
                     {
                         std::scoped_lock guard{pipeline_mutex};
+                        const auto old_hash = record.kind == DiskRecordKind::Graphics
+                                                  ? record.legacy_request_hash
+                                                  : hash;
+                        if (legacy_stalled->contains(old_hash) &&
+                            (record.legacy || record.kind == DiskRecordKind::Compute) &&
+                            stalled_requests.insert(hash).second) {
+                            std::ofstream{stalled_path, std::ios::app}
+                                << fmt::format("{:016x}\n", hash);
+                        }
                         if (stalled_requests.contains(hash)) {
                             ++stats->skipped;
                             return true;
@@ -2049,6 +2308,8 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
                             return false;
                         const auto entry = async->Lookup(request);
                         if (entry.status != AsyncCache::Status::Missing) {
+                            if (record.legacy)
+                                disk->DiscardLegacyDuplicate(record);
                             if (preload) {
                                 std::scoped_lock guard{preload->mutex};
                                 preload->requests.push_back(request);
@@ -2064,13 +2325,14 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
                         Microsoft::WRL::ComPtr<ID3D12Device> device{context.Device()};
                         if (async->Submit(
                                 request,
-                                [device, disk_cache = disk.get(), record, stop] {
+                                [device, disk_cache = disk.get(), record, stop, stats] {
                                     SetThreadDescription(GetCurrentThread(), L"D3D12 PSO compiler");
                                     if (stop.stop_requested())
                                         return std::shared_ptr<AsyncResult>{};
                                     auto result = std::make_shared<AsyncResult>();
                                     BuildPrewarmedPipeline(device.Get(), disk_cache, record,
-                                                           result->graphics, result->compute);
+                                                           result->graphics, result->compute,
+                                                           stats->phases);
                                     return result;
                                 },
                                 true))
@@ -2086,6 +2348,20 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
                     // busy in parallel, and runtime lookups pick each PSO up when it is ready.
                     return true;
                 }
+                PsoBuildStats build_stats;
+                const ScopedPsoBuildStats collect{build_stats};
+                bool success = false;
+                SCOPE_EXIT {
+                    auto& p = stats->phases;
+                    p.dxil_disk_hits += build_stats.disk_hits;
+                    p.dxil_disk_misses += build_stats.disk_misses;
+                    p.dxil_memory_hits += build_stats.memory_hits;
+                    p.dxc_us += build_stats.dxc_us;
+                    p.root_us += build_stats.root_us;
+                    p.driver_us += build_stats.driver_us;
+                    p.driver_builds += build_stats.driver_builds;
+                    (success ? p.built : p.failed).fetch_add(1);
+                };
                 const auto decoded = ReadRecipe(record);
                 const auto& stages = decoded.stages;
                 if (SkipGlobalFallbackCompute(
@@ -2107,6 +2383,7 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
                 else
                     return false;
                 disk->RememberPipeline(record);
+                success = true;
                 return true;
             } catch (const std::exception& error) {
                 LOG_WARNING(Render, "D3D12 disk PSO warmup rejected: {}", error.what());
@@ -2114,10 +2391,11 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
             }
         },
         [callback = async_warmup ? VideoCore::DiskResourceLoadCallback{} : callback, stats, preload,
+         report,
          warmup_pool = preload ? async.get() : nullptr](const DiskWarmupProgress& progress) {
             if (warmup_pool && (progress.stage == DiskWarmupStage::Cancelled ||
                                 progress.stage == DiskWarmupStage::Failed))
-                warmup_pool->SetWorkerTarget(2);
+                warmup_pool->SetWorkerTarget(RuntimePsoThreads());
             if (preload) {
                 std::scoped_lock guard{preload->mutex};
                 preload->progress = progress;
@@ -2128,12 +2406,9 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
             if (progress.stage == DiskWarmupStage::Begin) {
                 Diagnostic(fmt::format("D3D12_PSO_PREWARM start records={}", progress.total));
             } else if (progress.stage != DiskWarmupStage::Build) {
-                const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                    std::chrono::steady_clock::now() - stats->start)
-                                    .count();
-                Diagnostic(fmt::format("D3D12_PSO_PREWARM built={} skipped={} failed={} ms={}",
-                                       progress.completed - progress.failed - stats->skipped,
-                                       stats->skipped, progress.failed, ms));
+                // Enumeration completion is not async worker completion.
+                if (!preload)
+                    report("enumerated");
             }
             if (callback)
                 callback(progress.stage == DiskWarmupStage::Complete
@@ -2147,8 +2422,10 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
         for (;;) {
             // Poll independently of job completions, including slow or stuck driver calls.
             // B releases only the loading thread; closing still cancels the coordinator.
-            if (stop_loading.stop_requested() || (skip_wait && skip_wait()))
+            if (stop_loading.stop_requested() || (skip_wait && skip_wait())) {
+                report("interrupted");
                 return;
+            }
             DiskWarmupProgress progress;
             std::vector<GraphicsPipelineKey> requests;
             bool finished;
@@ -2169,7 +2446,8 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
                 callback(VideoCore::LoadCallbackStage::Build, built, progress.total);
             if (finished && pending == 0) {
                 disk->WaitWarmup();
-                async->SetWorkerTarget(2);
+                report("complete");
+                async->SetWorkerTarget(RuntimePsoThreads());
                 if (callback)
                     callback(VideoCore::LoadCallbackStage::Complete, built, progress.total);
                 return;
@@ -2187,6 +2465,7 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
 }
 void PipelineCache::BindToChannel(s32 id) {
     std::scoped_lock lock{pipeline_mutex};
+    graphics_state_inputs.Invalidate();
     InvalidateLastGraphicsPipeline();
     VideoCommon::ShaderCache::BindToChannel(id);
     if (maxwell3d)

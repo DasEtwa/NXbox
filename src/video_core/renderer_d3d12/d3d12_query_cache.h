@@ -30,9 +30,9 @@ struct QueryCacheRuntimeImpl;
 // before BeginDraw; pass whether the last stage is a geometry shader. Clear and
 // dispatch do not participate. NotifySegment pauses/resumes predication; BeginDraw
 // also reapplies it after list resets. Never submit while a draw query is open.
-// Results are accumulated on the GPU; readback snapshots retire with fences and the query
-// cache delivers their values directly to guest memory. Guest report
-// timestamps remain Tegra::GPU::GetTicks() in QueryCacheBase; CaptureTimestamp is
+// Results are accumulated on the GPU. Batches copy report values into guest buffers;
+// readback snapshots retire with fences and the query cache delivers CPU-visible values.
+// Guest report timestamps remain Tegra::GPU::GetTicks() in QueryCacheBase; CaptureTimestamp is
 // an independent host GPU timestamp facility, never a substitute guest clock.
 // Pipeline IAPrimitives is the fallback for generated primitives without a GS;
 // tessellated primitive counts require SO statistics (no exact D3D12 DS count).
@@ -70,9 +70,10 @@ public:
                                                VideoCommon::LookupData second, bool qc_dirty,
                                                bool equal_check);
     void ReportQueryFenceWait();
-    void ReportPending();
-    void ReportCompleted(bool invalidated);
+    u64 ReportPending(VAddr address);
+    void ReportCompleted(bool invalidated, u64 token);
     std::string VisibilityDiagnostics() const;
+    void FlushPendingReports(DAddr address, u64 size);
     void PrepareDraw();
     void BeginDraw(bool has_geometry_shader = false);
     void EndDraw();
@@ -81,7 +82,8 @@ public:
         u64 value{};
         StagingBufferRef result;
     };
-    CounterResult ReadCounter(VideoCommon::QueryType type, u32 stream = 0);
+    CounterResult ReadCounter(VideoCommon::QueryType type, u32 stream = 0, DAddr address = 0,
+                              u32 size = 0);
     void ResetCounter(VideoCommon::QueryType type);
     void EnableCounter(VideoCommon::QueryType type, bool enabled);
     struct Timestamp {
@@ -95,7 +97,7 @@ public:
     u64 ReadTimestamp(const Timestamp& timestamp);
 
 private:
-    void SetGpuPredicate(DAddr address, D3D12_PREDICATION_OP op);
+    void SetGpuPredicate(DAddr address, D3D12_PREDICATION_OP op, bool compare_words = false);
     bool CompareConditional(VideoCommon::LookupData first, VideoCommon::LookupData second,
                             bool equal_check);
     void WriteValue(DAddr address, const void* value, u64 size);

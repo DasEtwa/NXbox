@@ -164,6 +164,9 @@ public:
         }
         // Exit before executing even one instruction from the stale cached body.
         self.jit_state.pc = record->pc;
+#if NXBOX_STALL_PROFILE
+        NxboxStall::AddJit(NxboxStall::JitEvent::DiskStale);
+#endif
         self.InvalidateCacheRange(record->pc, record->guest.size());
         self.conf.disk_cache->Result(false);
         return false;
@@ -209,6 +212,10 @@ public:
     }
 
     void InvalidateCacheRange(u64 start_address, size_t length) {
+        // A zero-length range must not underflow into an invalidation of all guest code.
+        if (length == 0) {
+            return;
+        }
 #if NXBOX_STALL_PROFILE
         NxboxStall::AddJit(NxboxStall::JitEvent::RangeCalls);
         NxboxStall::AddJit(NxboxStall::JitEvent::RangeBytes, length);
@@ -357,10 +364,10 @@ private:
         if (block_of_code.SpaceRemaining() < MINIMUM_REMAINING_CODESIZE) {
             // Immediately evacuate cache
 #if NXBOX_STALL_PROFILE
-            NxboxStall::Record(NxboxStall::Kind::JitFlush, 0);
+            const NxboxStall::Scope flush_scope{NxboxStall::Kind::JitFlush};
 #endif
             invalidate_entire_cache = true;
-            PerformRequestedCacheInvalidation(HaltReason::CacheInvalidation);
+            PerformRequestedCacheInvalidation(HaltReason::CacheInvalidation, true);
         }
         block_of_code.EnsureMemoryCommitted(MINIMUM_REMAINING_CODESIZE);
 
@@ -391,7 +398,9 @@ private:
         // Remember the exact instruction reads used by the translator, not a later snapshot.
         std::map<u64, u32> instruction_reads;
         bool record_reads = conf.disk_cache && !disk_config.empty();
-        const auto get_code = [this, &instruction_reads, &record_reads](u64 vaddr) {
+        u64 guest_code_reads = 0;
+        const auto get_code = [this, &instruction_reads, &record_reads, &guest_code_reads](u64 vaddr) {
+            ++guest_code_reads;
             const auto word = conf.disk_cache ? conf.callbacks->MemoryReadCodeFresh(vaddr)
                                               : conf.callbacks->MemoryReadCode(vaddr);
             if (record_reads && word) {
@@ -418,6 +427,9 @@ private:
 #endif
             A64::Translate(ir_block, arch_descriptor, get_code, {conf.define_unpredictable_behaviour, conf.wall_clock_cntpct});
         }
+#if NXBOX_STALL_PROFILE
+        NxboxStall::AddJit(NxboxStall::JitEvent::GuestCodeReads, guest_code_reads);
+#endif
         bool disk_eligible = record_reads && emitter.DiskCacheEligible(ir_block);
         {
 #if NXBOX_STALL_PROFILE
@@ -470,12 +482,15 @@ private:
         RecordPc(arch_descriptor.PC());
         RecordCompilation(seen_keys, descriptor.Value(), NxboxStall::JitEvent::NewKey,
                           NxboxStall::JitEvent::RepeatKey, NxboxStall::JitEvent::UnknownKey);
-        SampleCache();
+        // Sample across the entire descriptor space, rather than only the first 65k
+        // startup keys. Counters are exact for sampled keys, not extrapolated estimates.
+        RecordSampledCompilation(descriptor.Value());
+        SampleCache(true);
 #endif
         return block.entrypoint;
     }
 
-    void PerformRequestedCacheInvalidation(HaltReason hr) {
+    void PerformRequestedCacheInvalidation(HaltReason hr, [[maybe_unused]] bool capacity_clear = false) {
         if (Has(hr, HaltReason::CacheInvalidation)) {
             std::unique_lock lock{invalidation_mutex};
 
@@ -492,25 +507,30 @@ private:
             if (invalidate_entire_cache) {
 #if NXBOX_STALL_PROFILE
                 NxboxStall::AddJit(NxboxStall::JitEvent::CacheClears);
+                NxboxStall::AddJit(capacity_clear ? NxboxStall::JitEvent::CapacityClears
+                                                  : NxboxStall::JitEvent::ExplicitClears);
 #endif
                 block_of_code.ClearCache();
                 emitter.ClearCache();
                 restored_records.clear();
             } else {
+#if NXBOX_STALL_PROFILE
+                NxboxStall::AddJit(NxboxStall::JitEvent::RangeBatches);
+#endif
                 emitter.InvalidateCacheRanges(invalid_cache_ranges);
             }
+#if NXBOX_STALL_PROFILE
+            SampleCache(false, invalidate_entire_cache);
+#endif
             invalid_cache_ranges.clear();
             invalidate_entire_cache = false;
-#if NXBOX_STALL_PROFILE
-            SampleCache();
-#endif
         }
     }
 
 #if NXBOX_STALL_PROFILE
-    void SampleCache() {
+    void SampleCache(bool compilation = false, bool cleared = false) {
         NxboxStall::SampleJitCache(conf.processor_id,
-                                   conf.code_cache_size - block_of_code.SpaceRemaining(), conf.code_cache_size);
+                                   conf.code_cache_size - block_of_code.SpaceRemaining(), conf.code_cache_size, compilation, cleared);
     }
 
     static constexpr size_t HISTORY_LIMIT = 65536;
@@ -542,6 +562,20 @@ private:
         }
     }
 
+    void RecordSampledCompilation(u64 key) {
+        // SplitMix64 finalizer: aligned PCs and FPCR variants all participate.
+        u64 hash = key;
+        hash = (hash ^ (hash >> 30)) * 0xbf58476d1ce4e5b9ULL;
+        hash = (hash ^ (hash >> 27)) * 0x94d049bb133111ebULL;
+        hash ^= hash >> 31;
+        if ((hash & 63) == 0) {
+            RecordCompilation(sampled_keys, key, NxboxStall::JitEvent::SampledNewKey,
+                              NxboxStall::JitEvent::SampledRepeatKey,
+                              NxboxStall::JitEvent::SampledUnknownKey);
+        }
+    }
+
+    std::unordered_set<u64> sampled_keys;
     std::unordered_map<u64, u64> seen_pcs;
     std::unordered_set<u64> seen_keys;
 #endif

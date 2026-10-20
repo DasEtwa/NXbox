@@ -7,7 +7,7 @@
 #include "core/file_sys/vfs/vfs.h"
 #include "core/hle/service/cmif_types.h"
 #include "core/hle/service/filesystem/filesystem.h"
-#include "core/hle/service/service.h"
+#include "core/hle/service/am/polling_service.h"
 
 namespace FileSys {
 struct DirectoryEntry;
@@ -15,7 +15,7 @@ struct DirectoryEntry;
 
 namespace Service::FileSystem {
 
-class IDirectory final : public ServiceFramework<IDirectory> {
+class IDirectory final : public PollingServiceFramework<IDirectory> {
 public:
     explicit IDirectory(Core::System& system_, FileSys::VirtualDir directory_,
                         FileSys::OpenDirectoryMode mode);

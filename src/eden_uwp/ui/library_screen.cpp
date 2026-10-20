@@ -221,6 +221,10 @@ public:
         internet_art_ = !std::filesystem::exists(local_state_ / "internet-art.disabled");
         if (internet_art_)
             backgrounds_ = std::make_unique<BackgroundArtSource>(local_state_);
+        // Headless transfers: an ftp-autostart file in LocalState starts the FTP server with the
+        // library, so games can be copied to the removable drive without a controller.
+        if (std::filesystem::exists(local_state_ / "ftp-autostart"))
+            ftp_.Start(local_state_);
         return_home_ = return_home;
         guest_home_request_ = guest_home_request;
         input_.SetCancelFlag(return_home_);
@@ -228,6 +232,7 @@ public:
         renderer_backend_ = RendererSettings::Read(local_state_);
         shader_preload_ = RendererSettings::ReadShaderPreload(local_state_);
         async_shaders_ = RendererSettings::ReadAsyncShaders(local_state_);
+        fsr_ = RendererSettings::ReadFsr(local_state_);
         xbox_button_icons_ = RendererSettings::ReadXboxButtonIcons(local_state_);
         button_layout_ = RendererSettings::ReadButtonLayout(local_state_);
         std::ifstream resolution_settings(local_state_ / "eden_settings.txt");
@@ -608,7 +613,9 @@ private:
                 resolution_save_failed_ = false;
             }
             if (input_.Pressed(Button::Right) || input_.Pressed(Button::Down)) {
-                resolution_choice_ = std::min(3, resolution_choice_ + 1);
+                resolution_choice_ =
+                    std::min(static_cast<int>(TitleSettings::kResolutionValues.size()) - 1,
+                             resolution_choice_ + 1);
                 resolution_save_failed_ = false;
             }
             if (input_.Pressed(Button::A)) {
@@ -848,7 +855,7 @@ private:
         const GameEntry& game = Game(selected_);
         if (game.incomplete) {
             details_open_ = true;
-            Toast(Tr(Text::IncompleteFile), now);
+            Toast(Tr(LibraryContent::Label(game.problem)), now);
             input_.ConsumeUntilRelease();
             return;
         }
@@ -869,7 +876,7 @@ private:
             std::ifstream title(TitleSettings::File(local_state_, Game(selected_).title_id));
             value = TitleSettings::ReadResolution(title, value);
         }
-        resolution_choice_ = 0;
+        resolution_choice_ = 2;
         for (std::size_t i = 0; i < TitleSettings::kResolutionValues.size(); ++i) {
             if (TitleSettings::kResolutionValues[i] == value) {
                 resolution_choice_ = static_cast<int>(i);
@@ -988,6 +995,13 @@ private:
         if (SelectedSetting() == Setting::AsyncShaders) {
             if (RendererSettings::SaveAsyncShaders(local_state_, !async_shaders_))
                 async_shaders_ = !async_shaders_;
+            else
+                Toast(Tr(Text::ResolutionSaveFailed), now);
+            return;
+        }
+        if (SelectedSetting() == Setting::Upscaler) {
+            if (RendererSettings::SaveFsr(local_state_, !fsr_))
+                fsr_ = !fsr_;
             else
                 Toast(Tr(Text::ResolutionSaveFailed), now);
             return;
@@ -1786,7 +1800,9 @@ private:
             winrt::to_hstring(Common::g_build_version).c_str() + std::wstring(L" · ") +
             winrt::to_hstring(std::string(Common::g_scm_rev).substr(0, 8)).c_str();
         const int resolution = settings_resolution_;
-        const Text resolution_label = resolution == 5   ? Text::Resolution1_5X
+        const Text resolution_label = resolution == 1   ? Text::Resolution0_5X
+                                      : resolution == 2 ? Text::Resolution0_75X
+                                      : resolution == 5 ? Text::Resolution1_5X
                                       : resolution == 6 ? Text::Resolution2X
                                       : resolution == 7 ? Text::Resolution3X
                                                         : Text::Resolution1X;
@@ -1839,6 +1855,8 @@ private:
               Theme::kTextSecondary, Tr(Text::ButtonLayoutHint)},
              {Tr(Text::ResolutionTitle), Tr(resolution_label), Theme::kTextSecondary,
               Tr(Text::ResolutionMemoryHint)},
+             {Tr(Text::UpscalerTitle), Tr(fsr_ ? Text::UpscalerFsr : Text::UpscalerBilinear),
+              Theme::kTextSecondary, Tr(Text::UpscalerHint)},
              {Tr(Text::SettingsVersion), build.c_str(), Theme::kTextSecondary,
               Tr(Text::SettingsBuildHint)},
              {Tr(Text::FtpServer), ftp_address.c_str(), Theme::kTextSecondary,
@@ -1870,11 +1888,12 @@ private:
         }};
         const int row_count =
             renderer_open_ ? 3 : kSettingsCategories[Idx(settings_category_)].count;
-        for (int i = 0; i < row_count; ++i) {
+        const int first_row = renderer_open_ ? 0 : SettingsFirstVisibleRow(settings_row_);
+        for (int i = first_row; i < std::min(row_count, first_row + 7); ++i) {
             const auto setting = kSettingsCategories[Idx(settings_category_)].rows[Idx(i)];
             const Row& item =
                 renderer_open_ ? renderer_rows[Idx(i)] : rows[static_cast<std::size_t>(setting)];
-            const float y = kRowTop + static_cast<float>(i) * kRowPitch;
+            const float y = kRowTop + static_cast<float>(i - first_row) * kRowPitch;
             const auto rect = RectF(kRowsLeft, y, kRight, y + kRowPitch - 16.0f);
             const bool disabled = renderer_open_ ? !RendererChoiceEnabled(i)
                                                  : setting == Setting::Version ||
@@ -2040,10 +2059,11 @@ private:
                                                 : Game(selected_).name.c_str(),
                              Font::Meta, RectF(left, sheet.top + 115.0f, right, sheet.top + 155.0f),
                              Theme::kTextSecondary);
-        const std::array<Text, 4> labels = {Text::Resolution1X, Text::Resolution1_5X,
-                                            Text::Resolution2X, Text::Resolution3X};
+        const std::array<Text, 6> labels = {Text::Resolution0_5X, Text::Resolution0_75X,
+                                            Text::Resolution1X,   Text::Resolution1_5X,
+                                            Text::Resolution2X,   Text::Resolution3X};
         float x = left;
-        for (int i = 0; i < 4; ++i) {
+        for (int i = 0; i < static_cast<int>(labels.size()); ++i) {
             const std::wstring label = Tr(labels[Idx(i)]);
             const float width = PillWidth(renderer_, label, false);
             DrawChoicePill(
@@ -2052,7 +2072,7 @@ private:
                 false, resolution_choice_ == i);
             x += width + kPillGap;
         }
-        if (resolution_choice_ >= 2) {
+        if (TitleSettings::kResolutionValues[Idx(resolution_choice_)] >= 6) {
             renderer_.DrawString(Tr(Text::ResolutionMemoryHint), Font::Body,
                                  RectF(left, sheet.top + 300.0f, right, sheet.top + 380.0f),
                                  Theme::kTextSecondary);
@@ -2112,6 +2132,7 @@ private:
     bool resolution_global_ = false;
     bool shader_preload_ = true;
     bool async_shaders_ = true;
+    bool fsr_ = true;
     bool xbox_button_icons_ = true;
     ButtonLayout button_layout_ = ButtonLayout::Name;
     int renderer_backend_ = RendererSettings::kDirectX12;

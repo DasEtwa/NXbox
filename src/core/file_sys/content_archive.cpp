@@ -9,12 +9,13 @@
 #include <optional>
 #include <utility>
 
-#include "common/logging.h"
 #include <ranges>
+#include "common/logging.h"
 #include "core/crypto/aes_util.h"
 #include "core/crypto/ctr_encryption_layer.h"
 #include "core/crypto/key_manager.h"
 #include "core/file_sys/content_archive.h"
+#include "core/file_sys/nca_header_check.h"
 #include "core/file_sys/partition_filesystem.h"
 #include "core/file_sys/romfs_read_diagnostics.h"
 #include "core/file_sys/romfs_verify.h"
@@ -31,7 +32,7 @@ static u8 MasterKeyIdForKeyGeneration(u8 key_generation) {
     return std::max<u8>(key_generation, 1) - 1;
 }
 
-NCA::NCA(VirtualFile file_, const NCA* base_nca, bool allow_missing_base)
+NCA::NCA(VirtualFile file_, const NCA* base_nca, bool allow_missing_base, ReadMode mode)
     : file(std::move(file_)), keys{Core::Crypto::KeyManager::Instance()} {
     if (file == nullptr) {
         status = Loader::ResultStatus::ErrorNullFile;
@@ -77,6 +78,11 @@ NCA::NCA(VirtualFile file_, const NCA* base_nca, bool allow_missing_base)
                          Core::Crypto::Op::Decrypt);
 
         reader->SetExternalDecryptionKey(titlekey.data(), titlekey.size());
+    }
+
+    if (mode == ReadMode::HeaderOnly) {
+        status = Loader::ResultStatus::Success;
+        return;
     }
 
     if (base_nca && !base_nca->reader) {
@@ -172,6 +178,34 @@ NCA::~NCA() = default;
 
 Loader::ResultStatus NCA::GetStatus() const {
     return status;
+}
+
+bool NCA::HasZeroSectionHeader() const {
+    if (!has_valid_header)
+        return false;
+    if (reader->GetFsCount() == 0)
+        return true; // A program without any filesystem cannot boot.
+    const u64 section_offset = reader->GetFsOffset(0);
+    if (FileSys::ZeroNcaSectionHeader(file->ReadBytes(16, section_offset)))
+        return true;
+    NcaFsHeaderReader header;
+    if (R_FAILED(header.Initialize(*reader, 0)))
+        return false;
+    // Ordinary ExeFS data follows the section's hash layer. Probe its on-disk header too:
+    // the hash layer can be downloaded while the partition itself is a preallocated hole.
+    // Sparse/compressed/patched layouts need mapping tables, so leave them to the loader.
+    if (header.GetFsType() != NcaFsHeader::FsType::PartitionFs || header.ExistsSparseLayer() ||
+        header.ExistsCompressionLayer() || header.GetPatchInfo().HasIndirectTable() ||
+        header.GetHashType() != NcaFsHeader::HashType::HierarchicalSha256Hash)
+        return false;
+    const auto& hash = header.GetHashData().hierarchical_sha256_data;
+    if (hash.hash_layer_count <= 0 ||
+        static_cast<std::size_t>(hash.hash_layer_count) > hash.hash_layer_region.size())
+        return false;
+    const s64 target = hash.hash_layer_region[hash.hash_layer_count - 1].offset;
+    const auto offset = FileSys::NcaSectionProbeOffset(section_offset, reader->GetFsSize(0), target,
+                                                       file->GetSize());
+    return offset && FileSys::ZeroNcaSectionHeader(file->ReadBytes(16, *offset));
 }
 
 bool NCA::HasValidHeader() const {

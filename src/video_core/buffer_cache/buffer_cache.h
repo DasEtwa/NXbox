@@ -313,7 +313,11 @@ bool BufferCache<P>::DMACopy(GPUVAddr src_address, GPUVAddr dest_address, u64 am
         memory_tracker.MarkRegionAsGpuModified(*cpu_dest_address, amount);
         const bool should_sync = Settings::IsGPUFenceBehaviorBalanced() || Settings::IsGPUFenceBehaviorAccurate();
         if (should_sync) {
-            runtime.Finish();
+            if constexpr (requires { runtime.FinishDmaCopy(); }) {
+                runtime.FinishDmaCopy();
+            } else {
+                runtime.Finish();
+            }
         }
     }
 
@@ -397,6 +401,16 @@ void BufferCache<P>::BindGraphicsUniformBuffer(size_t stage, u32 index, GPUVAddr
         .size = size,
         .buffer_id = BufferId{},
     };
+    // Keep a resolved identity on duplicate notifications. Cache deletion already
+    // invalidates buffer_id; translating first also detects guest address remaps.
+    // Other runtimes retain their existing binding/dirty-bit behavior.
+    if constexpr (requires { runtime.BufferFastpathEnabled(); }) {
+        const Binding& previous = channel_state->uniform_buffers[stage][index];
+        if (runtime.BufferFastpathEnabled() && previous.device_addr == binding.device_addr &&
+            previous.size == binding.size) {
+            return;
+        }
+    }
     channel_state->uniform_buffers[stage][index] = binding;
 }
 
@@ -525,8 +539,16 @@ bool BufferCache<P>::BindGraphicsStorageBuffer(size_t stage, size_t ssbo_index, 
 
     const auto& cbufs = maxwell3d->state.shader_stages[stage];
     const GPUVAddr ssbo_addr = cbufs.const_buffers[cbuf_index].address + cbuf_offset;
-    channel_state->storage_buffers[stage][ssbo_index] =
-        StorageBufferBinding(ssbo_addr, cbuf_index, is_written);
+    Binding binding = StorageBufferBinding(ssbo_addr, cbuf_index, is_written);
+    if constexpr (requires { runtime.BindingResolutionCacheEnabled(); }) {
+        const Binding& previous = channel_state->storage_buffers[stage][ssbo_index];
+        if (runtime.BindingResolutionCacheEnabled() &&
+            previous.device_addr == binding.device_addr && previous.gpu_addr == binding.gpu_addr &&
+            previous.size == binding.size) {
+            binding.buffer_id = previous.buffer_id;
+        }
+    }
+    channel_state->storage_buffers[stage][ssbo_index] = binding;
     return (channel_state->storage_buffers[stage][ssbo_index].buffer_id != NULL_BUFFER_ID);
 }
 
@@ -601,8 +623,16 @@ void BufferCache<P>::BindComputeStorageBuffer(size_t ssbo_index, u32 cbuf_index,
 
     const auto& cbufs = launch_desc.const_buffer_config;
     const GPUVAddr ssbo_addr = cbufs[cbuf_index].Address() + cbuf_offset;
-    channel_state->compute_storage_buffers[ssbo_index] =
-        StorageBufferBinding(ssbo_addr, cbuf_index, is_written);
+    Binding binding = StorageBufferBinding(ssbo_addr, cbuf_index, is_written);
+    if constexpr (requires { runtime.BindingResolutionCacheEnabled(); }) {
+        const Binding& previous = channel_state->compute_storage_buffers[ssbo_index];
+        if (runtime.BindingResolutionCacheEnabled() &&
+            previous.device_addr == binding.device_addr && previous.gpu_addr == binding.gpu_addr &&
+            previous.size == binding.size) {
+            binding.buffer_id = previous.buffer_id;
+        }
+    }
+    channel_state->compute_storage_buffers[ssbo_index] = binding;
 }
 
 template <class P>
@@ -839,6 +869,16 @@ void BufferCache<P>::BindHostIndexBuffer() {
         runtime.BindIndexBuffer(buffer, new_offset, size);
     } else {
         buffer.MarkUsage(offset, size);
+        if constexpr (requires {
+                          runtime.TryReuseIndexBinding(draw_state.topology,
+                                                       draw_state.index_buffer.format, buffer,
+                                                       offset, size);
+                      }) {
+            if (runtime.TryReuseIndexBinding(draw_state.topology, draw_state.index_buffer.format,
+                                             buffer, offset, size)) {
+                return;
+            }
+        }
         runtime.BindIndexBuffer(draw_state.topology, draw_state.index_buffer.format, draw_state.index_buffer.first, draw_state.index_buffer.count, buffer, offset, size);
     }
 }
@@ -918,6 +958,15 @@ void BufferCache<P>::BindHostVertexBuffers() {
             const u32 stride = maxwell3d->regs.vertex_streams[index].stride;
             const u32 offset = buffer.Offset(binding.device_addr);
             buffer.MarkUsage(offset, binding.size);
+            if constexpr (requires {
+                              runtime.TryReuseVertexBinding(index, buffer, offset, binding.size,
+                                                            stride);
+                          }) {
+                if (runtime.TryReuseVertexBinding(index, buffer, offset, binding.size, stride)) {
+                    flush_bindings();
+                    continue;
+                }
+            }
             if (!bindings.buffers.empty() && index != last_index + 1) {
                 flush_bindings();
             }
@@ -1012,6 +1061,20 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
     TouchBuffer(buffer, binding.buffer_id);
     const bool has_host_buffer = binding.buffer_id != NULL_BUFFER_ID;
     const u32 offset = has_host_buffer ? buffer.Offset(device_addr) : 0;
+    if constexpr (requires { runtime.TryReuseUniformBinding(buffer, offset, size, u32{}); }) {
+        if (runtime.BindingResolutionCacheEnabled()) {
+            if (SynchronizeBuffer(buffer, device_addr, size, BufferUploadSource::Uniform)) {
+                ++channel_state->uniform_cache_hits[0];
+            }
+            buffer.MarkUsage(offset, size);
+            const u32 read_limit = (*channel_state->uniform_buffer_sizes)[stage][index];
+            if (!runtime.TryReuseUniformBinding(buffer, offset, size, read_limit)) {
+                runtime.SetUniformReadLimit(read_limit);
+                runtime.BindUniformBuffer(buffer, offset, size);
+            }
+            return;
+        }
+    }
     const bool needs_alignment_stream = [&]() {
         if constexpr (IS_OPENGL) {
             return false;
@@ -1182,6 +1245,13 @@ void BufferCache<P>::BindHostGraphicsStorageBuffers(size_t stage) {
             MarkWrittenBuffer(binding.buffer_id, binding.device_addr, size);
         }
 
+        if constexpr (requires {
+                          runtime.TryReuseStorageBinding(buffer, offset, size, is_written);
+                      }) {
+            if (runtime.TryReuseStorageBinding(buffer, offset, size, is_written)) {
+                return;
+            }
+        }
         if constexpr (NEEDS_BIND_STORAGE_INDEX) {
             runtime.BindStorageBuffer(stage, binding_index, buffer, offset, size, is_written);
             ++binding_index;
@@ -1296,6 +1366,12 @@ void BufferCache<P>::BindHostComputeUniformBuffers() {
         SynchronizeBuffer(buffer, binding.device_addr, size, BufferUploadSource::Uniform);
 
         buffer.MarkUsage(offset, size);
+        if constexpr (requires { runtime.TryReuseUniformBinding(buffer, offset, size, u32{}); }) {
+            const u32 read_limit = ~0U;
+            if (runtime.TryReuseUniformBinding(buffer, offset, size, read_limit)) {
+                return;
+            }
+        }
         if constexpr (NEEDS_BIND_UNIFORM_INDEX) {
             runtime.BindComputeUniformBuffer(binding_index, buffer, offset, size);
             ++binding_index;
@@ -1327,6 +1403,13 @@ void BufferCache<P>::BindHostComputeStorageBuffers() {
             MarkWrittenBuffer(binding.buffer_id, binding.device_addr, size, true);
         }
 
+        if constexpr (requires {
+                          runtime.TryReuseStorageBinding(buffer, offset, size, is_written);
+                      }) {
+            if (runtime.TryReuseStorageBinding(buffer, offset, size, is_written)) {
+                return;
+            }
+        }
         if constexpr (NEEDS_BIND_STORAGE_INDEX) {
             runtime.BindComputeStorageBuffer(binding_index, buffer, offset, size, is_written);
             ++binding_index;
@@ -1437,7 +1520,7 @@ void BufferCache<P>::UpdateIndexBuffer() {
     channel_state->index_buffer = Binding{
         .device_addr = *device_addr,
         .size = size,
-        .buffer_id = FindBuffer(*device_addr, size, false),
+        .buffer_id = ResolveBufferBinding(channel_state->index_buffer, *device_addr, size),
     };
 }
 
@@ -1474,7 +1557,8 @@ void BufferCache<P>::UpdateVertexBuffer(u32 index) {
     if (!gpu_memory->IsWithinGPUAddressRange(gpu_addr_end) || size >= 64_MiB) {
         size = static_cast<u32>(gpu_memory->MaxContinuousRange(gpu_addr_begin, size));
     }
-    const BufferId buffer_id = FindBuffer(*device_addr, size, false);
+    const BufferId buffer_id =
+        ResolveBufferBinding(channel_state->vertex_buffers[index], *device_addr, size);
     const Binding binding{
         .device_addr = *device_addr,
         .size = size,
@@ -1528,8 +1612,7 @@ void BufferCache<P>::UpdateStorageBuffers(size_t stage) {
     ForEachEnabledBit(channel_state->enabled_storage_buffers[stage], [&](u32 index) {
         // Resolve buffer
         Binding& binding = channel_state->storage_buffers[stage][index];
-        const BufferId buffer_id = FindBuffer(binding.device_addr, binding.size, false);
-        binding.buffer_id = buffer_id;
+        binding.buffer_id = ResolveBufferBinding(binding, binding.device_addr, binding.size);
         const bool is_written = ((channel_state->written_storage_buffers[stage] >> index) & 1) != 0;
         ResolveMultiRangeStorage(binding, is_written, graphics_segments);
     });
@@ -1575,6 +1658,7 @@ template <class P>
 void BufferCache<P>::UpdateComputeUniformBuffers() {
     ForEachEnabledBit(channel_state->enabled_compute_uniform_buffer_mask, [&](u32 index) {
         Binding& binding = channel_state->compute_uniform_buffers[index];
+        const Binding previous = binding;
         binding = NULL_BINDING;
         const auto& launch_desc = kepler_compute->launch_description;
         if (((launch_desc.const_buffer_enable_mask >> index) & 1) != 0) {
@@ -1585,7 +1669,7 @@ void BufferCache<P>::UpdateComputeUniformBuffers() {
                 binding.size = cbuf.size;
             }
         }
-        binding.buffer_id = FindBuffer(binding.device_addr, binding.size, false);
+        binding.buffer_id = ResolveBufferBinding(previous, binding.device_addr, binding.size);
     });
 }
 
@@ -1594,7 +1678,7 @@ void BufferCache<P>::UpdateComputeStorageBuffers() {
     ForEachEnabledBit(channel_state->enabled_compute_storage_buffers, [&](u32 index) {
         // Resolve buffer
         Binding& binding = channel_state->compute_storage_buffers[index];
-        binding.buffer_id = FindBuffer(binding.device_addr, binding.size, false);
+        binding.buffer_id = ResolveBufferBinding(binding, binding.device_addr, binding.size);
         const bool is_written =
             ((channel_state->written_compute_storage_buffers >> index) & 1) != 0;
         ResolveMultiRangeStorage(binding, is_written, compute_segments);
@@ -1648,6 +1732,24 @@ BufferId BufferCache<P>::FindBuffer(DAddr device_addr, u32 size, bool sparse_com
         }
     }
     return CreateBuffer(device_addr, size, sparse_compatible);
+}
+
+template <class P>
+BufferId BufferCache<P>::ResolveBufferBinding(const Binding& previous, DAddr device_addr,
+                                              u32 size) {
+    // The per-slot ID is the resolution dirty bit: notifications change the key and
+    // DeleteBuffer clears IDs in every channel before a slot can be recycled.
+    // A default SlotId is invalid; the null-buffer slot is a valid cached result.
+    if constexpr (requires { runtime.BindingResolutionCacheEnabled(); }) {
+        if (runtime.BindingResolutionCacheEnabled() && previous.buffer_id &&
+            previous.device_addr == device_addr && previous.size == size) {
+            if (device_addr != 0 && Settings::IsGPUFenceBehaviorAccurate()) {
+                SynchronizeBufferWrites(slot_buffers[previous.buffer_id]);
+            }
+            return previous.buffer_id;
+        }
+    }
+    return FindBuffer(device_addr, size, false);
 }
 
 template <class P>
@@ -1830,6 +1932,19 @@ void BufferCache<P>::TouchBuffer(Buffer& buffer, BufferId buffer_id) noexcept {
 template <class P>
 bool BufferCache<P>::SynchronizeBuffer(Buffer& buffer, DAddr device_addr, u32 size,
                                        BufferUploadSource source) {
+    // D3D12 already reuses host binding resolutions. Avoid re-walking CPU dirty words
+    // for those same ranges; write notifications invalidate the memoized page regions.
+    bool cache_range = false;
+    if constexpr (requires { runtime.BindingResolutionCacheEnabled(); }) {
+        static const bool cache_upload_ranges = [] {
+            const char* value = std::getenv("NXBOX_BUFFER_UPLOAD_RANGE_CACHE");
+            return !value || std::string_view{value} != "0";
+        }();
+        cache_range = cache_upload_ranges;
+        if (cache_range && memory_tracker.IsUploadRangeCached(device_addr, size)) {
+            return true;
+        }
+    }
     upload_copies.clear();
     u64 total_size_bytes = 0;
     u64 largest_copy = 0;
@@ -1845,14 +1960,18 @@ bool BufferCache<P>::SynchronizeBuffer(Buffer& buffer, DAddr device_addr, u32 si
         total_size_bytes += range_size;
         largest_copy = (std::max)(largest_copy, range_size);
     };
-    memory_tracker.ForEachUploadRange(device_addr, size, [&](u64 device_addr_out, u64 range_size) {
-        DAddr upload_start = device_addr_out;
-        gpu_modified_ranges.ForEachInRange(device_addr_out, range_size, [&](DAddr gpu_start, DAddr gpu_end) {
-            add_upload(upload_start, gpu_start);
-            upload_start = gpu_end;
-        });
-        add_upload(upload_start, device_addr_out + range_size);
-    });
+    memory_tracker.ForEachUploadRange(
+        device_addr, size,
+        [&](u64 device_addr_out, u64 range_size) {
+            DAddr upload_start = device_addr_out;
+            gpu_modified_ranges.ForEachInRange(device_addr_out, range_size,
+                                               [&](DAddr gpu_start, DAddr gpu_end) {
+                                                   add_upload(upload_start, gpu_start);
+                                                   upload_start = gpu_end;
+                                               });
+            add_upload(upload_start, device_addr_out + range_size);
+        },
+        cache_range);
     if (total_size_bytes == 0) {
         return true;
     }
@@ -2065,6 +2184,17 @@ void BufferCache<P>::DeleteBuffer(BufferId buffer_id, bool do_not_mark) {
     replace(channel_state->transform_feedback_buffers);
     replace(channel_state->compute_uniform_buffers);
     replace(channel_state->compute_storage_buffers);
+    // Cached bindings in inactive channels must not retain a deleted/merged identity.
+    if constexpr (requires { runtime.BufferFastpathEnabled(); }) {
+        for (const size_t id : active_channel_ids) {
+            std::ranges::for_each(channel_storage[id].uniform_buffers, replace);
+            std::ranges::for_each(channel_storage[id].storage_buffers, replace);
+            scalar_replace(channel_storage[id].index_buffer);
+            replace(channel_storage[id].vertex_buffers);
+            replace(channel_storage[id].compute_uniform_buffers);
+            replace(channel_storage[id].compute_storage_buffers);
+        }
+    }
 
     // Mark the whole buffer as CPU written to stop tracking CPU writes
     if (!do_not_mark) {

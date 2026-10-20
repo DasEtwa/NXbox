@@ -20,7 +20,7 @@ namespace Service::AM {
 
 ISystemAppletProxy::ISystemAppletProxy(Core::System& system_, std::shared_ptr<Applet> applet,
                                        Kernel::KProcess* process, WindowSystem& window_system)
-    : ServiceFramework{system_, "ISystemAppletProxy"},
+    : PollingServiceFramework{system_, "ISystemAppletProxy"},
       m_window_system{window_system}, m_process{process}, m_applet{std::move(applet)} {
     // clang-format off
     static const FunctionInfo functions[] = {

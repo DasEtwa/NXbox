@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: Copyright 2026 NSPX
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "common/nxbox_wait_diag.h"
 #include "video_core/renderer_d3d12/d3d12_fence_manager.h"
 
 #include "common/gpu_thread_profile.h"
@@ -23,6 +24,7 @@ bool InnerFence::IsSignaled() const {
 }
 void InnerFence::Wait() {
     if (!is_stubbed) {
+        const Common::GpuProfile::WaitScope origin{Common::GpuProfile::Wait::GuestFenceCompletion};
         try {
             context.WaitSubmitted(tick);
         } catch (const std::exception& error) {
@@ -57,11 +59,18 @@ void FenceManager::SyncOperation(std::function<void()> &&func) {
 void FenceManager::SignalSyncPoint(u32 value) {
     syncpoint_manager.IncrementGuest(value);
     ++pending_syncpoints;
+    NxboxWait::Add(NxboxWait::Counter::SyncpointQueued);
     LogSyncpoints();
-    auto signal = [this, value] {
+    const auto diagnostic_token = NxboxWait::Enabled()
+                                      ? NxboxWait::BeginPending(NxboxWait::PendingKind::Syncpoint,
+                                                                value, context.PendingFenceTick())
+                                      : 0;
+    auto signal = [this, value, diagnostic_token] {
         syncpoint_manager.IncrementHost(value);
+        NxboxWait::EndPending(diagnostic_token);
         --pending_syncpoints;
         ++signaled_syncpoints;
+        NxboxWait::Add(NxboxWait::Counter::SyncpointSignaled);
         LogSyncpoints();
     };
     if (!Common::GpuProfile::enabled.load(std::memory_order_relaxed)) {

@@ -12,6 +12,7 @@
 #include "video_core/dma_pusher.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/gpu.h"
+#include "video_core/gpu_draw_pipeline.h"
 #include "video_core/guest_memory.h"
 #include "video_core/memory_manager.h"
 #include "video_core/rasterizer_interface.h"
@@ -32,7 +33,8 @@ DmaPusher::DmaPusher(Core::System& system_, MemoryManager& memory_manager_, Cont
 DmaPusher::~DmaPusher() = default;
 
 void DmaPusher::DispatchCalls() {
-    const Common::GpuProfile::PhaseScope gpu_profile_scope{Common::GpuProfile::Phase::DmaPusher};
+    const Common::GpuProfile::RecordingScope gpu_profile_scope{
+        Common::GpuProfile::Phase::DmaPusher};
     dma_pushbuffer_subindex = 0;
     dma_state.is_last_call = true;
     while (system.IsPoweredOn()) {
@@ -67,13 +69,16 @@ bool DmaPusher::Step() {
     }
 
     auto& current_command = command_list.command_lists[dma_pushbuffer_subindex];
-    const CommandListHeader& header = current_command;
+    // Keep the submission header in registers across the memory/engine calls below.
+    const CommandListHeader header_snapshot = current_command;
+    const CommandListHeader& header = frontend_fastpath ? header_snapshot : current_command;
     dma_state.dma_get = header.addr;
 
     if (signal_sync && !synced) {
         // Submit deferred host fences before waiting for the DMA memory-sync callback.
         // The completion thread cannot submit the recording thread's command list.
         rasterizer->FlushDeferredFences();
+        const Common::GpuProfile::WaitScope origin{Common::GpuProfile::Wait::DmaMemorySync};
         const Common::GpuProfile::PhaseScope wait{Common::GpuProfile::Phase::SyncWait};
         std::unique_lock lk(sync_mutex);
         sync_cv.wait(lk, [this]() { return synced; });
@@ -120,9 +125,83 @@ bool DmaPusher::Step() {
 }
 
 void DmaPusher::ProcessCommands(std::span<const CommandHeader> commands) {
+    constexpr u32 cb_data_begin =
+        static_cast<u32>(offsetof(Engines::Maxwell3D::Regs, const_buffer.buffer) / sizeof(u32));
+    std::vector<CommandHeader> pipeline_commands;
+    if (rasterizer && rasterizer->HasGpuPipeline()) {
+        rasterizer->DrainGpuPipeline();
+        commands = VideoCommon::SnapshotGpuMethods(commands, pipeline_commands);
+    }
     for (size_t index = 0; index < commands.size();) {
+        if (!dma_state.method_count) {
+            auto const command_header = commands[index]; // can copy
+            // No command active - this is the first word of a new one
+            switch (command_header.mode) {
+            case SubmissionMode::Increasing:
+                SetState(command_header);
+                dma_state.non_incrementing = false;
+                dma_increment_once = false;
+                if (frontend_fastpath && dma_state.method_count == 1 &&
+                    index + 1 < commands.size() && dma_state.method >= non_puller_methods &&
+                    dma_state.method < MacroRegistersStart &&
+                    dma_state.method - cb_data_begin >= 16 &&
+                    subchannel_type[dma_state.subchannel] == Engines::EngineTypes::Maxwell3D &&
+                    !subchannels[dma_state.subchannel]->execution_mask[dma_state.method]) {
+                    // Single-register state packets can append directly to the sink.
+                    // The execution mask excludes side effects; CB data and all
+                    // methods with side effects still take the normal payload path.
+                    subchannels[dma_state.subchannel]->method_sink.emplace_back(
+                        dma_state.method, commands[index + 1].argument);
+                    dma_state.dma_word_offset = u32((index + 1) * sizeof(u32));
+                    ++dma_state.method;
+                    dma_state.method_count = 0;
+                    dma_state.is_last_call = true;
+                    index += 2;
+                    continue;
+                }
+                break;
+            case SubmissionMode::NonIncreasing:
+                SetState(command_header);
+                dma_state.non_incrementing = true;
+                dma_increment_once = false;
+                break;
+            case SubmissionMode::Inline:
+                dma_state.method = command_header.method;
+                dma_state.subchannel = command_header.subchannel;
+                dma_state.dma_word_offset =
+                    u64(-s64(dma_state.dma_get)); // negate to set address as 0
+                if (frontend_fastpath && state_runs_fastpath &&
+                    dma_state.method >= non_puller_methods &&
+                    dma_state.method < MacroRegistersStart &&
+                    subchannel_type[dma_state.subchannel] == Engines::EngineTypes::Maxwell3D &&
+                    !subchannels[dma_state.subchannel]->execution_mask[dma_state.method]) {
+                    // Inline state has exactly the same deferred sink semantics as a
+                    // one-word increasing packet; no engine dispatch is needed.
+                    subchannels[dma_state.subchannel]->method_sink.emplace_back(
+                        dma_state.method, command_header.arg_count);
+                } else {
+                    CallMethod(command_header.arg_count);
+                }
+                dma_state.non_incrementing = true;
+                dma_increment_once = false;
+                break;
+            case SubmissionMode::IncreaseOnce:
+                SetState(command_header);
+                dma_state.non_incrementing = false;
+                dma_increment_once = true;
+                break;
+            default:
+                break;
+            }
+            index++;
+            // Decode a packet and consume its first payload in the same iteration.
+            // Do not read ahead across an engine call: uploads may modify later words.
+            if (!frontend_fastpath || !dma_state.method_count || index == commands.size()) {
+                continue;
+            }
+        }
         // Data word of methods command
-        if (dma_state.method_count && dma_state.non_incrementing) {
+        if (dma_state.non_incrementing) {
             auto const& command_header = commands[index]; //must ref (MUltiMethod re)
             dma_state.dma_word_offset = u32(index * sizeof(u32));
             const u32 max_write = u32(std::min<std::size_t>(index + dma_state.method_count, commands.size()) - index);
@@ -130,7 +209,7 @@ void DmaPusher::ProcessCommands(std::span<const CommandHeader> commands) {
             dma_state.method_count -= max_write;
             dma_state.is_last_call = true;
             index += max_write;
-        } else if (dma_state.method_count) {
+        } else {
             constexpr u32 cb_begin = static_cast<u32>(
                 offsetof(Engines::Maxwell3D::Regs, const_buffer.buffer) / sizeof(u32));
             constexpr u32 cb_end = cb_begin + 16;
@@ -151,6 +230,41 @@ void DmaPusher::ProcessCommands(std::span<const CommandHeader> commands) {
                 index += amount;
                 continue;
             }
+            if (frontend_fastpath && !dma_increment_once &&
+                subchannel_type[dma_state.subchannel] == Engines::EngineTypes::Maxwell3D &&
+                dma_state.method >= non_puller_methods && dma_state.method < MacroRegistersStart) {
+                auto* engine = static_cast<Engines::Maxwell3D*>(subchannels[dma_state.subchannel]);
+                const auto limit = static_cast<u32>(
+                    (std::min)(commands.size() - index,
+                               static_cast<size_t>(
+                                   (std::min)(dma_state.method_count,
+                                              MacroRegistersStart - dma_state.method))));
+                u32 amount = 0;
+                if (state_runs_fastpath) {
+                    // One lookup replaces a bitset test for every payload word.
+                    amount = (std::min)(limit, engine->GetRegisterWriteRunLength(dma_state.method));
+                } else {
+                    while (amount < limit && !engine->execution_mask[dma_state.method + amount])
+                        ++amount;
+                }
+                if (amount != 0) {
+                    if (amount == 1) {
+                        // A single register needs no range resize or zero initialization.
+                        engine->method_sink.emplace_back(dma_state.method,
+                                                         commands[index].argument);
+                    } else {
+                        engine->CallMultiMethod(system, dma_state.method, &commands[index].argument,
+                                                amount);
+                    }
+                    dma_state.dma_word_offset =
+                        static_cast<u32>((index + amount - 1) * sizeof(u32));
+                    dma_state.method += amount;
+                    dma_state.method_count -= amount;
+                    dma_state.is_last_call = dma_state.method_count == 0;
+                    index += amount;
+                    continue;
+                }
+            }
             auto const command_header = commands[index]; //can copy
             dma_state.dma_word_offset = u32(index * sizeof(u32));
             dma_state.is_last_call = dma_state.method_count <= 1;
@@ -158,37 +272,6 @@ void DmaPusher::ProcessCommands(std::span<const CommandHeader> commands) {
             dma_state.method += !dma_state.non_incrementing ? 1 : 0;
             dma_state.non_incrementing |= dma_increment_once;
             dma_state.method_count--;
-            index++;
-        } else {
-            auto const command_header = commands[index]; //can copy
-            // No command active - this is the first word of a new one
-            switch (command_header.mode) {
-            case SubmissionMode::Increasing:
-                SetState(command_header);
-                dma_state.non_incrementing = false;
-                dma_increment_once = false;
-                break;
-            case SubmissionMode::NonIncreasing:
-                SetState(command_header);
-                dma_state.non_incrementing = true;
-                dma_increment_once = false;
-                break;
-            case SubmissionMode::Inline:
-                dma_state.method = command_header.method;
-                dma_state.subchannel = command_header.subchannel;
-                dma_state.dma_word_offset = u64(-s64(dma_state.dma_get)); // negate to set address as 0
-                CallMethod(command_header.arg_count);
-                dma_state.non_incrementing = true;
-                dma_increment_once = false;
-                break;
-            case SubmissionMode::IncreaseOnce:
-                SetState(command_header);
-                dma_state.non_incrementing = false;
-                dma_increment_once = true;
-                break;
-            default:
-                break;
-            }
             index++;
         }
     }
@@ -213,9 +296,20 @@ void DmaPusher::CallMethod(u32 argument) {
         if (!subchannel->execution_mask[dma_state.method]) {
             subchannel->method_sink.emplace_back(dma_state.method, argument);
         } else {
-            subchannel->ConsumeSink(system);
-            subchannel->current_dma_segment = dma_state.dma_get + dma_state.dma_word_offset;
-            subchannel->CallMethod(system, dma_state.method, argument, dma_state.is_last_call);
+            const auto dispatch = [&](auto* target_engine) {
+                target_engine->ConsumeSink(system);
+                target_engine->current_dma_segment = dma_state.dma_get + dma_state.dma_word_offset;
+                target_engine->CallMethod(system, dma_state.method, argument,
+                                          dma_state.is_last_call);
+            };
+            // Maxwell3D is final: retain the concrete type through both sink
+            // consumption and method dispatch so these calls can be devirtualized.
+            if (frontend_fastpath &&
+                subchannel_type[dma_state.subchannel] == Engines::EngineTypes::Maxwell3D) {
+                dispatch(static_cast<Engines::Maxwell3D*>(subchannel));
+            } else {
+                dispatch(subchannel);
+            }
         }
     }
 }
@@ -225,9 +319,20 @@ void DmaPusher::CallMultiMethod(const u32* base_start, u32 num_methods) {
         puller.CallMultiMethod(*this, dma_state.method, dma_state.subchannel, base_start, num_methods, dma_state.method_count);
     } else {
         auto subchannel = subchannels[dma_state.subchannel];
-        subchannel->ConsumeSink(system);
-        subchannel->current_dma_segment = dma_state.dma_get + dma_state.dma_word_offset;
-        subchannel->CallMultiMethod(system, dma_state.method, base_start, num_methods, dma_state.method_count);
+        const auto dispatch = [&](auto* target_engine) {
+            target_engine->ConsumeSink(system);
+            target_engine->current_dma_segment = dma_state.dma_get + dma_state.dma_word_offset;
+            target_engine->CallMultiMethod(system, dma_state.method, base_start, num_methods,
+                                           dma_state.method_count);
+        };
+        // Non-incrementing CB, inline upload/index and macro payloads already have
+        // bulk handlers. Keep the final Maxwell type through this dispatch too.
+        if (frontend_fastpath &&
+            subchannel_type[dma_state.subchannel] == Engines::EngineTypes::Maxwell3D) {
+            dispatch(static_cast<Engines::Maxwell3D*>(subchannel));
+        } else {
+            dispatch(subchannel);
+        }
     }
 }
 

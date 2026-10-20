@@ -4,7 +4,7 @@
 #pragma once
 
 #include "core/hle/service/cmif_types.h"
-#include "core/hle/service/service.h"
+#include "core/hle/service/am/polling_service.h"
 
 namespace Service {
 
@@ -14,7 +14,7 @@ struct Applet;
 class IApplicationProxy;
 class WindowSystem;
 
-class IApplicationProxyService final : public ServiceFramework<IApplicationProxyService> {
+class IApplicationProxyService final : public PollingServiceFramework<IApplicationProxyService> {
 public:
     explicit IApplicationProxyService(Core::System& system_, WindowSystem& window_system);
     ~IApplicationProxyService() override;

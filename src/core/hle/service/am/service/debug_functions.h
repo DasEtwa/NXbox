@@ -3,11 +3,11 @@
 
 #pragma once
 
-#include "core/hle/service/service.h"
+#include "core/hle/service/am/polling_service.h"
 
 namespace Service::AM {
 
-class IDebugFunctions final : public ServiceFramework<IDebugFunctions> {
+class IDebugFunctions final : public PollingServiceFramework<IDebugFunctions> {
 public:
     explicit IDebugFunctions(Core::System& system_);
     ~IDebugFunctions() override;

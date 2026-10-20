@@ -89,6 +89,8 @@ A64EmitX64::BlockDescriptor A64EmitX64::Emit(IR::Block& block,
 #endif
         code.EnableWriting();
     }
+    // End the previous object's lifetime: alias vectors can outgrow inline storage.
+    this->reg_alloc.~RegAlloc();
     new (&this->reg_alloc) RegAlloc{[this] {
         std::bitset<32> gprs = any_gpr;
         if (conf.fastmem_pointer)
@@ -132,7 +134,9 @@ A64EmitX64::BlockDescriptor A64EmitX64::Emit(IR::Block& block,
 #if NXBOX_STALL_PROFILE
     const NxboxStall::Scope scope{NxboxStall::Kind::JitEmitInsts};
 #endif
+    u64 instruction_count = 0;
     for (auto& inst : block.instructions) {
+        ++instruction_count;
         auto const opcode = inst.GetOpcode();
         if (conf.collect_memory_access_context && IR::IsMemoryReadOrWrite(opcode)) {
             const A64::LocationDescriptor location{IR::LocationDescriptor{inst.GetArg(0).GetU64()}};
@@ -166,6 +170,8 @@ finish_this_inst:
     }
 
     reg_alloc.AssertNoMoreUses();
+    reg_alloc.ReportProfile();
+    NxboxStall::AddJit(NxboxStall::JitEvent::IrInstructions, instruction_count);
     }
     if (conf.enable_cycle_counting)
         EmitAddCycles(block.CycleCount());
@@ -210,6 +216,7 @@ finish_this_inst:
     }
 
     const size_t size = size_t(code.getCurr() - entrypoint);
+    NxboxStall::AddJit(NxboxStall::JitEvent::HostBytes, size);
 
     const A64::LocationDescriptor descriptor{block.Location()};
     const A64::LocationDescriptor end_location{block.EndLocation()};

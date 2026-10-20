@@ -31,6 +31,9 @@ std::optional<AxxEmitX64::DoNotFastmemMarker> AxxEmitX64::ShouldFastmem(AxxEmitC
 }
 
 FakeCall AxxEmitX64::FastmemCallback(u64 rip_) {
+#if NXBOX_STALL_PROFILE
+    NxboxStall::AddJit(NxboxStall::JitEvent::FastmemFaults);
+#endif
     const auto iter = fastmem_patch_info.find(rip_);
     if (iter != fastmem_patch_info.end()) {
         FakeCall result{
@@ -40,6 +43,9 @@ FakeCall AxxEmitX64::FastmemCallback(u64 rip_) {
         if (iter->second.recompile) {
             const auto marker = iter->second.marker;
             do_not_fastmem.insert(marker);
+#if NXBOX_STALL_PROFILE
+            NxboxStall::AddJit(NxboxStall::JitEvent::FastmemInvalidations);
+#endif
             InvalidateBasicBlocks({std::get<0>(marker)});
         }
         return result;

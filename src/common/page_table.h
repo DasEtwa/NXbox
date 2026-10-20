@@ -7,6 +7,7 @@
 #pragma once
 
 #include <atomic>
+#include <mutex>
 
 #include "common/common_types.h"
 #include "common/sparse_large_vector.h"
@@ -124,6 +125,60 @@ struct PageTable {
         static_assert(sizeof(Data) == sizeof(std::atomic<u64>));
     };
 
+    // Design follows Jadyx's clean JIT page table (GPL-3.0-or-later), xbox_internal.md
+    // "Page table JIT limpia (0.2.65.0)". Zero always selects the precise callback.
+    class JitPageEntry {
+    public:
+        uintptr_t Load() const noexcept {
+            return pointer.load(std::memory_order_acquire);
+        }
+        void Store(uintptr_t value) noexcept {
+            pointer.store(value, std::memory_order_release);
+        }
+
+    private:
+        std::atomic<uintptr_t> pointer{0};
+    };
+    static_assert(sizeof(JitPageEntry) == sizeof(uintptr_t));
+    static_assert(std::atomic<uintptr_t>::is_always_lock_free);
+
+    static bool CleanJitPageTableEnabled();
+    bool UseCleanJitPageTable() const {
+        return CleanJitPageTableEnabled() && !fastmem_arena;
+    }
+    // Called after fastmem selection and before the first mapping, with readers stopped.
+    void InitializeJitPageTable();
+    void LogJitPageTable();
+    void LogJitPageTableMemoryOnce();
+
+    // Writers retain the existing external mapping/lifetime synchronization. Clearing a
+    // slot cannot revoke a pointer already loaded by generated code; backing memory must
+    // remain alive until those accesses finish, just as with the canonical table.
+    void ClearJitPage(std::size_t index) {
+        if (jit_entries.size() && jit_entries[index].Load()) {
+            jit_entries.GetUnchecked(index).Store(0);
+        }
+    }
+    void ClearJitRegion(std::size_t begin, std::size_t end) {
+        if (jit_entries.size()) {
+            for (auto index = begin; index < end; ++index) {
+                ClearJitPage(index);
+            }
+        }
+    }
+    // Serializes writers (kernel map/unmap, debug marks, rasterizer marks) so the canonical
+    // entry and the JIT slot, written in separate steps, always end up agreeing. Readers never lock.
+    std::mutex writer_mutex;
+
+    void StorePage(std::size_t index, bool marked, PageType type, u16 block, uintptr_t pointer) {
+        // Invalidate an old mapping before replacing its canonical metadata.
+        ClearJitPage(index);
+        entries.GetAndFault(index).Store(marked, type, block, pointer);
+        if (jit_entries.size() && !marked && type == PageType::Memory) {
+            jit_entries.GetAndFault(index).Store(pointer);
+        }
+    }
+
     PageTable();
     ~PageTable() noexcept;
 
@@ -149,6 +204,9 @@ struct PageTable {
     /// corresponding attribute element is of type `Memory`.
     SparseLargeVector<PageEntryData> entries;
     static_assert(sizeof(PageEntryData) == 8);
+
+    SparseLargeVector<JitPageEntry> jit_entries;
+    std::atomic<bool> jit_memory_logged{false};
 
     u8* fastmem_arena{};
     std::size_t current_address_space_width_in_bits{};

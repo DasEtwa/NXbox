@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "common/logging.h"
+#include "video_core/renderer_d3d12/d3d12_build_stats.h"
 #include "video_core/renderer_d3d12/d3d12_context.h"
 #include "video_core/renderer_d3d12/d3d12_root_signature.h"
 
@@ -25,6 +26,7 @@ DescriptorCounts CountDescriptors(const Shader::Info& info) {
 
 ComPtr<ID3D12RootSignature> CreateRootSignature(ID3D12Device* device, DescriptorCounts counts,
                                                 bool root_cbvs) {
+    const PsoBuildTimer timer{&PsoBuildStats::root_us};
     root_cbvs = root_cbvs && UseRootCbvs(counts.cbv);
     const auto range = [](D3D12_DESCRIPTOR_RANGE_TYPE type, u32 count) {
         return D3D12_DESCRIPTOR_RANGE{type, std::max(count, 1u), 0, 0,

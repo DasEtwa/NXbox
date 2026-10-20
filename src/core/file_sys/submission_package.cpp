@@ -70,9 +70,9 @@ Truncation DescribeTruncation(const VirtualFile& file, const PartitionFilesystem
 
 } // Anonymous namespace
 
-NSP::NSP(VirtualFile file_, u64 title_id_, std::size_t program_index_)
-    : file(std::move(file_)), expected_program_id(title_id_),
-      program_index(program_index_), status{Loader::ResultStatus::Success},
+NSP::NSP(VirtualFile file_, u64 title_id_, std::size_t program_index_, bool program_headers_only_)
+    : file(std::move(file_)), expected_program_id(title_id_), program_index(program_index_),
+      program_headers_only(program_headers_only_), status{Loader::ResultStatus::Success},
       pfs(std::make_shared<PartitionFilesystem>(file)), keys{Core::Crypto::KeyManager::Instance()} {
     if (pfs->GetStatus() != Loader::ResultStatus::Success) {
         status = pfs->GetStatus();
@@ -161,6 +161,16 @@ std::vector<u64> NSP::GetProgramTitleIDs() const {
 
     std::vector<u64> out{program_ids.cbegin(), program_ids.cend()};
     return out;
+}
+
+const std::vector<std::pair<u64, TitleType>>& NSP::GetContentMeta() const {
+    return content_meta;
+}
+bool NSP::HasCorruptProgram() const {
+    return corrupt_program;
+}
+bool NSP::HasMissingProgramKeys() const {
+    return missing_program_keys;
 }
 
 bool NSP::IsExtractedType() const {
@@ -306,6 +316,7 @@ void NSP::ReadNCAs(const std::vector<VirtualFile>& files) {
             }
 
             const CNMT cnmt(inner_file);
+            content_meta.emplace_back(cnmt.GetTitleID(), cnmt.GetType());
 
             ncas[cnmt.GetTitleID()][{cnmt.GetType(), ContentRecordType::Meta}] = nca;
 
@@ -314,6 +325,8 @@ void NSP::ReadNCAs(const std::vector<VirtualFile>& files) {
                 auto next_file = pfs->GetFile(fmt::format("{}.nca", id_string));
 
                 if (next_file == nullptr) {
+                    if (rec.type == ContentRecordType::Program)
+                        corrupt_program = true;
                     if (rec.type != ContentRecordType::DeltaFragment) {
                         LOG_WARNING(Service_FS,
                                     "NCA with ID {}.nca is listed in content metadata, but cannot "
@@ -324,7 +337,25 @@ void NSP::ReadNCAs(const std::vector<VirtualFile>& files) {
                     continue;
                 }
 
-                auto next_nca = std::make_shared<NCA>(std::move(next_file));
+                auto next_nca = std::make_shared<NCA>(std::move(next_file), nullptr, false,
+                                                      program_headers_only &&
+                                                              rec.type == ContentRecordType::Program
+                                                          ? NCA::ReadMode::HeaderOnly
+                                                          : NCA::ReadMode::Full);
+
+                if (program_headers_only && rec.type == ContentRecordType::Program) {
+                    const auto result = next_nca->GetStatus();
+                    const bool key_error = result == Loader::ResultStatus::ErrorMissingKeyAreaKey ||
+                                           result == Loader::ResultStatus::ErrorMissingTitlekey ||
+                                           result == Loader::ResultStatus::ErrorMissingTitlekek;
+                    missing_program_keys |= key_error;
+                    // Without a header key an unreadable encrypted header is not evidence of
+                    // damage.
+                    corrupt_program |= !key_error &&
+                                       keys.HasKey(Core::Crypto::S256KeyType::Header) &&
+                                       (result == Loader::ResultStatus::ErrorBadNCAHeader ||
+                                        next_nca->HasZeroSectionHeader());
+                }
 
                 if (next_nca->HasValidHeader() && next_nca->GetType() == NCAContentType::Program) {
                     program_status[next_nca->GetTitleId()] = next_nca->GetStatus();

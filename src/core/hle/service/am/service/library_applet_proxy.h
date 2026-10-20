@@ -4,7 +4,7 @@
 #pragma once
 
 #include "core/hle/service/cmif_types.h"
-#include "core/hle/service/service.h"
+#include "core/hle/service/am/polling_service.h"
 
 namespace Service::AM {
 
@@ -23,7 +23,7 @@ class ISelfController;
 class IWindowController;
 class WindowSystem;
 
-class ILibraryAppletProxy final : public ServiceFramework<ILibraryAppletProxy> {
+class ILibraryAppletProxy final : public PollingServiceFramework<ILibraryAppletProxy> {
 public:
     explicit ILibraryAppletProxy(Core::System& system_, std::shared_ptr<Applet> applet,
                                  Kernel::KProcess* process, WindowSystem& window_system);

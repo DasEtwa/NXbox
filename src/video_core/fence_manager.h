@@ -19,6 +19,7 @@
 #include <queue>
 
 #include "common/common_types.h"
+#include "common/nxbox_wait_diag.h"
 #include "common/settings.h"
 #include "common/thread.h"
 #include "video_core/delayed_destruction_ring.h"
@@ -85,7 +86,17 @@ public:
         uncommitted_operations.emplace_back(std::move(func));
     }
 
+    // Recording thread only. A native submit alone cannot publish SyncOperation callbacks.
+    // Seal the tail before the producer goes idle, even without another guest fence.
+    void CommitPendingOperations() {
+        if (!uncommitted_operations.empty())
+            SignalReference();
+    }
+
     void SignalFence(std::function<void()>&& func) {
+        const NxboxWait::Scope publication{NxboxWait::Kind::FencePublication,
+                                           reinterpret_cast<std::uintptr_t>(this),
+                                           "fence publication"};
         const bool delay_fence =
             require_gpu_completion ||
             (Settings::IsGPUFenceBehaviorDefault() ? Settings::IsGPULevelHigh()
@@ -283,9 +294,19 @@ private:
                 if (!current_fence->IsStubbed()) {
                     WaitFence(current_fence);
                 }
-                PopAsyncFlushes();
-                for (auto& operation : current_operations) {
-                    operation();
+                {
+                    const NxboxWait::Scope retirement{NxboxWait::Kind::CacheRetirement,
+                                                      reinterpret_cast<std::uintptr_t>(this),
+                                                      "fence cache retirement"};
+                    PopAsyncFlushes();
+                }
+                {
+                    const NxboxWait::Scope callbacks{NxboxWait::Kind::GuestCallbacks,
+                                                     reinterpret_cast<std::uintptr_t>(this),
+                                                     "fence guest callbacks"};
+                    for (auto& operation : current_operations) {
+                        operation();
+                    }
                 }
                 {
                     std::unique_lock lock(ring_guard);

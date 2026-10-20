@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright 2026 NSPX
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""A failed launch shows why: from the library it returns there instead of closing the app."""
+"""A failed launch shows why, then returns to the library instead of closing the app."""
 
 import unittest
 from pathlib import Path
@@ -11,22 +11,21 @@ SESSION = (ROOT / "src/eden_uwp/game_session.cpp").read_text()
 
 class LaunchFailureScreen(unittest.TestCase):
     def test_every_failed_launch_shows_the_failure(self):
-        tail = SESSION[SESSION.index("worker.join();\n    // A failed launch says why.") :]
+        tail = SESSION[SESSION.index("worker.join();\n    // A failed launch says why,") :]
         tail = tail[: tail.index("\n}\n")]
-        self.assertIn("!(failed && protocol_launch)", tail)
         self.assertIn("if (failed && !closed.load()) {", tail)
+        self.assertIn("show_failure(launch_status.failure.load());", tail)
+        # Every in-app launch goes back; the next pass shows the library (allow_official_startup is
+        # cleared), so a direct boot does not retry the same file. A protocol launch ends.
+        self.assertIn("return_home = !protocol_launch && !closed.load();", tail)
         self.assertNotIn("if (protocol_launch && !closed.load() &&", tail)
 
-    def test_missing_exefs_gets_its_own_text(self):
+    def test_failed_load_explains_from_the_file_content(self):
         load = SESSION[SESSION.index("const auto result = system.Load(window, path, parameters);") :]
         load = load[: load.index('Diagnostic("GAME_LOAD_FAILED status="')]
-        self.assertIn("u32(Loader::ResultStatus::ErrorNoExeFS)", load)
-        self.assertIn("launch_status.missing_exefs.store(", load)
-        self.assertIn("Ui::Text::LaunchNeedsUpdate", SESSION)
-        for lang in ("en.inc", "pt_br.inc"):
-            with self.subTest(lang=lang):
-                self.assertIn("{Text::LaunchNeedsUpdate,", (ROOT / "src/eden_uwp/ui/lang" / lang).read_text())
-
+        self.assertIn("LibraryContent::LoadProblem(", load)
+        self.assertIn("Ui::LibraryFileProblem(", load)
+        self.assertIn("launch_status.failure.store(LibraryContent::Label(problem));", load)
 
 if __name__ == "__main__":
     unittest.main()

@@ -9,11 +9,10 @@
 namespace VideoCommon {
 
 ChannelInfo::ChannelInfo(Tegra::Control::ChannelState& channel_state)
-    : maxwell3d{channel_state.payload->maxwell_3d}
-    , kepler_compute{channel_state.payload->kepler_compute}
-    , gpu_memory{*channel_state.memory_manager}
-    , program_id{channel_state.program_id}
-  {}
+    : maxwell3d{channel_state.pipeline_maxwell ? *channel_state.pipeline_maxwell
+                                               : channel_state.payload->maxwell_3d},
+      kepler_compute{channel_state.payload->kepler_compute},
+      gpu_memory{*channel_state.memory_manager}, program_id{channel_state.program_id} {}
 
 template class VideoCommon::ChannelSetupCaches<VideoCommon::ChannelInfo>;
 

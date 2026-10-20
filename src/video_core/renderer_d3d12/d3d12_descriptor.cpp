@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdlib>
 #include <cstring>
 #include <stdexcept>
 #include <unordered_set>
@@ -228,7 +229,24 @@ D3D12_SAMPLER_DESC MakeSamplerDesc(const Tegra::Texture::TSCEntry& entry, bool s
 
 D3D12DescriptorAllocator::D3D12DescriptorAllocator(Context& context, u32 view_capacity,
                                                    u32 sampler_capacity)
-    : context{context}, views{view_capacity}, samplers{sampler_capacity} {
+    : handle_table_reuse{[] {
+          const char* value = std::getenv("NXBOX_D3D12_HANDLE_TABLE_CACHE");
+          return !value || std::strcmp(value, "0") != 0;
+      }()},
+      descriptor_table_cache{BisectEnabled("NXBOX_D3D12_DESCRIPTOR_TABLE_CACHE")},
+      descriptor_fastpath{[] {
+          const char* value = std::getenv("NXBOX_D3D12_DESCRIPTOR_FASTPATH");
+          return !value || std::strcmp(value, "0") != 0;
+      }()},
+      descriptor_ranges{[] {
+          const char* value = std::getenv("NXBOX_D3D12_DESCRIPTOR_RANGES");
+          return !value || std::strcmp(value, "0") != 0;
+      }()},
+      persistent_null_descriptors{[] {
+          const char* value = std::getenv("NXBOX_D3D12_PERSISTENT_NULL_DESCRIPTORS");
+          return !value || std::strcmp(value, "0") != 0;
+      }()},
+      context{context}, views{view_capacity}, samplers{sampler_capacity} {
     if (!view_capacity || view_capacity > ViewHeapSize || !sampler_capacity ||
         sampler_capacity > SamplerHeapSize)
         throw std::invalid_argument("D3D12 descriptor heap capacity outside supported limits");
@@ -238,8 +256,15 @@ D3D12DescriptorAllocator::D3D12DescriptorAllocator(Context& context, u32 view_ca
     Init(dsvs, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, DsvHeapSize, false);
     InitCache(view_cache, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 4096);
     InitCache(sampler_cache, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, 256);
+    if (persistent_null_descriptors)
+        InitCache(null_view_cache, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 32);
     InitCache(bound_rtvs, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 8);
     InitCache(bound_dsv, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 1);
+    Diagnostic(fmt::format("D3D12 handle_table_cache={}", handle_table_reuse ? 1 : 0));
+    Diagnostic(fmt::format("D3D12 descriptor_fastpath={}", descriptor_fastpath ? 1 : 0));
+    Diagnostic(fmt::format("D3D12 descriptor_table_cache={}", descriptor_table_cache ? 1 : 0));
+    Diagnostic(fmt::format("D3D12 descriptor_ranges={} persistent_null_descriptors={}",
+                           descriptor_ranges, persistent_null_descriptors));
 }
 
 void D3D12DescriptorAllocator::InitCache(DescriptorCache& cache, D3D12_DESCRIPTOR_HEAP_TYPE type,
@@ -251,6 +276,7 @@ void D3D12DescriptorAllocator::InitCache(DescriptorCache& cache, D3D12_DESCRIPTO
           "create CPU descriptor cache", context.Device());
     cache.stride = context.Device()->GetDescriptorHandleIncrementSize(type);
     cache.capacity = capacity;
+    cache.cpu = cache.heap->GetCPUDescriptorHandleForHeapStart();
 }
 void D3D12DescriptorAllocator::RefreshCaches() {
     if (cache_tick == context.CurrentTick())
@@ -264,6 +290,7 @@ void D3D12DescriptorAllocator::RefreshCaches() {
         new_frame = false;
         view_cache.entries.clear();
         view_cache.cursor = 0;
+        ++view_cache.generation;
     }
 }
 DescriptorKey D3D12DescriptorAllocator::MakeDescriptorKey(const ResourcePtr& resource, u32 kind,
@@ -281,33 +308,155 @@ DescriptorKey D3D12DescriptorAllocator::MakeDescriptorKey(const ResourcePtr& res
 void D3D12DescriptorAllocator::WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE type,
                                            const ResourcePtr& resource, u32 kind, const void* desc,
                                            size_t size, const DescriptorTable& table, u32 slot) {
+    if (slot >= table.count)
+        throw std::out_of_range("D3D12 descriptor write outside table slice");
     if (table.plan) {
         const u32 index = table.first + slot;
         const DescriptorKey key = MakeDescriptorKey(resource, kind, desc, size);
+        auto& plan = *table.plan;
+        if (descriptor_fastpath && plan.sources.valid) {
+            RefreshCaches();
+            auto& cache = type == D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER ? sampler_cache : view_cache;
+            const auto& previous = previous_draw_tables[type == D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER];
+            // Unchanged slots borrow immutable CPU sources without hashing or map access.
+            plan.sources.Set(
+                index, previous.plan.sources,
+                index < previous.plan.keys.size() && previous.plan.keys[index] == key,
+                [&] { return cache.generation; },
+                [&] { return ResolveDescriptor(type, resource, key, nullptr).ptr; });
+        }
         table.plan->keys.at(index) = key;
         table.plan->resources.at(index) = resource;
+        if (!table.plan->initialized.empty())
+            table.plan->initialized.at(index) = 1;
         return;
     }
     WriteCached(type, resource, kind, desc, size, table.Slot(slot));
 }
 
 bool D3D12DescriptorAllocator::CanReuseDrawTable(const DescriptorPlan& plan, bool sampler) const {
+    return CanReusePreviousDrawTable(plan, sampler) || FindHandleDrawTable(plan, sampler) ||
+           FindCachedDrawTable(plan, sampler);
+}
+
+bool D3D12DescriptorAllocator::CanReusePreviousDrawTable(const DescriptorPlan& plan,
+                                                         bool sampler) const {
     const auto& previous = previous_draw_tables[sampler ? 1 : 0];
+    if (descriptor_fastpath) {
+        const auto& cache = sampler ? sampler_cache : view_cache;
+        if (plan.sources.Current(cache.generation)) {
+            return previous.tick == context.CurrentTick() && previous.plan.sizes == plan.sizes &&
+                   previous.plan.sources.Matches(plan.sources, cache.generation);
+        }
+    }
     return previous.tick == context.CurrentTick() && previous.plan.sizes == plan.sizes &&
            previous.plan.keys == plan.keys;
 }
 
+const DescriptorTable* D3D12DescriptorAllocator::FindHandleDrawTable(const DescriptorPlan& plan,
+                                                                     bool sampler) const {
+    const auto& cache = sampler ? sampler_cache : view_cache;
+    if (!handle_table_reuse || !descriptor_fastpath || !plan.sources.Current(cache.generation))
+        return nullptr;
+    return handle_table_cache[sampler ? 1 : 0].Find(
+        context.CurrentTick(), cache.generation, plan.sizes,
+        {plan.sources.handles.data(), plan.sources.count});
+}
+
+const D3D12DescriptorAllocator::CachedDrawTable* D3D12DescriptorAllocator::FindCachedDrawTable(
+    const DescriptorPlan& plan, bool sampler) const {
+    if (!descriptor_table_cache)
+        return nullptr;
+    return draw_table_cache[sampler ? 1 : 0].Find(context.CurrentTick(), plan.sizes, plan.keys);
+}
+
+void D3D12DescriptorAllocator::RememberDrawTable(const DescriptorPlan& plan, DescriptorTable table,
+                                                 bool sampler) {
+    const auto& cache = sampler ? sampler_cache : view_cache;
+    if (handle_table_reuse && descriptor_fastpath && plan.sources.Current(cache.generation)) {
+        // Resource transitions retain every backing resource until tick completion;
+        // cached GPU slots are immutable and never reused across that tick.
+        handle_table_cache[sampler ? 1 : 0].Remember(
+            context.CurrentTick(), cache.generation, plan.sizes,
+            {plan.sources.handles.data(), plan.sources.count}, table);
+    }
+    if (descriptor_table_cache)
+        draw_table_cache[sampler ? 1 : 0].Remember(context.CurrentTick(), plan.sizes, plan.keys,
+                                                   {table, plan.resources});
+}
+
 DescriptorTable D3D12DescriptorAllocator::FinishDrawTable(DescriptorPlan& plan, bool sampler) {
+    if (!plan.initialized.empty()) {
+        for (u32 slot = 0; slot < plan.keys.size(); ++slot) {
+            if (!plan.initialized[slot]) {
+                const auto message =
+                    fmt::format("D3D12_VALIDATION invalid tick={} call=FinishDrawTable sampler={} "
+                                "unwritten_slot={} count={}",
+                                context.CurrentTick(), sampler, slot, plan.keys.size());
+                Diagnostic(message);
+                throw std::invalid_argument(message);
+            }
+        }
+    }
     auto& previous = previous_draw_tables[sampler ? 1 : 0];
-    if (CanReuseDrawTable(plan, sampler)) {
+    if (CanReusePreviousDrawTable(plan, sampler)) {
         context.Profile().Count(FrameCount::DescriptorTableReuses);
         return previous.table;
+    }
+    // Recheck after Reserve: a submission retires the entire cache's GPU slots.
+    if (const auto* cached = FindHandleDrawTable(plan, sampler)) {
+        context.Profile().Count(FrameCount::DescriptorTableReuses);
+        previous.tick = context.CurrentTick();
+        std::swap(previous.plan, plan);
+        previous.table = *cached;
+        return *cached;
+    }
+    if (const auto* cached = FindCachedDrawTable(plan, sampler)) {
+        context.Profile().Count(FrameCount::DescriptorTableReuses);
+        previous.tick = context.CurrentTick();
+        std::swap(previous.plan, plan);
+        previous.table = cached->table;
+        return cached->table;
     }
     const u32 count = static_cast<u32>(plan.keys.size());
     const auto table = sampler ? AllocateSamplers(count) : AllocateViews(count);
     const auto type =
         sampler ? D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER : D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    static const bool batch_copies = BisectEnabled("NXBOX_D3D12_BATCH_DESCRIPTOR_COPIES");
+    const FrameProfile::Scope profile_write{context.Profile(), FramePhase::DescriptorWrites};
+    RefreshCaches(); // Reserve may have submitted and invalidated CPU sources.
+    const auto& cache = sampler ? sampler_cache : view_cache;
+    if (descriptor_fastpath && plan.sources.Current(cache.generation)) {
+        // The destination is contiguous. Merge adjacent CPU sources, but keep
+        // repeated null handles separate so every GPU slot gets initialized.
+        if (descriptor_ranges) {
+            DescriptorCopyRanges<D3D12_CPU_DESCRIPTOR_HANDLE, 4096> sources;
+            for (u32 slot = 0; slot < count; ++slot) {
+                const D3D12_CPU_DESCRIPTOR_HANDLE handle{plan.sources.handles[slot]};
+                sources.Add(handle, cache.stride, IsNullDescriptorHandle(handle));
+            }
+            context.Device()->CopyDescriptors(1, &table.cpu, &count,
+                                              static_cast<UINT>(sources.count),
+                                              sources.starts.data(), sources.sizes.data(), type);
+        } else {
+            std::array<D3D12_CPU_DESCRIPTOR_HANDLE, 4096> sources;
+            for (u32 slot = 0; slot < count; ++slot)
+                sources[slot].ptr = plan.sources.handles[slot];
+            context.Device()->CopyDescriptors(1, &table.cpu, &count, count, sources.data(), nullptr,
+                                              type);
+        }
+        TraceApiCall(context.Device(), "CopyDescriptors", nullptr, &type, sizeof(type));
+        context.Profile().Count(FrameCount::DescriptorCopyCalls);
+        context.Profile().Count(FrameCount::DescriptorCopies, count);
+        RememberDrawTable(plan, table, sampler);
+        previous.tick = context.CurrentTick();
+        std::swap(previous.plan, plan);
+        previous.table = table;
+        return table;
+    }
+    static const bool batch_copies = [] {
+        const char* value = std::getenv("NXBOX_D3D12_BATCH_DESCRIPTOR_COPIES");
+        return !value || std::strcmp(value, "0") != 0;
+    }();
     std::optional<CopyBatch> batch;
     if (batch_copies)
         batch.emplace();
@@ -326,6 +475,7 @@ DescriptorTable D3D12DescriptorAllocator::FinishDrawTable(DescriptorPlan& plan, 
     }
     if (batch)
         FlushCopies(type, *batch);
+    RememberDrawTable(plan, table, sampler);
     previous.tick = context.CurrentTick();
     // Retain the new keys/resources and return the old storage to the draw scratch.
     // Move assignment would discard that storage and allocate again on the next draw.
@@ -338,13 +488,42 @@ void D3D12DescriptorAllocator::WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE type,
                                            const ResourcePtr& resource, u32 kind, const void* desc,
                                            size_t size, D3D12_CPU_DESCRIPTOR_HANDLE destination,
                                            CopyBatch* batch) {
-    const FrameProfile::Scope profile_write{context.Profile(), FramePhase::DescriptorWrites};
     RefreshCaches();
     const auto key = MakeDescriptorKey(resource, kind, desc, size);
     const auto old_contents = slot_contents.find(destination.ptr);
     if (old_contents != slot_contents.end() && old_contents->second == key)
         return; // The slot has not changed; never overwrite an in-flight table.
-    auto& cache = type == D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER ? sampler_cache : view_cache;
+    const auto source = ResolveDescriptor(type, resource, key, batch);
+    if (batch) {
+        batch->Add(destination, source,
+                   [&](size_t count, const auto* destinations, const auto* sources) {
+                       CopyDescriptors(type, count, destinations, sources);
+                   });
+    } else {
+        context.Device()->CopyDescriptorsSimple(1, destination, source, type);
+        TraceApiCall(context.Device(), "CopyDescriptorsSimple", nullptr, &type, sizeof(type));
+        context.Profile().Count(FrameCount::DescriptorCopyCalls);
+    }
+    context.Profile().Count(FrameCount::DescriptorCopies);
+    slot_contents[destination.ptr] = std::move(key);
+}
+D3D12_CPU_DESCRIPTOR_HANDLE D3D12DescriptorAllocator::ResolveDescriptor(
+    D3D12_DESCRIPTOR_HEAP_TYPE type, const ResourcePtr& resource, const DescriptorKey& key,
+    CopyBatch* batch) {
+    const auto kind = key.kind;
+    const void* desc = key.description.data();
+    // Null views own no resources and never change. Keep their CPU slots out
+    // of the frame/rollover cache; a full permanent heap falls back without
+    // recycling any handles borrowed by an unfinished descriptor plan.
+    const bool null_view = persistent_null_descriptors && !resource && kind < 3;
+    if (null_view) {
+        if (const auto found = null_view_cache.entries.find(key);
+            found != null_view_cache.entries.end())
+            return found->second.handle;
+    }
+    auto& cache = null_view && null_view_cache.cursor < null_view_cache.capacity ? null_view_cache
+                  : type == D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER                   ? sampler_cache
+                                                                                 : view_cache;
     auto found = cache.entries.find(key);
     if (found == cache.entries.end()) {
         if (cache.cursor == cache.capacity) {
@@ -355,8 +534,9 @@ void D3D12DescriptorAllocator::WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE type,
             cache.entries.clear();
             slot_contents.clear();
             cache.cursor = 0;
+            ++cache.generation;
         }
-        auto handle = cache.heap->GetCPUDescriptorHandleForHeapStart();
+        auto handle = cache.cpu;
         handle.ptr += static_cast<SIZE_T>(cache.cursor++) * cache.stride;
         switch (kind) {
         case 0: {
@@ -369,6 +549,19 @@ void D3D12DescriptorAllocator::WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE type,
         case 1: {
             D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
             std::memcpy(&srv, desc, sizeof(srv));
+            if (BisectEnabled("NXBOX_D3D12_VALIDATE_COMMANDS") && !resource) {
+                std::string words;
+                for (size_t offset = 0; offset < sizeof(srv); offset += sizeof(u32)) {
+                    u32 word{};
+                    std::memcpy(&word, reinterpret_cast<const u8*>(&srv) + offset,
+                                std::min(sizeof(word), sizeof(srv) - offset));
+                    words += fmt::format("{}{:08x}", offset ? " " : "", word);
+                }
+                Diagnostic(fmt::format(
+                    "D3D12_VALIDATION null_srv tick={} dimension={} format={} desc=[{}]",
+                    context.CurrentTick(), static_cast<UINT>(srv.ViewDimension),
+                    static_cast<UINT>(srv.Format), words));
+            }
             context.Device()->CreateShaderResourceView(resource ? resource->handle.Get() : nullptr,
                                                        &srv, handle);
             TraceApiCall(context.Device(), "CreateShaderResourceView",
@@ -401,26 +594,29 @@ void D3D12DescriptorAllocator::WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE type,
         context.Profile().Count(by_kind[kind]);
         found = cache.entries.emplace(key, CachedDescriptor{handle, resource}).first;
     }
-    if (batch) {
-        batch->Add(destination, found->second.handle,
-                   [&](size_t count, const auto* destinations, const auto* sources) {
-                       CopyDescriptors(type, count, destinations, sources);
-                   });
-    } else {
-        context.Device()->CopyDescriptorsSimple(1, destination, found->second.handle, type);
-        TraceApiCall(context.Device(), "CopyDescriptorsSimple", nullptr, &type, sizeof(type));
-        context.Profile().Count(FrameCount::DescriptorCopyCalls);
-    }
-    context.Profile().Count(FrameCount::DescriptorCopies);
-    slot_contents[destination.ptr] = std::move(key);
+    return found->second.handle;
 }
+
 void D3D12DescriptorAllocator::CopyDescriptors(D3D12_DESCRIPTOR_HEAP_TYPE type, size_t count,
                                                const D3D12_CPU_DESCRIPTOR_HANDLE* destinations,
                                                const D3D12_CPU_DESCRIPTOR_HANDLE* sources) {
-    const FrameProfile::Scope profile_write{context.Profile(), FramePhase::DescriptorWrites};
-    // Null range-size arrays mean one descriptor per range, including noncontiguous slots.
-    context.Device()->CopyDescriptors(static_cast<UINT>(count), destinations, nullptr,
-                                      static_cast<UINT>(count), sources, nullptr, type);
+    if (descriptor_ranges) {
+        DescriptorCopyRanges<D3D12_CPU_DESCRIPTOR_HANDLE, 32> destination_ranges, source_ranges;
+        const auto stride =
+            type == D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER ? sampler_cache.stride : view_cache.stride;
+        for (size_t index = 0; index < count; ++index) {
+            destination_ranges.Add(destinations[index], stride);
+            source_ranges.Add(sources[index], stride, IsNullDescriptorHandle(sources[index]));
+        }
+        context.Device()->CopyDescriptors(
+            static_cast<UINT>(destination_ranges.count), destination_ranges.starts.data(),
+            destination_ranges.sizes.data(), static_cast<UINT>(source_ranges.count),
+            source_ranges.starts.data(), source_ranges.sizes.data(), type);
+    } else {
+        // Null range-size arrays mean one descriptor per range, including noncontiguous slots.
+        context.Device()->CopyDescriptors(static_cast<UINT>(count), destinations, nullptr,
+                                          static_cast<UINT>(count), sources, nullptr, type);
+    }
     TraceApiCall(context.Device(), "CopyDescriptors", nullptr, &type, sizeof(type));
     context.Profile().Count(FrameCount::DescriptorCopyCalls);
 }
@@ -501,8 +697,7 @@ void D3D12DescriptorAllocator::Reserve(u32 view_count, u32 sampler_count, u32 rt
     }
 }
 
-void D3D12DescriptorAllocator::SetHeaps(ID3D12GraphicsCommandList* commands,
-                                        bool cache_draw_state) {
+void D3D12DescriptorAllocator::SetHeaps(CommandFacade* commands, bool cache_draw_state) {
     const std::array heaps{views.heap.Get(), samplers.heap.Get()};
     if (cache_draw_state) {
         auto& state = context.DrawState();
@@ -616,6 +811,7 @@ void D3D12DescriptorAllocator::WriteNullSampler(const DescriptorTable& table, u3
     D3D12_SAMPLER_DESC desc{};
     desc.Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
     desc.AddressU = desc.AddressV = desc.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    desc.MaxAnisotropy = 1;
     desc.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
     desc.MaxLOD = D3D12_FLOAT32_MAX;
     WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, {}, 3, &desc, sizeof(desc), table, slot);
@@ -724,11 +920,18 @@ bool D3D12DescriptorAllocator::WriteImageSrv(const DescriptorTable& table, u32 s
             // unbound one. Other mismatches keep the unadapted view, as before: MK8D binds later
             // cubes of a cube array to cube slots, and a null SRV in their place has not been
             // checked on the console.
-            const bool no_faces = (fallback_dimension == D3D12_SRV_DIMENSION_TEXTURECUBE ||
-                                   fallback_dimension == D3D12_SRV_DIMENSION_TEXTURECUBEARRAY) &&
-                                  backing_desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
-                                  backing_desc.SampleDesc.Count == 1 &&
-                                  backing_desc.DepthOrArraySize < 6;
+            // A 3D slot needs a 3D resource and the reverse: no view can bridge resource
+            // dimensions (Mario Party binds the same 8x8 2D texture to a 3D slot, and the
+            // device was removed with DXGI_ERROR_INVALID_CALL right after).
+            const bool wrong_resource =
+                (fallback_dimension == D3D12_SRV_DIMENSION_TEXTURE3D) !=
+                (backing_desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D);
+            const bool no_faces = wrong_resource ||
+                                  ((fallback_dimension == D3D12_SRV_DIMENSION_TEXTURECUBE ||
+                                    fallback_dimension == D3D12_SRV_DIMENSION_TEXTURECUBEARRAY) &&
+                                   backing_desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
+                                   backing_desc.SampleDesc.Count == 1 &&
+                                   backing_desc.DepthOrArraySize < 6);
             if (logged_srv_mismatches.insert(desc.ViewDimension * 16 + fallback_dimension)
                     .second) {
                 Diagnostic(fmt::format(

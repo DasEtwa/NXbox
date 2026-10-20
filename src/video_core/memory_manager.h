@@ -66,7 +66,8 @@ public:
     [[nodiscard]] const u8* GetPointer(GPUVAddr addr) const;
 
     template <typename T>
-    [[nodiscard]] inline T* GetPointer(GPUVAddr addr) noexcept {
+    [[nodiscard]] inline T* GetPointer(GPUVAddr addr) {
+        DrainGpuPipeline();
         const auto address = GpuToCpuAddress(addr);
         if (!address)
             return {};
@@ -74,7 +75,8 @@ public:
     }
 
     template <typename T>
-    [[nodiscard]] inline const T* GetPointer(GPUVAddr addr) const noexcept {
+    [[nodiscard]] inline const T* GetPointer(GPUVAddr addr) const {
+        DrainGpuPipeline();
         return GetPointer<T*>(addr);
     }
 
@@ -195,6 +197,8 @@ private:
     u64 big_page_mask;
     u64 big_page_table_mask;
 
+    void DrainGpuPipeline() const;
+    bool gpu_pipeline_enabled{};
     VideoCore::RasterizerInterface* rasterizer = nullptr;
 
     enum class EntryType : u64 {

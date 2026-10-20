@@ -7,11 +7,13 @@
 #pragma once
 
 #include <atomic>
+#include <cstdlib>
 #include <deque>
 #include <limits>
 #include <mutex>
 #include <span>
 #include <string>
+#include <string_view>
 #include <type_traits>
 // TODO: find out which don't require stable iters
 #include <unordered_map>
@@ -85,12 +87,25 @@ public:
     DescriptorTable<TICEntry> compute_image_table;
     DescriptorTable<TSCEntry> compute_sampler_table;
 
+    bool graphics_descriptors_initialized = false;
+    bool graphics_linked_tsc = false;
+
     // TODO: still relies on bad iterators :(
     std::unordered_map<TICEntry, ImageViewId> image_views;
     std::unordered_map<TSCEntry, SamplerId> samplers;
 
     ::Common::unordered_map<u32, SamplerId> sampler_ids;
     ::Common::unordered_map<u32, ImageViewId> image_view_ids;
+
+    // A descriptor is still read each use. Only its resolved ID avoids a hash lookup.
+    std::array<std::vector<ImageViewId>, 2> indexed_image_view_ids;
+
+    struct ResolvedSampler {
+        u32 index = (std::numeric_limits<u32>::max)();
+        SamplerId id{};
+    };
+    // Bounded, channel-local caches; descriptor Read remains the content/generation authority.
+    std::array<std::array<ResolvedSampler, 64>, 2> resolved_samplers{};
 
     TextureCacheGPUMap* gpu_page_table = nullptr;
     TextureCacheGPUMap* sparse_page_table = nullptr;
@@ -172,6 +187,22 @@ public:
     }
 
     std::string RecordPassDumpPresentation(DAddr cpu_addr, const ImageView* view);
+    void PublishShaderImageWrites(std::span<const ImageViewId> views, std::string_view writer,
+                                  u64 program = 0);
+    void BeginPassDumpImageWrite();
+    void ReportPassDumpHistory();
+    void NotePassDumpImageWrite(ImageId id, std::string_view writer, GPUVAddr source = 0);
+    void NotePassDumpRenderTargets(std::string_view writer);
+    void SnapshotPassDumpPresentation(const ImageView& view);
+    ImageView* PrepareImageForPresentation(ImageView* view);
+    void RecordPassDumpDepthWrite(std::string_view writer) {
+        RecordPassDumpImageWrite(render_targets.depth_buffer_id, writer);
+    }
+    void RecordPassDumpRenderTargetWrite(u32 slot, std::string_view writer, GPUVAddr source) {
+        RecordPassDumpImageWrite(render_targets.color_buffer_ids[slot], writer, source);
+    }
+    void RecordPassDumpImageWrite(ImageViewId view_id, std::string_view writer, GPUVAddr source = 0,
+                                  u64 program = 0);
 
     /// Return a constant reference to the given image view id
     [[nodiscard]] const ImageView& GetImageView(ImageViewId id) const noexcept;
@@ -316,6 +347,7 @@ private:
     void RunGarbageCollector();
 
     void UpdatePassDumpRenderTargets();
+    void ReportPassDump(const std::string& message);
     void DumpPassRenderTargets();
 
     /// Find or create an image view in the guest descriptor table
@@ -415,6 +447,8 @@ private:
     /// Synchronize image aliases, copying data if needed
     void SynchronizeAliases(ImageId image_id);
 
+    void InvalidateAliasSync(ImageBase& image) noexcept;
+
     /// Prepare an image view to be used
     void PrepareImageView(ImageViewId image_view_id, bool is_modification, bool invalidate);
 
@@ -451,6 +485,30 @@ private:
     Tegra::MaxwellDeviceMemoryManager& device_memory;
     std::deque<TextureCacheGPUMap> gpu_page_table_storage;
 
+    bool texture_cache_fastpath = false;
+    const bool alias_sync_fastpath = [] {
+        const char* value = std::getenv("NXBOX_TEXTURE_ALIAS_SYNC_FASTPATH");
+        return !value || value[0] != '0' || value[1] != '\0';
+    }();
+    u64 alias_sync_generation = 1;
+    const bool sampler_slot_fastpath = [] {
+        const char* value = std::getenv("NXBOX_TEXTURE_SAMPLER_SLOT_FASTPATH");
+        return !value || value[0] != '0' || value[1] != '\0';
+    }();
+    const bool draw_state_fastpath = [] {
+        const char* value = std::getenv("NXBOX_TEXTURE_DRAW_STATE_FASTPATH");
+        return !value || value[0] != '0' || value[1] != '\0';
+    }();
+    struct CachedImageLookup {
+        ImageInfo info;
+        GPUVAddr address = 0;
+        DAddr cpu_address = 0;
+        RelaxedOptions options{};
+        const Tegra::MemoryManager* memory = nullptr;
+        ImageId id{};
+    };
+    std::array<CachedImageLookup, 64> cached_image_lookup{};
+
     RenderTargets render_targets;
     u64 render_targets_serial = 0;
     std::array<ImageId, 8> pass_dump_colors{};
@@ -462,8 +520,23 @@ private:
         ImageId id;
         u64 sequence;
         u32 slot;
+        s32 level = 0;
+        s32 layer = 0;
+        s32 levels = 1;
+        s32 layers = 1;
     };
     std::vector<PassDumpTarget> pass_dump_targets;
+    struct PassDumpWriter {
+        ImageId id;
+        u64 frame;
+        u64 order;
+        u64 tick;
+        GPUVAddr source;
+        std::string writer;
+    };
+    // Capture-only metadata, bounded by live cache images, retained across frame boundaries.
+    std::vector<PassDumpWriter> pass_dump_writers;
+    u64 pass_dump_write_order = 0;
     u32 rt_active_mask = 0;
     std::array<ImageId, 8> rt_image_id{};
     ImageId rt_depth_image_id{};

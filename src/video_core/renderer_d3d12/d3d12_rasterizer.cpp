@@ -21,6 +21,7 @@
 #include "common/alignment.h"
 #include "common/logging.h"
 #include "common/scope_exit.h"
+#include "common/thread.h"
 #include "core/memory.h"
 #include "shader_recompiler/backend/hlsl/hlsl_draw_texture.h"
 #include "video_core/control/channel_state.h"
@@ -34,6 +35,8 @@
 #include "video_core/renderer_d3d12/d3d12_pipeline_cache.h"
 #include "video_core/renderer_d3d12/d3d12_rasterizer.h"
 #include "video_core/renderer_d3d12/d3d12_render_area.h"
+#include "video_core/renderer_d3d12/d3d12_resolution.h"
+#include "video_core/shader_discovery.h"
 #include "video_core/submission_trace.h"
 #include "video_core/textures/texture.h"
 
@@ -65,7 +68,19 @@ RasterizerD3D12::RasterizerD3D12(Tegra::GPU& gpu, Tegra::MaxwellDeviceMemoryMana
       transform_feedback{context}, query_runtime{context, memory, buffer_cache, transform_feedback},
       query_cache{gpu, *this, memory, query_runtime},
       fence_manager{*this, gpu, texture_cache, buffer_cache, query_cache, context}, m_gpu{gpu} {
+    // Root signatures are bounded by 64 parameters; never grow draw scratch.
+    draw_root_cbv_addresses.reserve(64);
+    if (BisectEnabled("NXBOX_GPU_PIPELINE")) {
+        gpu_pipeline = std::make_unique<VideoCommon::GpuDrawPipeline>();
+        gpu_pipeline->Invoke([&gpu] {
+            gpu.RegisterHostThread();
+            Common::SetCurrentThreadName("GPU draw builder");
+            Common::SetCurrentThreadPriority(Common::ThreadPriority::Critical);
+            Common::SetCurrentThreadToPerformanceCores();
+        });
+    }
     VideoCommon::SubmissionTrace::Reset();
+    VideoCommon::ShaderDiscovery::Reset();
     default_pipeline_cache = std::make_unique<PipelineCache>(context, memory);
     pipeline_cache = default_pipeline_cache.get();
     context.Profile().guest_visibility = [this] {
@@ -84,6 +99,12 @@ RasterizerD3D12::RasterizerD3D12(Tegra::GPU& gpu, Tegra::MaxwellDeviceMemoryMana
     };
 }
 RasterizerD3D12::~RasterizerD3D12() {
+    // Stop publication and join while snapshots, channels and caches are still alive.
+    if (gpu_pipeline) {
+        gpu_pipeline->Close();
+        gpu_pipeline.reset();
+    }
+    VideoCommon::ShaderDiscovery::Shutdown();
     context.Profile().guest_visibility = {};
     // Query callbacks capture the cache. Drain while every cache/runtime is alive.
     try {
@@ -144,7 +165,7 @@ DrawParams MakeDrawParams(const Tegra::Engines::Maxwell3D::DrawManager::State& d
 // Keep the submitted draw parameters available when sizing vertex bindings.
 struct DrawCommand {
     DrawParams params;
-    void operator()(ID3D12GraphicsCommandList* commands) const {
+    void operator()(CommandFacade* commands) const {
         if (!params.num_vertices || !params.num_instances)
             return;
         if (params.is_indexed)
@@ -216,7 +237,9 @@ D3D12_RECT MakeScissor(const Maxwell& regs, size_t index) {
                 static_cast<s32>(regs.surface_clip.x + regs.surface_clip.width),
                 static_cast<s32>(regs.surface_clip.y + regs.surface_clip.height)};
     }
-    if (src.enable) {
+    // The untransformed path uses the surface clip as its scissor, like Vulkan.
+    // Scissor registers can still contain the preceding transformed pass's bounds.
+    if (regs.viewport_scale_offset_enabled && src.enable) {
         clip = ClearOperations::Intersect(
             clip, {static_cast<s32>(src.min_x), static_cast<s32>(src.min_y),
                    static_cast<s32>(src.max_x), static_cast<s32>(src.max_y)});
@@ -318,10 +341,16 @@ constexpr D3D12_RESOURCE_STATES BufferReadState =
     D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER | D3D12_RESOURCE_STATE_INDEX_BUFFER |
     D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
 bool IsStorageBuffer(const BindingState& bindings, const ResourcePtr& resource) {
-    for (const auto& stage : bindings.stages)
+    for (const auto& stage : bindings.stages) {
         for (const auto& storage : stage.storage)
             if (storage.resource == resource)
                 return true;
+        // DBSZ aliases constants with image buffers. Those are UAVs even for read-only
+        // shader accesses; keeping the CBV on this resource drops the entire dispatch.
+        for (const auto& texel : stage.texel)
+            if (texel.image && texel.resource == resource)
+                return true;
+    }
     return false;
 }
 
@@ -485,9 +514,84 @@ ResourcePtr RasterizerD3D12::CopyFeedback(const ResourcePtr& source,
     return selected->resource;
 }
 
-// Binds everything a draw needs and invokes draw(commands, params-independent). Order matters:
-// every descriptor allocation (which may submit the open command list when a ring is full)
-// happens BEFORE any per-draw state is recorded.
+// Original dynamic-state calculations, shared by cache misses and verification.
+RasterizerD3D12::DynamicState RasterizerD3D12::ComputeDynamicState(
+    const Maxwell& regs, const Pso::GraphicsPsoState& attachment_state,
+    const Pso::FramebufferFormats& formats, u32 width, u32 height,
+    const IGraphicsPipeline& pipeline, bool rescaled) {
+    const auto& resolution = Settings::values.resolution_info;
+    const ResolutionScale scale =
+        rescaled ? ResolutionScale{resolution.up_scale, resolution.down_shift} : ResolutionScale{};
+    DynamicState result;
+    auto& viewports = result.viewports;
+    auto& scissors = result.scissors;
+    auto& y_flip = result.y_flip;
+    for (size_t i = 0; i < Maxwell::NumViewports; ++i) {
+        const auto viewport_result =
+            regs.viewport_scale_offset_enabled ? MakeViewport(regs, i) : MakeFullViewport(regs);
+        viewports[i] = viewport_result.viewport;
+        viewports[i].TopLeftX = scale.Coordinate(viewports[i].TopLeftX);
+        viewports[i].TopLeftY = scale.Coordinate(viewports[i].TopLeftY);
+        viewports[i].Width = scale.Coordinate(viewports[i].Width);
+        viewports[i].Height = scale.Coordinate(viewports[i].Height);
+        if (viewports[i].MinDepth > viewports[i].MaxDepth) {
+            static bool logged_inverted_depth = false;
+            if (!logged_inverted_depth) {
+                logged_inverted_depth = true;
+                Diagnostic(fmt::format("D3D12 viewport {} MinDepth={} > MaxDepth={}", i,
+                                       viewports[i].MinDepth, viewports[i].MaxDepth));
+            }
+        }
+        static const bool viewport_z01 = BisectEnabled("NXBOX_D3D12_VIEWPORT_Z01");
+        if (viewport_z01) {
+            viewports[i].MinDepth = 0.0f;
+            viewports[i].MaxDepth = 1.0f;
+        }
+        scissors[i] = MakeScissor(regs, i);
+        const auto scaled_scissor =
+            scale.Rect(scissors[i].left, scissors[i].top, scissors[i].right, scissors[i].bottom);
+        scissors[i] = {scaled_scissor.left, scaled_scissor.top, scaled_scissor.right,
+                       scaled_scissor.bottom};
+        scissors[i].right = std::min(scissors[i].right, static_cast<LONG>(width));
+        scissors[i].bottom = std::min(scissors[i].bottom, static_cast<LONG>(height));
+        scissors[i].left = std::min(scissors[i].left, scissors[i].right);
+        scissors[i].top = std::min(scissors[i].top, scissors[i].bottom);
+        if (i == 0)
+            y_flip = viewport_result.y_flip;
+    }
+    const bool back_only = regs.stencil_two_side_enable && regs.gl_cull_test_enabled &&
+                           static_cast<u32>(regs.gl_cull_face) == 0x404;
+    const auto cull =
+        Pso::CullMode(regs.gl_cull_test_enabled != 0, static_cast<u32>(regs.gl_cull_face));
+    if (attachment_state.stencil_enable && Pso::DsvHasStencil(formats.depth) && regs.zeta_enable &&
+        regs.stencil_enable &&
+        Pso::IndependentStencil(regs.stencil_two_side_enable != 0, cull.mode,
+                                regs.stencil_front_ref, regs.stencil_back_ref,
+                                regs.stencil_front_func_mask, regs.stencil_back_func_mask,
+                                regs.stencil_front_mask, regs.stencil_back_mask)) {
+        result.stencil = {1, regs.stencil_front_ref, regs.stencil_back_ref};
+    } else {
+        const UINT stencil_ref = back_only ? regs.stencil_back_ref : regs.stencil_front_ref;
+        result.stencil = {0, stencil_ref, stencil_ref};
+    }
+    const bool replicate_alpha = Pso::ConstantBlendFactors(attachment_state) == 2;
+    result.blend = {replicate_alpha ? regs.blend_color.a : regs.blend_color.r,
+                    replicate_alpha ? regs.blend_color.a : regs.blend_color.g,
+                    replicate_alpha ? regs.blend_color.a : regs.blend_color.b, regs.blend_color.a};
+    if (attachment_state.depth_bounds) {
+        result.depth_bounds = {std::clamp(regs.depth_bounds[0], 0.0f, 1.0f),
+                               std::clamp(regs.depth_bounds[1], 0.0f, 1.0f)};
+    }
+    // PositionPass converts guest window coordinates to NDC using guest dimensions.
+    result.words = pipeline.RootConstants(
+        {rescaled ? static_cast<u32>(regs.surface_clip.width) : width,
+         rescaled ? static_cast<u32>(regs.surface_clip.height) : height,
+         regs.window_origin.mode != Maxwell::WindowOrigin::Mode::UpperLeft});
+    return result;
+}
+
+// Binds everything a draw needs. Descriptor allocations (which can submit the open
+// command list) happen before recording state.
 template <typename Func>
 void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     // A guest fence cuts the list between draws; so does this. Nothing of this draw has been
@@ -538,82 +642,98 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     auto* const cached_framebuffer = texture_cache.GetFramebuffer();
     if (!cached_framebuffer)
         return;
-    Framebuffer framebuffer_snapshot = *cached_framebuffer;
-    Framebuffer* const framebuffer = &framebuffer_snapshot;
-    Pso::FramebufferFormats formats{};
-    u32 attachment_samples = 0;
-    const auto accept_attachment = [&](const ImageView& view, bool depth) {
-        const auto& resource = view.BorrowImageHandle();
-        if (!resource)
-            return false;
-        const auto desc = resource->handle->GetDesc();
-        const auto required = depth ? D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL
-                                    : D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
-        if (!(desc.Flags & required)) {
-            view.LogUnsupported(depth ? "depth attachment lacks ALLOW_DEPTH_STENCIL"
-                                      : "color attachment lacks ALLOW_RENDER_TARGET");
-            return false;
-        }
-        if (desc.SampleDesc.Quality != 0 ||
-            (attachment_samples && attachment_samples != desc.SampleDesc.Count)) {
-            view.LogUnsupported(
-                fmt::format("attachment sample mismatch: bound={} count={} quality={}",
-                            attachment_samples, desc.SampleDesc.Count, desc.SampleDesc.Quality));
-            return false;
-        }
-        attachment_samples = desc.SampleDesc.Count;
-        formats.sample_count = static_cast<u8>(attachment_samples);
-        return true;
-    };
-    std::array<ImageView*, VideoCommon::NUM_RT> color_views{};
+    const auto framebuffer_snapshot = cached_framebuffer->Snapshot();
+    auto* const framebuffer = framebuffer_snapshot.get();
+    static const bool cache_draw_metadata = !BisectEnabled("NXBOX_D3D12_NO_DRAW_FASTPATHS");
     const u32 guest_rts = std::min<u32>(regs.rt_control.count, VideoCommon::NUM_RT);
-    for (u32 slot = 0; slot < guest_rts; ++slot) {
-        auto* view = framebuffer->Color(framebuffer->DrawBuffer(slot));
-        if (view && !accept_attachment(*view, false)) {
-            SkipDraw("unsupported attachment or mismatched sample counts");
+    ImageView* const depth_view = framebuffer->Depth();
+    const bool has_depth = depth_view && depth_view->BorrowImageHandle();
+    const bool reuse_draw_attachments = cache_draw_metadata &&
+                                        draw_attachments.snapshot == framebuffer_snapshot &&
+                                        draw_attachments.guest_rts == guest_rts;
+    Pso::FramebufferFormats formats = draw_attachments.formats;
+    std::array<ImageView*, VideoCommon::NUM_RT> color_views = draw_attachments.colors;
+    if (!reuse_draw_attachments) {
+        formats = {};
+        color_views = {};
+        u32 attachment_samples = 0;
+        const auto accept_attachment = [&](const ImageView& view, bool depth) {
+            const auto& resource = view.BorrowImageHandle();
+            if (!resource)
+                return false;
+            const auto& desc = view.ResourceDescription();
+            const auto required = depth ? D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL
+                                        : D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+            if (!(desc.Flags & required)) {
+                view.LogUnsupported(depth ? "depth attachment lacks ALLOW_DEPTH_STENCIL"
+                                          : "color attachment lacks ALLOW_RENDER_TARGET");
+                return false;
+            }
+            if (desc.SampleDesc.Quality != 0 ||
+                (attachment_samples && attachment_samples != desc.SampleDesc.Count)) {
+                view.LogUnsupported(fmt::format(
+                    "attachment sample mismatch: bound={} count={} quality={}", attachment_samples,
+                    desc.SampleDesc.Count, desc.SampleDesc.Quality));
+                return false;
+            }
+            attachment_samples = desc.SampleDesc.Count;
+            formats.sample_count = static_cast<u8>(attachment_samples);
+            return true;
+        };
+        for (u32 slot = 0; slot < guest_rts; ++slot) {
+            auto* view = framebuffer->Color(framebuffer->DrawBuffer(slot));
+            if (view && !accept_attachment(*view, false)) {
+                SkipDraw("unsupported attachment or mismatched sample counts");
+                return;
+            }
+            if (view && view->BorrowImageHandle()) {
+                // Only overlapping RTV subresources conflict. Distinct mips/layers
+                // of one resource remain legal independent color attachments.
+                bool duplicate = false;
+                const auto& resource_desc = view->ResourceDescription();
+                for (u32 previous = 0; previous < slot; ++previous) {
+                    const auto* prior = color_views[previous];
+                    if (!prior || prior->BorrowImageHandle() != view->BorrowImageHandle())
+                        continue;
+                    const bool same_mip = resource_desc.SampleDesc.Count > 1 ||
+                                          prior->range.base.level == view->range.base.level;
+                    duplicate |= same_mip &&
+                                 (resource_desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D ||
+                                  Pso::RenderTargetLayersOverlap(
+                                      static_cast<u32>(prior->range.base.layer),
+                                      static_cast<u32>(prior->range.extent.layers),
+                                      static_cast<u32>(view->range.base.layer),
+                                      static_cast<u32>(view->range.extent.layers)));
+                }
+                if (!duplicate) {
+                    color_views[slot] = view;
+                    formats.colors[slot] = static_cast<u32>(view->Description().Format);
+                }
+            }
+        }
+        if (depth_view && !accept_attachment(*depth_view, true)) {
+            SkipDraw("unsupported depth attachment or mismatched sample counts");
             return;
         }
-        if (view && view->BorrowImageHandle()) {
-            // Only overlapping RTV subresources conflict. Distinct mips/layers
-            // of one resource remain legal independent color attachments.
-            bool duplicate = false;
-            const auto resource_desc = view->BorrowImageHandle()->handle->GetDesc();
-            for (u32 previous = 0; previous < slot; ++previous) {
-                const auto* prior = color_views[previous];
-                if (!prior || prior->BorrowImageHandle() != view->BorrowImageHandle())
-                    continue;
-                const bool same_mip = resource_desc.SampleDesc.Count > 1 ||
-                                      prior->range.base.level == view->range.base.level;
-                duplicate |=
-                    same_mip &&
-                    (resource_desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D ||
-                     Pso::RenderTargetLayersOverlap(static_cast<u32>(prior->range.base.layer),
-                                                    static_cast<u32>(prior->range.extent.layers),
-                                                    static_cast<u32>(view->range.base.layer),
-                                                    static_cast<u32>(view->range.extent.layers)));
-            }
-            if (!duplicate) {
-                color_views[slot] = view;
-                formats.colors[slot] = static_cast<u32>(view->Description().Format);
-            }
-        }
+        if (has_depth)
+            formats.depth = static_cast<u32>(DsvFormat(depth_view->Description().Format));
+        draw_attachments.snapshot = framebuffer_snapshot;
+        draw_attachments.guest_rts = guest_rts;
+        draw_attachments.formats = formats;
+        draw_attachments.colors = color_views;
+        draw_attachments.area_valid = false;
     }
-    ImageView* const depth_view = framebuffer->Depth();
-    if (depth_view && !accept_attachment(*depth_view, true)) {
-        SkipDraw("unsupported depth attachment or mismatched sample counts");
-        return;
-    }
-    const bool has_depth = depth_view && depth_view->BorrowImageHandle();
-    if (has_depth)
-        formats.depth = static_cast<u32>(DsvFormat(depth_view->Description().Format));
     Pso::GraphicsPsoState attachment_state{};
+    if (reuse_draw_attachments)
+        context.Profile().Count(FrameCount::AttachmentMetadataReuses);
     Pso::ApplyFramebufferFormats(attachment_state, formats);
     const u32 num_rts = attachment_state.num_render_targets;
     {
         const FrameProfile::Scope profile_query{context.Profile(), FramePhase::QueryState};
         query_runtime.PrepareDraw();
     }
-    IGraphicsPipeline* const pipeline = pipeline_cache->CurrentGraphicsPipeline(formats, is_indexed);
+    IGraphicsPipeline* const pipeline =
+        pipeline_cache->CurrentGraphicsPipeline(formats, is_indexed, texture_cache.CaptureFrame());
     if (!pipeline) {
         VideoCommon::SubmissionTrace::Log("host_draw_drop reason=pending_or_failed_pso");
         return;
@@ -627,8 +747,28 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
             return;
     }
     draw_phase.emplace(context.Profile(), FramePhase::GraphicsState);
-    FillGraphicsState(*maxwell3d, attachment_state);
-    Pso::ApplyFramebufferFormats(attachment_state, formats);
+    const GraphicsStateInputs current_attachment{
+        context.GraphicsStateTracker().Update(*maxwell3d),
+        {},
+        formats,
+        static_cast<u32>(maxwell3d->draw_manager.draw_state.topology),
+        regs.zeta_enable,
+        is_indexed,
+        {regs.pipelines[2].enable != 0, regs.pipelines[3].enable != 0}};
+    const bool reuse_attachment =
+        StateFastpathEnabled() && attachment_inputs.Matches(current_attachment);
+    if (!reuse_attachment || StateVerifyEnabled()) {
+        FillGraphicsState(*maxwell3d, attachment_state);
+        Pso::ApplyFramebufferFormats(attachment_state, formats);
+        if (StateVerifyEnabled() && reuse_attachment &&
+            std::memcmp(&cached_attachment_state, &attachment_state, sizeof(attachment_state)) != 0)
+            StateVerifyMismatch("pipeline", &cached_attachment_state, &attachment_state,
+                                sizeof(attachment_state));
+        cached_attachment_state = attachment_state;
+        attachment_inputs.Store(current_attachment);
+    } else {
+        attachment_state = cached_attachment_state;
+    }
     if (attachment_diagnostics < 8) {
         ++attachment_diagnostics;
         std::string message = "D3D12_ATTACHMENTS count=" + std::to_string(guest_rts);
@@ -645,53 +785,61 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     draw_phase.emplace(context.Profile(), FramePhase::AttachmentSetup);
     ++feedback_draw;
     const auto extent = [](const ImageView& view) {
-        const auto desc = view.BorrowImageHandle()->handle->GetDesc();
+        const auto& desc = view.ResourceDescription();
         const u32 mip = desc.SampleDesc.Count > 1 ? 0 : static_cast<u32>(view.range.base.level);
         return AttachmentExtent{static_cast<u32>(std::max<u64>(1, desc.Width >> mip)),
                                 std::max(1u, desc.Height >> mip),
                                 static_cast<u32>(view.range.extent.layers)};
     };
-    AttachmentExtent render_area{16384, 16384, 2048};
-    bool has_attachment = false;
-    for (const auto* color : color_views) {
-        if (color) {
-            render_area = IntersectAttachments(render_area, extent(*color));
+    AttachmentExtent render_area = draw_attachments.area;
+    AttachmentExtent matching_extent = draw_attachments.matching_extent;
+    if (!cache_draw_metadata || !draw_attachments.area_valid) {
+        render_area = {16384, 16384, 2048};
+        bool has_attachment = false;
+        for (const auto* color : color_views) {
+            if (color) {
+                render_area = IntersectAttachments(render_area, extent(*color));
+                has_attachment = true;
+            }
+        }
+        if (has_depth) {
+            render_area = IntersectAttachments(render_area, extent(*depth_view));
             has_attachment = true;
         }
-    }
-    if (has_depth) {
-        render_area = IntersectAttachments(render_area, extent(*depth_view));
-        has_attachment = true;
-    }
-    if (!has_attachment) {
-        const auto size = framebuffer->Size();
-        render_area = {size.width, size.height, 1};
-    }
-    if (!render_area.width || !render_area.height || !render_area.layers)
-        return;
-    D3D12_RESOURCE_DIMENSION attachment_dimension =
-        has_depth ? depth_view->BorrowImageHandle()->handle->GetDesc().Dimension
-                  : D3D12_RESOURCE_DIMENSION_UNKNOWN;
-    for (const auto* color : color_views) {
-        if (!color)
-            continue;
-        const auto dimension = color->BorrowImageHandle()->handle->GetDesc().Dimension;
-        if (attachment_dimension != D3D12_RESOURCE_DIMENSION_UNKNOWN &&
-            dimension != attachment_dimension) {
-            SkipDraw("mismatched attachment resource types");
-            return;
+        if (!has_attachment) {
+            const auto size = framebuffer->Size();
+            render_area = {size.width, size.height, 1};
         }
-        attachment_dimension = dimension;
+        if (!render_area.width || !render_area.height || !render_area.layers)
+            return;
+        D3D12_RESOURCE_DIMENSION attachment_dimension =
+            has_depth ? depth_view->ResourceDescription().Dimension
+                      : D3D12_RESOURCE_DIMENSION_UNKNOWN;
+        for (const auto* color : color_views) {
+            if (!color)
+                continue;
+            const auto dimension = color->ResourceDescription().Dimension;
+            if (attachment_dimension != D3D12_RESOURCE_DIMENSION_UNKNOWN &&
+                dimension != attachment_dimension) {
+                SkipDraw("mismatched attachment resource types");
+                return;
+            }
+            attachment_dimension = dimension;
+        }
+        matching_extent = MatchingAttachmentExtent(
+            render_area, has_depth ? extent(*depth_view) : render_area, has_depth);
+        draw_attachments.area = render_area;
+        draw_attachments.matching_extent = matching_extent;
+        draw_attachments.area_valid = true;
     }
-    const auto matching_extent = MatchingAttachmentExtent(
-        render_area, has_depth ? extent(*depth_view) : render_area, has_depth);
     std::array<ResourcePtr, VideoCommon::NUM_RT> color_resources{};
     struct ColorCopy {
         BlitSurface original;
         BlitSurface temporary;
         VideoCommon::ImageCopy region;
     };
-    std::vector<ColorCopy> color_copies;
+    std::array<ColorCopy, VideoCommon::NUM_RT> color_copy_storage{};
+    std::span<ColorCopy> color_copies{color_copy_storage.data(), size_t{0}};
     for (u32 slot = 0; slot < num_rts; ++slot) {
         const auto* color = color_views[slot];
         if (!color)
@@ -705,7 +853,7 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         if (no_extent_copy || (original_extent.width == matching_extent.width &&
                                original_extent.height == matching_extent.height))
             continue;
-        auto desc = color_resources[slot]->handle->GetDesc();
+        auto desc = color->ResourceDescription();
         if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D) {
             SkipDraw("mismatched non-2D attachment extents");
             return;
@@ -718,7 +866,7 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         desc.Flags &= ~D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
         ResourcePtr temporary;
         for (auto& entry : attachment_pool) {
-            const auto cached = entry.resource->handle->GetDesc();
+            const auto& cached = entry.resource->Description();
             if (entry.draw != feedback_draw && cached.Width == desc.Width &&
                 cached.Height == desc.Height && cached.DepthOrArraySize == desc.DepthOrArraySize &&
                 cached.Format == desc.Format && cached.Flags == desc.Flags &&
@@ -733,6 +881,7 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         if (!temporary) {
             temporary = context.CreateResource(desc, D3D12_HEAP_TYPE_DEFAULT,
                                                D3D12_RESOURCE_STATE_COPY_DEST);
+            temporary->Description();
             attachment_pool.push_back({temporary, nullptr, feedback_draw, feedback_frame});
         }
         color_resources[slot] = temporary;
@@ -750,7 +899,8 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         // sample-preserving shader copy for MSAA (never an averaging resolve).
         texture_runtime.BlitHelpers().CopyImage(target, original, std::span{&copy, 1});
         context.Profile().Count(FrameCount::ExtentCopies, render_area.layers);
-        color_copies.push_back({original, target, copy});
+        color_copy_storage[color_copies.size()] = {original, target, copy};
+        color_copies = {color_copy_storage.data(), color_copies.size() + 1};
     }
     if (!color_copies.empty() && attachment_extent_diagnostics++ < 16) {
         Diagnostic(fmt::format("D3D12_ATTACHMENT_EXTENTS area={}x{} layers={} matched={}x{} "
@@ -836,6 +986,8 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     draw_phase.emplace(context.Profile(), FramePhase::ImageViews);
     texture_cache.FillImageViews(std::span(view_scratch.data(), view_scratch.size()), false,
                                  has_images);
+    if (has_images)
+        texture_cache.BeginPassDumpImageWrite();
     // Mark the render targets modified again, after the sampled textures synchronized their
     // aliases. Vulkan prepares textures first; here the targets were marked earlier, so a
     // texture aliasing a target (SM3DW's bloom mip chain) copied the target's pre-draw
@@ -844,6 +996,7 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     texture_cache.UpdateRenderTargets(false);
 
     draw_phase.emplace(context.Profile(), FramePhase::ResourceBindings);
+    std::vector<VideoCommon::ImageViewId> written_images;
     // Texel/image buffers are bound through the buffer cache from the resolved views.
     {
         const VideoCommon::ImageViewInOut* it = view_scratch.data();
@@ -928,12 +1081,14 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     // Guest mappings can shrink between cache bindings. Do not hand invalid
     // buffer ranges to the descriptor API or poison the whole GPU thread.
     for (const auto& stage : bindings.stages) {
-        const auto valid = [](const auto& buffer, u64 alignment) {
+        const auto valid = [this](const auto& buffer, u64 alignment) {
             return !buffer.resource || !buffer.size ||
                    (buffer.offset % alignment == 0 &&
                     IsValidBufferView(buffer.resource->handle->GetGPUVirtualAddress(),
-                                      buffer.resource->handle->GetDesc().Width, buffer.offset,
-                                      buffer.size));
+                                      (buffer_runtime.BufferFastpathEnabled()
+                                           ? buffer.resource->Description().Width
+                                           : buffer.resource->handle->GetDesc().Width),
+                                      buffer.offset, buffer.size));
         };
         for (const auto& buffer : stage.uniform) {
             if (!valid(buffer, 256)) {
@@ -1036,14 +1191,22 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     bool invalid_states = false;
     bool readonly_depth = false;
     state_scratch.clear();
+    static const bool resource_state_index = [] {
+        const char* value = std::getenv("NXBOX_D3D12_RESOURCE_STATE_INDEX");
+        return !value || std::strcmp(value, "0") != 0;
+    }();
+    if (resource_state_index)
+        draw_resource_index.Reset();
     std::vector<std::pair<ResourcePtr, std::vector<u32>>> sampled_subresources;
     const auto need = [this, &invalid_states](const ResourcePtr& resource,
                                               D3D12_RESOURCE_STATES state) {
         if (!resource)
             return;
-        for (auto& [known, known_state] : state_scratch) {
-            if (known != resource)
-                continue;
+        const auto index = resource_state_index
+                               ? draw_resource_index.FindOrInsert(resource.get(), state_scratch)
+                               : DrawResourceIndex<>::FindLinear(resource.get(), state_scratch);
+        if (index != state_scratch.size()) {
+            auto& known_state = state_scratch[index].second;
             constexpr u32 WriteStates =
                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS | D3D12_RESOURCE_STATE_RENDER_TARGET |
                 D3D12_RESOURCE_STATE_DEPTH_WRITE | D3D12_RESOURCE_STATE_STREAM_OUT;
@@ -1082,7 +1245,6 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         std::fill(zero_vertex_buffer->mapped.begin(), zero_vertex_buffer->mapped.end(), u8{0});
     }
     context.Retain(zero_vertex_buffer);
-    u32 num_vertex_views = static_cast<u32>(vertex_views.size());
     const GraphicsPipeline* const native_pipeline = pipeline->AsNative();
     if (!native_pipeline) {
         SkipDraw("vertex layout unavailable for native pipeline");
@@ -1148,9 +1310,18 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     static const bool quad_whole_stream = BisectEnabled("NXBOX_D3D12_QUAD_WHOLE_STREAM");
     const bool quad_draw = guest_draw.topology == Maxwell::PrimitiveTopology::Quads;
     const bool whole_stream = is_indexed || (quad_whole_stream && quad_draw);
-    for (u32 i = 0; i < Pso::kNumVertexAttributes; ++i) {
+    static const bool vertex_binding_prefix =
+        !BisectEnabled("NXBOX_D3D12_NO_VERTEX_BINDING_PREFIX");
+    // Slots above the input layout are unread. A later, wider layout rebuilds
+    // its entire prefix; RecordedArray also compares the count when rebinding.
+    // Keep the complete array for diagnostics that inspect unused stream zero.
+    const u32 num_vertex_views = vertex_binding_prefix && !draw_trace_enabled
+                                     ? Pso::VertexBufferBindingCount(native_pipeline->State())
+                                     : static_cast<u32>(vertex_views.size());
+    const auto zero_vertex_address = zero_vertex_buffer->handle->GetGPUVirtualAddress();
+    for (u32 i = 0; i < num_vertex_views; ++i) {
         const auto& attribute = native_pipeline->State().attributes[i];
-        vertex_views[i] = {zero_vertex_buffer->handle->GetGPUVirtualAddress(), 65536, 0};
+        vertex_views[i] = {zero_vertex_address, 65536, 0};
         if (trace_vertex_bytes)
             trace_vertex_resources[i] = zero_vertex_buffer;
         if (!attribute.enabled || attribute.enabled == 2)
@@ -1434,8 +1605,6 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         PrepareZeroUniformBuffer();
     auto& root_cbv_addresses = draw_root_cbv_addresses;
     root_cbv_addresses.clear();
-    if (root_cbvs)
-        root_cbv_addresses.reserve(totals.cbv);
     const u32 cbv_size = root_cbvs ? 0u : TableSize(totals.cbv);
     const u32 srv_size = TableSize(totals.srv);
     const u32 uav_size = TableSize(totals.uav);
@@ -1454,6 +1623,8 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
 
     // ---- 3. Build full descriptor keys and collect resource states for every draw ----
     u32 cbv_i = 0, srv_i = 0, uav_i = 0, smp_i = 0;
+    std::array<u32, NUM_GRAPHICS_STAGES> texture_scaling_masks{};
+    u32 image_scaling_mask = 0;
     const VideoCommon::ImageViewInOut* view_it = view_scratch.data();
     const VideoCommon::SamplerId* sampler_it = sampler_scratch.data();
     for (size_t stage = 0; stage < NUM_GRAPHICS_STAGES; ++stage) {
@@ -1488,9 +1659,13 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         const u32 image_buffer_count = Shader::NumDescriptors(info->image_buffer_descriptors);
         const VideoCommon::ImageViewInOut* texture_views =
             view_it + texel_count + image_buffer_count;
+        u32 texture_descriptor_index = 0;
         for (const auto& desc : info->texture_descriptors) {
+            const u32 scaling_index = texture_descriptor_index++;
             for (u32 i = 0; i < desc.count; ++i, ++srv_i, ++smp_i) {
                 ImageView& view = texture_cache.GetImageView((texture_views++)->id);
+                if (scaling_index < 32 && view.IsRescaled())
+                    texture_scaling_masks[stage] |= 1u << scaling_index;
                 auto sampled = view.ImageHandle();
                 bool color_feedback = false;
                 for (const auto& color : color_resources)
@@ -1654,7 +1829,12 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
                 return;
             }
             for (u32 i = 0; i < desc.count; ++i, ++uav_i) {
-                auto& view = texture_cache.GetImageView((texture_views++)->id);
+                const auto view_id = (texture_views++)->id;
+                auto& view = texture_cache.GetImageView(view_id);
+                if (desc.is_written && view_id != VideoCommon::NULL_IMAGE_VIEW_ID)
+                    written_images.push_back(view_id);
+                if (uav_i < 32 && view.IsRescaled())
+                    image_scaling_mask |= 1u << uav_i;
                 const auto guest_format = format.value_or(view.format);
                 if (const auto problem =
                         StorageImageProblem(context, guest_format, desc.format, desc.is_integer,
@@ -1784,7 +1964,8 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     // Releasing the caches here lets guest writes (OnCPUWrite) through instead of stalling the
     // game core for the whole recording; SM3DW spent ~25% of cpu0 samples waiting on this.
     // The draw trace below still reads cache views, so it keeps the locks.
-    if (!draw_trace_enabled)
+    // Shader image writes publish cache modification ticks after recording the draw.
+    if (!draw_trace_enabled && written_images.empty())
         texture_lock.unlock();
     auto* const commands = context.Commands();
     descriptors.SetHeaps(commands, true);
@@ -1806,9 +1987,19 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     const auto topology = converted_indices ? converted_indices->topology : pipeline->Topology();
     if (context.RecordState(recorded.topology.Update(topology)))
         commands->IASetPrimitiveTopology(topology);
+    static const bool root_binding_batch = !BisectEnabled("NXBOX_D3D12_NO_ROOT_BINDING_BATCH");
+    const bool batch_root_bindings = commands->stream && root_binding_batch;
+    // At most 64 root parameters fit in a D3D12 root signature. Leave unused
+    // scratch uninitialized; only populated entries are copied into the stream.
+    std::array<RecordedRootBinding, 64> root_bindings;
+    size_t root_binding_count = 0;
     const auto bind_table = [&](UINT parameter, D3D12_GPU_DESCRIPTOR_HANDLE handle) {
-        if (context.RecordState(recorded.root_args.tables[parameter].Update(handle.ptr)))
-            commands->SetGraphicsRootDescriptorTable(parameter, handle);
+        if (context.RecordState(recorded.root_args.tables.Update(parameter, handle.ptr))) {
+            if (batch_root_bindings)
+                root_bindings[root_binding_count++] = {handle.ptr, parameter, true};
+            else
+                commands->SetGraphicsRootDescriptorTable(parameter, handle);
+        }
     };
     if (!root_cbvs)
         bind_table(RootCbvTable, cbv_table.gpu);
@@ -1816,47 +2007,80 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     bind_table(RootSrvTable - table_shift, srv_table.gpu);
     bind_table(RootUavTable - table_shift, uav_table.gpu);
     bind_table(RootSamplerTable - table_shift, sampler_table.gpu);
+    // Opt in independently: EndDraw deliberately invalidates general draw state
+    // for a known title workaround. Track actual root writes without relaxing it.
+    const bool root_cbv_reuse = commands->reuse_graphics_root_cbvs;
     for (UINT i = 0; i < root_cbv_addresses.size(); ++i) {
-        if (context.RecordState(
-                recorded.root_args.cbvs[kFirstRootCbv + i].Update(root_cbv_addresses[i]))) {
-            commands->SetGraphicsRootConstantBufferView(kFirstRootCbv + i, root_cbv_addresses[i]);
+        const bool changed =
+            recorded.root_args.cbvs.Update(kFirstRootCbv + i, root_cbv_addresses[i]);
+        const bool root_changed =
+            root_cbv_reuse
+                ? commands->graphics_root_cbvs.cbvs.Update(kFirstRootCbv + i, root_cbv_addresses[i])
+                : changed;
+        if (context.RecordState(root_cbv_reuse ? root_changed : changed)) {
+            if (batch_root_bindings)
+                root_bindings[root_binding_count++] = {root_cbv_addresses[i], kFirstRootCbv + i,
+                                                       false};
+            else
+                commands->SetGraphicsRootConstantBufferView(kFirstRootCbv + i,
+                                                            root_cbv_addresses[i]);
             context.Profile().Count(FrameCount::RootCbvBinds);
         }
     }
+    if (batch_root_bindings && commands->validation.enabled) {
+        for (size_t i = 0; i < root_binding_count; ++i) {
+            const auto& binding = root_bindings[i];
+            if (binding.table)
+                commands->validation.Table("SetGraphicsRootDescriptorTable", binding.parameter,
+                                           binding.address);
+            else
+                commands->validation.Root("SetGraphicsRootConstantBufferView", binding.parameter,
+                                          binding.address, true);
+        }
+    }
+    if (batch_root_bindings)
+        RecordGraphicsRootBindings<RecordingTarget>(*commands->stream, root_bindings.data(),
+                                                    root_binding_count);
 
     const std::array<u64, 4> target_key{num_rts, num_rts ? rtv_base.ptr : 0,
                                         has_depth ? dsv_handle.ptr : 0, has_depth ? 1u : 0u};
     if (context.RecordState(recorded.targets.Update(target_key)))
         commands->OMSetRenderTargets(num_rts, num_rts ? &rtv_base : nullptr, TRUE,
                                      has_depth ? &dsv_handle : nullptr);
-    std::array<D3D12_VIEWPORT, Maxwell::NumViewports> viewports{};
-    std::array<D3D12_RECT, Maxwell::NumViewports> scissors{};
-    bool y_flip = false;
-    for (size_t i = 0; i < Maxwell::NumViewports; ++i) {
-        const auto result =
-            regs.viewport_scale_offset_enabled ? MakeViewport(regs, i) : MakeFullViewport(regs);
-        viewports[i] = result.viewport;
-        if (viewports[i].MinDepth > viewports[i].MaxDepth) {
-            static bool logged_inverted_depth = false;
-            if (!logged_inverted_depth) {
-                logged_inverted_depth = true;
-                Diagnostic(fmt::format("D3D12 viewport {} MinDepth={} > MaxDepth={}", i,
-                                       viewports[i].MinDepth, viewports[i].MaxDepth));
-            }
+    context.GraphicsStateTracker().SetRenderArea(render_area.width, render_area.height);
+    const GraphicsStateInputs dynamic_graphics{
+        context.GraphicsStateTracker().Update(*maxwell3d),
+        {},
+        formats,
+        static_cast<u32>(draw_state.topology),
+        regs.zeta_enable,
+        is_indexed,
+        {regs.pipelines[2].enable != 0, regs.pipelines[3].enable != 0}};
+    const DynamicStateInputs current_dynamic{dynamic_graphics,   render_area.width,
+                                             render_area.height, static_cast<u32>(topology),
+                                             pipeline,           texture_cache.IsRescaling()};
+    const bool reuse_dynamic = StateFastpathEnabled() && dynamic_inputs.Matches(current_dynamic);
+    if (!reuse_dynamic || StateVerifyEnabled()) {
+        auto slow = ComputeDynamicState(regs, attachment_state, formats, render_area.width,
+                                        render_area.height, *pipeline, texture_cache.IsRescaling());
+        if (StateVerifyEnabled() && reuse_dynamic) {
+            const auto compare = [](std::string_view what, const auto& fast, const auto& slow) {
+                if (std::memcmp(&fast, &slow, sizeof(fast)) != 0)
+                    StateVerifyMismatch(what, &fast, &slow, sizeof(fast));
+            };
+            compare("viewport", cached_dynamic_state.viewports, slow.viewports);
+            compare("viewport", cached_dynamic_state.y_flip, slow.y_flip);
+            compare("viewport", cached_dynamic_state.words, slow.words);
+            compare("scissor", cached_dynamic_state.scissors, slow.scissors);
+            compare("stencil", cached_dynamic_state.stencil, slow.stencil);
+            compare("blend", cached_dynamic_state.blend, slow.blend);
+            compare("depth_bounds", cached_dynamic_state.depth_bounds, slow.depth_bounds);
         }
-        static const bool viewport_z01 = BisectEnabled("NXBOX_D3D12_VIEWPORT_Z01");
-        if (viewport_z01) {
-            viewports[i].MinDepth = 0.0f;
-            viewports[i].MaxDepth = 1.0f;
-        }
-        scissors[i] = MakeScissor(regs, i);
-        scissors[i].right = std::min(scissors[i].right, static_cast<LONG>(render_area.width));
-        scissors[i].bottom = std::min(scissors[i].bottom, static_cast<LONG>(render_area.height));
-        scissors[i].left = std::min(scissors[i].left, scissors[i].right);
-        scissors[i].top = std::min(scissors[i].top, scissors[i].bottom);
-        if (i == 0)
-            y_flip = result.y_flip;
+        cached_dynamic_state = slow;
+        dynamic_inputs.Store(current_dynamic);
     }
+    const auto& viewports = cached_dynamic_state.viewports;
+    const auto& scissors = cached_dynamic_state.scissors;
     static const bool depth_trace = BisectEnabled("NXBOX_D3D12_DEPTH_TRACE");
     if (has_depth && depth_trace && depth_trace_draws++ < 4) {
         const auto& viewport = viewports[0];
@@ -1882,51 +2106,33 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     if (needs_index && context.RecordState(recorded.index.Update(index_view)))
         commands->IASetIndexBuffer(&index_view);
 
-    auto words = pipeline->RootConstants({render_area.width, render_area.height, y_flip});
+    auto words = cached_dynamic_state.words;
+    words[4] = std::bit_cast<u32>(
+        texture_cache.IsRescaling() ? Settings::values.resolution_info.down_factor : 1.0f);
+    words[7] = image_scaling_mask;
+    for (size_t stage = 0; stage < texture_scaling_masks.size(); ++stage)
+        words[11 + stage] = texture_scaling_masks[stage];
     words[8] = is_indexed ? draw_state.base_index : draw_state.vertex_buffer.first;
     words[9] = draw_state.base_instance;
     words[10] = indirect_draw_id;
-    const bool back_only = regs.stencil_two_side_enable && regs.gl_cull_test_enabled &&
-                           static_cast<u32>(regs.gl_cull_face) == 0x404;
-    const auto cull =
-        Pso::CullMode(regs.gl_cull_test_enabled != 0, static_cast<u32>(regs.gl_cull_face));
-    if (attachment_state.stencil_enable && Pso::DsvHasStencil(formats.depth) && regs.zeta_enable &&
-        regs.stencil_enable &&
-        Pso::IndependentStencil(regs.stencil_two_side_enable != 0, cull.mode,
-                                regs.stencil_front_ref, regs.stencil_back_ref,
-                                regs.stencil_front_func_mask, regs.stencil_back_func_mask,
-                                regs.stencil_front_mask, regs.stencil_back_mask)) {
-        const std::array<UINT, 3> stencil{1, regs.stencil_front_ref, regs.stencil_back_ref};
-        if (context.RecordState(recorded.stencil.Update(stencil))) {
-            ComPtr<ID3D12GraphicsCommandList8> commands8;
-            Check(commands->QueryInterface(IID_PPV_ARGS(&commands8)),
-                  "D3D12 independent stencil command interface", context.Device());
-            commands8->OMSetFrontAndBackStencilRef(regs.stencil_front_ref, regs.stencil_back_ref);
+    const auto& stencil = cached_dynamic_state.stencil;
+    if (context.RecordState(recorded.stencil.Update(stencil))) {
+        if (stencil[0]) {
+            commands->OMSetFrontAndBackStencilRef(stencil[1], stencil[2]);
+        } else {
+            commands->OMSetStencilRef(stencil[1]);
         }
-    } else {
-        const UINT stencil_ref = back_only ? regs.stencil_back_ref : regs.stencil_front_ref;
-        const std::array<UINT, 3> stencil{0, stencil_ref, stencil_ref};
-        if (context.RecordState(recorded.stencil.Update(stencil)))
-            commands->OMSetStencilRef(stencil_ref);
     }
-    const bool replicate_alpha = Pso::ConstantBlendFactors(attachment_state) == 2;
-    const std::array<float, 4> blend{replicate_alpha ? regs.blend_color.a : regs.blend_color.r,
-                                     replicate_alpha ? regs.blend_color.a : regs.blend_color.g,
-                                     replicate_alpha ? regs.blend_color.a : regs.blend_color.b,
-                                     regs.blend_color.a};
+    const auto& blend = cached_dynamic_state.blend;
     if (context.RecordState(recorded.blend.Update(blend)))
         commands->OMSetBlendFactor(blend.data());
     if (attachment_state.depth_bounds) {
-        const std::array depth_bounds{std::clamp(regs.depth_bounds[0], 0.0f, 1.0f),
-                                      std::clamp(regs.depth_bounds[1], 0.0f, 1.0f)};
+        const auto& depth_bounds = cached_dynamic_state.depth_bounds;
         if (context.RecordState(recorded.depth_bounds.Update(depth_bounds))) {
-            ComPtr<ID3D12GraphicsCommandList1> commands1;
-            Check(commands->QueryInterface(IID_PPV_ARGS(&commands1)),
-                  "D3D12 depth-bounds command interface", context.Device());
-            commands1->OMSetDepthBounds(depth_bounds[0], depth_bounds[1]);
+            commands->OMSetDepthBounds(depth_bounds[0], depth_bounds[1]);
         }
     }
-    if (context.RecordState(recorded.root_args.constants[0].Update(words.data(), words.size())))
+    if (context.RecordState(recorded.root_args.constants.Update(words.data(), words.size())))
         commands->SetGraphicsRoot32BitConstants(0, static_cast<UINT>(words.size()), words.data(),
                                                 0);
 
@@ -2246,6 +2452,8 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         VideoCommon::SubmissionTrace::Log("host_draw_submit draw={} pass={}", trace_draw,
                                           texture_cache.CapturePassSequence());
         draw(commands);
+        if (color_views[0])
+            pipeline_cache->RecordGraphicsDraw(texture_cache.CaptureFrame());
         trace_submitted = true;
     }
     query_runtime.EndDraw();
@@ -2261,8 +2469,15 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     }
     if (totals.uav)
         FragmentBarrier();
-    for (auto& stage : bindings.stages)
-        stage.Clear(); // drop upload-page references so the staging ring can recycle them
+    if (trace_submitted) {
+        texture_cache.NotePassDumpRenderTargets("draw_submission");
+        texture_cache.PublishShaderImageWrites(written_images, "graphics_uav");
+    }
+    // The scope guard releases these leases on every exit, including this one.
+    if (!buffer_runtime.BufferFastpathEnabled()) {
+        for (auto& stage : bindings.stages)
+            stage.Clear(); // drop upload-page references so the staging ring can recycle them
+    }
 }
 
 // Diagnostic (NXBOX_D3D12_CBUF_TRACE_FRAME=<frame>): word 4 of constant buffer
@@ -2551,11 +2766,43 @@ bool RasterizerD3D12::PrepareDrawIndices(bool is_indexed, DrawParams& params,
     return true;
 }
 
-void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) try {
+void RasterizerD3D12::TickWork() {
+    // Sync callbacks can wait for decoder progress or dispatch more renderer work.
+    // The consumer must finish its job before the producer services those requests.
+    if (!gpu_pipeline || !gpu_pipeline->IsConsumer())
+        m_gpu.TickWork();
+}
+
+void RasterizerD3D12::DrainGpuPipeline() {
+    if (gpu_pipeline)
+        gpu_pipeline->Drain();
+}
+
+void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) {
+    if (OnGpuPipeline()) {
+        auto snapshot = VideoCommon::CaptureDrawSnapshot(*frontend_maxwell);
+        gpu_pipeline->Push([this, snapshot = std::move(snapshot), is_indexed, instance_count] {
+            snapshot.Apply(*maxwell3d);
+            DrawSynchronous(is_indexed, instance_count);
+        });
+        // Guest sync requests belong to the producer. A request that accesses
+        // memory drains the queue through the rasterizer/memory boundary.
+        TickWork();
+        return;
+    }
+    DrawSynchronous(is_indexed, instance_count);
+    // Indirect expansion runs on the consumer; its caller ticks on the producer
+    // after the entire synchronous operation has returned.
+    if (gpu_pipeline)
+        TickWork();
+}
+
+void RasterizerD3D12::DrawSynchronous(bool is_indexed, u32 instance_count) try {
     const FrameProfile::Scope profile_dispatch{context.Profile(), FramePhase::DrawDispatch};
     static const bool no_draws = BisectEnabled("NXBOX_D3D12_NO_DRAWS");
     if (no_draws) {
-        m_gpu.TickWork();
+        if (!gpu_pipeline)
+            TickWork();
         return;
     }
     converted_indices.reset();
@@ -2564,17 +2811,20 @@ void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) try {
         MakeDrawParams(maxwell3d->draw_manager.draw_state, instance_count, is_indexed);
     PrepareDraw(is_indexed, DrawCommand{params});
     converted_indices.reset();
-    m_gpu.TickWork();
+    if (!gpu_pipeline)
+        TickWork();
 } catch (const std::exception& error) {
     const FrameProfile::Scope profile_failure{context.Profile(), FramePhase::DrawCleanup};
     converted_indices.reset();
     SkipDraw(error.what());
-    m_gpu.TickWork();
+    if (!gpu_pipeline)
+        TickWork();
 } catch (...) {
     const FrameProfile::Scope profile_failure{context.Profile(), FramePhase::DrawCleanup};
     converted_indices.reset();
     SkipDraw("unknown exception in direct draw");
-    m_gpu.TickWork();
+    if (!gpu_pipeline)
+        TickWork();
 }
 
 ID3D12CommandSignature* RasterizerD3D12::IndirectSignature(bool indexed) {
@@ -2595,17 +2845,23 @@ ID3D12CommandSignature* RasterizerD3D12::IndirectSignature(bool indexed) {
 }
 
 void RasterizerD3D12::DrawIndirect() try {
+    if (OnGpuPipeline()) {
+        RunGpuPipeline([&] { return DrawIndirect(); });
+        TickWork();
+        return;
+    }
+
     const FrameProfile::Scope profile_dispatch{context.Profile(), FramePhase::DrawDispatch};
     static const bool no_draws = BisectEnabled("NXBOX_D3D12_NO_DRAWS");
     if (no_draws) {
-        m_gpu.TickWork();
+        TickWork();
         return;
     }
     query_runtime.PauseHostConditionalRendering();
     const auto params = maxwell3d->draw_manager.indirect_state;
     if (params.is_byte_count) {
         SkipDraw("draw_auto_stride byte-count draw requires guest transform feedback linkage");
-        m_gpu.TickWork();
+        TickWork();
         return;
     }
     const size_t command_size =
@@ -2631,7 +2887,7 @@ void RasterizerD3D12::DrawIndirect() try {
         "host_indirect args_gpu={:x} count_gpu={:x} guest_count={} expanded_count={}",
         params.indirect_start_address, params.count_start_address, guest_count, count);
     if (!count) {
-        m_gpu.TickWork();
+        TickWork();
         return;
     }
     const size_t bytes = static_cast<size_t>((count - 1) * stride + command_size);
@@ -2669,25 +2925,41 @@ void RasterizerD3D12::DrawIndirect() try {
             Draw(false, command.InstanceCount);
         }
     }
-    m_gpu.TickWork();
+    TickWork();
 } catch (const std::exception& error) {
+    if (OnGpuPipeline())
+        throw;
     const FrameProfile::Scope profile_failure{context.Profile(), FramePhase::DrawCleanup};
     SkipDraw(error.what());
-    m_gpu.TickWork();
+    TickWork();
 } catch (...) {
+    if (OnGpuPipeline())
+        throw;
     const FrameProfile::Scope profile_failure{context.Profile(), FramePhase::DrawCleanup};
     SkipDraw("unknown exception in indirect draw");
-    m_gpu.TickWork();
+    TickWork();
 }
 
 bool RasterizerD3D12::AccelerateConditionalRendering() {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return AccelerateConditionalRendering(); });
+
     gpu_memory->FlushCaching();
     return query_cache.AccelerateHostConditionalRendering();
 }
 void RasterizerD3D12::PreparePresentation() {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return PreparePresentation(); });
+
     query_runtime.PauseHostConditionalRendering();
 }
 void RasterizerD3D12::DrawTexture() {
+    if (OnGpuPipeline()) {
+        RunGpuPipeline([&] { return DrawTexture(); });
+        TickWork();
+        return;
+    }
+
     const auto execute_blit = [this] {
         ++feedback_draw;
         ++feedback_epoch;
@@ -2795,18 +3067,23 @@ void RasterizerD3D12::DrawTexture() {
         commands->SetGraphicsRootDescriptorTable(3, tables.Slice(2, 1).gpu);
         commands->SetGraphicsRootDescriptorTable(4, sampler_table.gpu);
         const auto size = framebuffer.Size();
-        const std::array<float, 12> constants{blit.dst_x0,
-                                              blit.dst_y0,
-                                              blit.dst_x1,
-                                              blit.dst_y1,
-                                              blit.src_x0,
-                                              blit.src_y0,
-                                              blit.src_x1,
-                                              blit.src_y1,
-                                              static_cast<float>(size.width),
-                                              static_cast<float>(size.height),
-                                              static_cast<float>(source.size.width),
-                                              static_cast<float>(source.size.height)};
+        const std::array<float, 12> constants{
+            blit.dst_x0,
+            blit.dst_y0,
+            blit.dst_x1,
+            blit.dst_y1,
+            blit.src_x0,
+            blit.src_y0,
+            blit.src_x1,
+            blit.src_y1,
+            static_cast<float>(texture_cache.IsRescaling()
+                                   ? static_cast<u32>(maxwell3d->regs.surface_clip.width)
+                                   : size.width),
+            static_cast<float>(texture_cache.IsRescaling()
+                                   ? static_cast<u32>(maxwell3d->regs.surface_clip.height)
+                                   : size.height),
+            static_cast<float>(source.size.width),
+            static_cast<float>(source.size.height)};
         if (!size.width || !size.height || !source.size.width || !source.size.height)
             return;
         commands->SetGraphicsRoot32BitConstants(0, static_cast<UINT>(constants.size()),
@@ -2824,21 +3101,38 @@ void RasterizerD3D12::DrawTexture() {
                                   maxwell3d->regs.zpass_pixel_count_enable != 0);
         query_runtime.BeginDraw(false);
         context.MarkWork("DrawTexture blit");
+        VideoCommon::SubmissionTrace::Log("host_draw_texture src_gpu={:x} dst_gpu={:x}",
+                                          source.GpuAddr(), target->GpuAddr());
         commands->DrawInstanced(4, 1, 0, 0);
+        if (pipeline_cache)
+            pipeline_cache->RecordGraphicsDraw(texture_cache.CaptureFrame());
         query_runtime.EndDraw();
+        query_runtime.PauseHostConditionalRendering();
+        texture_cache.RecordPassDumpRenderTargetWrite(framebuffer.DrawBuffer(0), "draw_texture",
+                                                      source.GpuAddr());
     };
     try {
         execute_blit();
     } catch (const std::exception& error) {
+        if (OnGpuPipeline())
+            throw;
         SkipDraw(error.what());
     } catch (...) {
+        if (OnGpuPipeline())
+            throw;
         SkipDraw("unknown exception in DrawTexture");
     }
     // Tick callbacks may throw. Let the GPU-thread boundary cancel their waiters;
     // executing them in a noexcept scope-exit destructor could terminate instead.
-    m_gpu.TickWork();
+    TickWork();
 }
 void RasterizerD3D12::Clear(u32 layer_count) try {
+    if (OnGpuPipeline()) {
+        RunGpuPipeline([&] { return Clear(layer_count); });
+        TickWork();
+        return;
+    }
+
     ++feedback_epoch;
     transform_feedback.Unbind();
     gpu_memory->FlushCaching();
@@ -2850,6 +3144,7 @@ void RasterizerD3D12::Clear(u32 layer_count) try {
     u32 surface{};
     std::memcpy(&surface, &regs.clear_surface, sizeof(surface));
     const auto selection = ClearOperations::Decode(surface, control, regs.stencil_front_mask);
+    texture_cache.BeginPassDumpImageWrite();
     texture_cache.UpdateRenderTargets(true);
     auto* framebuffer = texture_cache.GetFramebuffer();
     if (!framebuffer)
@@ -2881,7 +3176,13 @@ void RasterizerD3D12::Clear(u32 layer_count) try {
         }
     }
     const auto size = framebuffer->Size();
-    ClearOperations::Rect clip{0, 0, static_cast<s32>(size.width), static_cast<s32>(size.height)};
+    const auto& resolution = Settings::values.resolution_info;
+    const ResolutionScale scale = texture_cache.IsRescaling()
+                                      ? ResolutionScale{resolution.up_scale, resolution.down_shift}
+                                      : ResolutionScale{};
+    const u32 guest_width = maxwell3d->regs.surface_clip.width;
+    const u32 guest_height = maxwell3d->regs.surface_clip.height;
+    ClearOperations::Rect clip{0, 0, static_cast<s32>(guest_width), static_cast<s32>(guest_height)};
     if (regs.clear_control.use_scissor && regs.scissor_test[0].enable) {
         const auto& scissor = regs.scissor_test[0];
         clip = ClearOperations::Intersect(
@@ -2903,9 +3204,13 @@ void RasterizerD3D12::Clear(u32 layer_count) try {
     }
     if (regs.window_origin.mode != Maxwell::WindowOrigin::Mode::UpperLeft) {
         const auto top = clip.top;
-        clip.top = static_cast<s32>(size.height) - clip.bottom;
-        clip.bottom = static_cast<s32>(size.height) - top;
+        clip.top = static_cast<s32>(guest_height) - clip.bottom;
+        clip.bottom = static_cast<s32>(guest_height) - top;
     }
+    const auto scaled_clip = scale.Rect(clip.left, clip.top, clip.right, clip.bottom);
+    clip = ClearOperations::Intersect(
+        {scaled_clip.left, scaled_clip.top, scaled_clip.right, scaled_clip.bottom},
+        {0, 0, static_cast<s32>(size.width), static_cast<s32>(size.height)});
     for (u32 layer = selection.layer; layer < selection.layer + layer_count; ++layer) {
         ClearAttachment color_attachment, depth_attachment;
         descriptors.Reserve(0, 0, selection.color_mask ? 1u : 0u,
@@ -3012,18 +3317,39 @@ void RasterizerD3D12::Clear(u32 layer_count) try {
         const bool has_color = selection.color_mask && prepare(color, false, color_attachment);
         const bool has_depth =
             (selection.depth || selection.stencil) && prepare(depth, true, depth_attachment);
+        VideoCommon::SubmissionTrace::Log(
+            "host_clear color_gpu={:x} depth_gpu={:x} color={} depth={} stencil={} "
+            "layer={} rect={},{},{},{} value={},{},{},{}",
+            has_color ? color->GpuAddr() : 0, has_depth ? depth->GpuAddr() : 0,
+            has_color ? selection.color_mask : 0, selection.depth, selection.stencil, layer,
+            clip.left, clip.top, clip.right, clip.bottom, values.color[0], values.color[1],
+            values.color[2], values.color[3]);
         clear_renderer.Execute(selection, values, has_color ? &color_attachment : nullptr,
                                has_depth ? &depth_attachment : nullptr, &clip);
+        if (has_color)
+            texture_cache.RecordPassDumpRenderTargetWrite(selection.target, "clear", 0);
+        if (has_depth)
+            texture_cache.RecordPassDumpDepthWrite("clear_depth");
     }
-    m_gpu.TickWork();
+    TickWork();
 } catch (const std::exception& error) {
+    if (OnGpuPipeline())
+        throw;
     SkipDraw(error.what());
-    m_gpu.TickWork();
+    TickWork();
 } catch (...) {
+    if (OnGpuPipeline())
+        throw;
     SkipDraw("unknown exception in clear");
-    m_gpu.TickWork();
+    TickWork();
 }
 void RasterizerD3D12::DispatchCompute() try {
+    if (OnGpuPipeline()) {
+        RunGpuPipeline([&] { return DispatchCompute(); });
+        TickWork();
+        return;
+    }
+
     bool trace_submitted = false;
     VideoCommon::SubmissionTrace::Log("host_compute_begin");
     SCOPE_EXIT {
@@ -3032,7 +3358,7 @@ void RasterizerD3D12::DispatchCompute() try {
     const Common::GpuProfile::PhaseScope gpu_profile_scope{
         Common::GpuProfile::Phase::ComputeDispatchSetup};
     if (BisectEnabled("NXBOX_D3D12_NO_COMPUTE")) {
-        m_gpu.TickWork();
+        TickWork();
         return;
     }
     gpu_memory->FlushCaching();
@@ -3168,9 +3494,14 @@ void RasterizerD3D12::DispatchCompute() try {
         use(buffer.resource, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
     }
     u32 srv_index = 0, sampler_index = 0;
-    for (const auto& desc : info.texture_descriptors)
+    u32 compute_texture_scaling_mask = 0, compute_image_scaling_mask = 0;
+    u32 compute_texture_descriptor = 0;
+    for (const auto& desc : info.texture_descriptors) {
+        const u32 scaling_index = compute_texture_descriptor++;
         for (u32 i = 0; i < desc.count; ++i) {
             auto& view = texture_cache.GetImageView(view_scratch[view_index++].id);
+            if (scaling_index < 32 && view.IsRescaled())
+                compute_texture_scaling_mask |= 1u << scaling_index;
             descriptors.WriteImageSrv(srv, srv_index++, view,
                                       SrvDimension(desc.type, desc.is_multisample));
             if (const auto& image = view.ImageHandle())
@@ -3180,6 +3511,7 @@ void RasterizerD3D12::DispatchCompute() try {
                                      desc.is_depth);
             ++sampler_index;
         }
+    }
     const u32 texel_count = Shader::NumDescriptors(info.texture_buffer_descriptors);
     for (u32 i = 0; i < texel_count; ++i) {
         descriptors.WriteTexelSrv(srv, srv_index++, bound.texel[i]);
@@ -3194,6 +3526,7 @@ void RasterizerD3D12::DispatchCompute() try {
         descriptors.WriteStorageUav(uav, uav_index++, buffer);
         use(buffer.resource, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     }
+    std::vector<VideoCommon::ImageViewId> written_images;
     const u32 image_start = uav_index;
     uav_index += Shader::NumDescriptors(info.image_descriptors);
     for (size_t i = texel_count; i < bound.texel.size(); ++i) {
@@ -3204,7 +3537,12 @@ void RasterizerD3D12::DispatchCompute() try {
     uav_index = image_start;
     for (const auto& desc : info.image_descriptors)
         for (u32 i = 0; i < desc.count; ++i) {
-            auto& view = texture_cache.GetImageView(view_scratch[view_index++].id);
+            const auto view_id = view_scratch[view_index++].id;
+            auto& view = texture_cache.GetImageView(view_id);
+            if (desc.is_written && view_id != VideoCommon::NULL_IMAGE_VIEW_ID)
+                written_images.push_back(view_id);
+            if (uav_index < 32 && view.IsRescaled())
+                compute_image_scaling_mask |= 1u << uav_index;
             const auto format = PixelFormatFromImageFormat(desc.format);
             if (!format && desc.format != Shader::ImageFormat::Typeless)
                 throw std::runtime_error("D3D12 unsupported compute storage image format");
@@ -3264,47 +3602,84 @@ void RasterizerD3D12::DispatchCompute() try {
     dispatch.root_cbvs = root_cbvs;
     dispatch.root_cbv_addresses = root_cbv_addresses;
     Shader::Backend::HLSL::RootConstants constants;
+    constants.texture_scaling_mask = compute_texture_scaling_mask;
+    constants.image_scaling_mask = compute_image_scaling_mask;
     std::memcpy(dispatch.constants.data(), &constants, sizeof(constants));
     dispatch.resources = resources;
     dispatch.split_reads = split_reads;
     profile_descriptors.reset();
+    const ComputeGroups groups{qmd.grid_dim_x, qmd.grid_dim_y, qmd.grid_dim_z};
+    if (!HasComputeWork(groups)) {
+        VideoCommon::SubmissionTrace::Log("host_compute_drop reason=zero_grid");
+        bindings.stages[0].Clear();
+        TickWork();
+        return;
+    }
+    texture_cache.BeginPassDumpImageWrite();
     context.MarkWork("guest compute");
     VideoCommon::SubmissionTrace::Log("host_compute_submit program={:x} grid={},{},{}",
                                       qmd.program_start, qmd.grid_dim_x.Value(),
                                       qmd.grid_dim_y.Value(), qmd.grid_dim_z.Value());
-    compute_dispatch.Direct(dispatch, {qmd.grid_dim_x, qmd.grid_dim_y, qmd.grid_dim_z});
+    compute_dispatch.Direct(dispatch, groups);
     trace_submitted = true;
+    // VisitImageView prepares reads only. Publish UAV writes to the cache as Vulkan does,
+    // so alias synchronization and guest downloads see the dispatched version.
+    texture_cache.PublishShaderImageWrites(written_images, "compute_uav", qmd.program_start);
     bindings.stages[0].Clear();
-    m_gpu.TickWork();
+    TickWork();
 } catch (const std::exception& error) {
+    if (OnGpuPipeline())
+        throw;
     SkipDraw(error.what());
-    m_gpu.TickWork();
+    TickWork();
 } catch (...) {
+    if (OnGpuPipeline())
+        throw;
     SkipDraw("unknown exception in compute dispatch");
-    m_gpu.TickWork();
+    TickWork();
 }
 void RasterizerD3D12::ResetCounter(VideoCommon::QueryType type) {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return ResetCounter(type); });
+
     query_cache.CounterReset(type);
 }
 void RasterizerD3D12::Query(GPUVAddr gpu_addr, VideoCommon::QueryType type,
                             VideoCommon::QueryPropertiesFlags flags, u32 payload, u32 subreport) {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return Query(gpu_addr, type, flags, payload, subreport); });
+
     query_cache.CounterReport(gpu_addr, type, flags, payload, subreport);
 }
 void RasterizerD3D12::BindGraphicsUniformBuffer(size_t stage, u32 index, GPUVAddr gpu_addr,
                                                 u32 size) {
+    if (OnGpuPipeline())
+        return RunGpuPipeline(
+            [&] { return BindGraphicsUniformBuffer(stage, index, gpu_addr, size); });
+
     std::scoped_lock lock{buffer_cache.mutex};
     buffer_cache.BindGraphicsUniformBuffer(stage, index, gpu_addr, size);
 }
 void RasterizerD3D12::DisableGraphicsUniformBuffer(size_t stage, u32 index) {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return DisableGraphicsUniformBuffer(stage, index); });
+
     std::scoped_lock lock{buffer_cache.mutex};
     buffer_cache.DisableGraphicsUniformBuffer(stage, index);
 }
 void RasterizerD3D12::FlushAll() {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return FlushAll(); });
+
     fence_manager.SignalReference();
     fence_manager.WaitPendingFences(true);
     context.Finish(FrameCount::ForcedSubmitFlushAll);
 }
 void RasterizerD3D12::FlushRegion(DAddr addr, u64 size, VideoCommon::CacheType which) {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return FlushRegion(addr, size, which); });
+
+    query_runtime.FlushPendingReports(addr, size);
     if (!addr || !size)
         return;
     if (True(which & VideoCommon::CacheType::TextureCache)) {
@@ -3324,6 +3699,9 @@ void RasterizerD3D12::FlushRegion(DAddr addr, u64 size, VideoCommon::CacheType w
     }
 }
 bool RasterizerD3D12::MustFlushRegion(DAddr addr, u64 size, VideoCommon::CacheType which) {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return MustFlushRegion(addr, size, which); });
+
     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
     return (True(which & VideoCommon::CacheType::QueryCache) &&
             query_cache.IsRegionGpuModified(addr, size)) ||
@@ -3333,6 +3711,10 @@ bool RasterizerD3D12::MustFlushRegion(DAddr addr, u64 size, VideoCommon::CacheTy
             texture_cache.IsRegionGpuModified(addr, size));
 }
 void RasterizerD3D12::InvalidateRegion(DAddr addr, u64 size, VideoCommon::CacheType which) {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return InvalidateRegion(addr, size, which); });
+
+    query_runtime.FlushPendingReports(addr, size);
     if (!addr || !size)
         return;
     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
@@ -3346,6 +3728,12 @@ void RasterizerD3D12::InvalidateRegion(DAddr addr, u64 size, VideoCommon::CacheT
         query_cache.InvalidateRegion(addr, size);
 }
 void RasterizerD3D12::InnerInvalidation(std::span<const std::pair<DAddr, std::size_t>> sequences) {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return InnerInvalidation(sequences); });
+
+    for (const auto& [addr, size] : sequences)
+        query_runtime.FlushPendingReports(addr, size);
+
     // FlushCaching drains guest inline writes, even when CPU inner invalidation is skipped.
     // Match Vulkan: make those bytes CPU-owned before the next buffer synchronization.
     {
@@ -3366,6 +3754,11 @@ void RasterizerD3D12::InnerInvalidation(std::span<const std::pair<DAddr, std::si
     }
 }
 bool RasterizerD3D12::OnCPUWrite(DAddr addr, u64 size) {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return OnCPUWrite(addr, size); });
+
+    VideoCommon::SubmissionTrace::Log("cpu_write_notify cpu={} bytes={}", addr, size);
+
     {
         std::scoped_lock lock{buffer_cache.mutex};
         // Defer cached CPU stores while the buffer still owns GPU-written bytes.
@@ -3380,6 +3773,10 @@ bool RasterizerD3D12::OnCPUWrite(DAddr addr, u64 size) {
     return false;
 }
 void RasterizerD3D12::OnCacheInvalidation(DAddr addr, u64 size) {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return OnCacheInvalidation(addr, size); });
+
+    query_runtime.FlushPendingReports(addr, size);
     // Gathering cached CPU stores is not an explicit guest query overwrite.
     // Keep pending reports alive, as the OpenGL/Vulkan backends do.
     InvalidateRegion(addr, size,
@@ -3387,6 +3784,9 @@ void RasterizerD3D12::OnCacheInvalidation(DAddr addr, u64 size) {
                          VideoCommon::CacheType::ShaderCache);
 }
 VideoCore::RasterizerDownloadArea RasterizerD3D12::GetFlushArea(PAddr addr, u64 size) {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return GetFlushArea(addr, size); });
+
     {
         std::scoped_lock lock{texture_cache.mutex};
         if (const auto area = texture_cache.GetFlushArea(addr, size))
@@ -3405,12 +3805,19 @@ VideoCore::RasterizerDownloadArea RasterizerD3D12::GetFlushArea(PAddr addr, u64 
     return new_area;
 }
 void RasterizerD3D12::InvalidateGPUCache() {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return InvalidateGPUCache(); });
+
     // invalidate_texture_data_cache and fence signals make attachment writes visible to
     // texture reads: later feedback samples need a fresh copy.
     ++feedback_epoch;
     m_gpu.InvalidateGPUCache();
 }
 void RasterizerD3D12::UnmapMemory(DAddr addr, u64 size) {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return UnmapMemory(addr, size); });
+
+    query_runtime.FlushPendingReports(addr, size);
     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
     default_pipeline_cache->InvalidateRegion(addr, size);
     query_cache.InvalidateRegion(addr, size);
@@ -3418,17 +3825,37 @@ void RasterizerD3D12::UnmapMemory(DAddr addr, u64 size) {
     buffer_cache.WriteMemory(addr, size);
 }
 void RasterizerD3D12::ModifyGPUMemory(size_t as_id, GPUVAddr addr, u64 size) {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return ModifyGPUMemory(as_id, addr, size); });
+
     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
     texture_cache.UnmapGPUMemory(as_id, addr, size);
     buffer_cache.UnmapGPUMemory(as_id, addr, size);
 }
 void RasterizerD3D12::SignalFence(std::function<void()>&& func) {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return SignalFence(std::move(func)); });
+
     fence_manager.SignalFence(std::move(func));
 }
 void RasterizerD3D12::SyncOperation(std::function<void()>&& func) {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return SyncOperation(std::move(func)); });
+
     fence_manager.SyncOperation(std::move(func));
 }
 void RasterizerD3D12::ProfileGpuThread(bool active) {
+    if (OnGpuPipeline()) {
+        if (!active) {
+            // The GPU thread exits before channel payloads are destroyed. Join
+            // here too, including after a failed job, while their snapshots are valid.
+            gpu_pipeline->Close();
+            Common::GpuProfile::enabled.store(false);
+            return;
+        }
+        return gpu_pipeline->Invoke([&] { ProfileGpuThread(active); });
+    }
+
     if (!context.Profile().Enabled())
         return;
     if (active) {
@@ -3436,25 +3863,46 @@ void RasterizerD3D12::ProfileGpuThread(bool active) {
         Common::GpuProfile::enabled.store(true);
         context.Profile().BindRecordingThread(true);
         Common::GpuProfile::sink = &context.Profile();
+        Common::GpuProfile::recording_enabled = true;
     } else {
+        Common::GpuProfile::recording_enabled = false;
         Common::GpuProfile::sink = nullptr;
         Common::GpuProfile::enabled.store(false);
     }
 }
 void RasterizerD3D12::SignalSyncPoint(u32 value) {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return SignalSyncPoint(value); });
+
     fence_manager.SignalSyncPoint(value);
 }
 void RasterizerD3D12::SignalReference() {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return SignalReference(); });
+
     fence_manager.SignalReference();
 }
 void RasterizerD3D12::ReleaseFences(bool force) {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return ReleaseFences(force); });
+
+    // Every blocking drain (puller semaphores/syncpoints, queries) goes through here. Recorded
+    // without a SyncWait phase so sync_wait stays comparable; overlaps puller_acquire.
+    const auto start = force ? Common::GpuProfile::Start() : Common::GpuProfile::Tick{};
     fence_manager.WaitPendingFences(force);
+    Common::GpuProfile::Record(Common::GpuProfile::Wait::ForcedDrain, start);
 }
 void RasterizerD3D12::FlushAndInvalidateRegion(DAddr addr, u64 size, VideoCommon::CacheType which) {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return FlushAndInvalidateRegion(addr, size, which); });
+
     FlushRegion(addr, size, which);
     InvalidateRegion(addr, size, which);
 }
 void RasterizerD3D12::WaitForIdle() {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return WaitForIdle(); });
+
     const Common::GpuProfile::PhaseScope gpu_profile_scope{Common::GpuProfile::Phase::SyncWait};
     ++feedback_epoch;
     query_cache.NotifyWFI();
@@ -3470,27 +3918,51 @@ void RasterizerD3D12::WaitForIdle() {
     fence_manager.SignalOrdering();
 }
 void RasterizerD3D12::FragmentBarrier() {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return FragmentBarrier(); });
+
     ++feedback_epoch;
     D3D12_RESOURCE_BARRIER barrier{};
     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
     context.Commands()->ResourceBarrier(1, &barrier);
 }
 void RasterizerD3D12::TiledCacheBarrier() {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return TiledCacheBarrier(); });
+
     FragmentBarrier();
 }
 void RasterizerD3D12::FlushCommands() {
-    // Cache batches and guest callbacks belong to FenceManager, never submission.
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return FlushCommands(); });
+
+    // DispatchCalls reaches this boundary before the GPU command queue can go idle.
+    // Submit also flushes query reduction, but only a fence publishes its CPU callbacks.
+    // SignalFence may reenter FlushCommands; its operations have already been moved then.
+    fence_manager.CommitPendingOperations();
     context.Submit(FrameCount::ForcedSubmitGuestFlush);
     fence_manager.NotifyDeferredSubmit();
     default_pipeline_cache->FlushDiskCache();
 }
 void RasterizerD3D12::FlushDeferredFences() {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return FlushDeferredFences(); });
+
     fence_manager.FlushPendingFences();
 }
 void RasterizerD3D12::NotifyFencesSubmitted() {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return NotifyFencesSubmitted(); });
+
     fence_manager.NotifyDeferredSubmit();
 }
 void RasterizerD3D12::TickFrame() {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return TickFrame(); });
+
+    default_pipeline_cache->TickFrame();
+    if (VideoCommon::ShaderDiscovery::Enabled())
+        VideoCommon::ShaderDiscovery::EndFrame(gpu_memory);
     // Bisect toggles: each one skips one cache's per-frame aging.
     if (!BisectEnabled("NXBOX_D3D12_TICK_NO_FENCE"))
         fence_manager.TickFrame();
@@ -3523,11 +3995,18 @@ void RasterizerD3D12::TickFrame() {
     ++feedback_frame;
 }
 Tegra::Engines::AccelerateDMAInterface& RasterizerD3D12::AccessAccelerateDMA() {
+    if (OnGpuPipeline())
+        return RunGpuPipeline(
+            [&]() -> Tegra::Engines::AccelerateDMAInterface& { return AccessAccelerateDMA(); });
+
     return m_accelerate_dma;
 }
 bool RasterizerD3D12::AccelerateSurfaceCopy(const Tegra::Engines::Fermi2D::Surface& src,
                                             const Tegra::Engines::Fermi2D::Surface& dst,
                                             const Tegra::Engines::Fermi2D::Config& copy_config) {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return AccelerateSurfaceCopy(src, dst, copy_config); });
+
     const auto format =
         MaxwellFormat(VideoCore::Surface::PixelFormatFromRenderTargetFormat(dst.format));
     const u64 bytes =
@@ -3587,6 +4066,10 @@ bool RasterizerD3D12::AccelerateSurfaceCopy(const Tegra::Engines::Fermi2D::Surfa
                 src.Address(), dst.Address()));
         }
     }
+    VideoCommon::SubmissionTrace::Log(
+        "host_fermi_blit src_gpu={:x} dst_gpu={:x} src_format={} dst_format={} accelerated={}",
+        src.Address(), dst.Address(), static_cast<u32>(src.format), static_cast<u32>(dst.format),
+        accelerated);
     context.Profile().Count(accelerated ? FrameCount::FermiBlitsAccelerated
                                         : FrameCount::FermiBlitsSoftware);
     context.Profile().Count(accelerated ? FrameCount::FermiBlitAcceleratedBytes
@@ -3596,25 +4079,46 @@ bool RasterizerD3D12::AccelerateSurfaceCopy(const Tegra::Engines::Fermi2D::Surfa
 }
 void RasterizerD3D12::AccelerateInlineToMemory(GPUVAddr address, size_t copy_size,
                                                std::span<const u8> memory) {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return AccelerateInlineToMemory(address, copy_size, memory); });
+
     if (gpu_memory && copy_size <= memory.size()) {
         gpu_memory->WriteBlock(address, memory.data(), copy_size);
     }
 }
 void RasterizerD3D12::LoadDiskResources(u64 title_id, std::stop_token stop_loading,
                                         const VideoCore::DiskResourceLoadCallback& callback) {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return LoadDiskResources(title_id, stop_loading, callback); });
+
     default_pipeline_cache->LoadDiskResources(title_id, stop_loading, callback);
 }
 void RasterizerD3D12::LoadDiskResourcesWithPreload(
     u64 title_id, std::stop_token stop_loading, const VideoCore::DiskResourceLoadCallback& callback,
     const std::function<bool()>& skip_wait) {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] {
+            return LoadDiskResourcesWithPreload(title_id, stop_loading, callback, skip_wait);
+        });
+
     default_pipeline_cache->LoadDiskResources(title_id, stop_loading, callback, true, skip_wait);
 }
 
 void RasterizerD3D12::InitializeChannel(Tegra::Control::ChannelState& channel) {
-    // The shared caches consume common dirty bits, even without a native state tracker.
+    if (OnGpuPipeline())
+        return gpu_pipeline->Invoke([&] { InitializeChannel(channel); });
+    if (gpu_pipeline && !channel.pipeline_maxwell) {
+        channel.pipeline_maxwell =
+            std::make_unique<Tegra::Engines::Maxwell3D>(*channel.memory_manager);
+        channel.pipeline_maxwell->BindRasterizer(this);
+    }
+
+    // Preserve common cache flags while registering the native register dependencies.
     auto& dirty = channel.payload->maxwell_3d.dirty;
-    VideoCommon::Dirty::SetupDirtyFlags(dirty.tables);
+    StateTracker::SetupDirtyFlags(dirty.tables);
     dirty.flags.set();
+    if (channel.pipeline_maxwell)
+        channel.pipeline_maxwell->dirty = dirty;
     CreateChannel(channel);
     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
     buffer_cache.CreateChannel(channel);
@@ -3623,7 +4127,18 @@ void RasterizerD3D12::InitializeChannel(Tegra::Control::ChannelState& channel) {
     query_cache.CreateChannel(channel);
 }
 void RasterizerD3D12::BindChannel(Tegra::Control::ChannelState& channel) {
+    if (OnGpuPipeline()) {
+        DrainGpuPipeline();
+        pipeline_frontend_owner = this;
+        frontend_channel_id = channel.bind_id;
+        // Set only after the previous channel has drained.
+        frontend_maxwell = &channel.payload->maxwell_3d;
+        return gpu_pipeline->Invoke([&] { BindChannel(channel); });
+    }
+
     BindToChannel(channel.bind_id);
+    StateTracker::Bind(*maxwell3d);
+    context.GraphicsStateTracker().Invalidate();
     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
     buffer_cache.BindToChannel(channel.bind_id);
     texture_cache.BindToChannel(channel.bind_id);
@@ -3632,6 +4147,15 @@ void RasterizerD3D12::BindChannel(Tegra::Control::ChannelState& channel) {
     query_runtime.Bind3DEngine(maxwell3d);
 }
 void RasterizerD3D12::ReleaseChannel(s32 channel_id) {
+    if (OnGpuPipeline()) {
+        RunGpuPipeline([&] { ReleaseChannel(channel_id); });
+        if (frontend_channel_id == channel_id) {
+            frontend_maxwell = nullptr;
+            frontend_channel_id = -1;
+        }
+        return;
+    }
+
     EraseChannel(channel_id);
     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
     buffer_cache.EraseChannel(channel_id);
@@ -3642,10 +4166,15 @@ void RasterizerD3D12::ReleaseChannel(s32 channel_id) {
 
 RasterizerD3D12::DisplayTexture RasterizerD3D12::FramebufferTexture(
     const Tegra::FramebufferConfig& config) {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return FramebufferTexture(config); });
+
     std::scoped_lock lock{texture_cache.mutex};
-    const auto [view, scaled] =
+    auto [view, scaled] =
         texture_cache.TryFindFramebufferImageView(config, config.address + config.offset);
     const auto log_source = [&](const ResourcePtr& resource, DXGI_FORMAT format, bool cached) {
+        if (cached)
+            texture_cache.SnapshotPassDumpPresentation(*view);
         const auto mapping = texture_cache.RecordPassDumpPresentation(
             config.address + config.offset, cached ? view : nullptr);
         if (!mapping.empty())
@@ -3662,7 +4191,9 @@ RasterizerD3D12::DisplayTexture RasterizerD3D12::FramebufferTexture(
                    " height=" + std::to_string(desc.Height) + " scaled=" + std::to_string(scaled));
     };
     if (view && view->ImageHandle()) {
-        texture_cache.PrepareImage(view->image_id, false, false);
+        view = texture_cache.PrepareImageForPresentation(view);
+        if (!view || !view->ImageHandle())
+            return {};
         auto description = view->Description();
         if (view->ImageHandle()->handle->GetDesc().SampleDesc.Count > 1) {
             auto resource = texture_runtime.ResolveFramebuffer(*view);
@@ -3671,7 +4202,7 @@ RasterizerD3D12::DisplayTexture RasterizerD3D12::FramebufferTexture(
             description.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
             description.Texture2DArray = {0, 1, 0, 1, 0, 0};
             log_source(resource, description.Format, true);
-            return {resource, description};
+            return {resource, description, scaled, view->size.width, view->size.height};
         }
         if (description.ViewDimension == D3D12_SRV_DIMENSION_TEXTURE2D) {
             const auto mip = description.Texture2D.MostDetailedMip;
@@ -3685,8 +4216,18 @@ RasterizerD3D12::DisplayTexture RasterizerD3D12::FramebufferTexture(
             return {};
         }
         log_source(view->ImageHandle(), description.Format, true);
-        return {view->ImageHandle(), description};
+        return {view->ImageHandle(), description, scaled, view->size.width, view->size.height};
     }
+    // The fallback reads guest RAM directly. An incompatible format/size alias may
+    // still own newer GPU pixels; DownloadMemory writes whole images overlapping
+    // the display base, ordered by modification tick, before that CPU read.
+    // Opt-in: it cost MK8D 4.4 fps (33.8 -> 29.4) on Series X; only Scarlet's capture needs it.
+    const bool download_before_fallback = [] {
+        const char* value = std::getenv("NXBOX_PRESENT_FALLBACK_DOWNLOAD");
+        return value && value[0] == '1';
+    }();
+    if (download_before_fallback)
+        texture_cache.DownloadMemory(config.address + config.offset, 1);
     auto resource = texture_runtime.UploadFramebuffer(device_memory, config);
     if (!resource)
         return {};

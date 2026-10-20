@@ -15,7 +15,7 @@ namespace Service::AM {
 
 IProcessWindingController::IProcessWindingController(Core::System& system_,
                                                      std::shared_ptr<Applet> applet)
-    : ServiceFramework{system_, "IProcessWindingController"}, m_applet{std::move(applet)} {
+    : PollingServiceFramework{system_, "IProcessWindingController"}, m_applet{std::move(applet)} {
     // clang-format off
     static const FunctionInfo functions[] = {
         {0, D<&IProcessWindingController::GetLaunchReason>, "GetLaunchReason"},

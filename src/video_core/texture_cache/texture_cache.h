@@ -19,6 +19,7 @@
 #include <boost/container/small_vector.hpp>
 #include "common/container/unordered_map.h"
 #include "common/gpu_thread_profile.h"
+#include "common/nxbox_wait_diag.h"
 
 #include "common/alignment.h"
 #include "common/nxbox_stall.h"
@@ -89,6 +90,9 @@ using namespace Common::Literals;
 template <class P>
 TextureCache<P>::TextureCache(Runtime& runtime_, Tegra::MaxwellDeviceMemoryManager& device_memory_)
     : runtime{runtime_}, device_memory{device_memory_} {
+    if constexpr (requires { runtime.TextureCacheFastpathEnabled(); }) {
+        texture_cache_fastpath = runtime.TextureCacheFastpathEnabled();
+    }
     // Configure null sampler
     TSCEntry sampler_descriptor{};
     sampler_descriptor.min_filter.Assign(Tegra::Texture::TextureFilter::Linear);
@@ -234,6 +238,14 @@ void TextureCache<P>::TickFrame() {
     if (runtime.CanReportMemoryUsage()) {
         total_used_memory = runtime.GetDeviceMemoryUsage();
     }
+#ifdef NXBOX_UWP
+    // Guest heap/JIT growth changes the shared host budget after construction.
+    if constexpr (requires {
+                      runtime.ApplyMemoryBudgetOverride(expected_memory, critical_memory);
+                  }) {
+        runtime.ApplyMemoryBudgetOverride(expected_memory, critical_memory);
+    }
+#endif
     if (total_used_memory > minimum_memory) {
         NxboxStall::Scope stall_scope{NxboxStall::Kind::GarbageCollect};
         RunGarbageCollector();
@@ -246,6 +258,7 @@ void TextureCache<P>::TickFrame() {
 
     runtime.TickFrame();
     ++frame_tick;
+    ReportPassDumpHistory();
 
     if constexpr (IMPLEMENTS_ASYNC_DOWNLOADS) {
         for (auto& buffer : async_buffers_death_ring) {
@@ -293,7 +306,9 @@ void TextureCache<P>::FillImageViews(std::span<ImageViewInOut> views, bool compu
                 if (view.blacklist && view.id != NULL_IMAGE_VIEW_ID) {
                     const ImageViewBase& image_view = slot_image_views[view.id];
                     auto& image = slot_images[image_view.image_id];
-                    has_blacklisted |= ScaleDown(image);
+                    if (!draw_state_fastpath || True(image.flags & ImageFlagBits::Rescaled)) {
+                        has_blacklisted |= ScaleDown(image);
+                    }
                     image.scale_rating = 0;
                 }
             }
@@ -403,12 +418,25 @@ SamplerId TextureCache<P>::GetSamplerId(u32 index, bool compute) {
     }
     auto const map_index = index | (compute ? Common::SlotId::TAGGED_VALUE : 0);
     auto const [descriptor, is_new] = table.Read(*gpu_memory, index);
-    if (is_new) {
-        auto const id = FindSampler(descriptor, compute);
-        channel_state->sampler_ids.insert_or_assign(map_index, id);
-        return id;
+    auto& slots = channel_state->resolved_samplers[compute ? 1 : 0];
+    auto& resolved = slots[index % slots.size()];
+    const bool cache_enabled = sampler_slot_fastpath;
+    // Read detects content changes and returns is_new after table Refresh/Invalidate.
+    // A matching index alone is insufficient, including after a channel table switch.
+    if (cache_enabled && !is_new && resolved.index == index) {
+        return resolved.id;
     }
-    return channel_state->sampler_ids.find(map_index)->second;
+    SamplerId id;
+    if (is_new) {
+        id = FindSampler(descriptor, compute);
+        channel_state->sampler_ids.insert_or_assign(map_index, id);
+    } else {
+        id = channel_state->sampler_ids.find(map_index)->second;
+    }
+    if (cache_enabled) {
+        resolved = {index, id};
+    }
+    return id;
 }
 
 template <class P>
@@ -437,6 +465,18 @@ void TextureCache<P>::SynchronizeDescriptors(bool compute) {
         }
     } else {
         const bool linked_tsc = maxwell3d->regs.sampler_binding == Tegra::Engines::Maxwell3D::Regs::SamplerBinding::ViaHeaderBinding;
+        auto& flags = maxwell3d->dirty.flags;
+        // Descriptors tracks table registers, not writes to descriptor memory. Only skip
+        // Synchronize here; VisitImageView/GetSamplerId must still read each descriptor.
+        // sampler_binding is not covered by Dirty::Descriptors.
+        if (draw_state_fastpath && !flags[Dirty::Descriptors] &&
+            channel_state->graphics_descriptors_initialized &&
+            channel_state->graphics_linked_tsc == linked_tsc) {
+            return;
+        }
+        flags[Dirty::Descriptors] = false;
+        channel_state->graphics_descriptors_initialized = true;
+        channel_state->graphics_linked_tsc = linked_tsc;
         const u32 tic_limit = maxwell3d->regs.tex_header.limit;
         const u32 tsc_limit = linked_tsc ? tic_limit : maxwell3d->regs.tex_sampler.limit;
         bool bindings_changed = false;
@@ -556,12 +596,23 @@ void TextureCache<P>::UpdateRenderTargets(bool is_clear) {
         if (PassDump::GetConfig().enabled) {
             UpdatePassDumpRenderTargets();
         }
-        for (size_t index = 0; index < NUM_RT; ++index) {
-            ImageViewId& color_buffer_id = render_targets.color_buffer_ids[index];
-            PrepareImageView(color_buffer_id, true, is_clear && IsFullClear(color_buffer_id));
+        if (draw_state_fastpath) {
+            // The clean binding set already has an active mask. Preserve slot order and
+            // every preparation of a live image (alias sync and modification ticks).
+            for (u32 active = rt_active_mask; active; active &= active - 1) {
+                const auto index = std::countr_zero(active);
+                const ImageViewId id = index == NUM_RT ? render_targets.depth_buffer_id
+                                                       : render_targets.color_buffer_ids[index];
+                PrepareImageView(id, true, is_clear && IsFullClear(id));
+            }
+        } else {
+            for (size_t index = 0; index < NUM_RT; ++index) {
+                ImageViewId& color_buffer_id = render_targets.color_buffer_ids[index];
+                PrepareImageView(color_buffer_id, true, is_clear && IsFullClear(color_buffer_id));
+            }
+            const ImageViewId depth_buffer_id = render_targets.depth_buffer_id;
+            PrepareImageView(depth_buffer_id, true, is_clear && IsFullClear(depth_buffer_id));
         }
-        const ImageViewId depth_buffer_id = render_targets.depth_buffer_id;
-        PrepareImageView(depth_buffer_id, true, is_clear && IsFullClear(depth_buffer_id));
         return;
     }
 
@@ -641,6 +692,16 @@ ImageViewId TextureCache<P>::VisitImageView(u32 index, bool compute) {
         return NULL_IMAGE_VIEW_ID;
     }
     auto const map_index = index | (compute ? Common::SlotId::TAGGED_VALUE : 0);
+    auto& indexed_ids = channel_state->indexed_image_view_ids[compute ? 1 : 0];
+    const auto save_id = [&](ImageViewId id) {
+        channel_state->image_view_ids.insert_or_assign(map_index, id);
+        if (texture_cache_fastpath) {
+            if (indexed_ids.size() <= index) {
+                indexed_ids.resize(size_t{index} + 1);
+            }
+            indexed_ids[index] = id;
+        }
+    };
     // Is new (on the tegra engine side)?
     auto const [descriptor, is_new] = table.Read(*gpu_memory, index);
     if (is_new) {
@@ -650,7 +711,7 @@ ImageViewId TextureCache<P>::VisitImageView(u32 index, bool compute) {
             if (is_new_tc)
                 pair->second = CreateImageView(descriptor);
             PrepareImageView(pair->second, false, false);
-            channel_state->image_view_ids.insert_or_assign(map_index, pair->second);
+            save_id(pair->second);
             return pair->second;
         }
         static const bool trace = std::getenv("NXBOX_TEXTURE_NULL_TRACE") != nullptr;
@@ -660,8 +721,15 @@ ImageViewId TextureCache<P>::VisitImageView(u32 index, bool compute) {
             LOG_ERROR(HW_GPU, "TEXTURE_INVALID_ENTRY index={} addr={:x} compute={}", index,
                       descriptor.Address(), compute);
         }
-        channel_state->image_view_ids.insert_or_assign(map_index, NULL_IMAGE_VIEW_ID);
+        save_id(NULL_IMAGE_VIEW_ID);
         return NULL_IMAGE_VIEW_ID;
+    }
+    // Read above detects guest writes and all existing deletion/rescale invalidations.
+    // Never reuse an ID solely because the bound descriptor index stayed the same.
+    if (texture_cache_fastpath && index < indexed_ids.size()) {
+        const ImageViewId id = indexed_ids[index];
+        PrepareImageView(id, false, false);
+        return id;
     }
     auto const it = channel_state->image_view_ids.find(map_index);
     if (it->second != NULL_IMAGE_VIEW_ID)
@@ -688,7 +756,14 @@ FramebufferId TextureCache<P>::GetFramebufferId(const RenderTargets& key) {
 
 template <class P>
 void TextureCache<P>::WriteMemory(DAddr cpu_addr, size_t size) {
-    ForEachImageInRegion(cpu_addr, size, [this](ImageId image_id, Image& image) {
+    ForEachImageInRegion(cpu_addr, size, [this, cpu_addr, size](ImageId image_id, Image& image) {
+        if (PassDump::GetConfig().enabled && CaptureFrame() == PassDump::GetConfig().frame) {
+            ReportPassDump(fmt::format(
+                "PASS_DUMP memory_invalidate frame={} cpu={} bytes={} image_cpu={} gpu={:x} "
+                "already_dirty={}",
+                CaptureFrame(), cpu_addr, size, image.cpu_addr, image.gpu_addr,
+                True(image.flags & ImageFlagBits::CpuModified)));
+        }
         if (True(image.flags & ImageFlagBits::CpuModified)) {
             return;
         }
@@ -744,6 +819,16 @@ void TextureCache<P>::UpdatePassDumpRenderTargets() {
 }
 
 template <class P>
+void TextureCache<P>::ReportPassDump(const std::string& message) {
+    // D3D12's diagnostic sink is retained independently of the Eden log filter.
+    if constexpr (requires { runtime.ReportPassDump(message); }) {
+        runtime.ReportPassDump(message);
+    } else {
+        LOG_INFO(Render, "{}", message);
+    }
+}
+
+template <class P>
 void TextureCache<P>::DumpPassRenderTargets() {
     if (!pass_dump_has_set) {
         return;
@@ -788,6 +873,9 @@ void TextureCache<P>::DumpPassRenderTargets() {
         output.exceptions(std::ios::failbit | std::ios::badbit);
         output.write(reinterpret_cast<const char*>(map.mapped_span.data()),
                      static_cast<std::streamsize>(bytes));
+        output.close();
+        ReportPassDump(fmt::format("PASS_DUMP wrote frame={} seq={} bytes={} file={}",
+                                   CaptureFrame(), seq, bytes, path.string()));
         return bytes;
     };
     try {
@@ -848,7 +936,184 @@ void TextureCache<P>::DumpPassRenderTargets() {
             }
         }
     } catch (const std::exception& error) {
+        ReportPassDump(fmt::format("PASS_DUMP failed frame={} seq={} dir={} error={}",
+                                   CaptureFrame(), seq, directory.string(), error.what()));
         LOG_ERROR(Render, "Pass dump seq={} failed: {}", seq, error.what());
+    }
+}
+
+template <class P>
+void TextureCache<P>::PublishShaderImageWrites(std::span<const ImageViewId> views,
+                                               std::string_view writer, u64 program) {
+    // Publish the whole operation before any diagnostic readback can submit/wait.
+    // Descriptor lookup prepares reads, not modifications. Without this tick aliases
+    // and guest downloads can continue using the version preceding the shader store.
+    for (const auto id : views) {
+        if (id && id != NULL_IMAGE_VIEW_ID && !slot_image_views[id].IsBuffer()) {
+            MarkModification(slot_image_views[id].image_id);
+        }
+    }
+    for (const auto id : views) {
+        RecordPassDumpImageWrite(id, writer, 0, program);
+    }
+}
+
+template <class P>
+void TextureCache<P>::ReportPassDumpHistory() {
+    if (PassDump::GetConfig().enabled && CaptureFrame() == PassDump::GetConfig().frame) {
+        for (const auto& writer : pass_dump_writers) {
+            const auto& image = slot_images[writer.id];
+            ReportPassDump(
+                fmt::format("PASS_DUMP history frame={} gpu={:x} cpu={} format={} extent={}x{} "
+                            "writer={} writer_frame={} order={} tick={} source={:x}",
+                            CaptureFrame(), image.gpu_addr, image.cpu_addr,
+                            PassDump::FormatName(image.info.format), image.info.size.width,
+                            image.info.size.height, writer.writer, writer.frame, writer.order,
+                            writer.tick, writer.source));
+        }
+    }
+}
+
+template <class P>
+void TextureCache<P>::NotePassDumpImageWrite(ImageId id, std::string_view writer, GPUVAddr source) {
+    if (!PassDump::GetConfig().enabled || !id || id == NULL_IMAGE_ID) {
+        return;
+    }
+    const auto& image = slot_images[id];
+    PassDumpWriter record{
+        id,     CaptureFrame(),     ++pass_dump_write_order, image.modification_tick,
+        source, std::string{writer}};
+    const auto previous = std::ranges::find(pass_dump_writers, id, &PassDumpWriter::id);
+    if (previous == pass_dump_writers.end()) {
+        pass_dump_writers.push_back(std::move(record));
+    } else {
+        *previous = std::move(record);
+    }
+    if (CaptureFrame() == PassDump::GetConfig().frame) {
+        const auto& latest = *std::ranges::find(pass_dump_writers, id, &PassDumpWriter::id);
+        ReportPassDump(
+            fmt::format("PASS_DUMP writer frame={} order={} writer={} gpu={:x} cpu={} format={} "
+                        "extent={}x{} tick={} source={:x}",
+                        latest.frame, latest.order, writer, image.gpu_addr, image.cpu_addr,
+                        PassDump::FormatName(image.info.format), image.info.size.width,
+                        image.info.size.height, latest.tick, source));
+    }
+}
+
+template <class P>
+void TextureCache<P>::NotePassDumpRenderTargets(std::string_view writer) {
+    if (!PassDump::GetConfig().enabled) {
+        return;
+    }
+    for (const auto view_id : render_targets.color_buffer_ids) {
+        if (view_id && view_id != NULL_IMAGE_VIEW_ID) {
+            NotePassDumpImageWrite(slot_image_views[view_id].image_id, writer);
+        }
+    }
+    if (render_targets.depth_buffer_id) {
+        NotePassDumpImageWrite(slot_image_views[render_targets.depth_buffer_id].image_id, writer);
+    }
+}
+
+template <class P>
+void TextureCache<P>::BeginPassDumpImageWrite() {
+    if (PassDump::GetConfig().enabled && CaptureFrame() == PassDump::GetConfig().frame) {
+        DumpPassRenderTargets();
+    }
+}
+
+template <class P>
+void TextureCache<P>::RecordPassDumpImageWrite(ImageViewId view_id, std::string_view writer,
+                                               GPUVAddr source, u64 program) {
+    if (!PassDump::GetConfig().enabled || !view_id || view_id == NULL_IMAGE_VIEW_ID) {
+        return;
+    }
+    const auto& view = slot_image_views[view_id];
+    if (view.IsBuffer()) {
+        return;
+    }
+    if (writer != "present_snapshot") {
+        NotePassDumpImageWrite(view.image_id, writer, source);
+    }
+    if (CaptureFrame() != PassDump::GetConfig().frame) {
+        return;
+    }
+    DumpPassRenderTargets();
+    Image& image = slot_images[view.image_id];
+    const auto& info = image.info;
+    const u64 seq = ++pass_dump_sequence;
+    const auto& directory = PassDump::GetConfig().directory;
+    try {
+        std::filesystem::create_directories(directory);
+        std::ofstream manifest{directory / "manifest.jsonl", std::ios::app};
+        manifest.exceptions(std::ios::failbit | std::ios::badbit);
+        for (s32 layer = view.range.base.layer;
+             layer < view.range.base.layer + view.range.extent.layers; ++layer) {
+            for (s32 level = view.range.base.level;
+                 level < view.range.base.level + view.range.extent.levels; ++level) {
+                const u32 width = (std::max)(info.size.width >> level, 1u);
+                const u32 height = (std::max)(info.size.height >> level, 1u);
+                const auto block_width = VideoCore::Surface::DefaultBlockWidth(info.format);
+                const auto block_height = VideoCore::Surface::DefaultBlockHeight(info.format);
+                const size_t bytes = static_cast<size_t>((width + block_width - 1) / block_width) *
+                                     ((height + block_height - 1) / block_height) *
+                                     VideoCore::Surface::BytesPerBlock(info.format);
+                const std::string file =
+                    fmt::format("pass_{:04}_c0_m{}_l{}.raw", seq, level, layer);
+                // Volume writes need a depth-aware reader; report them rather than claiming a
+                // single z slice represents the whole view. Buffer images use the buffer cache.
+                const bool supported = info.num_samples == 1 &&
+                                       (info.type == ImageType::e1D || info.type == ImageType::e2D);
+                if (supported) {
+                    const std::array copies{BufferImageCopy{
+                        .buffer_offset = 0,
+                        .buffer_size = bytes,
+                        .buffer_row_length = width,
+                        .buffer_image_height = height,
+                        .image_subresource = {.base_level = level,
+                                              .base_layer = layer,
+                                              .num_layers = 1},
+                        .image_offset = {0, 0, 0},
+                        .image_extent = {width, height, 1},
+                    }};
+                    auto map = runtime.DownloadStagingBuffer(bytes);
+                    image.DownloadMemory(map, copies);
+                    runtime.Finish();
+                    std::ofstream output{directory / file, std::ios::binary};
+                    output.exceptions(std::ios::failbit | std::ios::badbit);
+                    output.write(reinterpret_cast<const char*>(map.mapped_span.data()),
+                                 static_cast<std::streamsize>(bytes));
+                    output.close();
+                    ReportPassDump(fmt::format("PASS_DUMP wrote frame={} seq={} bytes={} file={}",
+                                               CaptureFrame(), seq, bytes,
+                                               (directory / file).string()));
+                }
+                manifest << fmt::format(
+                    "{{\"seq\":{},\"slot\":0,\"writer\":\"{}\",\"frame\":{},"
+                    "\"gpu_addr\":{},\"source_gpu_addr\":{},\"program\":{},\"level\":{},\"layer\":{"
+                    "},"
+                    "\"width\":{},\"height\":{},\"format\":\"{}\",\"view_format\":\"{}\","
+                    "\"bytes\":{},\"file\":\"{}\"{}}}\n",
+                    seq, writer, CaptureFrame(), image.gpu_addr, source, program, level, layer,
+                    width, height, PassDump::FormatName(info.format),
+                    PassDump::FormatName(view.format), supported ? bytes : 0, supported ? file : "",
+                    supported ? "" : ",\"skipped\":\"volume_or_msaa\"");
+            }
+        }
+        manifest.close();
+        if (writer != "present_snapshot" && info.num_samples == 1 &&
+            (info.type == ImageType::e1D || info.type == ImageType::e2D)) {
+            pass_dump_targets.push_back({view.image_id, seq, 0, view.range.base.level,
+                                         view.range.base.layer, view.range.extent.levels,
+                                         view.range.extent.layers});
+        }
+        ReportPassDump(fmt::format(
+            "PASS_DUMP image_write frame={} seq={} writer={} gpu={:x} source={:x} program={:x}",
+            CaptureFrame(), seq, writer, image.gpu_addr, source, program));
+    } catch (const std::exception& error) {
+        ReportPassDump(
+            fmt::format("PASS_DUMP image_write failed frame={} seq={} writer={} error={}",
+                        CaptureFrame(), seq, writer, error.what()));
     }
 }
 
@@ -921,6 +1186,9 @@ void TextureCache<P>::UnmapMemory(DAddr cpu_addr, size_t size) {
 
 template <class P>
 void TextureCache<P>::UnmapGPUMemory(size_t as_id, GPUVAddr gpu_addr, size_t size) {
+    if (texture_cache_fastpath) {
+        cached_image_lookup = {};
+    }
     boost::container::small_vector<ImageId, 16> deleted_images;
     ForEachImageInRegionGPU(as_id, gpu_addr, size,
                             [&](ImageId id, Image&) { deleted_images.push_back(id); });
@@ -1038,6 +1306,7 @@ bool TextureCache<P>::BlitImage(const Tegra::Engines::Fermi2D::Surface& dst,
         scale_region(dst_region);
     }
 
+    BeginPassDumpImageWrite();
     // Always call this after src_framebuffer_id was queried, as the address might be invalidated.
     Framebuffer* const dst_framebuffer = &slot_framebuffers[dst_framebuffer_id];
     if constexpr (FRAMEBUFFER_BLITS) {
@@ -1053,7 +1322,39 @@ bool TextureCache<P>::BlitImage(const Tegra::Engines::Fermi2D::Surface& dst,
         runtime.BlitImage(dst_framebuffer, dst_view, src_view, dst_region, src_region, copy.filter,
                           copy.operation);
     }
+    RecordPassDumpImageWrite(dst_view_id, "fermi_blit", src.Address());
     return true;
+}
+
+template <class P>
+typename P::ImageView* TextureCache<P>::PrepareImageForPresentation(ImageView* view) {
+    const ImageId image_id = view->image_id;
+    for (const auto id : slot_images[image_id].image_view_ids) {
+        if (&slot_image_views[id] == view) {
+            // Alias conversion can insert views and relocate slot_image_views. Retain
+            // an ID across preparation, never the presenter's borrowed pointer.
+            PrepareImage(image_id, false, false);
+            return &slot_image_views[id];
+        }
+    }
+    return nullptr;
+}
+
+template <class P>
+void TextureCache<P>::SnapshotPassDumpPresentation(const ImageView& view) {
+    if (!PassDump::GetConfig().enabled || CaptureFrame() != PassDump::GetConfig().frame) {
+        return;
+    }
+    // Read the displayed mip/layer even when its last writer predates the selected frame.
+    // This is an observation, not a producer or a modification of the image.
+    // Reuse the display view: inserting a view could relocate slot_image_views and
+    // invalidate the presenter's pointer. Framebuffer views cover exactly one mip/layer.
+    for (const auto id : slot_images[view.image_id].image_view_ids) {
+        if (&slot_image_views[id] == &view) {
+            RecordPassDumpImageWrite(id, "present_snapshot");
+            return;
+        }
+    }
 }
 
 template <class P>
@@ -1066,13 +1367,27 @@ std::string TextureCache<P>::RecordPassDumpPresentation(DAddr cpu_addr, const Im
     int slot = -1;
     if (view) {
         for (const auto& target : pass_dump_targets) {
-            if (target.id == view->image_id) {
+            if (target.id == view->image_id && view->range.base.level >= target.level &&
+                view->range.base.level < target.level + target.levels &&
+                view->range.base.layer >= target.layer &&
+                view->range.base.layer < target.layer + target.layers) {
                 sequence = target.sequence;
                 slot = static_cast<int>(target.slot);
             }
         }
     }
     const auto* image = view ? &slot_images[view->image_id] : nullptr;
+    if (view) {
+        const auto writer =
+            std::ranges::find(pass_dump_writers, view->image_id, &PassDumpWriter::id);
+        if (writer != pass_dump_writers.end()) {
+            ReportPassDump(
+                fmt::format("PASS_DUMP display_writer frame={} gpu={:x} writer={} writer_frame={} "
+                            "order={} tick={} source={:x}",
+                            CaptureFrame(), image->gpu_addr, writer->writer, writer->frame,
+                            writer->order, writer->tick, writer->source));
+        }
+    }
     const std::string record =
         fmt::format("{{\"event\":\"present\",\"frame\":{},\"cpu_addr\":{},\"source\":\"{}\","
                     "\"gpu_addr\":{},\"format\":\"{}\",\"width\":{},\"height\":{},"
@@ -1089,7 +1404,12 @@ std::string TextureCache<P>::RecordPassDumpPresentation(DAddr cpu_addr, const Im
         std::ofstream manifest{PassDump::GetConfig().directory / "manifest.jsonl", std::ios::app};
         manifest.exceptions(std::ios::failbit | std::ios::badbit);
         manifest << record << '\n';
+        manifest.close();
+        ReportPassDump(fmt::format("PASS_DUMP manifest frame={} passes={} dir={}", CaptureFrame(),
+                                   pass_dump_sequence, PassDump::GetConfig().directory.string()));
     } catch (const std::exception& error) {
+        ReportPassDump(fmt::format("PASS_DUMP presentation failed dir={} error={}",
+                                   PassDump::GetConfig().directory.string(), error.what()));
         LOG_ERROR(Render, "Pass dump presentation failed: {}", error.what());
     }
     return record;
@@ -1098,7 +1418,17 @@ std::string TextureCache<P>::RecordPassDumpPresentation(DAddr cpu_addr, const Im
 template <class P>
 std::pair<typename P::ImageView*, bool> TextureCache<P>::TryFindFramebufferImageView(
     const Tegra::FramebufferConfig& config, DAddr cpu_addr) {
-    // TODO: Properly implement this
+    const auto view_format = [&]() {
+        switch (config.pixel_format) {
+        case Service::android::PixelFormat::Rgb565:
+            return PixelFormat::R5G6B5_UNORM;
+        case Service::android::PixelFormat::Bgra8888:
+            return PixelFormat::B8G8R8A8_UNORM;
+        default:
+            return PixelFormat::A8B8G8R8_UNORM;
+        }
+    }();
+
     const auto it = page_table.find(cpu_addr >> YUZU_PAGEBITS);
     if (it == page_table.end()) {
         return {};
@@ -1111,22 +1441,34 @@ std::pair<typename P::ImageView*, bool> TextureCache<P>::TryFindFramebufferImage
         if (image.cpu_addr != cpu_addr) {
             continue;
         }
-        if (image.image_view_ids.empty()) {
-            continue;
+        // An address can have several format/size aliases. Never create a display view
+        // on an incompatible resource just because it was modified more recently.
+        const bool eligible =
+            image.info.type == ImageType::e2D && image.info.size.width == config.stride &&
+            image.info.size.height == config.height &&
+            IsViewCompatible(image.info.format, view_format, runtime.HasBrokenTextureViewFormats(),
+                             runtime.HasNativeBgr());
+        if (PassDump::GetConfig().enabled && CaptureFrame() == PassDump::GetConfig().frame) {
+            const auto writer =
+                std::ranges::find(pass_dump_writers, map.image_id, &PassDumpWriter::id);
+            ReportPassDump(fmt::format(
+                "PASS_DUMP display_candidate frame={} cpu={} gpu={:x} format={} extent={}x{} "
+                "display={}x{} stride={} eligible={} tick={} cpu_dirty={} gpu_dirty={} "
+                "last_writer={} writer_frame={} writer_order={} source={:x}",
+                CaptureFrame(), cpu_addr, image.gpu_addr, PassDump::FormatName(image.info.format),
+                image.info.size.width, image.info.size.height, config.width, config.height,
+                config.stride, eligible, image.modification_tick,
+                True(image.flags & ImageFlagBits::CpuModified),
+                True(image.flags & ImageFlagBits::GpuModified),
+                writer == pass_dump_writers.end() ? "unknown" : writer->writer,
+                writer == pass_dump_writers.end() ? 0 : writer->frame,
+                writer == pass_dump_writers.end() ? 0 : writer->order,
+                writer == pass_dump_writers.end() ? 0 : writer->source));
         }
-        valid_image_ids.push_back(map.image_id);
+        if (eligible) {
+            valid_image_ids.push_back(map.image_id);
+        }
     }
-
-    const auto view_format = [&]() {
-        switch (config.pixel_format) {
-        case Service::android::PixelFormat::Rgb565:
-            return PixelFormat::R5G6B5_UNORM;
-        case Service::android::PixelFormat::Bgra8888:
-            return PixelFormat::B8G8R8A8_UNORM;
-        default:
-            return PixelFormat::A8B8G8R8_UNORM;
-        }
-    }();
 
     const auto GetImageViewForFramebuffer = [&](ImageId image_id) {
         ImageViewInfo info{ImageViewType::e2D, view_format};
@@ -1422,6 +1764,7 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
         runtime.RecordTextureUpload(image);
     }
     image.flags &= ~ImageFlagBits::CpuModified;
+    image.alias_sync_frame_tick = (std::numeric_limits<u64>::max)();
 
     TrackImage(image, image_id);
 
@@ -1451,6 +1794,7 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
     auto staging = runtime.UploadStagingBuffer(MapSizeBytes(image));
     UploadImageContents(image, staging);
     runtime.InsertUploadMemoryBarrier();
+    NotePassDumpImageWrite(image_id, "guest_upload");
 }
 
 template <class P>
@@ -1541,6 +1885,8 @@ ImageId TextureCache<P>::FindOrInsertImage(const ImageInfo& info, GPUVAddr gpu_a
 template <class P>
 ImageId TextureCache<P>::FindImage(const ImageInfo& info, GPUVAddr gpu_addr,
                                    RelaxedOptions options) {
+    // Keep the address translation: a guest can replace a mapping without changing
+    // the requested image layout. Memoize the expensive overlap/page-table search.
     std::optional<DAddr> cpu_addr = gpu_memory->GpuToCpuAddress(gpu_addr);
     if (!cpu_addr) {
         cpu_addr = gpu_memory->GpuToCpuAddress(gpu_addr, CalculateGuestSizeInBytes(info));
@@ -1548,6 +1894,10 @@ ImageId TextureCache<P>::FindImage(const ImageInfo& info, GPUVAddr gpu_addr,
             return ImageId{};
         }
     }
+    auto& cached = cached_image_lookup[(gpu_addr >> 8) % cached_image_lookup.size()];
+    const bool cache_hit = texture_cache_fastpath && cached.id && cached.memory == gpu_memory &&
+                           cached.address == gpu_addr && cached.cpu_address == *cpu_addr &&
+                           cached.options == options && SameImageLookupInfo(cached.info, info);
     const bool broken_views =
         runtime.HasBrokenTextureViewFormats() || True(options & RelaxedOptions::ForceBrokenViews);
     const bool native_bgr = runtime.HasNativeBgr();
@@ -1579,7 +1929,23 @@ ImageId TextureCache<P>::FindImage(const ImageInfo& info, GPUVAddr gpu_addr,
         }
         return false;
     };
-    ForEachImageInRegion(*cpu_addr, CalculateGuestSizeInBytes(info), lambda);
+    if (cache_hit && lambda(cached.id, slot_images[cached.id])) {
+        return image_id;
+    }
+    // A changed Strong flag can make a formerly valid pitch-linear view incompatible.
+    image_id = {};
+    image_ids.clear();
+    bool exact_match = false;
+    ForEachImageInRegion(*cpu_addr, CalculateGuestSizeInBytes(info),
+                         [&](ImageId candidate_id, ImageBase& candidate) {
+                             exact_match = lambda(candidate_id, candidate);
+                             return exact_match;
+                         });
+    // Only memoize an early exact-format match. Relaxed/multiple matches depend on
+    // modification ticks and must continue to search the complete overlap set.
+    if (texture_cache_fastpath && exact_match && image_ids.size() == 1) {
+        cached = {info, gpu_addr, *cpu_addr, options, gpu_memory, image_id};
+    }
     if (image_ids.size() <= 1) [[likely]] {
         return image_id;
     }
@@ -1620,6 +1986,7 @@ bool TextureCache<P>::ImageCanRescale(ImageBase& image) {
 
 template <class P>
 void TextureCache<P>::InvalidateScale(Image& image) {
+    ++alias_sync_generation;
     if (image.scale_tick <= frame_tick) {
         image.scale_tick = frame_tick + 1;
     }
@@ -1675,6 +2042,7 @@ void TextureCache<P>::QueueAsyncDecode(Image& image, ImageId image_id) {
     LOG_INFO(HW_GPU, "Queuing async texture decode");
 
     NxboxUpload::Record(NxboxUpload::Event::AstcQueued);
+    NxboxWait::Add(NxboxWait::Counter::DecodeQueued);
     image.flags |= ImageFlagBits::IsDecoding;
     auto decode = std::make_unique<AsyncDecodeContext>();
     auto* decode_ptr = decode.get();
@@ -1689,6 +2057,7 @@ void TextureCache<P>::QueueAsyncDecode(Image& image, ImageId image_id) {
     auto func = [out_size, copies, info = image.info,
                  input = std::move(local_unswizzle_data_buffer),
                  async_decode = decode_ptr]() mutable {
+        NxboxWait::Add(NxboxWait::Counter::DecodeStarted);
         async_decode->decoded_data.resize_destructive(out_size);
         std::span copies_span{copies.data(), copies.size()};
         ConvertImage(input, info, async_decode->decoded_data, copies_span);
@@ -1697,8 +2066,10 @@ void TextureCache<P>::QueueAsyncDecode(Image& image, ImageId image_id) {
         std::unique_lock lock{async_decode->mutex};
         async_decode->copies = std::move(copies);
         async_decode->complete = true;
+        NxboxWait::Add(NxboxWait::Counter::DecodeCompleted);
     };
     texture_decode_worker.QueueWork(std::move(func));
+    NxboxWait::Add(NxboxWait::Counter::DecodeDispatched);
 }
 
 template <class P>
@@ -1717,6 +2088,7 @@ void TextureCache<P>::QueueAsyncUnswizzle(Image& image, ImageId image_id) {
 
 template <class P>
 void TextureCache<P>::TickAsyncDecode() {
+    NxboxWait::Add(NxboxWait::Counter::DecodeTicks);
     bool has_uploads{};
     auto i = async_decodes.begin();
     while (i != async_decodes.end()) {
@@ -1727,6 +2099,7 @@ void TextureCache<P>::TickAsyncDecode() {
             continue;
         }
         if (async_decode->cancelled) {
+            NxboxWait::Add(NxboxWait::Counter::DecodeCancelled);
             lock.unlock();
             i = async_decodes.erase(i);
             continue;
@@ -1737,6 +2110,7 @@ void TextureCache<P>::TickAsyncDecode() {
                     async_decode->decoded_data.size());
         image.UploadMemory(staging, FixSmallVectorADL(async_decode->copies));
         NxboxUpload::Record(NxboxUpload::Event::AstcUploaded);
+        NxboxWait::Add(NxboxWait::Counter::DecodeUploaded);
         image.flags &= ~ImageFlagBits::IsDecoding;
         has_uploads = true;
         // Erasing destroys the mutex, so it must not still be held.
@@ -1852,6 +2226,7 @@ bool TextureCache<P>::ScaleDown(Image& image) {
 template <class P>
 ImageId TextureCache<P>::InsertImage(const ImageInfo& info, GPUVAddr gpu_addr,
                                      RelaxedOptions options) {
+    ++alias_sync_generation;
     std::optional<DAddr> cpu_addr = gpu_memory->GpuToCpuAddress(gpu_addr);
     if (!cpu_addr) {
         const auto size = CalculateGuestSizeInBytes(info);
@@ -2081,6 +2456,7 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
     }
 
     RegisterImage(new_image_id);
+    ++alias_sync_generation;
     return new_image_id;
 }
 
@@ -2482,6 +2858,9 @@ ImageViewId TextureCache<P>::FindOrEmplaceImageView(ImageId image_id, const Imag
 
 template <class P>
 void TextureCache<P>::RegisterImage(ImageId image_id) {
+    if (texture_cache_fastpath) {
+        cached_image_lookup = {};
+    }
     ImageBase& image = slot_images[image_id];
     ASSERT_MSG(False(image.flags & ImageFlagBits::Registered),
                "Trying to register an already registered image");
@@ -2522,6 +2901,9 @@ void TextureCache<P>::RegisterImage(ImageId image_id) {
 
 template <class P>
 void TextureCache<P>::UnregisterImage(ImageId image_id) {
+    if (texture_cache_fastpath) {
+        cached_image_lookup = {};
+    }
     Image& image = slot_images[image_id];
     ASSERT_MSG(True(image.flags & ImageFlagBits::Registered),
                "Trying to unregister an already registered image");
@@ -2654,6 +3036,7 @@ void TextureCache<P>::UntrackImage(ImageBase& image, ImageId image_id) {
 
 template <class P>
 void TextureCache<P>::DeleteImage(ImageId image_id, bool immediate_delete) {
+    ++alias_sync_generation;
     // Target lookup can retire old images. Capture before their slot can be reused.
     if (PassDump::GetConfig().enabled) {
         if (pass_dump_has_set &&
@@ -2661,6 +3044,15 @@ void TextureCache<P>::DeleteImage(ImageId image_id, bool immediate_delete) {
              std::ranges::find(pass_dump_colors, image_id) != pass_dump_colors.end())) {
             DumpPassRenderTargets();
         }
+        if (CaptureFrame() == PassDump::GetConfig().frame) {
+            const auto& retired = slot_images[image_id];
+            ReportPassDump(fmt::format(
+                "PASS_DUMP image_delete frame={} gpu={:x} tick={} modified={} aliases={}",
+                CaptureFrame(), retired.gpu_addr, retired.modification_tick,
+                True(retired.flags & ImageFlagBits::GpuModified), retired.aliased_images.size()));
+        }
+        std::erase_if(pass_dump_writers,
+                      [image_id](const auto& writer) { return writer.id == image_id; });
         std::erase_if(pass_dump_targets,
                       [image_id](const auto& target) { return target.id == image_id; });
         std::erase(pass_dump_sampled, image_id);
@@ -2803,12 +3195,33 @@ template <class P>
 void TextureCache<P>::MarkModification(ImageBase& image) noexcept {
     image.flags |= ImageFlagBits::GpuModified;
     image.modification_tick = ++modification_tick;
+    InvalidateAliasSync(image);
+}
+
+template <class P>
+void TextureCache<P>::InvalidateAliasSync(ImageBase& image) noexcept {
+    if (!alias_sync_fastpath) {
+        return;
+    }
+    // Notify direct dependents on writes, rather than polling every alias on every read.
+    // SynchronizeAliases also notifies them when it adopts a newer source tick.
+    for (const auto& alias : image.aliased_images) {
+        slot_images[alias.id].alias_sync_frame_tick = (std::numeric_limits<u64>::max)();
+    }
 }
 
 template <class P>
 void TextureCache<P>::SynchronizeAliases(ImageId image_id) {
     boost::container::small_vector<const AliasedImage*, 8> aliased_images;
     Image& image = slot_images[image_id];
+    if (alias_sync_fastpath && image.alias_sync_frame_tick == frame_tick &&
+        image.alias_sync_generation == alias_sync_generation) {
+        return;
+    }
+    // Copying/scaling below can change the generation. Record the pre-copy generation
+    // conservatively: a changed generation must take the full path on the next use.
+    image.alias_sync_frame_tick = frame_tick;
+    image.alias_sync_generation = alias_sync_generation;
     bool any_rescaled = True(image.flags & ImageFlagBits::Rescaled);
     bool any_modified = True(image.flags & ImageFlagBits::GpuModified);
     u64 most_recent_tick = image.modification_tick;
@@ -2833,6 +3246,7 @@ void TextureCache<P>::SynchronizeAliases(ImageId image_id) {
         }
     }
     image.modification_tick = most_recent_tick;
+    InvalidateAliasSync(image);
     if (any_modified) {
         image.flags |= ImageFlagBits::GpuModified;
     }
@@ -2845,26 +3259,31 @@ void TextureCache<P>::SynchronizeAliases(ImageId image_id) {
     if (PassDump::GetConfig().enabled && frame_tick + 1 == PassDump::GetConfig().frame) {
         for (const AliasedImage* const aliased : aliased_images) {
             const ImageBase& source = slot_images[aliased->id];
-            LOG_ERROR(Render, "Pass dump alias sync {:x} {}x{} <- {}x{} copies={} extent={}x{}",
-                      image.gpu_addr, image.info.size.width, image.info.size.height,
-                      source.info.size.width, source.info.size.height, aliased->copies.size(),
-                      aliased->copies.empty() ? 0 : aliased->copies[0].extent.width,
-                      aliased->copies.empty() ? 0 : aliased->copies[0].extent.height);
+            ReportPassDump(fmt::format(
+                "PASS_DUMP alias_sync frame={} dst_gpu={:x} src_gpu={:x} source_tick={} "
+                "copies={} extent={}x{}",
+                CaptureFrame(), image.gpu_addr, source.gpu_addr, source.modification_tick,
+                aliased->copies.size(),
+                aliased->copies.empty() ? 0 : aliased->copies[0].extent.width,
+                aliased->copies.empty() ? 0 : aliased->copies[0].extent.height));
         }
     }
     for (const AliasedImage* const aliased : aliased_images) {
         if (!resolution.active || !any_rescaled) {
             CopyImage(image_id, aliased->id, aliased->copies);
+            NotePassDumpImageWrite(image_id, "alias_sync", slot_images[aliased->id].gpu_addr);
             continue;
         }
         Image& aliased_image = slot_images[aliased->id];
         if (!can_rescale) {
             ScaleDown(aliased_image);
             CopyImage(image_id, aliased->id, aliased->copies);
+            NotePassDumpImageWrite(image_id, "alias_sync", slot_images[aliased->id].gpu_addr);
             continue;
         }
         ScaleUp(aliased_image);
         CopyImage(image_id, aliased->id, aliased->copies);
+        NotePassDumpImageWrite(image_id, "alias_sync", slot_images[aliased->id].gpu_addr);
     }
 }
 
@@ -2912,8 +3331,27 @@ void TextureCache<P>::PrepareImageView(ImageViewId image_view_id, bool is_modifi
     if (!image_view_id) {
         return;
     }
-    const ImageViewBase& image_view = slot_image_views[image_view_id];
+    ImageViewBase& image_view = slot_image_views[image_view_id];
     if (image_view.IsBuffer()) {
+        return;
+    }
+    Image& image = slot_images[image_view.image_id];
+    static const bool force_refresh = std::getenv("NXBOX_FORCE_REFRESH_DIMS") != nullptr;
+    if (!force_refresh && !invalidate && False(image.flags & ImageFlagBits::CpuModified) &&
+        !False(image.flags & ImageFlagBits::Tracked) &&
+        ((texture_cache_fastpath && image.aliased_images.empty()) ||
+         (alias_sync_fastpath && !image.aliased_images.empty() &&
+          image.alias_sync_frame_tick == frame_tick &&
+          image.alias_sync_generation == alias_sync_generation))) {
+        // Bound sets repeat across draws, but writes must still advance the modification
+        // tick, including the second UpdateRenderTargets after sampled alias preparation.
+        if (is_modification) {
+            MarkModification(image);
+        }
+        if (image_view.prepare_frame_tick != frame_tick) {
+            lru_cache.Touch(image.lru_index, frame_tick);
+            image_view.prepare_frame_tick = frame_tick;
+        }
         return;
     }
     PrepareImage(image_view.image_id, is_modification, invalidate);

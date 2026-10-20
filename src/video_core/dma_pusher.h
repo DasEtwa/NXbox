@@ -8,6 +8,7 @@
 
 #include <array>
 #include <condition_variable>
+#include <cstdlib>
 #include <span>
 #include <vector>
 #include <boost/container/small_vector.hpp>
@@ -18,6 +19,7 @@
 #include "common/scratch_buffer.h"
 #include "video_core/engines/engine_interface.h"
 #include "video_core/engines/puller.h"
+#include "video_core/gpu_frontend.h"
 
 namespace Core {
 class System;
@@ -159,6 +161,11 @@ private:
     void SetState(const CommandHeader& command_header);
 
     void CallMethod(u32 argument);
+    const bool frontend_fastpath{GpuFrontendFastPathEnabled()};
+    const bool state_runs_fastpath{[] {
+        const char* value = std::getenv("NXBOX_DMA_STATE_RUNS");
+        return !value || value[0] != '0' || value[1] != '\0';
+    }()};
     void CallMultiMethod(const u32* base_start, u32 num_methods);
 
 public:

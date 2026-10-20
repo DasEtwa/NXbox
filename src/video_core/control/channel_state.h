@@ -56,6 +56,8 @@ struct ChannelState {
         Engines::Nv01Timer nv01_timer;
         DmaPusher dma_pusher;
     };
+    // Optional private renderer state; created before the D3D12 caches register the channel.
+    std::unique_ptr<Engines::Maxwell3D> pipeline_maxwell;
     std::optional<Payload> payload;
     MemoryManager* memory_manager = nullptr;
 

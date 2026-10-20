@@ -10,7 +10,7 @@ namespace Service::FileSystem {
 
 IDirectory::IDirectory(Core::System& system_, FileSys::VirtualDir directory_,
                        FileSys::OpenDirectoryMode mode)
-    : ServiceFramework{system_, "IDirectory"},
+    : PollingServiceFramework{system_, "IDirectory"},
       backend(std::make_unique<FileSys::Fsa::IDirectory>(directory_, mode)) {
     static const FunctionInfo functions[] = {
         {0, D<&IDirectory::Read>, "Read"},

@@ -11,6 +11,7 @@
 #include "common/logging.h"
 #include "common/settings.h"
 #include "common/cpu_features.h"
+#include "core/core.h"
 #include "core/hle/kernel/k_event.h"
 #include "core/hle/kernel/k_readable_event.h"
 #include "core/hle/kernel/kernel.h"
@@ -21,6 +22,7 @@
 #include "core/hle/service/nvnflinger/parcel.h"
 #include "core/hle/service/nvnflinger/ui/graphic_buffer.h"
 #include "core/hle/service/nvnflinger/window.h"
+#include "core/hle/service/vi/vblank_timing.h"
 
 namespace Service::android {
 
@@ -503,6 +505,19 @@ Status BufferQueueProducer::QueueBuffer(s32 slot, const QueueBufferInput& input,
         item.fence = fence;
         item.is_droppable = core->dequeue_buffer_cannot_block || async;
         item.swap_interval = swap_interval;
+#ifdef NXBOX_UWP
+        const auto program_id = service_context.kernel.System().GetApplicationProcessProgramID();
+        const auto observation = frame_unlock.Observe(program_id, swap_interval);
+        item.swap_interval = observation.effective;
+        if (observation.changed) {
+            LOG_INFO(Service_Nvnflinger,
+                     "NXBOX_SWAP_INTERVAL title={:016X} queue={} requested={} effective={}",
+                     program_id, fmt::ptr(this), swap_interval, item.swap_interval);
+        }
+#endif
+        if (VI::VblankProfileEnabled()) {
+            VI::vblank_timing.RecordSwapInterval(swap_interval);
+        }
         item.acquire_called = slots[slot].acquire_called;
 
         sticky_transform = sticky_transform_;

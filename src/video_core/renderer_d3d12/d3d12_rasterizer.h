@@ -10,15 +10,18 @@
 #include "common/common_types.h"
 #include "video_core/control/channel_state_cache.h"
 #include "video_core/engines/maxwell_dma.h"
+#include "video_core/gpu_draw_pipeline.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/renderer_d3d12/d3d12_buffer_cache.h"
 #include "video_core/renderer_d3d12/d3d12_clear.h"
 #include "video_core/renderer_d3d12/d3d12_descriptor.h"
 #include "video_core/renderer_d3d12/d3d12_dispatch.h"
+#include "video_core/renderer_d3d12/d3d12_draw_resource_index.h"
 #include "video_core/renderer_d3d12/d3d12_fence_manager.h"
 #include "video_core/renderer_d3d12/d3d12_index_converter.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_iface.h"
 #include "video_core/renderer_d3d12/d3d12_query_cache.h"
+#include "video_core/renderer_d3d12/d3d12_render_area.h"
 #include "video_core/renderer_d3d12/d3d12_texture_cache.h"
 #include "video_core/renderer_d3d12/d3d12_transform_feedback.h"
 
@@ -66,14 +69,44 @@ public:
     struct DisplayTexture {
         ResourcePtr resource;
         D3D12_SHADER_RESOURCE_VIEW_DESC view;
+        bool scaled{};
+        u32 guest_width{}, guest_height{};
     };
     DisplayTexture FramebufferTexture(const Tegra::FramebufferConfig& config);
     ~RasterizerD3D12() override;
+
+    void DrainGpuPipeline() override;
+    bool HasGpuPipeline() const override {
+        return gpu_pipeline != nullptr;
+    }
+    bool OnGpuPipeline() const {
+        return gpu_pipeline && !gpu_pipeline->IsConsumer();
+    }
+    // Synchronous calls and presentation execute on the same consumer as draws.
+    template <class Func>
+    auto RunGpuPipeline(Func&& function) -> std::invoke_result_t<Func> {
+        if (OnGpuPipeline()) {
+            // Only the GPU producer may read frontend registers. CPU invalidation
+            // callbacks use the queue without reading the concurrently decoding engine.
+            if (pipeline_frontend_owner == this && frontend_maxwell) {
+                auto snapshot = VideoCommon::CaptureDrawSnapshot(*frontend_maxwell);
+                return gpu_pipeline->Invoke(
+                    [&, snapshot = std::move(snapshot)]() -> std::invoke_result_t<Func> {
+                        snapshot.Apply(*maxwell3d);
+                        return function();
+                    });
+            }
+            return gpu_pipeline->Invoke(std::forward<Func>(function));
+        }
+        return function();
+    }
 
     void Draw(bool is_indexed, u32 instance_count) override;
     void DrawIndirect() override;
     // Overrides the built-in guest shader pipeline cache for alternate providers.
     void SetPipelineCache(IPipelineCache* cache) {
+        if (OnGpuPipeline())
+            return RunGpuPipeline([&] { SetPipelineCache(cache); });
         pipeline_cache = cache;
     }
     void DrawTexture() override;
@@ -132,6 +165,39 @@ public:
     void ReleaseChannel(s32 channel_id) override;
 
 private:
+    Tegra::Engines::Maxwell3D* frontend_maxwell{};
+    inline static thread_local const RasterizerD3D12* pipeline_frontend_owner{};
+    s32 frontend_channel_id{-1};
+    // Destroy/join explicitly before cache and context teardown.
+    std::unique_ptr<VideoCommon::GpuDrawPipeline> gpu_pipeline;
+    struct DynamicState {
+        std::array<D3D12_VIEWPORT, Tegra::Engines::Maxwell3D::Regs::NumViewports> viewports{};
+        std::array<D3D12_RECT, Tegra::Engines::Maxwell3D::Regs::NumViewports> scissors{};
+        std::array<UINT, 3> stencil{};
+        std::array<float, 4> blend{};
+        std::array<float, 2> depth_bounds{};
+        std::array<u32, 16> words{};
+        bool y_flip{};
+    };
+    static DynamicState ComputeDynamicState(const Tegra::Engines::Maxwell3D::Regs& regs,
+                                            const Pso::GraphicsPsoState& attachment_state,
+                                            const Pso::FramebufferFormats& formats, u32 width,
+                                            u32 height, const IGraphicsPipeline& pipeline,
+                                            bool rescaled);
+    // Snapshot identity includes views, draw-buffer mapping and framebuffer size. Holding
+    // the snapshot prevents pointer reuse after eviction; rt_control.count is separate.
+    struct DrawAttachments {
+        std::shared_ptr<Framebuffer::Attachments> snapshot;
+        u32 guest_rts{};
+        Pso::FramebufferFormats formats{};
+        std::array<ImageView*, VideoCommon::NUM_RT> colors{};
+        bool area_valid{};
+        AttachmentExtent area{}, matching_extent{};
+    } draw_attachments;
+    StateInputCache<GraphicsStateInputs> attachment_inputs;
+    Pso::GraphicsPsoState cached_attachment_state{};
+    StateInputCache<DynamicStateInputs> dynamic_inputs;
+    DynamicState cached_dynamic_state;
     Context& context;
     Tegra::MaxwellDeviceMemoryManager& device_memory;
     BindingState bindings;
@@ -178,6 +244,8 @@ private:
     ResourcePtr CopyFeedback(const ResourcePtr& source,
                              const VideoCommon::SubresourceRange* range = nullptr);
     void SkipDraw(const char* reason);
+    void TickWork();
+    void DrawSynchronous(bool is_indexed, u32 instance_count);
     struct FeedbackTexture {
         ResourcePtr resource;
         const Resource* source{};
@@ -218,6 +286,7 @@ private:
     ResourcePtr zero_uniform_buffer;
     void PrepareZeroUniformBuffer();
     std::vector<std::pair<ResourcePtr, D3D12_RESOURCE_STATES>> state_scratch;
+    DrawResourceIndex<> draw_resource_index;
     DescriptorPlan draw_view_plan{{0, 0, 0}};
     DescriptorPlan draw_sampler_plan{{0, 0, 0}};
     std::vector<D3D12_GPU_VIRTUAL_ADDRESS> draw_root_cbv_addresses;

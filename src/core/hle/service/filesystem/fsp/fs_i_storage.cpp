@@ -11,7 +11,7 @@
 namespace Service::FileSystem {
 
 IStorage::IStorage(Core::System& system_, FileSys::VirtualFile backend_)
-    : ServiceFramework{system_, "IStorage"}, backend(std::move(backend_)) {
+    : PollingServiceFramework{system_, "IStorage"}, backend(std::move(backend_)) {
     static const FunctionInfo functions[] = {
         {0, D<&IStorage::Read>, "Read"},
         {1, nullptr, "Write"},
@@ -30,9 +30,24 @@ Result IStorage::Read(
 
     R_UNLESS(length >= 0, FileSys::ResultInvalidSize);
     R_UNLESS(offset >= 0, FileSys::ResultInvalidOffset);
+    R_UNLESS(static_cast<u64>(length) <= out_bytes.size(), FileSys::ResultInvalidSize);
 
-    // Read the data from the Storage backend
-    backend->Read(out_bytes.data(), length, offset);
+    const u64 storage_size = backend->GetSize();
+    R_UNLESS(static_cast<u64>(offset) <= storage_size &&
+                 static_cast<u64>(length) <= storage_size - static_cast<u64>(offset),
+             FileSys::ResultOutOfRange);
+
+    if (length == 0) {
+        R_SUCCEED();
+    }
+
+    // IStorage has no bytes-read output: success promises the entire requested range.
+    const auto read = backend->Read(out_bytes.data(), length, offset);
+    if (read != static_cast<u64>(length)) {
+        LOG_ERROR(Service_FS, "Storage read failed, offset={:#x}, requested={}, actual={}", offset,
+                  length, read);
+        R_THROW(ResultUnknown);
+    }
 
     R_SUCCEED();
 }

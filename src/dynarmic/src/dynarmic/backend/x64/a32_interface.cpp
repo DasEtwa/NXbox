@@ -19,6 +19,9 @@
 
 #include "dynarmic/backend/x64/a32_emit_x64.h"
 #include "dynarmic/backend/x64/a32_jitstate.h"
+#if __has_include("../../../../../common/nxbox_stall.h")
+#    include "../../../../../common/nxbox_stall.h"
+#endif
 #include "dynarmic/backend/x64/block_of_code.h"
 #include "dynarmic/backend/x64/callback.h"
 #include "dynarmic/backend/x64/devirtualize.h"
@@ -104,12 +107,22 @@ struct Jit::Impl {
     }
 
     void ClearCache() {
+#if NXBOX_STALL_PROFILE
+        NxboxStall::AddJit(NxboxStall::JitEvent::ClearRequests);
+#endif
         std::unique_lock lock{invalidation_mutex};
         invalidate_entire_cache = true;
         HaltExecution(HaltReason::CacheInvalidation);
     }
 
     void InvalidateCacheRange(std::uint32_t start_address, std::size_t length) {
+        if (length == 0) {
+            return;
+        }
+#if NXBOX_STALL_PROFILE
+        NxboxStall::AddJit(NxboxStall::JitEvent::RangeCalls);
+        NxboxStall::AddJit(NxboxStall::JitEvent::RangeBytes, length);
+#endif
         std::unique_lock lock{invalidation_mutex};
         invalid_cache_ranges.add(boost::icl::discrete_interval<u32>::closed(start_address, static_cast<u32>(start_address + length - 1)));
         HaltExecution(HaltReason::CacheInvalidation);
@@ -194,8 +207,11 @@ private:
 
         constexpr size_t MINIMUM_REMAINING_CODESIZE = 1 * 1024 * 1024;
         if (block_of_code.SpaceRemaining() < MINIMUM_REMAINING_CODESIZE) {
+#if NXBOX_STALL_PROFILE
+            const NxboxStall::Scope flush_scope{NxboxStall::Kind::JitFlush};
+#endif
             invalidate_entire_cache = true;
-            PerformRequestedCacheInvalidation(HaltReason::CacheInvalidation);
+            PerformRequestedCacheInvalidation(HaltReason::CacheInvalidation, true);
         }
         block_of_code.EnsureMemoryCommitted(MINIMUM_REMAINING_CODESIZE);
 
@@ -204,10 +220,14 @@ private:
         ir_block.Reset(arch_descriptor);
         A32::Translate(ir_block, arch_descriptor, conf.callbacks, {conf.arch_version, conf.define_unpredictable_behaviour, conf.hook_hint_instructions});
         Optimization::Optimize(ir_block, conf, polyfill_options);
-        return emitter.Emit(ir_block);
+        const auto block = emitter.Emit(ir_block);
+#if NXBOX_STALL_PROFILE
+        SampleCache(true);
+#endif
+        return block;
     }
 
-    void PerformRequestedCacheInvalidation(HaltReason hr) {
+    void PerformRequestedCacheInvalidation(HaltReason hr, [[maybe_unused]] bool capacity_clear = false) {
         if (Has(hr, HaltReason::CacheInvalidation)) {
             std::unique_lock lock{invalidation_mutex};
 
@@ -217,17 +237,39 @@ private:
                 return;
             }
 
+#if NXBOX_STALL_PROFILE
+            const NxboxStall::Scope scope{NxboxStall::Kind::JitInvalidate};
+#endif
             jit_state.ResetRSB();
             if (invalidate_entire_cache) {
+#if NXBOX_STALL_PROFILE
+                NxboxStall::AddJit(NxboxStall::JitEvent::CacheClears);
+                NxboxStall::AddJit(capacity_clear ? NxboxStall::JitEvent::CapacityClears
+                                                  : NxboxStall::JitEvent::ExplicitClears);
+#endif
                 block_of_code.ClearCache();
                 emitter.ClearCache();
             } else {
+#if NXBOX_STALL_PROFILE
+                NxboxStall::AddJit(NxboxStall::JitEvent::RangeBatches);
+#endif
                 emitter.InvalidateCacheRanges(invalid_cache_ranges);
             }
+#if NXBOX_STALL_PROFILE
+            SampleCache(false, invalidate_entire_cache);
+#endif
             invalid_cache_ranges.clear();
             invalidate_entire_cache = false;
         }
     }
+
+#if NXBOX_STALL_PROFILE
+    void SampleCache(bool compilation = false, bool cleared = false) {
+        NxboxStall::SampleJitCache(conf.processor_id,
+                                   conf.code_cache_size - block_of_code.SpaceRemaining(),
+                                   conf.code_cache_size, compilation, cleared);
+    }
+#endif
 
     IR::Block ir_block = {LocationDescriptor(0, PSR(0), FPSCR(0), false)};
     A32JitState jit_state;

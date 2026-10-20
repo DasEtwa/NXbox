@@ -44,7 +44,7 @@ AppletIdentityInfo GetCallerIdentity(Applet& applet) {
 
 ILibraryAppletSelfAccessor::ILibraryAppletSelfAccessor(Core::System& system_,
                                                        std::shared_ptr<Applet> applet)
-    : ServiceFramework{system_, "ILibraryAppletSelfAccessor"}, m_applet{std::move(applet)},
+    : PollingServiceFramework{system_, "ILibraryAppletSelfAccessor"}, m_applet{std::move(applet)},
       m_broker{m_applet->caller_applet_broker} {
     // clang-format off
     static const FunctionInfo functions[] = {

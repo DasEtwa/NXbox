@@ -52,7 +52,7 @@ FileSys::PatchManager::Metadata GetApplicationMetadata(Core::System& system, u64
 } // Anonymous namespace
 
 IApplicationFunctions::IApplicationFunctions(Core::System& system_, std::shared_ptr<Applet> applet)
-    : ServiceFramework{system_, "IApplicationFunctions"}, m_applet{std::move(applet)} {
+    : PollingServiceFramework{system_, "IApplicationFunctions"}, m_applet{std::move(applet)} {
     // clang-format off
     static const FunctionInfo functions[] = {
         {1, D<&IApplicationFunctions::PopLaunchParameter>, "PopLaunchParameter"},

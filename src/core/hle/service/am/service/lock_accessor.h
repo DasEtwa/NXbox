@@ -6,11 +6,11 @@
 #include "core/hle/service/cmif_types.h"
 #include "core/hle/service/kernel_helpers.h"
 #include "core/hle/service/os/event.h"
-#include "core/hle/service/service.h"
+#include "core/hle/service/am/polling_service.h"
 
 namespace Service::AM {
 
-class ILockAccessor final : public ServiceFramework<ILockAccessor> {
+class ILockAccessor final : public PollingServiceFramework<ILockAccessor> {
 public:
     explicit ILockAccessor(Core::System& system_);
     ~ILockAccessor() override;

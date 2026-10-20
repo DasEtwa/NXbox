@@ -10,7 +10,7 @@
 #include "core/hle/service/apm/apm_controller.h"
 #include "core/hle/service/cmif_types.h"
 #include "core/hle/service/pm/pm.h"
-#include "core/hle/service/service.h"
+#include "core/hle/service/am/polling_service.h"
 #include "core/hle/service/set/settings_types.h"
 
 namespace Kernel {
@@ -23,7 +23,7 @@ struct Applet;
 class ILockAccessor;
 class IStorage;
 
-class ICommonStateGetter final : public ServiceFramework<ICommonStateGetter> {
+class ICommonStateGetter final : public PollingServiceFramework<ICommonStateGetter> {
 public:
     explicit ICommonStateGetter(Core::System& system_, std::shared_ptr<Applet> applet_);
     ~ICommonStateGetter() override;

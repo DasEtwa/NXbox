@@ -166,7 +166,7 @@ class PrewarmThreadTests(unittest.TestCase):
         )[0]
         guard = load.split("SCOPE_EXIT {", 1)[1].split("};", 1)[0]
         self.assertIn("if (preload)", guard)
-        self.assertIn("async->SetWorkerTarget(2)", guard)
+        self.assertIn("async->SetWorkerTarget(RuntimePsoThreads())", guard)
         self.assertIn("async_warmup && wait_for_warmup", load)
         self.assertLess(load.index("SCOPE_EXIT {"), load.index("SetWorkerTarget(threads)"))
         self.assertLess(load.index("SetWorkerTarget(threads)"), load.index("disk->StartWarmup("))
@@ -174,11 +174,11 @@ class PrewarmThreadTests(unittest.TestCase):
         self.assertIn('Diagnostic(fmt::format("D3D12 prewarm threads={}", threads))', load)
         completion = load.split("if (finished && pending == 0)", 1)[1]
         self.assertLess(
-            completion.index("async->SetWorkerTarget(2)"),
+            completion.index("async->SetWorkerTarget(RuntimePsoThreads())"),
             completion.index("callback(VideoCore::LoadCallbackStage::Complete"),
         )
         self.assertIn("disk->WaitWarmup();", completion)
         self.assertIn("DiskWarmupStage::Cancelled", load)
         self.assertIn("DiskWarmupStage::Failed", load)
-        self.assertIn("warmup_pool->SetWorkerTarget(2)", load)
+        self.assertIn("warmup_pool->SetWorkerTarget(RuntimePsoThreads())", load)
         self.assertIn("!CompileHeadroomAvailable(false)", load)

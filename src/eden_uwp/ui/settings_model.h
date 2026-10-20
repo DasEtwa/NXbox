@@ -25,20 +25,21 @@ enum class Setting {
     XboxButtonIcons,
     ButtonLayout,
     Resolution,
+    Upscaler,
     Version,
     FtpServer,
     Count
 };
 struct SettingsCategory {
     Text title;
-    std::array<Setting, 7> rows;
+    std::array<Setting, 8> rows;
     int count;
 };
 inline constexpr std::array<SettingsCategory, 6> kSettingsCategories{{
     {Text::SettingsGraphics,
      {Setting::Renderer, Setting::ShaderPreload, Setting::AsyncShaders, Setting::XboxButtonIcons,
-      Setting::ButtonLayout, Setting::Resolution, Setting::InternetArt},
-     7},
+      Setting::ButtonLayout, Setting::Resolution, Setting::Upscaler, Setting::InternetArt},
+     8},
     {Text::NavShop, {Setting::Sources, Setting::Usb}, 2},
     {Text::SettingsOnline, {Setting::Nextendo, Setting::Multiplayer, Setting::FtpServer}, 3},
     {Text::AccountSection,
@@ -49,6 +50,10 @@ inline constexpr std::array<SettingsCategory, 6> kSettingsCategories{{
      3},
     {Text::SettingsAbout, {Setting::Version, Setting::Credits}, 2},
 }};
+// Keep seven full-height settings rows visible as focus moves through larger categories.
+inline constexpr int SettingsFirstVisibleRow(int selected) {
+    return selected > 6 ? selected - 6 : 0;
+}
 inline constexpr bool RendererChoiceEnabled(int choice) {
     return choice >= 0 && choice < 2;
 }

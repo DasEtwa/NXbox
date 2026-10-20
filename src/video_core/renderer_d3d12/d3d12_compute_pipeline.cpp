@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: Copyright 2026 NSPX
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "video_core/renderer_d3d12/d3d12_build_stats.h"
 #include "video_core/renderer_d3d12/d3d12_compute_pipeline.h"
 #include "video_core/renderer_d3d12/d3d12_context.h"
 
@@ -20,7 +21,9 @@ ComputePipeline::ComputePipeline(ID3D12Device* device, ComPtr<ID3D12RootSignatur
     }
     if (profile)
         profile->Count(FrameCount::PsoCompiles);
-    CheckPipeline(device->CreateComputePipelineState(&desc, IID_PPV_ARGS(&pso)),
+    CheckPipeline(TimePsoDriver([&] {
+                      return device->CreateComputePipelineState(&desc, IID_PPV_ARGS(&pso));
+                  }),
                   "CreateComputePipelineState", device, key);
 }
 

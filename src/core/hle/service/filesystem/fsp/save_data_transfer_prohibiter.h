@@ -3,11 +3,11 @@
 
 #pragma once
 
-#include "core/hle/service/service.h"
+#include "core/hle/service/am/polling_service.h"
 
 namespace Service::FileSystem {
 
-class ISaveDataTransferProhibiter : public ServiceFramework<ISaveDataTransferProhibiter> {
+class ISaveDataTransferProhibiter : public PollingServiceFramework<ISaveDataTransferProhibiter> {
 public:
     explicit ISaveDataTransferProhibiter(Core::System& system_);
     ~ISaveDataTransferProhibiter() override;

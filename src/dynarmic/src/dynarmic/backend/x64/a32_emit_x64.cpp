@@ -103,6 +103,8 @@ A32EmitX64::BlockDescriptor A32EmitX64::Emit(IR::Block& block) {
     }
 
     code.EnableWriting();
+    // End the previous object's lifetime: alias vectors can outgrow inline storage.
+    this->reg_alloc.~RegAlloc();
     new (&this->reg_alloc) RegAlloc([this] {
         std::bitset<32> gprs{any_gpr};
         if (conf.fastmem_pointer)
@@ -171,6 +173,7 @@ finish_this_inst:
     }
 
     reg_alloc.AssertNoMoreUses();
+    reg_alloc.ReportProfile();
 
     if (conf.enable_cycle_counting)
         EmitAddCycles(block.CycleCount());

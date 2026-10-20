@@ -15,6 +15,7 @@
 #include <unordered_map>
 #include <utility>
 
+#include "common/cityhash.h"
 #include "shader_recompiler/stage.h"
 #include "video_core/renderer_d3d12/d3d12_async_pso.h"
 #include "video_core/renderer_d3d12/d3d12_compute_pipeline.h"
@@ -22,6 +23,7 @@
 #include "video_core/renderer_d3d12/d3d12_dxc.h"
 #include "video_core/renderer_d3d12/d3d12_graphics_pipeline.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_iface.h"
+#include "video_core/renderer_d3d12/d3d12_pso_frame_budget.h"
 #include "video_core/renderer_d3d12/d3d12_pso_tables.h"
 #include "video_core/renderer_d3d12/d3d12_root_signature.h"
 #include "video_core/shader_cache.h"
@@ -51,7 +53,10 @@ static_assert(std::has_unique_object_representations_v<GraphicsPipelineKey>);
 
 struct GraphicsPipelineKeyHash {
     size_t operator()(const GraphicsPipelineKey& key) const noexcept {
-        return static_cast<size_t>(Pso::HashBytes(&key, sizeof(key)));
+        if (!StateFastpathEnabled())
+            return static_cast<size_t>(Pso::HashBytes(&key, sizeof(key)));
+        return static_cast<size_t>(
+            Common::CityHash64(reinterpret_cast<const char*>(&key), sizeof(key)));
     }
 };
 
@@ -67,7 +72,9 @@ public:
     ~PipelineCache() override;
     void BindToChannel(s32 id) override;
     IGraphicsPipeline* CurrentGraphicsPipeline(const Pso::FramebufferFormats& formats,
-                                               bool is_indexed) override;
+                                               bool is_indexed, u64 frame) override;
+    void RecordGraphicsDraw(u64 frame) override;
+    void TickFrame();
     ComputePipeline* CurrentComputePipeline();
     void LoadDiskResources(u64 title_id, std::stop_token stop_loading,
                            const VideoCore::DiskResourceLoadCallback& callback,
@@ -108,6 +115,7 @@ private:
     const CachedFeature<D3D12_FEATURE_DATA_FORMAT_SUPPORT>& QueryFormatSupport(DXGI_FORMAT format);
     void InvalidateLastGraphicsPipeline();
     void StoreGuestGraphics(const GraphicsPipelineKey& request, GraphicsPipeline* pipeline);
+    std::chrono::steady_clock::duration PendingPsoWaitBudget();
     IGraphicsPipeline* RememberGraphicsPipeline(const GraphicsPipelineKey& request,
                                                 IGraphicsPipeline* pipeline);
 
@@ -128,6 +136,8 @@ private:
     std::unique_ptr<AsyncCache> async;
     /// Requests that already spent their one bounded wait for an async PSO.
     std::unordered_set<u64> pso_waited;
+    PsoFrameBudget pso_frame_budget;
+    RenderTargetDrawHistory rt_draw_history;
     std::unordered_set<GraphicsPipelineKey, GraphicsPipelineKeyHash> prewarmed_graphics;
     std::unordered_set<u64> prewarmed_compute;
     std::recursive_mutex pipeline_mutex;
@@ -140,8 +150,14 @@ private:
     std::unordered_map<DXGI_FORMAT, CachedFeature<D3D12_FEATURE_DATA_FORMAT_SUPPORT>>
         format_support;
     Pso::ByteHashCache<128> vertex_specialization_hash;
+    StateInputCache<GraphicsStateInputs> graphics_state_inputs;
+    GraphicsPipelineKey cached_graphics_request{};
+    Pso::TopologyInfo cached_topology{};
     GraphicsPipelineKey last_graphics_request{};
     IGraphicsPipeline* last_graphics_pipeline{};
+    // True only when the last resolved pipeline belongs to cached_graphics_request's inputs.
+    bool last_graphics_request_current{};
+    bool last_graphics_prewarmed{};
     std::array<u64, 6> guest_hashes{};
     DxcCache dxc{&context.Profile()};
     std::unique_ptr<DiskPipelineCache> disk;

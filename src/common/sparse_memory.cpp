@@ -99,6 +99,33 @@ std::uint64_t CommittedBytes() noexcept {
     return g_committed_bytes.load(std::memory_order_relaxed);
 }
 
+std::uint64_t CommittedBytes(const void* base, std::size_t size) noexcept {
+    if (!base || !query_pages) {
+        return 0;
+    }
+    const auto begin = reinterpret_cast<std::uintptr_t>(base);
+    const auto end = begin + size;
+    std::uint64_t committed = 0;
+    for (auto address = begin; address < end;) {
+        MEMORY_BASIC_INFORMATION info{};
+        if (query_pages(reinterpret_cast<const void*>(address), &info, sizeof(info)) !=
+            sizeof(info)) {
+            break;
+        }
+        const auto region_end =
+            reinterpret_cast<std::uintptr_t>(info.BaseAddress) + info.RegionSize;
+        if (region_end <= address) {
+            break;
+        }
+        const auto next = region_end < end ? region_end : end;
+        if (info.State == MEM_COMMIT) {
+            committed += next - address;
+        }
+        address = next;
+    }
+    return committed;
+}
+
 void* Allocate(std::size_t size) noexcept {
     if (size == 0) {
         return nullptr;

@@ -1,13 +1,16 @@
 // SPDX-FileCopyrightText: Copyright 2026 NSPX
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "common/nxbox_wait_diag.h"
 #include "video_core/renderer_d3d12/d3d12_query_cache.h"
 
 #include <algorithm>
 #include <array>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <stdexcept>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "common/logging.h"
 #include "common/settings.h"
@@ -25,6 +28,9 @@ namespace D3D12 {
 using VideoCommon::QueryType;
 namespace {
 constexpr u32 BankSize = 256;
+constexpr u32 BatchCapacity = 1024;
+constexpr u32 BatchOperationsOffset = BankSize * 16;
+constexpr u32 BatchUploadBytes = BatchOperationsOffset + BatchCapacity * 32;
 // Full banks rotate instead of waiting: a bank is consumed only when it comes around again,
 // several submits later, or when the guest reads a counter. BotW records ~3600 occlusion
 // queries per frame: 8 banks wrapped inside one command list and the render thread waited
@@ -39,10 +45,29 @@ constexpr u64 CounterBytes = TypeCount * 4 * sizeof(u64);
 // Not tied to GPU accuracy: the default (High) would keep every report on the per-report
 // submit-and-wait path, as Persona 5 Royal showed (641 forced submits per frame).
 bool SynchronousQueries() {
-    return BisectEnabled("NXBOX_D3D12_SYNC_QUERIES");
+    static const bool enabled = BisectEnabled("NXBOX_D3D12_SYNC_QUERIES");
+    return enabled;
+}
+void QueryUavBarrier(Context& context, const ResourcePtr& counters, const ResourcePtr& output) {
+    if (BisectEnabled("NXBOX_D3D12_GLOBAL_QUERY_UAV")) {
+        context.GlobalUavBarrier();
+        return;
+    }
+    // These committed buffers are private to query reduction/normalization, never guest
+    // aliases. Order their dependent dispatches without draining unrelated guest UAV work.
+    // SRV/copy consumers are covered by their resource transitions, as before.
+    const FrameProfile::Scope profile_barrier{context.Profile(), FramePhase::Barriers};
+    D3D12_RESOURCE_BARRIER barriers[2]{};
+    barriers[0].Type = barriers[1].Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+    barriers[0].UAV.pResource = counters->handle.Get();
+    barriers[1].UAV.pResource = output ? output->handle.Get() : nullptr;
+    const UINT count = output ? 2 : 1;
+    context.Commands()->ResourceBarrier(count, barriers);
+    context.Profile().Count(FrameCount::Barriers, count);
 }
 ComPtr<ID3D12QueryHeap> CreateHeap(Context& context, D3D12_QUERY_HEAP_TYPE type, u32 count) {
-    if (BisectEnabled("NXBOX_D3D12_NO_QUERIES"))
+    static const bool no_queries = BisectEnabled("NXBOX_D3D12_NO_QUERIES");
+    if (no_queries)
         return {};
     D3D12_QUERY_HEAP_DESC desc{};
     desc.Type = type;
@@ -75,7 +100,8 @@ public:
                         std::optional<u32> stream = std::nullopt) override {
         VideoCommon::SubmissionTrace::Log("query_report_begin cpu={:x} type={}", address,
                                           static_cast<u32>(type));
-        const auto counter = runtime.ReadCounter(type, stream.value_or(0));
+        const auto counter =
+            runtime.ReadCounter(type, stream.value_or(0), address, timestamp ? 8 : 4);
         VideoCommon::SubmissionTrace::Log("query_report_end cpu={:x} type={} value={} pending={}",
                                           address, static_cast<u32>(type), counter.value,
                                           static_cast<bool>(counter.result.buffer));
@@ -183,6 +209,9 @@ struct QueryCacheRuntimeImpl {
           results{context.CreateBuffer(ResultStride * SlotCount, synchronous
                                                                      ? D3D12_HEAP_TYPE_READBACK
                                                                      : D3D12_HEAP_TYPE_DEFAULT)} {
+        batch_operations.reserve(BatchCapacity);
+        batch_destinations.reserve(BatchCapacity);
+        batch_destination_resources.reserve(BatchCapacity);
         for (auto& heap : so) {
             heap = CreateHeap(context, D3D12_QUERY_HEAP_TYPE_SO_STATISTICS, SlotCount);
         }
@@ -265,7 +294,7 @@ struct QueryCacheRuntimeImpl {
         Check(context.Device()->CreateComputePipelineState(&desc, IID_PPV_ARGS(&resolve_pipeline)),
               "create query resolve pipeline", context.Device());
         gpu_counters = context.CreateBuffer(CounterBytes * 2, D3D12_HEAP_TYPE_DEFAULT);
-        gpu_report = context.CreateBuffer(8, D3D12_HEAP_TYPE_DEFAULT);
+        gpu_report = context.CreateBuffer(BatchCapacity * 8, D3D12_HEAP_TYPE_DEFAULT);
         auto zero = upload.Request(CounterBytes * 2);
         std::memset(zero.mapped_span.data(), 0, CounterBytes * 2);
         context.Commands()->SetPredication(nullptr, 0, D3D12_PREDICATION_OP_EQUAL_ZERO);
@@ -290,7 +319,7 @@ struct QueryCacheRuntimeImpl {
         context.Retain(gpu_report);
         if (metadata.buffer)
             context.Retain(metadata.buffer);
-        context.GlobalUavBarrier();
+        QueryUavBarrier(context, gpu_counters, gpu_report);
         auto* commands = context.Commands();
         commands->OMSetRenderTargets(0, nullptr, FALSE, nullptr);
         commands->SetComputeRootSignature(resolve_root.Get());
@@ -309,13 +338,117 @@ struct QueryCacheRuntimeImpl {
         context.MarkWork("query GPU reduction");
         commands->Dispatch(static_cast<UINT>((TypeCount * 4 + 31) / 32), 1, 1);
         context.Profile().Count(FrameCount::Dispatches);
-        context.GlobalUavBarrier();
+        QueryUavBarrier(context, gpu_counters, gpu_report);
+    }
+    void PrepareBatch() {
+        if (batch_operations.size() == BatchCapacity)
+            FlushBatch();
+        if (!batch_operations.empty())
+            return;
+        EnsureGpuCounters();
+        // Allocate everything BEFORE publishing an operation. Staging pressure can submit
+        // and invoke FlushBatch recursively; draining must never allocate or wait.
+        auto instructions = upload.Request(BatchUploadBytes);
+        auto snapshots = readback.Request(BatchCapacity * 8);
+        batch_upload = std::move(instructions);
+        batch_readback = std::move(snapshots);
+        batch_reports = 0;
+    }
+    void QueueOperation(u32 operation, u32 type = 0, u32 stream = 0) {
+        PrepareBatch();
+        batch_operations.push_back({operation, bank * BankSize + accumulated, count - accumulated,
+                                    type, stream, batch_reports, 0, 0});
+        // A pending snapshot belongs to this tick even if no native command was needed yet.
+        context.MarkWork("query batch pending");
+    }
+    void FlushBatch() {
+        if (flushing_batch || batch_operations.empty())
+            return;
+        RequireClosed();
+        flushing_batch = true;
+        struct FlushGuard {
+            bool& flushing;
+            ~FlushGuard() {
+                flushing = false;
+            }
+        } guard{flushing_batch};
+        for (u32 i = 0; i < count; ++i) {
+            const auto& draw = draws[bank * BankSize + i];
+            const std::array<u32, 4> flags{draw.occlusion, draw.geometry, draw.pipeline,
+                                           draw.streams};
+            std::memcpy(batch_upload.mapped_span.data() + i * sizeof(flags), flags.data(),
+                        sizeof(flags));
+        }
+        std::memcpy(batch_upload.mapped_span.data() + BatchOperationsOffset,
+                    batch_operations.data(), batch_operations.size() * 32);
+        context.Commands()->SetPredication(nullptr, 0, D3D12_PREDICATION_OP_EQUAL_ZERO);
+        context.InvalidateRecordedState();
+        context.Transition(results, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        context.Transition(gpu_counters, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        context.Transition(gpu_report, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        context.Retain(results);
+        context.Retain(gpu_counters);
+        context.Retain(gpu_report);
+        context.Retain(batch_upload.buffer);
+        context.Retain(batch_readback.buffer);
+        auto* commands = context.Commands();
+        commands->OMSetRenderTargets(0, nullptr, FALSE, nullptr);
+        commands->SetComputeRootSignature(resolve_root.Get());
+        commands->SetPipelineState(resolve_pipeline.Get());
+        const std::array<u32, 5> constants{4, BatchOperationsOffset,
+                                           static_cast<u32>(batch_operations.size()), 0, 0};
+        commands->SetComputeRoot32BitConstants(0, 5, constants.data(), 0);
+        commands->SetComputeRootShaderResourceView(1, results->handle->GetGPUVirtualAddress());
+        commands->SetComputeRootShaderResourceView(
+            2, batch_upload.buffer->handle->GetGPUVirtualAddress() + batch_upload.offset);
+        commands->SetComputeRootUnorderedAccessView(3,
+                                                    gpu_counters->handle->GetGPUVirtualAddress());
+        commands->SetComputeRootUnorderedAccessView(4, gpu_report->handle->GetGPUVirtualAddress());
+        context.MarkWork("query GPU batch reduction");
+        context.Profile().Count(FrameCount::QueryBatchDispatches);
+        commands->Dispatch(static_cast<UINT>((TypeCount * 4 + 31) / 32), 1, 1);
+        context.Profile().Count(FrameCount::Dispatches);
+        // One lane owns each counter/baseline and each report has exactly one writer.
+        // Order the next accumulator use with one UAV barrier. The COPY_SOURCE
+        // transition below orders report writes before every snapshot/guest copy.
+        QueryUavBarrier(context, gpu_counters, {});
+        if (batch_reports) {
+            context.Transition(gpu_report, D3D12_RESOURCE_STATE_COPY_SOURCE);
+            context.BeforeCopyWrite(batch_readback.buffer, batch_readback.offset,
+                                    batch_reports * 8);
+            commands->CopyBufferRegion(batch_readback.buffer->handle.Get(), batch_readback.offset,
+                                       gpu_report->handle.Get(), 0, batch_reports * 8);
+        }
+        // Copy in report order, including repeated/partially overlapping addresses.
+        // Buffer-cache tracking makes CPU downloads and later GPU bindings see these writes.
+        for (u32 i = 0; i < batch_destinations.size(); ++i) {
+            const auto& target = batch_destinations[i];
+            if (!target.resource)
+                continue;
+            context.Transition(target.resource, D3D12_RESOURCE_STATE_COPY_DEST);
+            context.BeforeCopyWrite(target.resource, target.offset, target.size);
+            commands->CopyBufferRegion(target.resource->handle.Get(), target.offset,
+                                       gpu_report->handle.Get(), i * 8, target.size);
+            context.Profile().Count(FrameCount::GpuBufferCopyBytes, target.size);
+            ++report_copies;
+        }
+        batch_destinations.clear();
+        batch_destination_resources.clear();
+        batch_operations.clear();
+        batch_upload = {};
+        batch_readback = {};
+        batch_reports = 0;
     }
     void AccumulateGpu() {
         RequireClosed();
         EnsureGpuCounters();
         if (accumulated == count)
             return;
+        if (batch_queries) {
+            QueueOperation(0);
+            accumulated = count;
+            return;
+        }
         auto metadata = upload.Request((count - accumulated) * 4 * sizeof(u32));
         for (u32 i = accumulated; i < count; ++i) {
             const auto& draw = draws[bank * BankSize + i];
@@ -351,6 +484,7 @@ struct QueryCacheRuntimeImpl {
     void Rotate() {
         if (!synchronous) {
             AccumulateGpu();
+            FlushBatch(); // Resolve all references before bank slots can be recycled.
             bank = (bank + 1) % BankCount;
             count = 0;
             accumulated = 0;
@@ -453,6 +587,22 @@ struct QueryCacheRuntimeImpl {
         return value;
     }
     const bool synchronous{SynchronousQueries()};
+    // Opt-in: on Series X it cost Odyssey 18% (25.0 vs 30.4 fps without profilers).
+    const bool batch_queries = [] {
+        const char* value = std::getenv("NXBOX_D3D12_BATCH_QUERIES");
+        return value && value[0] == '1' && value[1] == '\0';
+    }();
+    struct ReportDestination {
+        ResourcePtr resource;
+        u64 offset, address;
+        u32 size;
+    };
+    std::vector<ReportDestination> batch_destinations;
+    std::unordered_set<Resource*> batch_destination_resources;
+    bool flushing_batch{};
+    std::vector<std::array<u32, 8>> batch_operations;
+    StagingBufferRef batch_upload, batch_readback;
+    u32 batch_reports{};
     Context& context;
     Tegra::MaxwellDeviceMemoryManager& memory;
     BufferCache& cache;
@@ -478,7 +628,7 @@ struct QueryCacheRuntimeImpl {
     std::array<bool, TypeCount> enabled{};
     std::atomic<u64> pending_reports{}, completed_reports{}, invalidated_reports{}, report_copies{};
     u32 count{};
-    bool drawing{}, predicate_set{};
+    bool drawing{}, predicate_set{}, idle_draw{};
     // EQUAL_ZERO skips commands when the predicate is zero; NOT_EQUAL_ZERO inverts that.
     D3D12_PREDICATION_OP predicate_op{D3D12_PREDICATION_OP_EQUAL_ZERO};
     // Pipeline statistics are recorded only once the guest has read one of those counters.
@@ -489,13 +639,21 @@ struct QueryCacheRuntimeImpl {
 
 QueryCacheRuntime::QueryCacheRuntime(Context& context, Tegra::MaxwellDeviceMemoryManager& memory,
                                      BufferCache& cache, TransformFeedback& feedback)
-    : impl{std::make_unique<QueryCacheRuntimeImpl>(*this, context, memory, cache, feedback)} {}
+    : impl{std::make_unique<QueryCacheRuntimeImpl>(*this, context, memory, cache, feedback)} {
+    context.before_submit = [this] { impl->FlushBatch(); };
+    context.before_resource_use = [this](const ResourcePtr& resource) {
+        if (impl->batch_destination_resources.contains(resource.get()))
+            impl->FlushBatch();
+    };
+}
 QueryCacheRuntime::~QueryCacheRuntime() {
     try {
         impl->context.Finish(FrameCount::ForcedSubmitQueryReadback);
     } catch (const std::exception& error) {
         LOG_ERROR(Render, "D3D12 query teardown: {}", error.what());
     }
+    impl->context.before_submit = {};
+    impl->context.before_resource_use = {};
 }
 VideoCommon::StreamerInterface* QueryCacheRuntime::GetStreamerInterface(QueryType type) {
     if (type == QueryType::Payload) {
@@ -507,9 +665,18 @@ VideoCommon::StreamerInterface* QueryCacheRuntime::GetStreamerInterface(QueryTyp
 void QueryCacheRuntime::ReportQueryFenceWait() {
     impl->context.Profile().Count(FrameCount::QueryReportFenceWaits);
 }
-void QueryCacheRuntime::ReportPending() { ++impl->pending_reports; }
-void QueryCacheRuntime::ReportCompleted(bool invalidated) {
+u64 QueryCacheRuntime::ReportPending(VAddr address) {
+    ++impl->pending_reports;
+    NxboxWait::Add(NxboxWait::Counter::QueryQueued);
+    return NxboxWait::Enabled() ? NxboxWait::BeginPending(NxboxWait::PendingKind::Query, address,
+                                                          impl->context.PendingFenceTick())
+                                : 0;
+}
+void QueryCacheRuntime::ReportCompleted(bool invalidated, u64 token) {
+    NxboxWait::EndPending(token);
     --impl->pending_reports;
+    NxboxWait::Add(invalidated ? NxboxWait::Counter::QueryInvalidated
+                               : NxboxWait::Counter::QueryWritten);
     if (invalidated)
         ++impl->invalidated_reports;
     else
@@ -522,8 +689,19 @@ std::string QueryCacheRuntime::VisibilityDiagnostics() const {
            " query_buffer_copies=" + std::to_string(impl->report_copies.load()) +
            " pending_native_queries=" + std::to_string(impl->count);
 }
+void QueryCacheRuntime::FlushPendingReports(DAddr address, u64 size) {
+    if (!size)
+        return;
+    if (std::any_of(impl->batch_destinations.begin(), impl->batch_destinations.end(),
+                    [&](const auto& target) {
+                        return target.address < address + size &&
+                               address < target.address + target.size;
+                    }))
+        impl->FlushBatch();
+}
 void QueryCacheRuntime::PrepareDraw() {
-    if (BisectEnabled("NXBOX_D3D12_NO_QUERIES"))
+    static const bool no_queries = BisectEnabled("NXBOX_D3D12_NO_QUERIES");
+    if (no_queries)
         return;
     impl->RequireClosed();
     if (impl->count == BankSize) {
@@ -531,18 +709,28 @@ void QueryCacheRuntime::PrepareDraw() {
     }
 }
 void QueryCacheRuntime::BeginDraw(bool geometry) {
-    if (BisectEnabled("NXBOX_D3D12_NO_QUERIES"))
+    static const bool no_queries = BisectEnabled("NXBOX_D3D12_NO_QUERIES");
+    if (no_queries)
         return;
     impl->RequireClosed();
     if (impl->count == BankSize) {
         throw std::logic_error("PrepareDraw must precede draw state binding");
     }
     ResumeHostConditionalRendering();
+    // Predication still resumes on an idle draw. No bank slot needs to be touched
+    // until a counter, pipeline statistics or stream output actually records data.
+    const bool occlusion = impl->enabled[static_cast<size_t>(QueryType::ZPassPixelCount)] ||
+                           impl->enabled[static_cast<size_t>(QueryType::ZPassPixelCount64)];
+    const u32 streams = impl->feedback.StreamMask();
+    static const bool draw_fastpaths = !BisectEnabled("NXBOX_D3D12_NO_DRAW_FASTPATHS");
+    impl->idle_draw = draw_fastpaths && !occlusion && !impl->pipeline_wanted && !streams;
+    if (impl->idle_draw) {
+        impl->drawing = true;
+        return;
+    }
     const u32 slot = impl->Slot();
     auto& draw = impl->draws[slot];
-    draw = {impl->enabled[static_cast<size_t>(QueryType::ZPassPixelCount)] ||
-                impl->enabled[static_cast<size_t>(QueryType::ZPassPixelCount64)],
-            geometry, impl->pipeline_wanted, false, impl->feedback.StreamMask()};
+    draw = {occlusion, geometry, impl->pipeline_wanted, false, streams};
     draw.recorded = draw.occlusion || draw.pipeline || draw.streams;
     impl->drawing = true;
     if (!draw.recorded)
@@ -561,10 +749,15 @@ void QueryCacheRuntime::BeginDraw(bool geometry) {
     }
 }
 void QueryCacheRuntime::EndDraw() {
-    if (BisectEnabled("NXBOX_D3D12_NO_QUERIES"))
+    static const bool no_queries = BisectEnabled("NXBOX_D3D12_NO_QUERIES");
+    if (no_queries)
         return;
     if (!impl->drawing) {
         throw std::logic_error("D3D12 EndDraw without BeginDraw");
+    }
+    if (impl->idle_draw) {
+        impl->drawing = false;
+        return;
     }
     const u32 slot = impl->Slot();
     const auto& draw = impl->draws[slot];
@@ -576,7 +769,21 @@ void QueryCacheRuntime::EndDraw() {
     context.Retain(impl->results);
     if (!impl->synchronous)
         context.Transition(impl->results, D3D12_RESOURCE_STATE_COPY_DEST);
-    context.InvalidateRecordedState();
+    // Removing this workaround regressed SM3DW terrain (f1adbb814e); no stale
+    // binding has been identified. Keep full invalidation by default. The opt-in
+    // probes isolate root-argument re-emission without changing query commands,
+    // predication or the results-buffer transition. FULL_INVALIDATE overrides both, and
+    // REBIND_ROOT_ARGUMENTS implies KEEP_RECORDED_STATE (alone it would test nothing).
+    static const bool rebind_root_arguments =
+        BisectEnabled("NXBOX_D3D12_QUERY_REBIND_ROOT_ARGUMENTS");
+    static const bool keep_recorded_state =
+        rebind_root_arguments || BisectEnabled("NXBOX_D3D12_QUERY_KEEP_RECORDED_STATE");
+    static const bool full_invalidate = BisectEnabled("NXBOX_D3D12_QUERY_FULL_INVALIDATE");
+    if (!keep_recorded_state || full_invalidate) {
+        context.InvalidateRecordedState();
+    } else if (rebind_root_arguments) {
+        context.DrawState().ClearRootArguments();
+    }
     auto* commands = context.Commands();
     const auto end = [&](ID3D12QueryHeap* heap, D3D12_QUERY_TYPE type, u64 offset) {
         commands->EndQuery(heap, type, slot);
@@ -604,8 +811,10 @@ void QueryCacheRuntime::CancelDraw() {
         EndDraw();
     PauseHostConditionalRendering();
 }
-QueryCacheRuntime::CounterResult QueryCacheRuntime::ReadCounter(QueryType type, u32 stream) {
-    if (BisectEnabled("NXBOX_D3D12_NO_QUERIES"))
+QueryCacheRuntime::CounterResult QueryCacheRuntime::ReadCounter(QueryType type, u32 stream,
+                                                                DAddr address, u32 size) {
+    static const bool no_queries = BisectEnabled("NXBOX_D3D12_NO_QUERIES");
+    if (no_queries)
         return {};
     impl->RequireClosed();
     if (stream >= 4 || static_cast<size_t>(type) >= TypeCount) {
@@ -623,6 +832,36 @@ QueryCacheRuntime::CounterResult QueryCacheRuntime::ReadCounter(QueryType type, 
     }
     PauseHostConditionalRendering();
     impl->AccumulateGpu();
+    if (impl->batch_queries && type != QueryType::StreamingByteCount) {
+        // Obtain/mark the destination before enqueueing: cache growth and uploads can
+        // submit or consume earlier reports. Preserve that order before taking a snapshot.
+        ResourcePtr destination;
+        u32 destination_offset{};
+        if (size) {
+            std::scoped_lock lock{impl->cache.mutex};
+            const auto [buffer, offset] = impl->cache.ObtainCPUBuffer(
+                address, size, VideoCommon::ObtainBufferSynchronize::FullSynchronize,
+                VideoCommon::ObtainBufferOperation::MarkAsWritten);
+            destination = buffer->Handle();
+            destination_offset = offset;
+        }
+        impl->QueueOperation(1, static_cast<u32>(type), stream);
+        impl->batch_destinations.push_back({destination, destination_offset, address, size});
+        if (destination) {
+            // Invalidate copied CBV/binding resolutions now, before a consumer can
+            // reuse a snapshot without ever transitioning the original resource.
+            ++destination->content_version;
+            impl->batch_destination_resources.insert(destination.get());
+        }
+        const auto offset = impl->batch_reports++ * 8;
+        auto result = impl->batch_readback;
+        result.offset += offset;
+        result.mapped_span = result.mapped_span.subspan(offset, 8);
+        impl->context.Profile().Count(FrameCount::GpuResolvedQueryReports);
+        return {0, result};
+    }
+    // SO cursor copies must capture the cursor before subsequent guest draws.
+    impl->FlushBatch();
     impl->DispatchResolve(1, static_cast<u32>(type), stream);
     if (type == QueryType::StreamingByteCount) {
         // The byte counter is the SO cursor, not a sum of primitive statistics.
@@ -639,7 +878,8 @@ QueryCacheRuntime::CounterResult QueryCacheRuntime::ReadCounter(QueryType type, 
     return {0, result};
 }
 void QueryCacheRuntime::ResetCounter(QueryType type) {
-    if (BisectEnabled("NXBOX_D3D12_NO_QUERIES"))
+    static const bool no_queries = BisectEnabled("NXBOX_D3D12_NO_QUERIES");
+    if (no_queries)
         return;
     impl->RequireClosed();
     const auto index = static_cast<size_t>(type);
@@ -653,6 +893,10 @@ void QueryCacheRuntime::ResetCounter(QueryType type) {
     }
     PauseHostConditionalRendering();
     impl->AccumulateGpu();
+    if (impl->batch_queries) {
+        impl->QueueOperation(2, static_cast<u32>(type));
+        return;
+    }
     impl->DispatchResolve(2, static_cast<u32>(type), 0);
 }
 void QueryCacheRuntime::EnableCounter(QueryType type, bool enabled) {
@@ -674,6 +918,7 @@ void QueryCacheRuntime::WriteValue(DAddr address, const void* value, u64 size) {
     CopyValue(address, upload.buffer, upload.offset, size);
 }
 void QueryCacheRuntime::CopyValue(DAddr address, const ResourcePtr& source, u64 offset, u64 size) {
+    impl->FlushBatch();
     impl->RequireClosed();
     if (!source || (size != 4 && size != 8) || offset > source->handle->GetDesc().Width ||
         size > source->handle->GetDesc().Width - offset) {
@@ -701,7 +946,8 @@ void QueryCacheRuntime::Barriers(bool) {
     impl->RequireClosed(); // Explicit resource transitions order every resolve/copy.
 }
 void QueryCacheRuntime::PauseHostConditionalRendering() {
-    if (BisectEnabled("NXBOX_D3D12_NO_QUERIES"))
+    static const bool no_queries = BisectEnabled("NXBOX_D3D12_NO_QUERIES");
+    if (no_queries)
         return;
     // Predication is always recorded and does not alter any cached draw state.
     impl->context.Commands()->SetPredication(nullptr, 0, D3D12_PREDICATION_OP_EQUAL_ZERO);
@@ -712,7 +958,8 @@ void QueryCacheRuntime::EndHostConditionalRendering() {
     impl->predicate.reset();
 }
 void QueryCacheRuntime::ResumeHostConditionalRendering() {
-    if (BisectEnabled("NXBOX_D3D12_NO_QUERIES"))
+    static const bool no_queries = BisectEnabled("NXBOX_D3D12_NO_QUERIES");
+    if (no_queries)
         return;
     if (impl->predicate_set) {
         impl->context.Transition(impl->predicate, D3D12_RESOURCE_STATE_PREDICATION);
@@ -735,7 +982,8 @@ bool QueryCacheRuntime::HostConditionalRenderingCompareValues(VideoCommon::Looku
 }
 bool QueryCacheRuntime::CompareConditional(VideoCommon::LookupData first,
                                            VideoCommon::LookupData second, bool equal) {
-    if (BisectEnabled("NXBOX_D3D12_NO_QUERIES"))
+    static const bool no_queries = BisectEnabled("NXBOX_D3D12_NO_QUERIES");
+    if (no_queries)
         return false;
     VideoCommon::SubmissionTrace::Log("predicate_compare first_cpu={:x} second_cpu={:x} equal={}",
                                       first.address, second.address, equal);
@@ -756,6 +1004,7 @@ bool QueryCacheRuntime::CompareConditional(VideoCommon::LookupData first,
         EndHostConditionalRendering();
         return false;
     }
+    impl->FlushBatch();
     PauseHostConditionalRendering();
     impl->guest.SyncWrites();
     for (auto& streamer : impl->streamers) {
@@ -763,11 +1012,13 @@ bool QueryCacheRuntime::CompareConditional(VideoCommon::LookupData first,
             streamer->SyncWrites();
         }
     }
-    if (!BisectEnabled("NXBOX_D3D12_CPU_PREDICATE")) {
+    static const bool cpu_predicate = BisectEnabled("NXBOX_D3D12_CPU_PREDICATE");
+    static const bool exact_conditional = BisectEnabled("NXBOX_D3D12_EXACT_CONDITIONAL");
+    if (!cpu_predicate) {
         if (!second.address) {
-            // "Render when the value is non-zero" is exactly EQUAL_ZERO predication. Reading it
-            // back on the CPU forced a submit and a fence wait per conditional draw.
-            SetGpuPredicate(first.address, D3D12_PREDICATION_OP_EQUAL_ZERO);
+            // Conditional requires both words to be nonzero. Normalize on the GPU to avoid
+            // a submit/readback wait while preserving Maxwell's two-word comparison.
+            SetGpuPredicate(first.address, D3D12_PREDICATION_OP_EQUAL_ZERO, exact_conditional);
             return true;
         }
         // Two reports, as in the Vulkan backend: outside high GPU accuracy only a known-zero
@@ -811,7 +1062,9 @@ bool QueryCacheRuntime::CompareConditional(VideoCommon::LookupData first,
     }
     const auto a = impl->ReadGuest(first);
     const auto b = second.address ? impl->ReadGuest(second) : 0;
-    const u64 predicate = (a == b) == equal;
+    const u64 predicate = !second.address && exact_conditional
+                              ? static_cast<u32>(a) != 0 && static_cast<u32>(a >> 32) != 0
+                              : (a == b) == equal;
     impl->context.Profile().Count(FrameCount::BufferUploadBytes, 8);
     impl->context.Profile().Count(FrameCount::OtherUploadBytes, 8);
     impl->context.Profile().Count(FrameCount::StagingCopyBytes, 8);
@@ -830,21 +1083,56 @@ bool QueryCacheRuntime::CompareConditional(VideoCommon::LookupData first,
     ResumeHostConditionalRendering();
     return true;
 }
-void QueryCacheRuntime::SetGpuPredicate(DAddr address, D3D12_PREDICATION_OP op) {
+void QueryCacheRuntime::SetGpuPredicate(DAddr address, D3D12_PREDICATION_OP op,
+                                        bool compare_words) {
     // Fresh storage: a previous SetPredication may still reference the old value.
     impl->predicate = impl->context.CreateBuffer(8, D3D12_HEAP_TYPE_DEFAULT);
+    if (compare_words)
+        impl->EnsureGpuCounters();
     {
         std::scoped_lock lock(impl->cache.mutex);
         const auto [buffer, offset] = impl->cache.ObtainCPUBuffer(
             address, 8, VideoCommon::ObtainBufferSynchronize::FullSynchronize,
             VideoCommon::ObtainBufferOperation::DoNothing);
         auto resource = buffer->Handle();
-        impl->context.Transition(resource, D3D12_RESOURCE_STATE_COPY_SOURCE);
-        impl->context.Transition(impl->predicate, D3D12_RESOURCE_STATE_COPY_DEST);
-        impl->context.MarkWork("query report/predicate copy");
-        impl->context.BeforeCopyWrite(impl->predicate, 0, 8);
-        impl->context.Commands()->CopyBufferRegion(impl->predicate->handle.Get(), 0,
-                                                   resource->handle.Get(), offset, 8);
+        if (compare_words) {
+            auto& context = impl->context;
+            // Root SRVs require aligned GPU addresses. Keep the suballocation offset in
+            // the shader constant rather than adding it to the root descriptor address.
+            if (offset > UINT32_MAX)
+                throw std::out_of_range("Conditional rendering buffer offset exceeds uint32");
+            context.InvalidateRecordedState();
+            context.Transition(resource, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            context.Transition(impl->gpu_counters, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            context.Transition(impl->predicate, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            context.Retain(resource);
+            context.Retain(impl->gpu_counters);
+            context.Retain(impl->predicate);
+            QueryUavBarrier(context, impl->gpu_counters, impl->predicate);
+            auto* commands = context.Commands();
+            commands->OMSetRenderTargets(0, nullptr, FALSE, nullptr);
+            commands->SetComputeRootSignature(impl->resolve_root.Get());
+            commands->SetPipelineState(impl->resolve_pipeline.Get());
+            const std::array<u32, 5> constants{3, static_cast<u32>(offset), 0, 0, 0};
+            commands->SetComputeRoot32BitConstants(0, 5, constants.data(), 0);
+            commands->SetComputeRootShaderResourceView(1, resource->handle->GetGPUVirtualAddress());
+            commands->SetComputeRootShaderResourceView(2, resource->handle->GetGPUVirtualAddress());
+            commands->SetComputeRootUnorderedAccessView(
+                3, impl->gpu_counters->handle->GetGPUVirtualAddress());
+            commands->SetComputeRootUnorderedAccessView(
+                4, impl->predicate->handle->GetGPUVirtualAddress());
+            context.MarkWork("conditional predicate resolve");
+            commands->Dispatch(1, 1, 1);
+            context.Profile().Count(FrameCount::Dispatches);
+            QueryUavBarrier(context, impl->gpu_counters, impl->predicate);
+        } else {
+            impl->context.Transition(resource, D3D12_RESOURCE_STATE_COPY_SOURCE);
+            impl->context.Transition(impl->predicate, D3D12_RESOURCE_STATE_COPY_DEST);
+            impl->context.MarkWork("query report/predicate copy");
+            impl->context.BeforeCopyWrite(impl->predicate, 0, 8);
+            impl->context.Commands()->CopyBufferRegion(impl->predicate->handle.Get(), 0,
+                                                       resource->handle.Get(), offset, 8);
+        }
     }
     impl->predicate_set = true;
     impl->predicate_op = op;
@@ -887,7 +1175,8 @@ void QueryCacheRuntime::TracePredicate(u64 frame, u64 pass, u64 draw,
 }
 
 QueryCacheRuntime::Timestamp QueryCacheRuntime::CaptureTimestamp() {
-    if (BisectEnabled("NXBOX_D3D12_NO_QUERIES"))
+    static const bool no_queries = BisectEnabled("NXBOX_D3D12_NO_QUERIES");
+    if (no_queries)
         return {};
     impl->context.MarkWork("timestamp query");
     impl->RequireClosed();
@@ -904,7 +1193,8 @@ QueryCacheRuntime::Timestamp QueryCacheRuntime::CaptureTimestamp() {
     return timestamp;
 }
 u64 QueryCacheRuntime::ReadTimestamp(const Timestamp& timestamp) {
-    if (BisectEnabled("NXBOX_D3D12_NO_QUERIES"))
+    static const bool no_queries = BisectEnabled("NXBOX_D3D12_NO_QUERIES");
+    if (no_queries)
         return 0;
     impl->RequireClosed();
     if (!timestamp.result.buffer || timestamp.result.mapped_span.size() < 8) {

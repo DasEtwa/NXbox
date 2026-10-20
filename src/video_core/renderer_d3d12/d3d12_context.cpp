@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: Copyright 2026 NSPX
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "common/nxbox_wait_diag.h"
 #include "video_core/renderer_d3d12/d3d12_context.h"
 
 #include <algorithm>
@@ -11,6 +12,7 @@
 #include <set>
 #include <stdexcept>
 #include <unordered_map>
+#include <utility>
 #include <d3d12sdklayers.h>
 #include <fmt/format.h>
 #include <windows.h>
@@ -25,6 +27,7 @@
 #include <dxgi1_4.h>
 #endif
 #include "common/logging.h"
+#include "common/thread.h"
 #include "video_core/renderer_d3d12/d3d12_completion.h"
 #include "video_core/renderer_d3d12/d3d12_descriptor.h"
 #include "video_core/renderer_d3d12/d3d12_footprint.h"
@@ -38,7 +41,7 @@ bool BisectEnabled(const char* name) noexcept {
         const char* name;
         bool value;
     };
-    thread_local std::array<Cached, 64> cache{};
+    thread_local std::array<Cached, 128> cache{};
     thread_local size_t used = 0;
     for (size_t i = 0; i < used; ++i)
         if (cache[i].name == name)
@@ -48,6 +51,43 @@ bool BisectEnabled(const char* name) noexcept {
     if (used < cache.size())
         cache[used++] = {name, enabled};
     return enabled;
+}
+bool StateFastpathEnabled() noexcept {
+    static const bool enabled = [] {
+        char value[2]{};
+        return !(GetEnvironmentVariableA("NXBOX_D3D12_STATE_FASTPATH", value, sizeof(value)) == 1 &&
+                 value[0] == '0');
+    }();
+    return enabled;
+}
+// NXBOX_D3D12_WAIT_SPIN=0 blocks on the fence event at once, as before the bounded spin.
+static bool WaitSpinEnabled() noexcept {
+    static const bool enabled = [] {
+        char value[2]{};
+        return !(GetEnvironmentVariableA("NXBOX_D3D12_WAIT_SPIN", value, sizeof(value)) == 1 &&
+                 value[0] == '0');
+    }();
+    return enabled;
+}
+bool StateVerifyEnabled() noexcept {
+    static const bool enabled = BisectEnabled("NXBOX_D3D12_STATE_VERIFY");
+    return enabled;
+}
+void StateVerifyMismatch(std::string_view what, const void* fast, const void* slow, size_t size) {
+    struct Mismatch {
+        std::string_view what;
+        u64 fast{}, slow{};
+        bool operator==(const Mismatch&) const = default;
+    };
+    static std::array<Mismatch, 32> reported{};
+    static size_t count{};
+    const Mismatch mismatch{what, Pso::HashBytes(fast, size), Pso::HashBytes(slow, size)};
+    if (count == reported.size() ||
+        std::find(reported.begin(), reported.begin() + count, mismatch) != reported.begin() + count)
+        return;
+    reported[count++] = mismatch;
+    Diagnostic(fmt::format("D3D12_STATE_VERIFY mismatch what={} fast={:016x} slow={:016x}", what,
+                           mismatch.fast, mismatch.slow));
 }
 std::uint32_t FlushDrawsKnob() noexcept {
     char value[16]{};
@@ -178,6 +218,14 @@ std::string Narrow(const wchar_t* value) {
     text.pop_back();
     return text;
 }
+std::mutex& InfoQueueMutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+void ClearInfoQueue(ID3D12InfoQueue* queue) {
+    std::lock_guard lock{InfoQueueMutex()};
+    queue->ClearStoredMessages();
+}
 void LogDeviceInfoQueue(ID3D12Device* device) noexcept {
     try {
         if (!device)
@@ -185,6 +233,7 @@ void LogDeviceInfoQueue(ID3D12Device* device) noexcept {
         static const bool debug = BisectEnabled("NXBOX_D3D12_DEBUG");
         if (!debug)
             return;
+        std::lock_guard lock{InfoQueueMutex()};
         ComPtr<ID3D12InfoQueue> info;
         if (FAILED(device->QueryInterface(IID_PPV_ARGS(&info))))
             return;
@@ -368,12 +417,30 @@ std::size_t FrameProfile::Enter(Common::GpuProfile::Phase phase) {
                                 FramePhase::BufferCacheBind,
                                 FramePhase::TextureCacheUpdate,
                                 FramePhase::DescriptorAndPipeline};
+    const auto target = phases[static_cast<std::size_t>(phase)];
     const auto previous = timing.active;
-    Switch(phases[static_cast<std::size_t>(phase)]);
+    // Nested method/bulk dispatch often enters the already active phase. Preserve
+    // the outer boundary without two redundant clock reads for each inner scope.
+    if (previous == target)
+        return static_cast<std::size_t>(FramePhase::Count);
+    Switch(target);
     return static_cast<std::size_t>(previous);
 }
 void FrameProfile::Leave(std::size_t previous) {
-    Switch(static_cast<FramePhase>(previous));
+    if (previous != static_cast<std::size_t>(FramePhase::Count))
+        Switch(static_cast<FramePhase>(previous));
+}
+u64 FrameProfile::TakeRecorderCpu() {
+    if (!recorder_thread)
+        return 0;
+    FILETIME creation{}, exit{}, kernel{}, user{};
+    if (!GetThreadTimes(recorder_thread, &creation, &exit, &kernel, &user))
+        return 0;
+    const auto value = [](FILETIME t) {
+        return (static_cast<u64>(t.dwHighDateTime) << 32) | t.dwLowDateTime;
+    };
+    const auto current = value(kernel) + value(user);
+    return current - std::exchange(recorder_initial_cpu, current);
 }
 void FrameProfile::Switch(FramePhase phase) {
     // Wall time: GetThreadTimes ticks at 15.6 ms and costs a syscall per phase switch.
@@ -621,16 +688,24 @@ void FrameProfile::EndFrame(bool presented) {
                                       "staging_new_resources",
                                       "uniform_snapshot_requests",
                                       "uniform_snapshot_new_resources",
-                                      "forced_submits_flush_draws"};
+                                      "forced_submits_flush_draws",
+                                      "attachment_metadata_reuses",
+                                      "query_batch_dispatches"};
         static_assert(names.size() == static_cast<size_t>(FramePhase::Count));
         static_assert(counters.size() == static_cast<size_t>(FrameCount::Count));
         const double elapsed = static_cast<double>(wall - start_wall);
         std::string line = fmt::format(
             "D3D12_FRAME_PROFILE thread={} frames={} gpu_thread_cpu_pct={:.2f} "
-            "fence_wait_wall_ms={:.3f} gpu_busy_ms={:.3f}",
-            owner.load(), frames, 100.0 * static_cast<double>(ProfileCpuTime() - initial_cpu) / elapsed,
+            "fence_wait_wall_ms={:.3f} gpu_busy_ms={:.3f} recorder_busy_ms_per_frame={:.3f} "
+            "recorder_backpressure_waits={} recorder_backpressure_ms_per_frame={:.3f}",
+            owner.load(), frames,
+            100.0 * static_cast<double>(ProfileCpuTime() - initial_cpu) / elapsed,
             static_cast<double>(fence_wall) / 10000.0,
-            static_cast<double>(gpu_busy.exchange(0)) / 10000.0);
+            static_cast<double>(gpu_busy.exchange(0)) / 10000.0,
+            static_cast<double>(TakeRecorderCpu()) / (10000.0 * std::max<u64>(frames, 1)),
+            std::exchange(recorder_waits, 0),
+            static_cast<double>(std::exchange(recorder_wait_ns, 0)) /
+                (1000000.0 * std::max<u64>(frames, 1)));
         for (size_t i = 0; i < timing.cpu.size(); ++i)
             line += fmt::format(" {}_cpu_ms={:.3f}", names[i],
                                 static_cast<double>(timing.cpu[i]) / 10000.0);
@@ -664,17 +739,28 @@ void FrameProfile::EndFrame(bool presented) {
         for (const auto& [site, entry] : waits)
             line += fmt::format("{}:{}:{:.3f},", site, entry.first,
                                 static_cast<double>(entry.second) / 10000.0);
+        for (const auto& [site, entry] : waits)
+            line +=
+                fmt::format(" wait_{}_per_frame={:.2f} wait_{}_ms_per_frame={:.3f}", site,
+                            frames ? static_cast<double>(entry.first) / frames : 0.0, site,
+                            frames ? static_cast<double>(entry.second) / (10000.0 * frames) : 0.0);
         if (guest_visibility)
             line += guest_visibility();
         Diagnostic(line);
         const auto guest = Common::GpuProfile::TakeWindow();
         std::string guest_line = "D3D12_GUEST_WAITS";
+        guest_line += fmt::format(" frames={}", frames);
         for (size_t i = 0; i < guest.waits.size(); ++i) {
             const auto& sample = guest.waits[i];
             guest_line += fmt::format(" {}_count={} {}_total_ms={:.3f} {}_max_ms={:.3f}",
                                       Common::GpuProfile::WaitNames[i], sample.count,
                                       Common::GpuProfile::WaitNames[i], sample.total_ns / 1.0e6,
                                       Common::GpuProfile::WaitNames[i], sample.max_ns / 1.0e6);
+            guest_line += fmt::format(" {}_per_frame={:.2f} {}_ms_per_frame={:.3f}",
+                                      Common::GpuProfile::WaitNames[i],
+                                      frames ? static_cast<double>(sample.count) / frames : 0.0,
+                                      Common::GpuProfile::WaitNames[i],
+                                      frames ? sample.total_ns / (1.0e6 * frames) : 0.0);
         }
         guest_line += fmt::format(
             " fence_samples={} fence_queued_avg_ms={:.3f} fence_gpu_execution_avg_ms={:.3f}"
@@ -692,6 +778,7 @@ void FrameProfile::EndFrame(bool presented) {
         Diagnostic(guest_line);
         const auto methods = Common::GpuProfile::TakeMethodWindow();
         std::string method_line = "D3D12_MAXWELL_METHODS timing_sample_stride=64";
+        method_line += Common::GpuProfile::MethodProfilingEnabled() ? " enabled=1" : " enabled=0";
         for (size_t i = 0; i < methods.size(); ++i) {
             const auto& sample = methods[i];
             const auto name = Common::GpuProfile::MethodNames[i];
@@ -721,6 +808,9 @@ void FrameProfile::EndFrame(bool presented) {
     timing.Reset(start_wall);
 }
 Context::Context() {
+    Diagnostic(fmt::format("D3D12 state fastpath={} verify={}", StateFastpathEnabled() ? 1 : 0,
+                           StateVerifyEnabled() ? 1 : 0));
+    Diagnostic(fmt::format("D3D12 wait spin={}", WaitSpinEnabled() ? 1 : 0));
     SetEnvironmentVariableA("NXBOX_D3D12_COMMAND_FAILURE", nullptr);
     SetEnvironmentVariableA("NXBOX_D3D12_FIRST_FAILURE", nullptr);
     ComPtr<ID3D12DeviceRemovedExtendedDataSettings1> dred;
@@ -797,7 +887,9 @@ Context::Context() {
     for (const auto* knob :
          {"NXBOX_D3D12_NO_PSO_LIBRARY", "NXBOX_D3D12_GPU_ASTC", "NXBOX_D3D12_NO_COMPUTE",
           "NXBOX_D3D12_NO_DRAWS", "NXBOX_D3D12_NO_QUERIES", "NXBOX_D3D12_SUBMIT_TRACE",
-          "NXBOX_D3D12_FENCE_BATCHING", "NXBOX_D3D12_BATCH_DESCRIPTOR_COPIES"})
+          "NXBOX_D3D12_FENCE_BATCHING", "NXBOX_D3D12_BATCH_DESCRIPTOR_COPIES",
+          "NXBOX_D3D12_ASYNC_DMA", "NXBOX_D3D12_SMALL_RECORDER_QUEUE",
+          "NXBOX_D3D12_SYNC_BUFFER_CLEARS", "NXBOX_D3D12_VALIDATE_COMMANDS"})
         Diagnostic(fmt::format("D3D12 bisect {}={}", knob, BisectEnabled(knob) ? 1 : 0));
     Diagnostic(fmt::format("D3D12 flush_draws={}", FlushDrawsKnob()));
     D3D12_FEATURE_DATA_SHADER_MODEL model{D3D_SHADER_MODEL_6_0};
@@ -825,6 +917,38 @@ Context::Context() {
     queue->SetName(L"NXbox direct queue");
     Check(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence)), "CreateFence",
           device.Get());
+    facade.device = device.Get();
+    facade.reuse_draw_state = BisectEnabled("NXBOX_D3D12_RECORD_STATE");
+    {
+        char value[2]{};
+        facade.compact_draws =
+            !(GetEnvironmentVariableA("NXBOX_D3D12_COMPACT_DRAWS", value, sizeof(value)) == 1 &&
+              value[0] == '0');
+    }
+    Diagnostic(fmt::format("D3D12 compact_draws={} record_state={}", facade.compact_draws,
+                           facade.reuse_draw_state));
+    // On by default: +8-16% fps in BotW, MK8D and Odyssey on a Series X. =0 records inline.
+    {
+        char value[2]{};
+        deferred = !(GetEnvironmentVariableA("NXBOX_D3D12_DEFERRED_RECORDING", value,
+                                             sizeof(value)) == 1 &&
+                     value[0] == '0');
+    }
+    Diagnostic(fmt::format("D3D12 deferred_recording={} chunk_size={} chunk_count={}",
+                           deferred ? 1 : 0, RecordStream<>::chunk_size,
+                           RecordStream<>::chunk_count));
+    if (deferred) {
+        record_descriptors = std::make_unique<RecordDescriptors>();
+        record_descriptors->Initialize(device.Get());
+        facade.descriptors = record_descriptors.get();
+        StartRecorder();
+        facade.stream = stream.get();
+    } else {
+        InitializeLists();
+        facade.immediate = commands.Get();
+    }
+}
+void Context::InitializeLists() {
     for (auto& slot : allocators) {
         Check(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
                                              IID_PPV_ARGS(&slot.handle)),
@@ -835,6 +959,173 @@ Context::Context() {
           "CreateCommandList", device.Get());
     Check(commands->Close(), "initial Close", device.Get());
 }
+
+void Context::CheckRecorder() {
+    recorder_progress.Check();
+}
+void Context::Acknowledge(u64 tick) {
+    if (deferred)
+        recorder_progress.Await(tick);
+}
+void Context::StartRecorder() {
+    stream = std::make_unique<RecordStream<>>(
+        BisectEnabled("NXBOX_D3D12_SMALL_RECORDER_QUEUE") ? 8 : RecordStream<>::chunk_count,
+        BisectEnabled("NXBOX_D3D12_DIRECT_REPLAY"));
+    stream->metrics = profile.Enabled();
+    recorder = std::thread{[this] {
+        RecordingTarget target;
+        target.owner = this;
+        bool execute = true;
+        auto fail = [this] { recorder_progress.Fail(std::current_exception()); };
+        try {
+            // Thread naming converts UTF-8 on Windows and can allocate/throw too.
+            Common::SetCurrentThreadName("D3D12 recorder");
+            Common::SetCurrentThreadPriority(Common::ThreadPriority::Critical);
+            InitializeLists();
+            facade.depth_bounds_status = commands.As(&extended1);
+            facade.independent_stencil_status = commands.As(&extended8);
+            target.list = commands.Get();
+            target.list1 = extended1.Get();
+            target.list8 = extended8.Get();
+            recorder_progress.Ready();
+        } catch (...) {
+            fail();
+            execute = false;
+        }
+        // Continue draining holds after a failed replay so a producer blocked at a chunk
+        // boundary can always finish publishing and observe the exception at submit/wait.
+        for (;;) {
+            try {
+                const bool more = stream->Consume(
+                    &target, execute && !submit_failed.load(std::memory_order_acquire));
+                if (!more)
+                    break;
+            } catch (...) {
+                fail();
+                execute = false;
+            }
+        }
+    }};
+    profile.BindRecorder(recorder.native_handle());
+    try {
+        recorder_progress.WaitReady();
+    } catch (...) {
+        stream->Close();
+        recorder.join();
+        throw;
+    }
+}
+void Context::RecorderBegin() {
+    auto& slot = allocators[allocator_index];
+    // No completion callbacks on this thread. Fence-only retirement of native allocators.
+    if (!IsFree(slot.tick)) {
+        const HANDLE event = CreateEventExW(nullptr, nullptr, 0, EVENT_ALL_ACCESS);
+        if (!event)
+            Check(HRESULT_FROM_WIN32(GetLastError()), "recorder CreateEventExW", device.Get());
+        const auto status = fence->SetEventOnCompletion(slot.tick, event);
+        if (FAILED(status)) {
+            CloseHandle(event);
+            Check(status, "recorder SetEventOnCompletion", device.Get());
+        }
+        const auto wait = WaitForSingleObjectEx(event, 10000, FALSE);
+        const auto error = GetLastError();
+        CloseHandle(event);
+        Check(device->GetDeviceRemovedReason(), "recorder allocator wait", device.Get());
+        if (wait != WAIT_OBJECT_0) {
+            Check(wait == WAIT_FAILED ? HRESULT_FROM_WIN32(error)
+                                      : HRESULT_FROM_WIN32(ERROR_TIMEOUT),
+                  "recorder allocator wait", device.Get());
+        }
+    }
+    Check(slot.handle->Reset(), "allocator Reset", device.Get());
+    Check(commands->Reset(slot.handle.Get(), nullptr), "command list Reset", device.Get());
+}
+void Context::RecorderSubmit(u64 tick) {
+    Check(commands->Close(), "Close", device.Get());
+    ID3D12CommandList* lists[]{commands.Get()};
+    Check(device->GetDeviceRemovedReason(), "before ExecuteCommandLists", device.Get());
+    queue->ExecuteCommandLists(1, lists);
+    Check(device->GetDeviceRemovedReason(), "after ExecuteCommandLists", device.Get());
+    if (info_callback.registered)
+        ClearInfoQueue(info_callback.queue.Get());
+    else
+        LogDeviceInfoQueue(device.Get());
+    Check(queue->Signal(fence.Get(), tick), "Signal", device.Get());
+    allocators[allocator_index].tick = tick;
+    allocator_index = (allocator_index + 1) % allocators.size();
+    recorder_progress.Acknowledge(tick);
+    NxboxWait::Max(NxboxWait::Counter::SubmittedTick, tick);
+}
+u64 Context::SealRecording(FrameCount reason) {
+    CheckRecorder();
+    InvalidateRecordedState();
+    flush_cadence.Submitted();
+    if (!recording)
+        return sealed;
+    const auto tick = CurrentTick();
+    if (gpu_time_heap && profile.Enabled()) {
+        const auto first = static_cast<UINT>(((tick - 1) % allocators.size()) * 2);
+        facade.EndQuery(gpu_time_heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, first + 1);
+        facade.ResolveQueryData(gpu_time_heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, first, 2,
+                                gpu_time_readback->handle.Get(), u64{first} * 8);
+        completion.push_back([this, first] {
+            u64 stamps[2]{};
+            std::memcpy(stamps, gpu_time_readback->mapped.data() + u64{first} * 8, sizeof(stamps));
+            if (stamps[1] > stamps[0])
+                profile.gpu_busy += static_cast<u64>(static_cast<double>(stamps[1] - stamps[0]) *
+                                                     gpu_ticks_to_100ns);
+        });
+    }
+    std::string contents;
+    for (const auto& label : work) {
+        if (!contents.empty())
+            contents += ", ";
+        contents += label;
+    }
+    const auto name = fmt::format("NXbox execute {}: {}", ++execute_sequence,
+                                  contents.empty() ? "barriers/state" : contents);
+    const std::wstring wide_name(name.begin(), name.end());
+    EncodeCall<[](void* target, const wchar_t* name) {
+        static_cast<RecordingTarget*>(target)->list->SetName(name);
+    }>(*stream, Snapshot(wide_name.c_str(), wide_name.size() + 1));
+    if (BisectEnabled("NXBOX_D3D12_SUBMIT_TRACE") || execute_sequence <= 8 ||
+        execute_sequence % 120 == 0)
+        Diagnostic(fmt::format("D3D12 ExecuteCommandLists sequence={} tick={} contents={}",
+                               execute_sequence, tick, contents));
+    // Install completion ownership before publication of the submission control record.
+    {
+        std::lock_guard lock{completion_mutex};
+        batches.push_back({tick, std::move(completion), std::move(retained)});
+        completion.clear();
+        retained.clear();
+    }
+    if (facade.validation.enabled) {
+        const auto summary = facade.validation.Summary();
+        EncodeCall<[](void*, const char* message) { Diagnostic(message); }>(
+            *stream, Snapshot(summary.c_str(), summary.size() + 1));
+    }
+    EncodeCall<[](void* target, u64 tick) {
+        static_cast<Context*>(static_cast<RecordingTarget*>(target)->owner)->RecorderSubmit(tick);
+    }>(*stream, tick);
+    sealed = tick;
+    NxboxWait::Max(NxboxWait::Counter::SealedTick, tick);
+    recording = false;
+    work.clear();
+    copy_writes.clear();
+    stream->Flush();
+    profile.Count(FrameCount::Executes);
+    profile.Count(reason);
+    if (profile.Enabled()) {
+        profile.recorder_waits += std::exchange(stream->waits, 0);
+        profile.recorder_wait_ns += std::exchange(stream->wait_ns, 0);
+    }
+    CheckRecorder();
+    if (BisectEnabled("NXBOX_D3D12_SUBMIT_TRACE"))
+        WaitSubmitted(tick, "submit trace");
+    profile.EndFrame(false);
+    return tick;
+}
+
 Context::~Context() {
     try {
         Finish(FrameCount::ForcedSubmitLifecycle);
@@ -843,10 +1134,17 @@ Context::~Context() {
     } catch (...) {
         Diagnostic("D3D12 context teardown: non-standard exception");
     }
+    if (recorder.joinable()) {
+        stream->Close();
+        recorder.join();
+    }
 }
 void Context::LogInfoQueue() noexcept {
+    if (deferred)
+        return; // Recorder owns draining the shared InfoQueue.
+
     if (info_callback.registered)
-        info_callback.queue->ClearStoredMessages();
+        ClearInfoQueue(info_callback.queue.Get());
     else
         LogDeviceInfoQueue(device.Get());
 }
@@ -889,11 +1187,21 @@ bool Context::IsFree(u64 tick) const {
         Check(device->GetDeviceRemovedReason(), "GetCompletedValue device removed", device.Get());
         throw std::runtime_error("D3D12 fence returned UINT64_MAX with S_OK removed reason");
     }
-    return completed >= tick;
+    return (!deferred || LastSubmittedTick() >= tick) && completed >= tick;
+}
+u64 Context::CompletedTick() const {
+    const auto completed = fence->GetCompletedValue();
+    if (completed == UINT64_MAX) {
+        Check(device->GetDeviceRemovedReason(), "GetCompletedValue device removed", device.Get());
+        throw std::runtime_error("D3D12 fence returned UINT64_MAX with S_OK removed reason");
+    }
+    return deferred ? std::min(completed, LastSubmittedTick()) : completed;
 }
 void Context::Wait(u64 tick, std::string_view site) {
-    if (tick > submitted) {
-        if (tick != CurrentTick())
+    if (deferred)
+        CheckRecorder();
+    if (tick > LastSealedTick()) {
+        if (tick != CurrentTick() || (deferred && !recording))
             throw std::invalid_argument("D3D12 future fence");
         Submit(FrameCount::ForcedSubmitFenceWait);
     }
@@ -901,35 +1209,51 @@ void Context::Wait(u64 tick, std::string_view site) {
     LogInfoQueue();
 }
 void Context::WaitSubmitted(u64 tick, std::string_view site) {
+    const NxboxWait::Scope wait_diag_scope{NxboxWait::Kind::Fence, GetCurrentThreadId(), site,
+                                      std::array<std::uint64_t, 1>{tick}};
+    Acknowledge(tick);
     if (!IsFree(tick)) {
-        const u64 wait_start = ProfileWallTime();
+        const u64 wait_start = profile.Enabled() ? ProfileWallTime() : 0;
         const FrameProfile::Scope frame_wait{profile, FramePhase::FenceWait};
-        // Each waiter owns its event; GPU and fencing threads may wait concurrently.
-        const HANDLE wait_event = CreateEventExW(nullptr, nullptr, 0, EVENT_ALL_ACCESS);
-        if (!wait_event)
-            Check(HRESULT_FROM_WIN32(GetLastError()), "CreateEventExW", device.Get());
-        const auto result = fence->SetEventOnCompletion(tick, wait_event);
-        if (FAILED(result)) {
+        const bool spun_ready =
+            WaitSpinEnabled() &&
+            SpinUntilReady([this, tick] { return IsFree(tick); },
+                           [] { return std::chrono::steady_clock::now(); },
+                           [] { YieldProcessor(); }, std::chrono::microseconds{50});
+        if (!spun_ready) {
+            // Each waiter owns its event; GPU and fencing threads may wait concurrently.
+            const HANDLE wait_event = CreateEventExW(nullptr, nullptr, 0, EVENT_ALL_ACCESS);
+            if (!wait_event)
+                Check(HRESULT_FROM_WIN32(GetLastError()), "CreateEventExW", device.Get());
+            const auto result = fence->SetEventOnCompletion(tick, wait_event);
+            if (FAILED(result)) {
+                CloseHandle(wait_event);
+                Check(result, "SetEventOnCompletion", device.Get());
+            }
+            DWORD wait;
+            DWORD wait_error;
+            {
+                const EdenXbox::ThreadProfile::Scope wait_scope{
+                    EdenXbox::ThreadProfile::Wait::Fence};
+                wait = WaitForSingleObjectEx(wait_event, 10000, FALSE);
+                wait_error = GetLastError();
+            }
             CloseHandle(wait_event);
-            Check(result, "SetEventOnCompletion", device.Get());
+            if (wait != WAIT_OBJECT_0) {
+                Diagnostic(fmt::format("D3D12 wait tick={} result={:#x}", tick, wait));
+                Check(device->GetDeviceRemovedReason(), "device removed while waiting",
+                      device.Get());
+                Check(wait == WAIT_FAILED ? HRESULT_FROM_WIN32(wait_error)
+                                          : HRESULT_FROM_WIN32(ERROR_TIMEOUT),
+                      "WaitForSingleObjectEx", device.Get());
+                throw std::runtime_error("D3D12 fence wait failed/timed out");
+            }
         }
-        DWORD wait;
-        DWORD wait_error;
-        {
-            const EdenXbox::ThreadProfile::Scope wait_scope{EdenXbox::ThreadProfile::Wait::Fence};
-            wait = WaitForSingleObjectEx(wait_event, 10000, FALSE);
-            wait_error = GetLastError();
+        if (profile.Enabled()) {
+            const auto wall = ProfileWallTime() - wait_start;
+            profile.NoteWait(site, wall);
+            profile.NoteWait(spun_ready ? "spin_ready" : "event_block", wall);
         }
-        CloseHandle(wait_event);
-        if (wait != WAIT_OBJECT_0) {
-            Diagnostic(fmt::format("D3D12 wait tick={} result={:#x}", tick, wait));
-            Check(device->GetDeviceRemovedReason(), "device removed while waiting", device.Get());
-            Check(wait == WAIT_FAILED ? HRESULT_FROM_WIN32(wait_error)
-                                      : HRESULT_FROM_WIN32(ERROR_TIMEOUT),
-                  "WaitForSingleObjectEx", device.Get());
-            throw std::runtime_error("D3D12 fence wait failed/timed out");
-        }
-        profile.NoteWait(site, ProfileWallTime() - wait_start);
     }
     Check(device->GetDeviceRemovedReason(), "device removed after waiting", device.Get());
     CompleteThrough(tick);
@@ -937,6 +1261,9 @@ void Context::WaitSubmitted(u64 tick, std::string_view site) {
 void Context::CompleteThrough(u64 tick) {
     // Keep callback execution ordered with readback retirement on the fencing thread.
     // Detach first so reentrant waits cannot replay a batch.
+    if (deferred)
+        tick = std::min(tick, LastSubmittedTick());
+    NxboxWait::Max(NxboxWait::Counter::CompletedObservedTick, tick);
     std::scoped_lock lock{completion_mutex};
     while (!batches.empty() && batches.front().tick <= tick) {
         auto batch = std::move(batches.front());
@@ -962,24 +1289,27 @@ void Context::Collect() {
         IsFree(0); // Preserve device removal diagnostics.
     CompleteThrough(completed);
 }
-ID3D12GraphicsCommandList* Context::Commands() {
+CommandFacade* Context::Commands() {
     profile.BindRecordingThread();
     static const bool debug_recorder = BisectEnabled("NXBOX_D3D12_DEBUG");
     if (debug_recorder) {
         // Diagnostic: the command list and copy hazard state are single-threaded.
-        static std::atomic<DWORD> recorder{};
+        static std::atomic<DWORD> owner_thread{};
         static std::atomic<u32> foreign{};
         DWORD expected{};
         const DWORD self = GetCurrentThreadId();
-        if (!recorder.compare_exchange_strong(expected, self) && expected != self &&
+        if (!owner_thread.compare_exchange_strong(expected, self) && expected != self &&
             foreign.fetch_add(1) < 16)
             Diagnostic(fmt::format("D3D12_FOREIGN_RECORDER thread={} owner={} recording={}",
                                    self, expected, recording));
     }
     if (!recording) {
         Collect();
-        auto& slot = allocators[allocator_index];
-        WaitSubmitted(slot.tick, "allocator");
+        if (!deferred)
+            WaitSubmitted(allocators[allocator_index].tick, "allocator");
+        // Timestamp readback slots also need their completion callback before reuse.
+        if (deferred && gpu_time_heap && CurrentTick() > allocators.size())
+            WaitSubmitted(CurrentTick() - allocators.size(), "recorder timestamp reuse");
         // Created before Reset: CreateResource may submit under memory pressure.
         if (profile.Enabled() && !gpu_time_heap) {
             D3D12_QUERY_HEAP_DESC desc{};
@@ -1001,18 +1331,34 @@ ID3D12GraphicsCommandList* Context::Commands() {
     }
     // A completion callback may have started the next command list.
     if (!recording) {
-        Check(allocators[allocator_index].handle->Reset(), "allocator Reset", device.Get());
-        Check(commands->Reset(allocators[allocator_index].handle.Get(), nullptr),
-              "command list Reset", device.Get());
+        if (deferred) {
+            CheckRecorder();
+            EncodeCall<[](void* target) {
+                static_cast<Context*>(static_cast<RecordingTarget*>(target)->owner)
+                    ->RecorderBegin();
+            }>(*stream);
+        } else {
+            Check(allocators[allocator_index].handle->Reset(), "allocator Reset", device.Get());
+            Check(commands->Reset(allocators[allocator_index].handle.Get(), nullptr),
+                  "command list Reset", device.Get());
+        }
+        facade.validation.Begin(CurrentTick());
+        facade.ResetDrawState();
         copy_writes.clear();
+        // Globally unique across Context instances; never reuse a resource stamp.
+        static std::atomic<u64> next_retention_generation{1};
+        retention_generation = next_retention_generation.fetch_add(1, std::memory_order_relaxed);
         recording = true;
+        facade.graphics_root_cbvs.Reset();
         InvalidateRecordedState();
         if (gpu_time_heap && profile.Enabled()) {
-            commands->EndQuery(gpu_time_heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
-                               static_cast<UINT>(allocator_index * 2));
+            facade.EndQuery(
+                gpu_time_heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
+                static_cast<UINT>(
+                    (deferred ? (CurrentTick() - 1) % allocators.size() : allocator_index) * 2));
         }
     }
-    return commands.Get();
+    return &facade;
 }
 void Context::MarkWork(std::string_view label) {
     Commands();
@@ -1034,8 +1380,7 @@ void Context::MarkWork(std::string_view label) {
     work.emplace_back(label);
     // PIX string marker encoding consumed by DRED breadcrumb contexts.
     const std::wstring marker(label.begin(), label.end());
-    commands->SetMarker(0, marker.c_str(),
-                        static_cast<UINT>((marker.size() + 1) * sizeof(wchar_t)));
+    facade.SetMarker(0, marker.c_str(), static_cast<UINT>((marker.size() + 1) * sizeof(wchar_t)));
 }
 u64 Context::Submit(FrameCount reason) {
     // Device removal can throw after the command list was closed but before its tick was
@@ -1048,7 +1393,17 @@ u64 Context::Submit(FrameCount reason) {
                 flag.store(true, std::memory_order_release);
         }
     } failure_flag{submit_failed};
+    if (before_submit)
+        before_submit();
     const FrameProfile::Scope profile_submit{profile, FramePhase::Submit};
+    if (deferred) {
+        try {
+            return SealRecording(reason);
+        } catch (...) {
+            recorder_progress.Fail(std::current_exception());
+            throw;
+        }
+    }
     InvalidateRecordedState();
     flush_cadence.Submitted();
     // QueueFence and FlushCommands can both request the same submission.
@@ -1090,6 +1445,8 @@ u64 Context::Submit(FrameCount reason) {
             Diagnostic(fmt::format("D3D12 ExecuteCommandLists sequence={} tick={} contents={}",
                                    execute_sequence, CurrentTick(), contents));
         Check(device->GetDeviceRemovedReason(), "before ExecuteCommandLists", device.Get());
+        if (facade.validation.enabled)
+            Diagnostic(facade.validation.Summary());
         queue->ExecuteCommandLists(1, lists);
         profile.Count(FrameCount::Executes);
         profile.Count(reason);
@@ -1107,10 +1464,11 @@ u64 Context::Submit(FrameCount reason) {
         batches.push_back({tick, std::move(completion), std::move(retained)});
         completion.clear();
         retained.clear();
-        retained_ids.clear();
     }
     Check(queue->Signal(fence.Get(), tick), "Signal", device.Get());
     submitted = tick;
+    NxboxWait::Max(NxboxWait::Counter::SealedTick, tick);
+    NxboxWait::Max(NxboxWait::Counter::SubmittedTick, tick);
     submit_failed.store(false, std::memory_order_release);
     if (BisectEnabled("NXBOX_D3D12_SUBMIT_TRACE"))
         WaitSubmitted(tick, "submit trace");
@@ -1129,27 +1487,30 @@ void Context::Finish(FrameCount reason) {
     Wait(Submit(reason), "finish");
 }
 void Context::Retain(const ResourcePtr& resource) {
-    // Opening a recording can retire resources; do it before consulting retained IDs.
+    // Opening a recording can retire resources and run callbacks. Consult the stamp after it.
     if (!recording)
         Commands();
-    if (!resource || (!retained.empty() && retained.back() == resource))
+    if (!resource || resource->retained_generation == retention_generation)
         return;
-    // The same attachment/texture can be referenced by thousands of draws.
-    // Hold each resource once per recording, not once per binding.
-    const auto [entry, inserted] = retained_ids.insert(resource.get());
-    if (inserted) {
-        try {
-            retained.push_back(resource);
-        } catch (...) {
-            retained_ids.erase(entry);
-            throw;
-        }
-    }
+    // Publish only after push_back succeeds, so allocation failure cannot lose the lease.
+    retained.push_back(resource);
+    resource->retained_generation = retention_generation;
 }
+namespace {
+constexpr bool ShaderReadStateCovers(D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after) {
+    constexpr auto shader_reads =
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    // A transition to a subset of an existing shader-read state orders no writes. Preserve
+    // the actual superset in the tracker so the next write barrier has the correct Before.
+    // COMMON (zero), write states and split subresources must keep their normal barriers.
+    return after != 0 && (before & ~shader_reads) == 0 && (before & after) == after;
+}
+} // namespace
 void Context::Transition(const ResourcePtr& resource, D3D12_RESOURCE_STATES state) {
-    const FrameProfile::Scope profile_barrier{profile, FramePhase::Barriers};
     if (!resource)
         throw std::invalid_argument("D3D12 null resource");
+    if (before_resource_use)
+        before_resource_use(resource);
     Retain(resource);
     if (!resource->sub_states.empty()) {
         const std::pair<ResourcePtr, D3D12_RESOURCE_STATES> use{resource, state};
@@ -1161,13 +1522,16 @@ void Context::Transition(const ResourcePtr& resource, D3D12_RESOURCE_STATES stat
         ++resource->content_version;
     if (resource->heap != D3D12_HEAP_TYPE_DEFAULT || resource->state == state)
         return;
+    if (ShaderReadStateCovers(resource->state, state))
+        return;
+    const FrameProfile::Scope profile_barrier{profile, FramePhase::Barriers};
     D3D12_RESOURCE_BARRIER barrier{};
     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
     barrier.Transition.pResource = resource->handle.Get();
     barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
     barrier.Transition.StateBefore = resource->state;
     barrier.Transition.StateAfter = state;
-    commands->ResourceBarrier(1, &barrier);
+    facade.ResourceBarrier(1, &barrier);
     profile.Count(FrameCount::Barriers);
     if (profile.Enabled())
         profile.NoteTransition(resource->state, state,
@@ -1177,7 +1541,6 @@ void Context::Transition(const ResourcePtr& resource, D3D12_RESOURCE_STATES stat
 }
 void Context::TransitionSubresources(const ResourcePtr& resource, std::span<const u32> subresources,
                                      D3D12_RESOURCE_STATES state) {
-    const FrameProfile::Scope profile_barrier{profile, FramePhase::Barriers};
     if (!resource)
         throw std::invalid_argument("D3D12 null subresource resource");
     Retain(resource);
@@ -1201,6 +1564,10 @@ void Context::TransitionSubresources(const ResourcePtr& resource, std::span<cons
     if (state & (D3D12_RESOURCE_STATE_COPY_DEST | D3D12_RESOURCE_STATE_UNORDERED_ACCESS |
                  D3D12_RESOURCE_STATE_STREAM_OUT))
         ++resource->content_version;
+    if (std::all_of(subresources.begin(), subresources.end(),
+                    [&](u32 index) { return resource->sub_states[index] == state; }))
+        return;
+    const FrameProfile::Scope profile_barrier{profile, FramePhase::Barriers};
     auto& barriers = transition_barriers;
     barriers.clear();
     barriers.reserve(subresources.size());
@@ -1217,7 +1584,7 @@ void Context::TransitionSubresources(const ResourcePtr& resource, std::span<cons
         before = state;
     }
     if (!barriers.empty()) {
-        commands->ResourceBarrier(static_cast<UINT>(barriers.size()), barriers.data());
+        facade.ResourceBarrier(static_cast<UINT>(barriers.size()), barriers.data());
         profile.Count(FrameCount::Barriers, barriers.size());
         copy_writes.erase(resource->handle.Get());
     }
@@ -1240,12 +1607,12 @@ void Context::CrossListCopyBarrier(Resource& resource, u64 tick, u64 offset, u64
             barriers[1].Transition = {resource.handle.Get(),
                                       D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
                                       D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST};
-            commands->ResourceBarrier(2, barriers);
+            facade.ResourceBarrier(2, barriers);
             profile.Count(FrameCount::Barriers, 2);
         } else {
             D3D12_RESOURCE_BARRIER barrier{};
             barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_ALIASING;
-            commands->ResourceBarrier(1, &barrier);
+            facade.ResourceBarrier(1, &barrier);
             profile.Count(FrameCount::Barriers);
         }
         profile.Count(FrameCount::CopyHazardBarriers);
@@ -1297,7 +1664,7 @@ void Context::BeforeCopyWrite(const ResourcePtr& resource, u64 offset, u64 size)
                 barriers[1].Transition = {destination, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
                                           D3D12_RESOURCE_STATE_COMMON,
                                           D3D12_RESOURCE_STATE_COPY_DEST};
-                commands->ResourceBarrier(2, barriers);
+                facade.ResourceBarrier(2, barriers);
                 profile.Count(FrameCount::Barriers, 2);
                 copy_writes.erase(found);
                 break;
@@ -1306,7 +1673,7 @@ void Context::BeforeCopyWrite(const ResourcePtr& resource, u64 offset, u64 size)
             barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_ALIASING;
             barrier.Aliasing.pResourceBefore = nullptr;
             barrier.Aliasing.pResourceAfter = nullptr;
-            commands->ResourceBarrier(1, &barrier);
+            facade.ResourceBarrier(1, &barrier);
             profile.Count(FrameCount::Barriers);
             // The null/null aliasing barrier orders all prior work, not just this buffer.
             copy_writes.clear();
@@ -1325,7 +1692,10 @@ void Context::GlobalUavBarrier() {
     profile.Count(FrameCount::Barriers);
 }
 void Context::TransitionBatch(std::span<const std::pair<ResourcePtr, D3D12_RESOURCE_STATES>> uses) {
-    const FrameProfile::Scope profile_barrier{profile, FramePhase::Barriers};
+    if (before_resource_use) {
+        for (const auto& use : uses)
+            before_resource_use(use.first);
+    }
     // Start/retire recording before reading tracked states: completion callbacks
     // can themselves record transitions. Keep all intermediate transitions ordered.
     auto* list = Commands();
@@ -1334,6 +1704,27 @@ void Context::TransitionBatch(std::span<const std::pair<ResourcePtr, D3D12_RESOU
             throw std::invalid_argument("D3D12 null batch resource");
         Retain(use.first);
     }
+    const bool needs_barrier = std::any_of(uses.begin(), uses.end(), [](const auto& use) {
+        const auto& [resource, state] = use;
+        if (!resource->sub_states.empty())
+            return std::any_of(resource->sub_states.begin(), resource->sub_states.end(),
+                               [&](auto before) { return before != state; });
+        return resource->heap == D3D12_HEAP_TYPE_DEFAULT && resource->state != state &&
+               !ShaderReadStateCovers(resource->state, state);
+    });
+    if (!needs_barrier) {
+        for (const auto& [resource, state] : uses) {
+            if (state & (D3D12_RESOURCE_STATE_COPY_DEST | D3D12_RESOURCE_STATE_UNORDERED_ACCESS |
+                         D3D12_RESOURCE_STATE_STREAM_OUT))
+                ++resource->content_version;
+            if (!resource->sub_states.empty()) {
+                resource->sub_states.clear();
+                resource->state = state;
+            }
+        }
+        return;
+    }
+    const FrameProfile::Scope profile_barrier{profile, FramePhase::Barriers};
     // Retain can open a list and run callbacks which also transition resources.
     // Acquire the shared scratch only after every resource has been retained.
     auto& barriers = transition_barriers;
@@ -1359,7 +1750,8 @@ void Context::TransitionBatch(std::span<const std::pair<ResourcePtr, D3D12_RESOU
             resource->state = state;
             continue;
         }
-        if (resource->heap != D3D12_HEAP_TYPE_DEFAULT || resource->state == state)
+        if (resource->heap != D3D12_HEAP_TYPE_DEFAULT || resource->state == state ||
+            ShaderReadStateCovers(resource->state, state))
             continue;
         D3D12_RESOURCE_BARRIER barrier{};
         barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -1382,6 +1774,20 @@ void Context::TransitionBatch(std::span<const std::pair<ResourcePtr, D3D12_RESOU
 void Context::AfterCompletion(std::function<void()> callback) {
     Commands();
     completion.push_back(std::move(callback));
+}
+TextureMemoryBudget NativeTextureMemoryBudget(u64 cache) noexcept {
+#ifdef NXBOX_UWP
+    try {
+        using winrt::Windows::System::MemoryManager;
+        return TextureMemoryThresholds(MemoryManager::AppMemoryUsageLimit(),
+                                       MemoryManager::AppMemoryUsage(), cache);
+    } catch (...) {
+        // Retain the ordinary watermarks if platform telemetry is unavailable.
+    }
+#else
+    static_cast<void>(cache);
+#endif
+    return {};
 }
 u64 NativeBufferMemoryTarget(u64 cache) noexcept {
 #ifdef NXBOX_UWP
@@ -1600,12 +2006,26 @@ ResourcePtr Context::CreateBuffer(u64 size, D3D12_HEAP_TYPE heap) {
     }
     return CreateResource(desc, heap, state);
 }
-void StagingRing::Collect() {
+void StagingRing::Collect(bool trim) {
     const FrameProfile::Scope profile_collect{context.Profile(), FramePhase::StagingCollect};
     context.Profile().Count(FrameCount::StagingCollections);
     context.Collect();
+    // One conservative completion snapshot per sweep, rather than a fence/recorder
+    // poll for every page. A newly completed page can wait until the next sweep.
+    static const bool draw_fastpaths = !BisectEnabled("NXBOX_D3D12_NO_DRAW_FASTPATHS");
+    const u64 completed = draw_fastpaths ? context.CompletedTick() : 0;
+    const auto is_free = [&](u64 tick) {
+        return draw_fastpaths ? tick <= completed : context.IsFree(tick);
+    };
+    if (trim) {
+        // Fence completion alone is insufficient: mapped spans and uniform caches
+        // may still own a CPU lease. Only the ring's last reference can be dropped.
+        std::erase_if(pages, [&is_free](const Page& page) {
+            return is_free(page.tick) && page.resource.use_count() == 1;
+        });
+    }
     for (auto& page : pages) {
-        if (context.IsFree(page.tick) && page.resource.use_count() == 1)
+        if (is_free(page.tick) && page.resource.use_count() == 1)
             page.cursor = 0;
     }
 }

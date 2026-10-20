@@ -43,12 +43,11 @@ class DescriptorBatchTests(unittest.TestCase):
         )
         finish = source.split("DescriptorTable D3D12DescriptorAllocator::FinishDrawTable", 1)[1]
         finish = finish.split("void D3D12DescriptorAllocator::WriteCached", 1)[0]
-        self.assertIn(
-            'static const bool batch_copies = BisectEnabled("NXBOX_D3D12_BATCH_DESCRIPTOR_COPIES")',
-            finish,
-        )
+        self.assertIn('std::getenv("NXBOX_D3D12_BATCH_DESCRIPTOR_COPIES")', finish)
         self.assertLess(finish.index("return previous.table"), finish.index("batch.emplace()"))
-        self.assertLess(finish.rindex("FlushCopies(type, *batch)"), finish.index("previous.tick ="))
+        self.assertLess(
+            finish.rindex("FlushCopies(type, *batch)"), finish.rindex("previous.tick =")
+        )
         self.assertIn("catch (...) {", finish)
         self.assertIn("table.Slot(slot), batch ? &*batch : nullptr", finish)
 
@@ -56,7 +55,7 @@ class DescriptorBatchTests(unittest.TestCase):
         source = (NATIVE / "d3d12_descriptor.cpp").read_text()
         self.assertIn("destinations, nullptr,", source)
         self.assertIn("sources, nullptr, type)", source)
-        self.assertEqual(source.count("Count(FrameCount::DescriptorCopyCalls)"), 2)
+        self.assertEqual(source.count("Count(FrameCount::DescriptorCopyCalls)"), 3)
         self.assertIn('"descriptor_copy_calls"', (NATIVE / "d3d12_context.cpp").read_text())
         self.assertIn("DescriptorCopyCalls,", (NATIVE / "d3d12_context.h").read_text())
 

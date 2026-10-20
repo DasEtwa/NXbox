@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <map>
 #include <mutex>
 
@@ -39,6 +40,29 @@ struct Sink {
 };
 inline thread_local Sink* sink{};
 inline std::atomic<bool> enabled{};
+// Recording-thread-only gate. Set alongside sink on that same thread; generic
+// PhaseScope/WaitScope callers on other threads must continue to use the TLS sink.
+inline thread_local bool recording_enabled{};
+class RecordingScope {
+public:
+    explicit RecordingScope(Phase phase) {
+        if (recording_enabled) [[unlikely]] {
+            owner = sink;
+            if (owner)
+                previous = owner->Enter(phase);
+        }
+    }
+    ~RecordingScope() {
+        if (owner)
+            owner->Leave(previous);
+    }
+    RecordingScope(const RecordingScope&) = delete;
+    RecordingScope& operator=(const RecordingScope&) = delete;
+
+private:
+    Sink* owner{};
+    std::size_t previous{};
+};
 class PhaseScope {
 public:
     explicit PhaseScope(Phase phase) : owner{sink} {
@@ -56,6 +80,16 @@ private:
     Sink* owner{};
     std::size_t previous{};
 };
+// Detailed per-method accounting is opt-in: even sampled clocks leave TLS counters
+// and scope bookkeeping on every register write. Coarse exclusive phases remain on.
+inline bool MethodProfilingEnabled() {
+    // Latch after launcher environment overrides have loaded, not at static init.
+    static const bool method_profiling = [] {
+        const char* value = std::getenv("NXBOX_GPU_METHOD_PROFILE");
+        return value && value[0] == '1' && value[1] == '\0';
+    }();
+    return method_profiling;
+}
 // Recording-thread method classes. Time one call in 64 to keep clock reads out
 // of the per-register hot path; counts/units are exact, time is an estimate.
 enum class MethodClass : std::size_t {
@@ -80,7 +114,7 @@ inline thread_local std::array<Tick, static_cast<std::size_t>(MethodClass::Count
 class MethodScope {
 public:
     explicit MethodScope(MethodClass category, Tick units = 1) {
-        if (!sink)
+        if (!recording_enabled || !MethodProfilingEnabled())
             return;
         const auto index = static_cast<std::size_t>(category);
         sample = &method_window[index];
@@ -127,12 +161,17 @@ enum class Wait : std::size_t {
     TickGPU,
     GpuThreadCommand,
     GpuQueueIdle,
+    DmaMemorySync,
+    PullerAcquire,
+    GuestFenceCompletion,
+    ForcedDrain,
     Count
 };
 inline constexpr std::array WaitNames{
-    "syncpoint_host", "syncpoint_guest", "nvdrv_event", "request_sync_operation",
-    "request_flush",  "wait_idle",       "tick_gpu",    "gpu_thread_command",
-    "gpu_queue_idle"};
+    "syncpoint_host", "syncpoint_guest", "nvdrv_event",    "request_sync_operation",
+    "request_flush",  "wait_idle",       "tick_gpu",       "gpu_thread_command",
+    "gpu_queue_idle", "dma_memory_sync", "puller_acquire", "guest_fence_completion",
+    "forced_drain"};
 static_assert(WaitNames.size() == static_cast<std::size_t>(Wait::Count));
 struct Sample {
     Tick count{}, total_ns{}, max_ns{};

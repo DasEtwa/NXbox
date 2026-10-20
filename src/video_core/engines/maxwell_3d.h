@@ -22,10 +22,11 @@
 #include "video_core/engines/const_buffer_info.h"
 #include "video_core/engines/engine_interface.h"
 #include "video_core/engines/engine_upload.h"
+#include "video_core/engines/maxwell_3d.h"
 #include "video_core/gpu.h"
+#include "video_core/gpu_frontend.h"
 #include "video_core/macro.h"
 #include "video_core/textures/texture.h"
-#include "video_core/engines/maxwell_3d.h"
 
 namespace Core {
 class System;
@@ -3135,7 +3136,14 @@ public:
     /// Write multiple values to the register identified by method.
     void CallMultiMethod(Core::System& system, u32 method, const u32* base_start, u32 amount, u32 methods_pending) override;
 
+    // Queue increasing, side-effect-free register writes without changing sink boundaries.
+    void CallMultiMethod(Core::System& system, u32 method, const u32* values, u32 amount);
     void CallCBDataIncrementing(u32 method, const u32* values, u32 amount);
+
+    // The execution mask is fixed at construction. Zero denotes a side-effect method.
+    u32 GetRegisterWriteRunLength(u32 method) const {
+        return register_write_runs[method];
+    }
 
     bool ShouldExecute() const {
         return execute_on;
@@ -3200,12 +3208,17 @@ public:
 
 private:
     void InitializeRegisterDefaults();
+    void InitializeRegisterWriteRuns();
+
+    std::array<u16, Regs::NUM_REGS> register_write_runs{};
 
     void ProcessMacro(Core::System& system, u32 method, const u32* base_start, u32 amount, bool is_last_call);
 
     u32 ProcessShadowRam(u32 method, u32 argument);
 
+    const bool frontend_fastpath{GpuFrontendFastPathEnabled()};
     void ProcessDirtyRegisters(u32 method, u32 argument);
+    void ProcessDirtyRegistersImpl(u32 method, u32 argument);
 
     void ConsumeSinkImpl(Core::System& system) override;
 

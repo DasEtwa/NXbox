@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Exercise renderer-neutral hooks and cross-thread wait/fence windows without D3D12."""
 
+import os
 import subprocess
 import tempfile
 import unittest
@@ -37,6 +38,7 @@ int main() {
     assert(TakeWindow().waits[0].count == 0);
     TestSink owner;
     sink = &owner;
+    recording_enabled = true;
     {
         PhaseScope parser{Phase::DmaPusher};
         owner.now = 10;
@@ -77,6 +79,7 @@ int main() {
     const auto completed_method = TakeMethodWindow()[3];
     assert(completed_method.count == 1 && completed_method.units == 3);
     assert(completed_method.timed_calls == 1 && completed_method.skipped == 1);
+    recording_enabled = false;
     sink = nullptr;
     { MethodScope disabled{MethodClass::DirtyFlags}; }
     assert(TakeMethodWindow()[0].count == 0);
@@ -141,7 +144,12 @@ class GpuThreadProfileTests(unittest.TestCase):
                 text=True,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            subprocess.run([str(binary)], check=True, timeout=15)
+            subprocess.run(
+                [str(binary)],
+                check=True,
+                timeout=15,
+                env=dict(os.environ, NXBOX_GPU_METHOD_PROFILE="1"),
+            )
 
     def test_phases_and_guest_wait_line_are_wired(self):
         backend = ROOT / "src/video_core/renderer_d3d12"
@@ -181,7 +189,14 @@ class GpuThreadProfileTests(unittest.TestCase):
             lifecycle.index("if (!context.Profile().Enabled())"),
             lifecycle.index("enabled.store(true)"),
         )
-        self.assertIn("sink = nullptr", lifecycle)
+        self.assertLess(
+            lifecycle.index("sink = &context.Profile()"),
+            lifecycle.index("recording_enabled = true"),
+        )
+        self.assertLess(
+            lifecycle.index("recording_enabled = false"),
+            lifecycle.index("sink = nullptr"),
+        )
         for path, marker in [
             ("src/video_core/gpu_thread.cpp", "ProfileGpuThread(true)"),
             ("src/video_core/host1x/syncpoint_manager.cpp", "Wait::SyncpointHost"),
