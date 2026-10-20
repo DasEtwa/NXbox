@@ -32,6 +32,7 @@
 #include <winrt/Windows.System.h>
 
 #include <fmt/format.h>
+#include "common/cpu_features.h"
 #include "common/fs/file.h"
 #include "common/fs/fs.h"
 #include "common/host_memory.h"
@@ -43,6 +44,7 @@
 #include "common/settings.h"
 #include "common/sparse_memory.h"
 #include "core/core.h"
+#include "core/core_timing.h"
 #include "core/cpu_manager.h"
 #include "core/file_sys/nsz.h"
 #include "core/file_sys/registered_cache.h"
@@ -74,6 +76,7 @@
 #include "eden_uwp/renderer_settings.h"
 #include "eden_uwp/save_sync.h"
 #include "eden_uwp/setup_ui.h"
+#include "eden_uwp/timing_probe.h"
 #include "eden_uwp/title_settings.h"
 #include "eden_uwp/ui/accounts_screen.h"
 #include "eden_uwp/ui/input.h"
@@ -981,6 +984,17 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
                            Settings::values.use_asynchronous_shaders.GetValue(),
                            NxboxUpload::ForceAstcSync(),
                            Settings::values.use_reactive_flushing.GetValue()));
+    Diagnostic(fmt::format(
+        "TIMING_POLICY use_multi_core={} use_speed_limit={} speed_limit={} "
+        "fast_cpu_time={} sync_core_speed={} use_vsync={} use_video_framerate={} sink_id={} "
+        "native_clock={} button_layout={}",
+        Settings::values.use_multi_core.GetValue(), Settings::values.use_speed_limit.GetValue(),
+        Settings::SpeedLimit(), static_cast<int>(Settings::values.cpu_clock.GetValue()),
+        Settings::values.sync_core_speed.GetValue(),
+        static_cast<int>(Settings::values.vsync_mode.GetValue()),
+        Settings::values.use_video_framerate.GetValue(),
+        static_cast<int>(Settings::values.sink_id.GetValue()), Common::g_wall_clock.IsNative(),
+        Settings::values.button_layout.GetValue()));
     system.GetUserChannel().clear();
     Diagnostic("GAME_LOADING");
     // Same parameters the desktop frontend uses to boot an application. With a zeroed applet id the
@@ -1206,6 +1220,17 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
     int stall_dumps = 0;
     int idle_windows = 0;
     const auto started_at = std::chrono::steady_clock::now();
+    TimingProbe timing_probe;
+    const auto timing_now = [] {
+        return std::chrono::duration_cast<std::chrono::nanoseconds>(
+                   std::chrono::steady_clock::now().time_since_epoch())
+            .count();
+    };
+    const auto reset_timing_probe = [&] {
+        timing_probe.Reset(timing_now(), Common::g_wall_clock.GetCNTPCT(),
+                           system.CoreTiming().GetClockTicks());
+    };
+    reset_timing_probe();
     SCOPE_EXIT {
         lifecycle.CompleteDeferral();
     };
@@ -1267,12 +1292,14 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
             paused = false;
             measured_at = std::chrono::steady_clock::now();
             measured_frames = window.FrameCount();
+            reset_timing_probe();
             Diagnostic("GAME_RESUMED");
         }
         if (paused) {
             std::this_thread::sleep_for(std::chrono::milliseconds(8));
             continue;
         }
+        timing_probe.Poll(timing_now());
         gamepad->Poll(*controller, system.HIDCore().GetSupportedStyleTag(),
                       session_ui.overlay_open.load(std::memory_order_acquire));
         switch (gamepad->HomeCombo()) {
@@ -1328,6 +1355,16 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
         }
         const auto elapsed = std::chrono::duration<double>(now - measured_at).count();
         if (elapsed >= 5.0) {
+            const auto timing_sample =
+                timing_probe.Read(timing_now(), Common::g_wall_clock.GetCNTPCT(),
+                                  system.CoreTiming().GetClockTicks());
+            Diagnostic(fmt::format("GAME_TIMING wall_ms={:.1f} clock_mhz={:.4f} guest_mhz={:.4f} "
+                                   "polls={} max_poll_gap_ms={:.1f} overlay_open={}",
+                                   timing_sample.wall_ms, timing_sample.clock_mhz,
+                                   timing_sample.guest_mhz, timing_sample.polls,
+                                   timing_sample.max_poll_gap_ms,
+                                   session_ui.overlay_open.load(std::memory_order_acquire)));
+            reset_timing_probe();
             const auto frames = window.FrameCount();
             const auto stats = system.GetAndResetPerfStats();
             Diagnostic(fmt::format("GAME_PRESENT frames={} seconds={:.3f} fps={:.2f} "
