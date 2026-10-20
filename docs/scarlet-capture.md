@@ -1,3 +1,98 @@
+# Frame 1200 UAV/copy investigation — 2026-10-20
+
+This section covers `compat-2026-10-18/v-scarlet-cap` and supersedes absence
+claims based only on the older captures. A cache-coherence defect is fixed below;
+**a Scarlet rendering cure is not established**.
+
+## Evidence and its limits
+
+- The manifest has five attachment snapshots, not five proven draw passes.
+  Clears also update render targets and create snapshots. Pass 5 is at
+  `22951559168` (`0x558050000`), 1920×1080 `B10G11R11_FLOAT`.
+  All 2,073,600 packed words are `0x591642c8`: RGB is exactly 0.0703125.
+  The snapshot therefore contains only the reported clear value.
+- Presentation selects `23033741312` (`0x55ceb0000`), 1920×1080
+  `A8B8G8R8_UNORM`, with no attachment-snapshot producer (`producer_seq=0`).
+  The old dumper observes neither Fermi2D destinations nor shader storage images.
+  This does not distinguish a copy from an image store, or prove either lost data.
+- Eden contains events 0–66, followed by `frame_end events=67 truncated=false`.
+  There is one `guest_draw` and one host draw submission: a 3-vertex, 6-instance
+  draw to `0x54af60000`, 64×64 `R16_FLOAT`, PS `fa4b2ee1b67cfe3e`,
+  VS `0f38f8c713b9ff63`. There is no guest compute, indirect draw, compute
+  submission or draw-skip record in this selected trace. In particular there is
+  **no traced compute writer to either requested address**.
+- Live profiles report about seven accelerated Fermi2D blits/frame, zero software
+  Fermi blits, and an empty guest compute pipeline cache. The run-wide rate of
+  fourteen guest draws/frame disagrees with the single selected-frame draw; it
+  does not identify the unobserved draws or prove every frame contains them.
+  The old submission trace did not record successful Fermi blits or DrawTexture.
+  Their actual source/destination addresses remain unknown for this capture.
+- The supplied `v-scarlet-cap` tree contains no `.hlsl` or `.hash` files, despite
+  the HLSL-dump env being enabled. There is no supplied shader source with which
+  to identify image stores, manually packed pixels, or the final conversion.
+
+Consequently the existing files cannot identify the writer of the presented
+image or establish an R11G11B10 typed-UAV, transition, temporary-copy, or
+recreation failure. Do not change packed-format storage representation on this
+evidence. A prior-frame writer is also possible; a single selected frame does
+not prove the scene is rewritten every frame.
+
+## Concrete cache defect and correction
+
+D3D12 prepared descriptor images through `VisitImageView`, which calls
+`PrepareImageView(..., false, false)`. Neither the graphics nor compute image-UAV
+binding path subsequently called `MarkModification`. Vulkan's
+`PushImageDescriptors` does so for every `desc.is_written` image.
+
+D3D12 now collects writable image views and publishes their modifications after
+successful draw/dispatch recording, before diagnostic readback. This sets
+`GpuModified` and advances `modification_tick`. Without that publication,
+`SynchronizeAliases` can regard a shader output as older than its alias, and
+`IsDownloadable` can ignore its GPU-only changes. Image writes now retain the
+texture-cache lock through publication. Read-only storage views and failed/zero
+work do not publish writes. Existing D3D12 compute UAV barriers remain in place;
+this change does not add an unproven format alias or barrier workaround.
+
+This fixes a real missing-write coherence contract, independently of capture
+settings. It has **not** been linked to a shader in the supplied Scarlet frame.
+
+## Next capture and expected proof
+
+Use the existing exact-env/collection instructions below, with the newly built
+package. In addition to attachment snapshots, `manifest.jsonl` now records
+`writer=compute_uav`, `graphics_uav`, `fermi_blit`, or `draw_texture` after the
+corresponding work. Each record gives the cache-image address, image/view format,
+mip, layer, dimensions, raw filename and byte count; compute includes the guest
+program offset, and blits include `source_gpu_addr`. Shader images are marked
+modified before any capture wait. Each 1D/2D view mip/layer gets its own
+`pass_NNNN_c0_mM_lL.raw`; volume/MSAA writes are explicitly skipped rather than
+represented as empty successful raws. Successful captures participate in the
+presentation producer lookup. Submission logs now name Fermi source/destination
+addresses and DrawTexture source/destination addresses, including Fermi fallback
+status. Alias synchronization now reports both addresses and the source modification
+tick to the diagnostic sink; image retirement reports its address, tick and dirty
+state. Presentation producer matching checks mip/layer ranges, so a later write
+to an unrelated mip cannot claim the displayed image. Previous pending attachment
+snapshots close before compute/blit writes.
+
+Follow the last record at each address backward through blit sources and shader
+program/hash mappings. Require the entire fresh `log/gfx_*.hlsl` and `.hash` set;
+the env alone is not shader evidence. If no compute is requested again, expect no
+`compute_uav` records: follow `fermi_blit`/`draw_texture` instead. A nonzero
+presentation producer and its actual raw pixels should identify the final writer.
+Compare the scene's post-writer pixels with its clear snapshot. Nonconstant scene
+pixels would support progress; a still-clear scene with only copy producers
+moves the investigation upstream, rather than proving a typed-UAV problem.
+If neither requested image is written, repeat a neighboring frame with a clean
+capture directory, including the same shaders.
+
+Host regressions execute the production publication and view-readback methods:
+capture-disabled dirty flags/ticks, null/buffer exclusion, multiple mip/layer
+bytes and metadata, unsupported volumes, and failed output paths. Xbox/UWP
+compilation, D3D12 validation and console rendering remain unverified.
+
+---
+
 # Scarlet capture audit — 2026-10-20
 
 This section supersedes the older run instructions below. No rendering fix or

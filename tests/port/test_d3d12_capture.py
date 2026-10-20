@@ -161,18 +161,29 @@ const char* FormatName(int) { return "A8B8G8R8_UNORM"; }
 struct Size { unsigned width=1920, height=1080; };
 struct Info { int format=1; Size size; };
 struct Image { GPUVAddr gpu_addr=0x55ceb0000ULL; Info info; };
-struct ImageView { unsigned image_id=1; int format=1; Size size; };
+struct ImageView {
+    unsigned image_id=1; int format=1; Size size;
+    struct Range { struct Base { int level=0, layer=0; } base; } range;
+};
 struct Cache {
     u64 frame=120; bool pending=true; unsigned flushes=0;
     u64 pass_dump_sequence=72;
     std::vector<std::string> reports;
     void ReportPassDump(const std::string& message) { reports.push_back(message); }
-    struct Target { unsigned id; u64 sequence; unsigned slot; };
+    struct Target {
+        unsigned id; u64 sequence; unsigned slot;
+        int level=0, layer=0, levels=1, layers=1;
+    };
     std::vector<Target> pass_dump_targets{{1, 12, 1}};
     std::vector<Image> slot_images{2};
     u64 CaptureFrame() { return frame; }
     void DumpPassRenderTargets() {
-        if(pending) { pending=false; ++flushes; pass_dump_targets.push_back({1,72,0}); }
+        if(pending) {
+            pending=false; ++flushes;
+            pass_dump_targets.push_back({1,72,0});
+            // A later shader write to another mip must not claim presentation's producer.
+            pass_dump_targets.push_back({1,73,0,2,0,1,1});
+        }
     }
     std::string RecordPassDumpPresentation(DAddr, const ImageView*);
 };

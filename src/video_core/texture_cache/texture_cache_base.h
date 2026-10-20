@@ -12,6 +12,7 @@
 #include <mutex>
 #include <span>
 #include <string>
+#include <string_view>
 #include <type_traits>
 // TODO: find out which don't require stable iters
 #include <unordered_map>
@@ -175,6 +176,14 @@ public:
     }
 
     std::string RecordPassDumpPresentation(DAddr cpu_addr, const ImageView* view);
+    void PublishShaderImageWrites(std::span<const ImageViewId> views, std::string_view writer,
+                                  u64 program = 0);
+    void BeginPassDumpImageWrite();
+    void RecordPassDumpRenderTargetWrite(u32 slot, std::string_view writer, GPUVAddr source) {
+        RecordPassDumpImageWrite(render_targets.color_buffer_ids[slot], writer, source);
+    }
+    void RecordPassDumpImageWrite(ImageViewId view_id, std::string_view writer, GPUVAddr source = 0,
+                                  u64 program = 0);
 
     /// Return a constant reference to the given image view id
     [[nodiscard]] const ImageView& GetImageView(ImageViewId id) const noexcept;
@@ -477,6 +486,10 @@ private:
         ImageId id;
         u64 sequence;
         u32 slot;
+        s32 level = 0;
+        s32 layer = 0;
+        s32 levels = 1;
+        s32 layers = 1;
     };
     std::vector<PassDumpTarget> pass_dump_targets;
     u32 rt_active_mask = 0;
