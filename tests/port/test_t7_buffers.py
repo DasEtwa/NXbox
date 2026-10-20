@@ -148,6 +148,7 @@ template<class T> T AlignUp(T value, T alignment) { return (value+alignment-1)&~
 namespace VideoCommon { struct BufferCopy { u64 src_offset, dst_offset, size; }; }
 struct Resource {
     u64 content_version{};
+    mutable unsigned descriptions{};
     std::vector<u8> bytes;
     struct Handle {
         Resource* owner;
@@ -156,7 +157,7 @@ struct Resource {
         u64 GetGPUVirtualAddress() const { return reinterpret_cast<u64>(owner); }
         Handle* operator->() { return this; }
     } handle{this};
-    Handle::Desc Description() const { return handle.GetDesc(); }
+    Handle::Desc Description() const { ++descriptions; return handle.GetDesc(); }
 };
 using ResourcePtr=std::shared_ptr<Resource>;
 struct Buffer { ResourcePtr resource; ResourcePtr Handle() const { return resource; } };
@@ -211,11 +212,14 @@ void InvalidRange(u32, const char*, u64, u64, u64) { ++invalid; }
 struct BufferCacheRuntime {
     bool buffer_fastpath = true;
     bool BufferFastpathEnabled() const { return buffer_fastpath; }
+    bool BindingCacheEnabled() const { return binding_cache; }
+    bool binding_cache = true;
     Context context;
     Staging upload{context};
     SnapshotStaging uniform_snapshots{context, {}, 0};
     BindingState bindings;
     UniformCopyCache<Resource> uniform_copies;
+    __RESOLUTION_FIELDS__
     void CopyBuffer(ResourcePtr dst, ResourcePtr src, std::span<const VideoCommon::BufferCopy> copies, bool) {
         ++dst->content_version;
         for (const auto& copy:copies)
@@ -230,16 +234,39 @@ struct BufferCacheRuntime {
     void BindStorageBuffer(const Buffer&, u32, u32, bool);
 };
 __BINDINGS__
-void CheckBindings(bool fastpath) {
+void CheckBindings(bool fastpath, bool binding_cache) {
     invalid = 0;
     BufferCacheRuntime runtime;
     runtime.buffer_fastpath = fastpath;
+    runtime.binding_cache = binding_cache;
+    // Rebuilt per-draw vectors must still receive entries on a resolution-cache hit.
+    runtime.SetUniformReadLimit(256);
+    runtime.BindUniformBuffer(Buffer{runtime.context.CreateBuffer(1024, 0)}, 0, 256);
+    auto repeated = runtime.bindings.stages[0].uniform.back().resource;
+    runtime.bindings.stages[0].uniform.clear();
+    const auto descriptions = repeated->descriptions;
+    runtime.SetUniformReadLimit(256);
+    runtime.BindUniformBuffer(Buffer{repeated}, 0, 256);
+    assert(runtime.bindings.stages[0].uniform.size() == 1);
+    assert(runtime.bindings.stages[0].uniform.back().resource == repeated);
+    assert(!fastpath || repeated->descriptions == descriptions + !binding_cache);
+    runtime.bindings.stages[0].uniform.clear();
+    ++repeated->content_version;
+    runtime.SetUniformReadLimit(256);
+    runtime.BindUniformBuffer(Buffer{repeated}, 0, 256);
+    assert(!fastpath || repeated->descriptions == descriptions + 1 + !binding_cache);
+    runtime.bindings.stages[0].uniform.clear();
     auto memory=runtime.context.CreateBuffer(131072,0);
     for (size_t i=0;i<memory->bytes.size();++i) memory->bytes[i]=u8(i);
     Buffer buffer{memory};
     runtime.BindVertexBuffer(0,memory,7,103,0);
     assert(runtime.bindings.geometry.vertex[0].stride==0);
     assert(runtime.bindings.geometry.vertex[0].size==103);
+    const auto vertex_descriptions = memory->descriptions;
+    runtime.BindVertexBuffer(0,memory,7,103,0);
+    assert(!fastpath || memory->descriptions == vertex_descriptions + !binding_cache);
+    runtime.BindVertexBuffer(0,memory,7,103,16);
+    assert(runtime.bindings.geometry.vertex[0].stride == 16);
     runtime.BindVertexBuffer(1,memory,7,1000,32);
     assert(runtime.bindings.geometry.vertex[1].offset==7);
     runtime.BindVertexBuffer(1,memory,131071,1000,32);
@@ -293,9 +320,55 @@ void CheckBindings(bool fastpath) {
     runtime.BindStorageBuffer(buffer,3,16,false);
     assert(!runtime.bindings.stages[0].storage.back().resource && invalid==3);
 }
+void CheckResolution() {
+    BufferCacheRuntime runtime;
+    Buffer buffer{runtime.context.CreateBuffer(8192, 0)};
+    runtime.BindUniformBuffer(buffer, 4, 259);
+    const auto first = runtime.bindings.stages[0].uniform.back();
+    const auto descriptions = buffer.resource->descriptions;
+    for (unsigned draw = 0; draw < 1000; ++draw) {
+        runtime.bindings.stages[0].uniform.clear();
+        runtime.BindUniformBuffer(buffer, 4, 259);
+        const auto& resolved = runtime.bindings.stages[0].uniform.back();
+        assert(resolved.resource == first.resource && resolved.offset == first.offset);
+    }
+    assert(buffer.resource->descriptions == descriptions);
+    ++buffer.resource->content_version;
+    runtime.bindings.stages[0].uniform.clear();
+    runtime.BindUniformBuffer(buffer, 4, 259);
+    assert(runtime.bindings.stages[0].uniform.back().offset != first.offset);
+    assert(buffer.resource->descriptions == descriptions + 1);
+    // Snapshot page recycle clears both caches before the page can be overwritten.
+    runtime.uniform_copies.Clear();
+    runtime.InvalidateUniformBindings();
+    runtime.bindings.stages[0].uniform.clear();
+    runtime.BindUniformBuffer(buffer, 4, 259);
+    assert(buffer.resource->descriptions == descriptions + 2);
+    // Read bounds are part of the key: a tail that becomes readable must be zero padded.
+    runtime.bindings.stages[0].uniform.clear();
+    runtime.SetUniformReadLimit(96);
+    runtime.BindUniformBuffer(buffer, 512, 96);
+    assert(runtime.bindings.stages[0].uniform.back().resource == buffer.resource);
+    runtime.bindings.stages[0].uniform.clear();
+    runtime.BindUniformBuffer(buffer, 512, 96);
+    assert(runtime.bindings.stages[0].uniform.back().resource != buffer.resource);
+    runtime.bindings.current_stage = 1;
+    runtime.BindUniformBuffer(buffer, 256, 256);
+    assert(runtime.bindings.stages[1].uniform.back().offset == 256);
+    // Different shader/compute layouts can use more dense slots than the cache supports.
+    for (unsigned slot = 0; slot < 24; ++slot) runtime.BindUniformBuffer(buffer, 0, 256);
+    assert(runtime.bindings.stages[1].uniform.size() == 25);
+    Buffer replacement{runtime.context.CreateBuffer(8192, 0)};
+    runtime.bindings.stages[1].uniform.clear();
+    runtime.BindUniformBuffer(replacement, 256, 256);
+    assert(runtime.bindings.stages[1].uniform.back().resource == replacement.resource);
+}
 int main() {
-    CheckBindings(true);
-    CheckBindings(false);
+    CheckBindings(true, true);
+    CheckBindings(false, true);
+    CheckBindings(true, false);
+    CheckBindings(false, false);
+    CheckResolution();
 }
 """
 
@@ -344,7 +417,18 @@ class T7BuffersTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="nxbox-t7-bindings-") as folder:
             source_file = Path(folder) / "bindings.cpp"
             binary = Path(folder) / "bindings"
-            source_file.write_text(BINDINGS_DRIVER.replace("__BINDINGS__", implementation))
+            header = (BACKEND / "d3d12_buffer_cache.h").read_text()
+            resolution = header.split("    struct UniformBindingResolution {", 1)[1].split(
+                "    UniformCopyCache<Resource> uniform_copies;", 1
+            )[0]
+            resolution = "    struct UniformBindingResolution {" + resolution
+            resolution = resolution.replace("VideoCommon::NUM_GRAPHICS_UNIFORM_BUFFERS", "18")
+            resolution = resolution.replace("BindingState::NumStages", "5")
+            source_file.write_text(
+                BINDINGS_DRIVER.replace("__BINDINGS__", implementation).replace(
+                    "__RESOLUTION_FIELDS__", resolution
+                )
+            )
             result = subprocess.run(
                 [
                     "clang++",
