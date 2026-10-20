@@ -151,6 +151,7 @@ template<class P> struct TextureCache {
     static constexpr bool IMPLEMENTS_ASYNC_DOWNLOADS = false;
     std::vector<int> async_buffers_death_ring;
     void DumpPassRenderTargets() {}
+    void ReportPassDumpHistory() {}
     void TickAsyncDecode() {}
     void TickAsyncUnswizzle() {}
     void RunGarbageCollector() { aggressive = total_used_memory >= critical_memory; }

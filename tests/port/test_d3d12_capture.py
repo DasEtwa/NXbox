@@ -175,6 +175,10 @@ struct Cache {
         int level=0, layer=0, levels=1, layers=1;
     };
     std::vector<Target> pass_dump_targets{{1, 12, 1}};
+    struct PassDumpWriter {
+        unsigned id; u64 frame, order, tick; GPUVAddr source; std::string writer;
+    };
+    std::vector<PassDumpWriter> pass_dump_writers{{1,119,20,30,0,"fermi_blit"}};
     std::vector<Image> slot_images{2};
     u64 CaptureFrame() { return frame; }
     void DumpPassRenderTargets() {
@@ -325,12 +329,16 @@ int main(int argc, char** argv) {
     std::stringstream contents;
     contents << marker.rdbuf();
     assert(contents.str() == "NXBOX_PASS_DUMP_FRAME=1200\n");
-    // A stale marker is replaced for the next session.
+    std::ofstream{destination / "manifest.jsonl"} << "old producer\n";
+    std::ofstream{destination / "sampled.jsonl"} << "old sample\n";
+    // A new session must not append to a previous session's producer indexes.
     VideoCommon::PassDump::PrepareDirectory(destination, "3000");
     std::ifstream updated{destination / "capture.txt"};
     std::string line;
     std::getline(updated, line);
     assert(line == "NXBOX_PASS_DUMP_FRAME=3000");
+    assert(std::filesystem::file_size(destination / "manifest.jsonl") == 0);
+    assert(std::filesystem::file_size(destination / "sampled.jsonl") == 0);
     bool rejected = false;
     try { VideoCommon::PassDump::PrepareDirectory(destination / "capture.txt", "1"); }
     catch (const std::exception&) { rejected = true; }

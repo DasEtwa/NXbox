@@ -2451,6 +2451,7 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     if (totals.uav)
         FragmentBarrier();
     if (trace_submitted) {
+        texture_cache.NotePassDumpRenderTargets("draw_submission");
         texture_cache.PublishShaderImageWrites(written_images, "graphics_uav");
     }
     // The scope guard releases these leases on every exit, including this one.
@@ -3124,6 +3125,7 @@ void RasterizerD3D12::Clear(u32 layer_count) try {
     u32 surface{};
     std::memcpy(&surface, &regs.clear_surface, sizeof(surface));
     const auto selection = ClearOperations::Decode(surface, control, regs.stencil_front_mask);
+    texture_cache.BeginPassDumpImageWrite();
     texture_cache.UpdateRenderTargets(true);
     auto* framebuffer = texture_cache.GetFramebuffer();
     if (!framebuffer)
@@ -3296,8 +3298,19 @@ void RasterizerD3D12::Clear(u32 layer_count) try {
         const bool has_color = selection.color_mask && prepare(color, false, color_attachment);
         const bool has_depth =
             (selection.depth || selection.stencil) && prepare(depth, true, depth_attachment);
+        VideoCommon::SubmissionTrace::Log(
+            "host_clear color_gpu={:x} depth_gpu={:x} color={} depth={} stencil={} "
+            "layer={} rect={},{},{},{} value={},{},{},{}",
+            has_color ? color->GpuAddr() : 0, has_depth ? depth->GpuAddr() : 0,
+            has_color ? selection.color_mask : 0, selection.depth, selection.stencil, layer,
+            clip.left, clip.top, clip.right, clip.bottom, values.color[0], values.color[1],
+            values.color[2], values.color[3]);
         clear_renderer.Execute(selection, values, has_color ? &color_attachment : nullptr,
                                has_depth ? &depth_attachment : nullptr, &clip);
+        if (has_color)
+            texture_cache.RecordPassDumpRenderTargetWrite(selection.target, "clear", 0);
+        if (has_depth)
+            texture_cache.RecordPassDumpDepthWrite("clear_depth");
     }
     TickWork();
 } catch (const std::exception& error) {
@@ -3725,6 +3738,8 @@ bool RasterizerD3D12::OnCPUWrite(DAddr addr, u64 size) {
     if (OnGpuPipeline())
         return RunGpuPipeline([&] { return OnCPUWrite(addr, size); });
 
+    VideoCommon::SubmissionTrace::Log("cpu_write_notify cpu={} bytes={}", addr, size);
+
     {
         std::scoped_lock lock{buffer_cache.mutex};
         // Defer cached CPU stores while the buffer still owns GPU-written bytes.
@@ -4133,9 +4148,11 @@ RasterizerD3D12::DisplayTexture RasterizerD3D12::FramebufferTexture(
         return RunGpuPipeline([&] { return FramebufferTexture(config); });
 
     std::scoped_lock lock{texture_cache.mutex};
-    const auto [view, scaled] =
+    auto [view, scaled] =
         texture_cache.TryFindFramebufferImageView(config, config.address + config.offset);
     const auto log_source = [&](const ResourcePtr& resource, DXGI_FORMAT format, bool cached) {
+        if (cached)
+            texture_cache.SnapshotPassDumpPresentation(*view);
         const auto mapping = texture_cache.RecordPassDumpPresentation(
             config.address + config.offset, cached ? view : nullptr);
         if (!mapping.empty())
@@ -4152,7 +4169,9 @@ RasterizerD3D12::DisplayTexture RasterizerD3D12::FramebufferTexture(
                    " height=" + std::to_string(desc.Height) + " scaled=" + std::to_string(scaled));
     };
     if (view && view->ImageHandle()) {
-        texture_cache.PrepareImage(view->image_id, false, false);
+        view = texture_cache.PrepareImageForPresentation(view);
+        if (!view || !view->ImageHandle())
+            return {};
         auto description = view->Description();
         if (view->ImageHandle()->handle->GetDesc().SampleDesc.Count > 1) {
             auto resource = texture_runtime.ResolveFramebuffer(*view);
@@ -4177,6 +4196,10 @@ RasterizerD3D12::DisplayTexture RasterizerD3D12::FramebufferTexture(
         log_source(view->ImageHandle(), description.Format, true);
         return {view->ImageHandle(), description, scaled, view->size.width, view->size.height};
     }
+    // The fallback reads guest RAM directly. An incompatible format/size alias may
+    // still own newer GPU pixels; DownloadMemory writes whole images overlapping
+    // the display base, ordered by modification tick, before that CPU read.
+    texture_cache.DownloadMemory(config.address + config.offset, 1);
     auto resource = texture_runtime.UploadFramebuffer(device_memory, config);
     if (!resource)
         return {};

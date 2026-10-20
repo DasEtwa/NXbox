@@ -82,6 +82,7 @@ u64 AlignDown(u64 a,u64 b) { return a/b*b; }
 u64 AlignUp(u64 a,u64 b) { return (a+b-1)/b*b; }
 }
 namespace VideoCommon {
+namespace SubmissionTrace { template<class... Args> void Log(const char*, Args...) {} }
 enum class CacheType { BufferCache=1,TextureCache=2,ShaderCache=4,QueryCache=8 };
 CacheType operator|(CacheType a,CacheType b) { return CacheType(int(a)|int(b)); }
 }

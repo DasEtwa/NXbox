@@ -16,5 +16,11 @@ inline void PrepareDirectory(const std::filesystem::path& directory, std::string
     marker.open(directory / "capture.txt", std::ios::trunc);
     marker << "NXBOX_PASS_DUMP_FRAME=" << frame << '\n';
     marker.close();
+    for (const char* name : {"manifest.jsonl", "sampled.jsonl"}) {
+        std::ofstream index;
+        index.exceptions(std::ios::failbit | std::ios::badbit);
+        index.open(directory / name, std::ios::trunc);
+        index.close();
+    }
 }
 } // namespace VideoCommon::PassDump

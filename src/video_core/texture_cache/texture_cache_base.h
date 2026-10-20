@@ -183,6 +183,14 @@ public:
     void PublishShaderImageWrites(std::span<const ImageViewId> views, std::string_view writer,
                                   u64 program = 0);
     void BeginPassDumpImageWrite();
+    void ReportPassDumpHistory();
+    void NotePassDumpImageWrite(ImageId id, std::string_view writer, GPUVAddr source = 0);
+    void NotePassDumpRenderTargets(std::string_view writer);
+    void SnapshotPassDumpPresentation(const ImageView& view);
+    ImageView* PrepareImageForPresentation(ImageView* view);
+    void RecordPassDumpDepthWrite(std::string_view writer) {
+        RecordPassDumpImageWrite(render_targets.depth_buffer_id, writer);
+    }
     void RecordPassDumpRenderTargetWrite(u32 slot, std::string_view writer, GPUVAddr source) {
         RecordPassDumpImageWrite(render_targets.color_buffer_ids[slot], writer, source);
     }
@@ -500,6 +508,17 @@ private:
         s32 layers = 1;
     };
     std::vector<PassDumpTarget> pass_dump_targets;
+    struct PassDumpWriter {
+        ImageId id;
+        u64 frame;
+        u64 order;
+        u64 tick;
+        GPUVAddr source;
+        std::string writer;
+    };
+    // Capture-only metadata, bounded by live cache images, retained across frame boundaries.
+    std::vector<PassDumpWriter> pass_dump_writers;
+    u64 pass_dump_write_order = 0;
     u32 rt_active_mask = 0;
     std::array<ImageId, 8> rt_image_id{};
     ImageId rt_depth_image_id{};
