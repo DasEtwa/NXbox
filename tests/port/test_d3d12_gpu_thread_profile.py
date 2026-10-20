@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Exercise renderer-neutral hooks and cross-thread wait/fence windows without D3D12."""
 
+import os
 import subprocess
 import tempfile
 import unittest
@@ -143,7 +144,12 @@ class GpuThreadProfileTests(unittest.TestCase):
                 text=True,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            subprocess.run([str(binary)], check=True, timeout=15)
+            subprocess.run(
+                [str(binary)],
+                check=True,
+                timeout=15,
+                env=dict(os.environ, NXBOX_GPU_METHOD_PROFILE="1"),
+            )
 
     def test_phases_and_guest_wait_line_are_wired(self):
         backend = ROOT / "src/video_core/renderer_d3d12"

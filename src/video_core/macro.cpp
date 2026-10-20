@@ -12,6 +12,7 @@
 #include "common/gpu_thread_profile.h"
 
 #include <fstream>
+#include <type_traits>
 #include <variant>
 
 #ifdef ARCHITECTURE_x86_64
@@ -1368,36 +1369,21 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
             maxwell3d.RefreshParameters();
         }
 
-        if (auto program = std::get_if<HLE_DrawArraysIndirect>(&cached))
-            return program->Execute(system, maxwell3d, parameters, method);
-        if (auto program = std::get_if<HLE_DrawIndexedIndirect>(&cached))
-            return program->Execute(system, maxwell3d, parameters, method);
-        if (auto program = std::get_if<HLE_MultiDrawIndexedIndirectCount>(&cached))
-            return program->Execute(system, maxwell3d, parameters, method);
-        if (auto program = std::get_if<HLE_MultiLayerClear>(&cached))
-            return program->Execute(system, maxwell3d, parameters, method);
-        if (auto program = std::get_if<HLE_C713C83D8F63CCF3>(&cached))
-            return program->Execute(system, maxwell3d, parameters, method);
-        if (auto program = std::get_if<HLE_D7333D26E0A93EDE>(&cached))
-            return program->Execute(system, maxwell3d, parameters, method);
-        if (auto program = std::get_if<HLE_BindShader>(&cached))
-            return program->Execute(system, maxwell3d, parameters, method);
-        if (auto program = std::get_if<HLE_SetRasterBoundingBox>(&cached))
-            return program->Execute(system, maxwell3d, parameters, method);
-        if (auto program = std::get_if<HLE_ClearConstBuffer>(&cached))
-            return program->Execute(system, maxwell3d, parameters, method);
-        if (auto program = std::get_if<HLE_ClearMemory>(&cached))
-            return program->Execute(system, maxwell3d, parameters, method);
-        if (auto program = std::get_if<HLE_TransformFeedbackSetup>(&cached))
-            return program->Execute(system, maxwell3d, parameters, method);
-        if (auto program = std::get_if<HLE_DrawIndirectByteCount>(&cached))
-            return program->Execute(system, maxwell3d, parameters, method);
-        if (auto program = std::get_if<MacroInterpreterImpl>(&cached))
-            return program->Execute(system, maxwell3d, parameters, method);
-        if (auto program = std::get_if<std::unique_ptr<DynamicCachedMacro>>(&cached))
-            return program->get()->Execute(system, maxwell3d, parameters, method);
-
-        UNREACHABLE();
+        // Dispatch by variant index once instead of testing every HLE alternative
+        // before reaching the interpreter/JIT (the last alternatives).
+        std::visit(
+            [&](auto& program) {
+                using Program = std::decay_t<decltype(program)>;
+                if constexpr (std::is_same_v<Program, std::monostate> ||
+                              std::is_same_v<Program, HLEMacro>) {
+                    UNREACHABLE();
+                } else if constexpr (std::is_same_v<Program, std::unique_ptr<DynamicCachedMacro>>) {
+                    program->Execute(system, maxwell3d, parameters, method);
+                } else {
+                    program.Execute(system, maxwell3d, parameters, method);
+                }
+            },
+            cached);
     };
     if (auto const it = macro_cache.find(method); it != macro_cache.end()) {
         execute_variant(it->second.program);

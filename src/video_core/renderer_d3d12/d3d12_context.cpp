@@ -416,12 +416,18 @@ std::size_t FrameProfile::Enter(Common::GpuProfile::Phase phase) {
                                 FramePhase::BufferCacheBind,
                                 FramePhase::TextureCacheUpdate,
                                 FramePhase::DescriptorAndPipeline};
+    const auto target = phases[static_cast<std::size_t>(phase)];
     const auto previous = timing.active;
-    Switch(phases[static_cast<std::size_t>(phase)]);
+    // Nested method/bulk dispatch often enters the already active phase. Preserve
+    // the outer boundary without two redundant clock reads for each inner scope.
+    if (previous == target)
+        return static_cast<std::size_t>(FramePhase::Count);
+    Switch(target);
     return static_cast<std::size_t>(previous);
 }
 void FrameProfile::Leave(std::size_t previous) {
-    Switch(static_cast<FramePhase>(previous));
+    if (previous != static_cast<std::size_t>(FramePhase::Count))
+        Switch(static_cast<FramePhase>(previous));
 }
 u64 FrameProfile::TakeRecorderCpu() {
     if (!recorder_thread)
@@ -769,6 +775,7 @@ void FrameProfile::EndFrame(bool presented) {
         Diagnostic(guest_line);
         const auto methods = Common::GpuProfile::TakeMethodWindow();
         std::string method_line = "D3D12_MAXWELL_METHODS timing_sample_stride=64";
+        method_line += Common::GpuProfile::MethodProfilingEnabled() ? " enabled=1" : " enabled=0";
         for (size_t i = 0; i < methods.size(); ++i) {
             const auto& sample = methods[i];
             const auto name = Common::GpuProfile::MethodNames[i];

@@ -268,9 +268,20 @@ void DmaPusher::CallMultiMethod(const u32* base_start, u32 num_methods) {
         puller.CallMultiMethod(*this, dma_state.method, dma_state.subchannel, base_start, num_methods, dma_state.method_count);
     } else {
         auto subchannel = subchannels[dma_state.subchannel];
-        subchannel->ConsumeSink(system);
-        subchannel->current_dma_segment = dma_state.dma_get + dma_state.dma_word_offset;
-        subchannel->CallMultiMethod(system, dma_state.method, base_start, num_methods, dma_state.method_count);
+        const auto dispatch = [&](auto* target_engine) {
+            target_engine->ConsumeSink(system);
+            target_engine->current_dma_segment = dma_state.dma_get + dma_state.dma_word_offset;
+            target_engine->CallMultiMethod(system, dma_state.method, base_start, num_methods,
+                                           dma_state.method_count);
+        };
+        // Non-incrementing CB, inline upload/index and macro payloads already have
+        // bulk handlers. Keep the final Maxwell type through this dispatch too.
+        if (frontend_fastpath &&
+            subchannel_type[dma_state.subchannel] == Engines::EngineTypes::Maxwell3D) {
+            dispatch(static_cast<Engines::Maxwell3D*>(subchannel));
+        } else {
+            dispatch(subchannel);
+        }
     }
 }
 

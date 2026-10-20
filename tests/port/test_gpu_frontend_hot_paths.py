@@ -52,7 +52,9 @@ class GpuFrontendHotPathTests(unittest.TestCase):
                 ],
                 check=True,
             )
-            for environment in environments or [None]:
+            for environment in environments or [
+                dict(os.environ, NXBOX_GPU_METHOD_PROFILE=value) for value in ("0", "1")
+            ]:
                 subprocess.run([str(binary)], check=True, timeout=30, env=environment)
 
     def test_registers_macros_and_assertions(self):

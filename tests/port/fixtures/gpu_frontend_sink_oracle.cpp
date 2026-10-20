@@ -137,7 +137,8 @@ int main() {
                     const auto window = Common::GpuProfile::TakeMethodWindow();
                     assert(window[static_cast<std::size_t>(
                                       Common::GpuProfile::MethodClass::DirtyFlags)]
-                               .count == (recording ? n : 0));
+                               .count ==
+                           (recording && Common::GpuProfile::MethodProfilingEnabled() ? n : 0));
                     Common::GpuProfile::recording_enabled = false;
                     assert(base.method_sink.empty() && cur.method_sink.empty());
                     assert(same(base, cur));
