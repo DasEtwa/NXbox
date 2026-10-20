@@ -806,11 +806,18 @@ bool D3D12DescriptorAllocator::WriteImageSrv(const DescriptorTable& table, u32 s
             // unbound one. Other mismatches keep the unadapted view, as before: MK8D binds later
             // cubes of a cube array to cube slots, and a null SRV in their place has not been
             // checked on the console.
-            const bool no_faces = (fallback_dimension == D3D12_SRV_DIMENSION_TEXTURECUBE ||
-                                   fallback_dimension == D3D12_SRV_DIMENSION_TEXTURECUBEARRAY) &&
-                                  backing_desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
-                                  backing_desc.SampleDesc.Count == 1 &&
-                                  backing_desc.DepthOrArraySize < 6;
+            // A 3D slot needs a 3D resource and the reverse: no view can bridge resource
+            // dimensions (Mario Party binds the same 8x8 2D texture to a 3D slot, and the
+            // device was removed with DXGI_ERROR_INVALID_CALL right after).
+            const bool wrong_resource =
+                (fallback_dimension == D3D12_SRV_DIMENSION_TEXTURE3D) !=
+                (backing_desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D);
+            const bool no_faces = wrong_resource ||
+                                  ((fallback_dimension == D3D12_SRV_DIMENSION_TEXTURECUBE ||
+                                    fallback_dimension == D3D12_SRV_DIMENSION_TEXTURECUBEARRAY) &&
+                                   backing_desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
+                                   backing_desc.SampleDesc.Count == 1 &&
+                                   backing_desc.DepthOrArraySize < 6);
             if (logged_srv_mismatches.insert(desc.ViewDimension * 16 + fallback_dimension)
                     .second) {
                 Diagnostic(fmt::format(
