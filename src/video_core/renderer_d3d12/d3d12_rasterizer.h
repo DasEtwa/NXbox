@@ -243,6 +243,7 @@ private:
     ResourcePtr CopyFeedback(const ResourcePtr& source,
                              const VideoCommon::SubresourceRange* range = nullptr);
     void SkipDraw(const char* reason);
+    void TickWork();
     void DrawSynchronous(bool is_indexed, u32 instance_count);
     struct FeedbackTexture {
         ResourcePtr resource;

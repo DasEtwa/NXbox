@@ -2728,6 +2728,13 @@ bool RasterizerD3D12::PrepareDrawIndices(bool is_indexed, DrawParams& params,
     return true;
 }
 
+void RasterizerD3D12::TickWork() {
+    // Sync callbacks can wait for decoder progress or dispatch more renderer work.
+    // The consumer must finish its job before the producer services those requests.
+    if (!gpu_pipeline || !gpu_pipeline->IsConsumer())
+        m_gpu.TickWork();
+}
+
 void RasterizerD3D12::DrainGpuPipeline() {
     if (gpu_pipeline)
         gpu_pipeline->Drain();
@@ -2742,14 +2749,14 @@ void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) {
         });
         // Guest sync requests belong to the producer. A request that accesses
         // memory drains the queue through the rasterizer/memory boundary.
-        m_gpu.TickWork();
+        TickWork();
         return;
     }
     DrawSynchronous(is_indexed, instance_count);
-    // Indirect expansion calls Draw on the consumer and retains its per-draw
-    // sync-request cadence. Only asynchronously published draws tick on the producer.
+    // Indirect expansion runs on the consumer; its caller ticks on the producer
+    // after the entire synchronous operation has returned.
     if (gpu_pipeline)
-        m_gpu.TickWork();
+        TickWork();
 }
 
 void RasterizerD3D12::DrawSynchronous(bool is_indexed, u32 instance_count) try {
@@ -2757,7 +2764,7 @@ void RasterizerD3D12::DrawSynchronous(bool is_indexed, u32 instance_count) try {
     static const bool no_draws = BisectEnabled("NXBOX_D3D12_NO_DRAWS");
     if (no_draws) {
         if (!gpu_pipeline)
-            m_gpu.TickWork();
+            TickWork();
         return;
     }
     converted_indices.reset();
@@ -2767,19 +2774,19 @@ void RasterizerD3D12::DrawSynchronous(bool is_indexed, u32 instance_count) try {
     PrepareDraw(is_indexed, DrawCommand{params});
     converted_indices.reset();
     if (!gpu_pipeline)
-        m_gpu.TickWork();
+        TickWork();
 } catch (const std::exception& error) {
     const FrameProfile::Scope profile_failure{context.Profile(), FramePhase::DrawCleanup};
     converted_indices.reset();
     SkipDraw(error.what());
     if (!gpu_pipeline)
-        m_gpu.TickWork();
+        TickWork();
 } catch (...) {
     const FrameProfile::Scope profile_failure{context.Profile(), FramePhase::DrawCleanup};
     converted_indices.reset();
     SkipDraw("unknown exception in direct draw");
     if (!gpu_pipeline)
-        m_gpu.TickWork();
+        TickWork();
 }
 
 ID3D12CommandSignature* RasterizerD3D12::IndirectSignature(bool indexed) {
@@ -2800,20 +2807,23 @@ ID3D12CommandSignature* RasterizerD3D12::IndirectSignature(bool indexed) {
 }
 
 void RasterizerD3D12::DrawIndirect() try {
-    if (OnGpuPipeline())
-        return RunGpuPipeline([&] { return DrawIndirect(); });
+    if (OnGpuPipeline()) {
+        RunGpuPipeline([&] { return DrawIndirect(); });
+        TickWork();
+        return;
+    }
 
     const FrameProfile::Scope profile_dispatch{context.Profile(), FramePhase::DrawDispatch};
     static const bool no_draws = BisectEnabled("NXBOX_D3D12_NO_DRAWS");
     if (no_draws) {
-        m_gpu.TickWork();
+        TickWork();
         return;
     }
     query_runtime.PauseHostConditionalRendering();
     const auto params = maxwell3d->draw_manager.indirect_state;
     if (params.is_byte_count) {
         SkipDraw("draw_auto_stride byte-count draw requires guest transform feedback linkage");
-        m_gpu.TickWork();
+        TickWork();
         return;
     }
     const size_t command_size =
@@ -2839,7 +2849,7 @@ void RasterizerD3D12::DrawIndirect() try {
         "host_indirect args_gpu={:x} count_gpu={:x} guest_count={} expanded_count={}",
         params.indirect_start_address, params.count_start_address, guest_count, count);
     if (!count) {
-        m_gpu.TickWork();
+        TickWork();
         return;
     }
     const size_t bytes = static_cast<size_t>((count - 1) * stride + command_size);
@@ -2877,19 +2887,19 @@ void RasterizerD3D12::DrawIndirect() try {
             Draw(false, command.InstanceCount);
         }
     }
-    m_gpu.TickWork();
+    TickWork();
 } catch (const std::exception& error) {
     if (OnGpuPipeline())
         throw;
     const FrameProfile::Scope profile_failure{context.Profile(), FramePhase::DrawCleanup};
     SkipDraw(error.what());
-    m_gpu.TickWork();
+    TickWork();
 } catch (...) {
     if (OnGpuPipeline())
         throw;
     const FrameProfile::Scope profile_failure{context.Profile(), FramePhase::DrawCleanup};
     SkipDraw("unknown exception in indirect draw");
-    m_gpu.TickWork();
+    TickWork();
 }
 
 bool RasterizerD3D12::AccelerateConditionalRendering() {
@@ -2906,8 +2916,11 @@ void RasterizerD3D12::PreparePresentation() {
     query_runtime.PauseHostConditionalRendering();
 }
 void RasterizerD3D12::DrawTexture() {
-    if (OnGpuPipeline())
-        return RunGpuPipeline([&] { return DrawTexture(); });
+    if (OnGpuPipeline()) {
+        RunGpuPipeline([&] { return DrawTexture(); });
+        TickWork();
+        return;
+    }
 
     const auto execute_blit = [this] {
         ++feedback_draw;
@@ -3068,11 +3081,14 @@ void RasterizerD3D12::DrawTexture() {
     }
     // Tick callbacks may throw. Let the GPU-thread boundary cancel their waiters;
     // executing them in a noexcept scope-exit destructor could terminate instead.
-    m_gpu.TickWork();
+    TickWork();
 }
 void RasterizerD3D12::Clear(u32 layer_count) try {
-    if (OnGpuPipeline())
-        return RunGpuPipeline([&] { return Clear(layer_count); });
+    if (OnGpuPipeline()) {
+        RunGpuPipeline([&] { return Clear(layer_count); });
+        TickWork();
+        return;
+    }
 
     ++feedback_epoch;
     transform_feedback.Unbind();
@@ -3260,21 +3276,24 @@ void RasterizerD3D12::Clear(u32 layer_count) try {
         clear_renderer.Execute(selection, values, has_color ? &color_attachment : nullptr,
                                has_depth ? &depth_attachment : nullptr, &clip);
     }
-    m_gpu.TickWork();
+    TickWork();
 } catch (const std::exception& error) {
     if (OnGpuPipeline())
         throw;
     SkipDraw(error.what());
-    m_gpu.TickWork();
+    TickWork();
 } catch (...) {
     if (OnGpuPipeline())
         throw;
     SkipDraw("unknown exception in clear");
-    m_gpu.TickWork();
+    TickWork();
 }
 void RasterizerD3D12::DispatchCompute() try {
-    if (OnGpuPipeline())
-        return RunGpuPipeline([&] { return DispatchCompute(); });
+    if (OnGpuPipeline()) {
+        RunGpuPipeline([&] { return DispatchCompute(); });
+        TickWork();
+        return;
+    }
 
     bool trace_submitted = false;
     VideoCommon::SubmissionTrace::Log("host_compute_begin");
@@ -3284,7 +3303,7 @@ void RasterizerD3D12::DispatchCompute() try {
     const Common::GpuProfile::PhaseScope gpu_profile_scope{
         Common::GpuProfile::Phase::ComputeDispatchSetup};
     if (BisectEnabled("NXBOX_D3D12_NO_COMPUTE")) {
-        m_gpu.TickWork();
+        TickWork();
         return;
     }
     gpu_memory->FlushCaching();
@@ -3537,17 +3556,17 @@ void RasterizerD3D12::DispatchCompute() try {
     compute_dispatch.Direct(dispatch, {qmd.grid_dim_x, qmd.grid_dim_y, qmd.grid_dim_z});
     trace_submitted = true;
     bindings.stages[0].Clear();
-    m_gpu.TickWork();
+    TickWork();
 } catch (const std::exception& error) {
     if (OnGpuPipeline())
         throw;
     SkipDraw(error.what());
-    m_gpu.TickWork();
+    TickWork();
 } catch (...) {
     if (OnGpuPipeline())
         throw;
     SkipDraw("unknown exception in compute dispatch");
-    m_gpu.TickWork();
+    TickWork();
 }
 void RasterizerD3D12::ResetCounter(VideoCommon::QueryType type) {
     if (OnGpuPipeline())

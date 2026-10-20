@@ -19,8 +19,9 @@ SyncpointManager::ActionHandle SyncpointManager::RegisterAction(
         return {};
     }
 
-    std::scoped_lock lk(guard);
+    std::unique_lock lk(guard);
     if (syncpoint.load(std::memory_order_relaxed) >= expected_value) {
+        lk.unlock();
         action();
         return {};
     }
@@ -59,7 +60,26 @@ void SyncpointManager::DeregisterHostAction(u32 syncpoint_id, const ActionHandle
 }
 
 void SyncpointManager::IncrementGuest(u32 syncpoint_id) {
-    Increment(syncpoints_guest[syncpoint_id], wait_guest_cv, guest_action_storage[syncpoint_id]);
+    // Guest actions include presentation, which can synchronously dispatch to the
+    // draw builder. That worker also increments syncpoints: never wait for it
+    // while owning guard. Detach ready actions before releasing the lock so each
+    // action runs exactly once, including when a callback registers another one.
+    std::list<RegisteredAction> ready;
+    {
+        std::scoped_lock lk(guard);
+        const auto value =
+            syncpoints_guest[syncpoint_id].fetch_add(1, std::memory_order_acq_rel) + 1;
+        auto& actions = guest_action_storage[syncpoint_id];
+        auto end = actions.begin();
+        while (end != actions.end() && end->expected_value <= value) {
+            ++end;
+        }
+        ready.splice(ready.end(), actions, actions.begin(), end);
+        wait_guest_cv.notify_all();
+    }
+    for (auto& entry : ready) {
+        entry.action();
+    }
 }
 
 void SyncpointManager::IncrementHost(u32 syncpoint_id) {

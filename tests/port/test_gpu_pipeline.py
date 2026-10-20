@@ -40,6 +40,43 @@ class GpuPipelineTests(unittest.TestCase):
                 timeout=60,
             )
 
+    def test_syncpoint_pipeline_wait_cycle(self):
+        with tempfile.TemporaryDirectory(prefix="nxbox-pipeline-deadlock-") as directory:
+            root = Path(directory)
+            # Keep the real syncpoint manager and queue; stub only platform types
+            # and profiling so no D3D12 or emulator runtime is needed on the host.
+            common = root / "common"
+            common.mkdir()
+            (common / "common_types.h").write_text(
+                "#pragma once\n#include <cstdint>\nusing u32 = std::uint32_t;\n"
+            )
+            (common / "gpu_thread_profile.h").write_text(
+                "#pragma once\nnamespace Common::GpuProfile {\n"
+                "enum class Wait { SyncpointHost, SyncpointGuest };\n"
+                "struct WaitScope { explicit WaitScope(Wait) {} };\n}\n"
+            )
+            binary = root / "deadlock"
+            subprocess.run(
+                [
+                    "clang++",
+                    "-std=c++20",
+                    "-Wall",
+                    "-Wextra",
+                    "-Wshadow",
+                    "-Werror",
+                    "-pthread",
+                    "-fsanitize=address,undefined",
+                    f"-I{root}",
+                    f"-I{ROOT / 'src'}",
+                    str(ROOT / "tests/port/gpu_pipeline_deadlock_test.cpp"),
+                    str(ROOT / "src/video_core/host1x/syncpoint_manager.cpp"),
+                    "-o",
+                    str(binary),
+                ],
+                check=True,
+            )
+            subprocess.run([str(binary)], check=True, timeout=20)
+
     def test_production_maxwell_method_replay(self):
         header = (ROOT / "src/video_core/engines/maxwell_3d.h").read_text()
         declaration = header.split("    struct DrawManager {", 1)[1].split("    Regs regs{};", 1)[0]
@@ -99,11 +136,15 @@ class GpuPipelineTests(unittest.TestCase):
         start = header.index("    template <class Func>\n    auto RunGpuPipeline")
         end = header.index("\n    void Draw(bool", start)
         dispatch = header[start:end]
+        native = (ROOT / "src/video_core/renderer_d3d12/d3d12_rasterizer.cpp").read_text()
+        tick = native.split("void RasterizerD3D12::TickWork() {", 1)[1].split("\n}", 1)[0]
         program = r"""
 #include <array>
 #include <bitset>
 #include <cassert>
 #include <map>
+#include <chrono>
+#include "common/cancellable_sync_queue.h"
 #include "video_core/gpu_draw_pipeline.h"
 struct Engine {
     unsigned engine_state{};
@@ -112,6 +153,12 @@ struct Engine {
     std::map<unsigned, unsigned> replace_table;
 };
 struct Rasterizer {
+    struct GPU {
+        Common::CancellableSyncQueue requests;
+        void TickWork() { requests.Tick(); }
+    } m_gpu;
+    void TickWork() { // TICK_BODY
+    }
     std::unique_ptr<VideoCommon::GpuDrawPipeline> gpu_pipeline;
     Engine frontend, consumer;
     Engine* frontend_maxwell = &frontend;
@@ -150,8 +197,21 @@ int main() {
     });
     reference = 42;
     assert(object == 42);
+
+    // The producer cannot retire this marker until Invoke returns. Servicing
+    // this CPU sync request inside the invoked draw/compute would form a cycle.
+    std::promise<void> producer_returned;
+    auto progress = producer_returned.get_future();
+    auto fence = renderer.m_gpu.requests.Request([&] {
+        assert(progress.wait_for(std::chrono::seconds{3}) == std::future_status::ready);
+    });
+    renderer.RunGpuPipeline([&] { renderer.TickWork(); });
+    assert(renderer.m_gpu.requests.Completed() < fence);
+    producer_returned.set_value();
+    renderer.TickWork();
+    assert(renderer.m_gpu.requests.Completed() == fence);
 }
-""".replace("// DISPATCH", dispatch)
+""".replace("// DISPATCH", dispatch).replace("// TICK_BODY", tick)
         with tempfile.TemporaryDirectory(prefix="nxbox-pipeline-dispatch-") as directory:
             source = Path(directory) / "test.cpp"
             binary = Path(directory) / "test"
@@ -184,7 +244,16 @@ int main() {
             "void RasterizerD3D12::DrawSynchronous", 1
         )[0]
         self.assertIn("DrawSynchronous(is_indexed, instance_count)", draw)
-        self.assertIn("if (gpu_pipeline)\n        m_gpu.TickWork()", draw)
+        self.assertIn("if (gpu_pipeline)\n        TickWork()", draw)
+        self.assertEqual(native.count("m_gpu.TickWork();"), 1)
+        for name in (
+            "DrawIndirect() try",
+            "DrawTexture()",
+            "Clear(u32 layer_count) try",
+            "DispatchCompute() try",
+        ):
+            entry = native.split(f"void RasterizerD3D12::{name}", 1)[1].split("\n    }", 1)[0]
+            self.assertLess(entry.index("RunGpuPipeline"), entry.index("TickWork();"))
         teardown = native.split("RasterizerD3D12::~RasterizerD3D12()", 1)[1]
         self.assertLess(
             teardown.index("gpu_pipeline->Close()"), teardown.index("gpu_pipeline.reset()")

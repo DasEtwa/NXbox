@@ -111,6 +111,61 @@ As with the previous renderer, games must synchronize CPU/guest writes against
 GPU use. Snapshots do not copy arbitrary vertex, texture, shader or CB memory and
 do not make unsynchronized guest memory mutations well-defined.
 
+## Syncpoint lock inversion repair (2026-10-20)
+
+The supplied `compat-2026-10-18/v-botw-pipe` logs stop presenting at frame 600
+without device removal or a crash. They contain no thread stacks, so they do not
+identify the exact blocked instruction. Code inspection and a deterministic host
+regression establish this reachable cycle:
+
+1. A syncpoint notification thread owns `SyncpointManager::guard` while calling a
+   guest action. The compositor action calls `RendererD3D12::Composite`, which
+   synchronously invokes the draw queue (or first waits for FIFO capacity).
+2. The builder's older job needs that same guard to increment a guest
+   syncpoint (host fence notification also needs this guard). It cannot retire, free capacity, or reach the queued composition.
+3. The notifier cannot release guard until composition returns. CPU cache
+   callbacks queued behind the builder and the decoder waiting for a synchronous
+   renderer call are blocked too.
+
+There is also a decoder-specific entry: `RegisterAction` can observe an unmet
+threshold before locking, then find it reached on the locked recheck. It used to
+call the compositor under guard in this branch, making the decoder the notifier
+in the same cycle. CDMA/sync-manager guest increments are other notification
+threads that can enter the first case.
+
+Guest increments now detach ready actions under guard and invoke them after
+unlocking. The registration recheck also unlocks before invoking an immediate
+action. Host increment callbacks retain their existing lock/cancellation behavior;
+they signal nvdrv events rather than dispatching composition. Guest callback
+claiming is atomic with the increment, and each detached callback executes once.
+
+The wait audit also found that indirect draws, textured draws, clears and compute
+still called `TickWork` on the consumer despite the producer ownership rule.
+All rasterizer tick sites now use a consumer-aware gate. Those synchronous
+entrypoints tick on the caller after `RunGpuPipeline` returns, with cache locks
+released. A consumer must not service a CPU sync callback that could depend on
+its blocked decoder. Normal direct publication still ticks on the producer.
+
+Queue full/empty waits and futures release the queue mutex; jobs run without it.
+Consumer `Invoke` and `Drain` remain inline/nonblocking. Cache entrypoints
+(`FlushRegion`, `OnCPUWrite`, invalidation, WFI) dispatch before taking cache
+locks. Memory barriers wait only outside the consumer. Native query/fence waits
+retain their submit/completion protocol; a FIFO drain is not a hardware fence.
+The resulting lock rule is: **never dispatch/wait for the builder while holding
+the syncpoint guard, and never run decoder sync requests on the builder**.
+
+`gpu_pipeline_deadlock_test.cpp` compiles the production queue and syncpoint
+manager with platform/profiling stubs. It fills capacities 1, 2 and 64, runs a
+presentation round trip against an older syncpoint job, and adds a concurrent CPU
+callback. Futures and a watchdog fail the executable instead of hanging. It also
+checks callback reentrancy, thresholds and exactly-once delivery. Compiling this
+regression against the original manager fails with exit 1 after three seconds;
+the repaired manager passes under ASan/UBSan. The compiled production dispatcher
+and tick gate additionally verify that a CPU sync request cannot execute on the
+consumer before its producer returns from the synchronous invocation.
+
+A new console run is still required to confirm BotW continues beyond frame 600.
+
 ## What is not yet pipelined
 
 - Indirect draw expansion, textured blits, clears and compute are synchronous.
