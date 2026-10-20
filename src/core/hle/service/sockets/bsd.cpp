@@ -45,29 +45,40 @@ public:
         }();
         return enabled;
     }
-    static void Record(s32 fd, const Network::SockAddrIn& peer, bool sent, size_t bytes) {
+    static void Record(s32 fd, const Network::SockAddrIn& peer, bool sent, size_t bytes,
+                       Errno error = Errno::SUCCESS) {
         static std::mutex mutex;
-        static std::map<std::string, std::array<u64, 4>> peers; // sent, sent bytes, recv, recv bytes
+        // Sent packets/bytes, received packets/bytes, send errors, last errno.
+        static std::map<std::string, std::array<u64, 6>> peers;
         static auto last = std::chrono::steady_clock::now();
-        const auto key = fmt::format("fd={} {}:{}", fd, Network::IPv4AddressToString(peer.ip),
-                                     peer.portno);
+        const auto key =
+            fmt::format("fd={} {}:{}", fd, Network::IPv4AddressToString(peer.ip), peer.portno);
         std::scoped_lock lock{mutex};
         auto [it, fresh] = peers.try_emplace(key);
         if (fresh) {
-            LOG_INFO(Service, "NXBOX_UDP new peer {} first={} bytes={}", key, sent ? "send" : "recv",
-                     bytes);
+            LOG_INFO(Service, "NXBOX_UDP new peer {} first={} bytes={}", key,
+                     sent ? (error == Errno::SUCCESS ? "send" : "send-error") : "recv", bytes);
         }
         auto& c = it->second;
-        c[sent ? 0 : 2] += 1;
-        c[sent ? 1 : 3] += bytes;
+        // A failed send used to count as a sent packet with zero bytes, hiding socket errors.
+        // Successful empty UDP datagrams still count as packets.
+        if (sent && error != Errno::SUCCESS) {
+            ++c[4];
+            c[5] = static_cast<u64>(error);
+        } else {
+            c[sent ? 0 : 2] += 1;
+            c[sent ? 1 : 3] += bytes;
+        }
         const auto now = std::chrono::steady_clock::now();
         if (now - last < std::chrono::seconds{5}) {
             return;
         }
         last = now;
         for (auto& [name, n] : peers) {
-            if (n[0] || n[2]) {
-                LOG_INFO(Service, "NXBOX_UDP {} sent={}/{}B recv={}/{}B", name, n[0], n[1], n[2], n[3]);
+            if (n[0] || n[2] || n[4]) {
+                LOG_INFO(Service,
+                         "NXBOX_UDP {} sent={}/{}B recv={}/{}B send_errors={} last_errno={}", name,
+                         n[0], n[1], n[2], n[3], n[4], n[5]);
             }
             n = {};
         }
@@ -1070,7 +1081,9 @@ std::pair<s32, Errno> BSD_USA::SendToImpl(s32 fd, u32 flags, std::span<const u8>
         return Translate(descriptor.socket->SendTo(flags, message, p_addr_in));
     });
     if (p_addr_in && UdpPeerTrace::Enabled()) {
-        UdpPeerTrace::Record(fd, addr_in, true, result.first > 0 ? static_cast<size_t>(result.first) : 0);
+        UdpPeerTrace::Record(fd, addr_in, true,
+                             result.first > 0 ? static_cast<size_t>(result.first) : 0,
+                             result.second);
     }
     return result;
 }
