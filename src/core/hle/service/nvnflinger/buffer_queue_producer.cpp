@@ -21,6 +21,7 @@
 #include "core/hle/service/nvnflinger/parcel.h"
 #include "core/hle/service/nvnflinger/ui/graphic_buffer.h"
 #include "core/hle/service/nvnflinger/window.h"
+#include "core/hle/service/vi/vblank_timing.h"
 
 namespace Service::android {
 
@@ -503,6 +504,9 @@ Status BufferQueueProducer::QueueBuffer(s32 slot, const QueueBufferInput& input,
         item.fence = fence;
         item.is_droppable = core->dequeue_buffer_cannot_block || async;
         item.swap_interval = swap_interval;
+        if (VI::VblankProfileEnabled()) {
+            VI::vblank_timing.RecordSwapInterval(swap_interval);
+        }
         item.acquire_called = slots[slot].acquire_called;
 
         sticky_transform = sticky_transform_;
