@@ -24,7 +24,9 @@ class RedundantStateTests(unittest.TestCase):
     def test_cache_is_owned_by_context_and_checks_generation(self):
         self.assertIn("struct RecordedDrawState", self.state)
         self.assertIn("RecordedDrawState recorded_state;", self.header)
-        self.assertIn("recorded_state.Refresh(recording_generation);", self.header)
+        self.assertIn(
+            "recorded_state.Refresh(recording_generation, full_state_reset);", self.header
+        )
         self.assertIn("if (generation != current_generation)", self.state)
         self.assertIn("*this = {};", self.state)
         self.assertIn("generation = current_generation;", self.state)
@@ -44,10 +46,12 @@ class RedundantStateTests(unittest.TestCase):
             binding.index("SetGraphicsRootSignature(root_signature)"),
             binding.index("recorded.ClearRootArguments();"),
         )
-        self.assertIn("root_args = {};", self.state)
-        self.assertIn("root_args.tables[parameter].Update(handle.ptr)", self.draw)
-        self.assertIn("root_args.cbvs[kFirstRootCbv + i].Update(root_cbv_addresses[i])", self.draw)
-        self.assertIn("root_args.constants[0].Update(words.data(), words.size())", self.draw)
+        self.assertIn("root_args.tables.valid = 0;", self.state)
+        self.assertIn("root_args.cbvs.valid = 0;", self.state)
+        self.assertIn("root_args.constants.valid = false;", self.state)
+        self.assertIn("root_args.tables.Update(parameter, handle.ptr)", self.draw)
+        self.assertIn("root_args.cbvs.Update(kFirstRootCbv + i, root_cbv_addresses[i])", self.draw)
+        self.assertIn("root_args.constants.Update(words.data(), words.size())", self.draw)
         self.assertIn("std::memcmp(values.data(), next, next_count * sizeof(T))", self.state)
 
     def test_all_draw_state_calls_are_cached_and_draw_is_emitted(self):

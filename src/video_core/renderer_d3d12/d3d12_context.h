@@ -499,7 +499,9 @@ public:
         return graphics_state_tracker;
     }
     RecordedDrawState& DrawState() {
-        recorded_state.Refresh(recording_generation);
+        // Diagnostic fallback for comparing validity-only and full state resets.
+        static const bool full_state_reset = BisectEnabled("NXBOX_D3D12_FULL_STATE_RESET");
+        recorded_state.Refresh(recording_generation, full_state_reset);
         return recorded_state;
     }
     bool RecordState(bool changed) {

@@ -47,6 +47,29 @@ struct RecordedArray {
         return true;
     }
 };
+// Root descriptors are addressed by parameter index. Keep validity in one word
+// instead of clearing every cached address on a root-signature/heap change.
+template <class T, size_t Capacity>
+struct RecordedSlots {
+    static_assert(std::is_trivially_copyable_v<T>);
+    static_assert(Capacity <= 64);
+    std::array<T, Capacity> values{};
+    std::uint64_t valid{};
+
+    bool Update(size_t slot, const T& next) {
+        if (slot >= Capacity) {
+            valid = 0;
+            return true;
+        }
+        const auto bit = std::uint64_t{1} << slot;
+        if ((valid & bit) && std::memcmp(&values[slot], &next, sizeof(T)) == 0)
+            return false;
+        std::memcpy(&values[slot], &next, sizeof(T));
+        valid |= bit;
+        return true;
+    }
+};
+
 } // namespace D3D12
 
 #ifdef _WIN32
@@ -62,9 +85,10 @@ struct RecordedDrawState {
     RecordedValue<ID3D12PipelineState*> pipeline;
     RecordedValue<D3D_PRIMITIVE_TOPOLOGY> topology;
     struct RootArguments {
-        std::array<RecordedValue<D3D12_GPU_VIRTUAL_ADDRESS>, 64> tables;
-        std::array<RecordedValue<D3D12_GPU_VIRTUAL_ADDRESS>, 64> cbvs;
-        std::array<RecordedArray<std::uint32_t, 16>, 64> constants;
+        RecordedSlots<D3D12_GPU_VIRTUAL_ADDRESS, 64> tables;
+        RecordedSlots<D3D12_GPU_VIRTUAL_ADDRESS, 64> cbvs;
+        // Guest graphics has a single constants parameter, at root index zero.
+        RecordedArray<std::uint32_t, 16> constants;
     } root_args;
     // Count, contiguous RTV base, DSV handle, DSV presence. The rasterizer also
     // invalidates on fixed RTV/DSV descriptor rewrites, even if handles match.
@@ -79,14 +103,35 @@ struct RecordedDrawState {
     RecordedValue<std::array<float, 2>> depth_bounds;
     RecordedArray<D3D12_STREAM_OUTPUT_BUFFER_VIEW, 4> stream_output;
 
-    void Refresh(std::uint64_t current_generation) {
+    void Refresh(std::uint64_t current_generation, bool full_reset = false) {
         if (generation != current_generation) {
-            *this = {};
+            if (full_reset) {
+                *this = {};
+            } else {
+                // Values are unreadable until Update sets validity again. Preserve
+                // payloads so per-draw invalidation writes only validity metadata.
+                heaps.valid = false;
+                root_signature.valid = false;
+                pipeline.valid = false;
+                topology.valid = false;
+                targets.valid = false;
+                viewports.valid = false;
+                scissors.valid = false;
+                vertices.valid = false;
+                index.valid = false;
+                stencil.valid = false;
+                blend.valid = false;
+                depth_bounds.valid = false;
+                stream_output.valid = false;
+                ClearRootArguments();
+            }
             generation = current_generation;
         }
     }
     void ClearRootArguments() {
-        root_args = {};
+        root_args.tables.valid = 0;
+        root_args.cbvs.valid = 0;
+        root_args.constants.valid = false;
     }
 };
 } // namespace D3D12
