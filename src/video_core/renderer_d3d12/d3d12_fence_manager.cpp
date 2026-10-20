@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: Copyright 2026 NSPX
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "common/nxbox_wait_diag.h"
 #include "video_core/renderer_d3d12/d3d12_fence_manager.h"
 
 #include "common/gpu_thread_profile.h"
@@ -58,11 +59,13 @@ void FenceManager::SyncOperation(std::function<void()> &&func) {
 void FenceManager::SignalSyncPoint(u32 value) {
     syncpoint_manager.IncrementGuest(value);
     ++pending_syncpoints;
+    NxboxWait::Add(NxboxWait::Counter::SyncpointQueued);
     LogSyncpoints();
     auto signal = [this, value] {
         syncpoint_manager.IncrementHost(value);
         --pending_syncpoints;
         ++signaled_syncpoints;
+        NxboxWait::Add(NxboxWait::Counter::SyncpointSignaled);
         LogSyncpoints();
     };
     if (!Common::GpuProfile::enabled.load(std::memory_order_relaxed)) {

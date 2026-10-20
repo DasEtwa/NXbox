@@ -26,6 +26,8 @@ def compile_run(source):
                 "-Wextra",
                 "-Werror",
                 "-fsanitize=address,undefined",
+                "-I",
+                str(ROOT / "src"),
                 str(path),
                 "-o",
                 str(binary),
@@ -47,6 +49,7 @@ class DrawBookkeepingTests(unittest.TestCase):
         )
         compile_run(
             r"""
+#include "common/nxbox_wait_diag.h"
 #include <cassert>
 #include <cstdint>
 #include <deque>

@@ -19,6 +19,7 @@
 #include <boost/container/small_vector.hpp>
 #include "common/container/unordered_map.h"
 #include "common/gpu_thread_profile.h"
+#include "common/nxbox_wait_diag.h"
 
 #include "common/alignment.h"
 #include "common/nxbox_stall.h"
@@ -1748,6 +1749,7 @@ void TextureCache<P>::QueueAsyncDecode(Image& image, ImageId image_id) {
     LOG_INFO(HW_GPU, "Queuing async texture decode");
 
     NxboxUpload::Record(NxboxUpload::Event::AstcQueued);
+    NxboxWait::Add(NxboxWait::Counter::DecodeQueued);
     image.flags |= ImageFlagBits::IsDecoding;
     auto decode = std::make_unique<AsyncDecodeContext>();
     auto* decode_ptr = decode.get();
@@ -1762,6 +1764,7 @@ void TextureCache<P>::QueueAsyncDecode(Image& image, ImageId image_id) {
     auto func = [out_size, copies, info = image.info,
                  input = std::move(local_unswizzle_data_buffer),
                  async_decode = decode_ptr]() mutable {
+        NxboxWait::Add(NxboxWait::Counter::DecodeStarted);
         async_decode->decoded_data.resize_destructive(out_size);
         std::span copies_span{copies.data(), copies.size()};
         ConvertImage(input, info, async_decode->decoded_data, copies_span);
@@ -1770,8 +1773,10 @@ void TextureCache<P>::QueueAsyncDecode(Image& image, ImageId image_id) {
         std::unique_lock lock{async_decode->mutex};
         async_decode->copies = std::move(copies);
         async_decode->complete = true;
+        NxboxWait::Add(NxboxWait::Counter::DecodeCompleted);
     };
     texture_decode_worker.QueueWork(std::move(func));
+    NxboxWait::Add(NxboxWait::Counter::DecodeDispatched);
 }
 
 template <class P>
@@ -1790,6 +1795,7 @@ void TextureCache<P>::QueueAsyncUnswizzle(Image& image, ImageId image_id) {
 
 template <class P>
 void TextureCache<P>::TickAsyncDecode() {
+    NxboxWait::Add(NxboxWait::Counter::DecodeTicks);
     bool has_uploads{};
     auto i = async_decodes.begin();
     while (i != async_decodes.end()) {
@@ -1800,6 +1806,7 @@ void TextureCache<P>::TickAsyncDecode() {
             continue;
         }
         if (async_decode->cancelled) {
+            NxboxWait::Add(NxboxWait::Counter::DecodeCancelled);
             lock.unlock();
             i = async_decodes.erase(i);
             continue;
@@ -1810,6 +1817,7 @@ void TextureCache<P>::TickAsyncDecode() {
                     async_decode->decoded_data.size());
         image.UploadMemory(staging, FixSmallVectorADL(async_decode->copies));
         NxboxUpload::Record(NxboxUpload::Event::AstcUploaded);
+        NxboxWait::Add(NxboxWait::Counter::DecodeUploaded);
         image.flags &= ~ImageFlagBits::IsDecoding;
         has_uploads = true;
         // Erasing destroys the mutex, so it must not still be held.

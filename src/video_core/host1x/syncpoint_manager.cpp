@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "common/gpu_thread_profile.h"
+#include "common/nxbox_wait_diag.h"
 #include "video_core/host1x/syncpoint_manager.h"
 
 namespace Tegra {
@@ -87,10 +88,16 @@ void SyncpointManager::IncrementHost(u32 syncpoint_id) {
 }
 
 void SyncpointManager::WaitGuest(u32 syncpoint_id, u32 expected_value) {
+    const NxboxWait::Scope wait_scope{
+        NxboxWait::Kind::Syncpoint, syncpoint_id, "guest",
+        std::array<std::uint64_t, 2>{expected_value, syncpoints_guest[syncpoint_id].load()}};
     Wait(syncpoints_guest[syncpoint_id], wait_guest_cv, expected_value);
 }
 
 void SyncpointManager::WaitHost(u32 syncpoint_id, u32 expected_value) {
+    const NxboxWait::Scope wait_scope{
+        NxboxWait::Kind::Syncpoint, syncpoint_id, "host",
+        std::array<std::uint64_t, 2>{expected_value, syncpoints_host[syncpoint_id].load()}};
     Wait(syncpoints_host[syncpoint_id], wait_host_cv, expected_value);
 }
 

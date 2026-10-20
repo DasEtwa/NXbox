@@ -657,6 +657,32 @@ struct Memory::Impl {
             LOG_ERROR(HW_Memory, "NXBOX FAULT REG x{}={:#018x}", i, ctx.r[i]);
         }
         LOG_ERROR(HW_Memory, "NXBOX FAULT REG x29={:#018x} x30={:#018x}", ctx.fp, ctx.lr);
+        // Recover callers of a deliberate fatal write, not just the crash helper's PC.
+        // Read each byte silently: malformed guest frame pointers must not recurse into faults.
+        u64 frame = ctx.fp;
+        for (size_t depth = 0; depth < 16; ++depth) {
+            if (frame < ctx.sp || (frame & 15) || frame > UINT64_MAX - 15) {
+                break;
+            }
+            std::array<u64, 2> saved{};
+            bool mapped = true;
+            for (size_t byte = 0; byte < 16; ++byte) {
+                const auto* ptr = GetPointerSilent(frame + byte);
+                if (!ptr) {
+                    mapped = false;
+                    break;
+                }
+                saved[byte / 8] |= u64(*ptr) << (8 * (byte % 8));
+            }
+            LOG_ERROR(HW_Memory,
+                      "NXBOX FAULT FRAME depth={} fp={:#018x} mapped={} next_fp={:#018x} "
+                      "return_pc={:#018x}",
+                      depth, frame, mapped, saved[0], saved[1]);
+            if (!mapped || saved[0] <= frame || saved[0] - frame > 1024 * 1024) {
+                break;
+            }
+            frame = saved[0];
+        }
         // Silent byte reads avoid recursion and handle page boundaries independently.
         // Each word is an AArch64 instruction; a missing byte invalidates the whole word.
         for (s64 offset = -32; offset < 64; offset += 4) {
@@ -684,9 +710,10 @@ struct Memory::Impl {
                 const auto& entry = history.entries[i % history.entries.size()];
                 LOG_ERROR(HW_Memory,
                           "NXBOX FAULT SVC sequence={} number={:#x} input_x0={:#x} "
-                          "output_x0={:#x} output_x1={:#x} completed={}",
+                          "output_x0={:#x} output_x1={:#x} completed={} entered_ms={} "
+                          "finished_ms={} pc={:#x} lr={:#x}",
                           i, entry.number, entry.input_x0, entry.output_x0, entry.output_x1,
-                          entry.completed);
+                          entry.completed, entry.entered_ms, entry.finished_ms, entry.pc, entry.lr);
             }
         }
         LOG_ERROR(HW_Memory, "NXBOX FAULT END");

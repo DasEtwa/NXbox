@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: Copyright 2026 NSPX
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "common/nxbox_wait_diag.h"
 #include "eden_uwp/firmware.h"
 #include "eden_uwp/game_session.h"
 #include "eden_uwp/shader_share.h"
@@ -1392,6 +1393,34 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
                     vblank.intervals[5], vblank.intervals[6]));
             }
             const auto frames = window.FrameCount();
+            if (NxboxWait::Enabled()) {
+                // Only atomics and recorder-owned copies: never enqueue a GPU task here.
+                std::string progress = "WAIT_PROGRESS";
+                for (size_t i = 0; i < NxboxWait::counters.size(); ++i) {
+                    progress += fmt::format(" {}={}", NxboxWait::CounterNames[i],
+                                            NxboxWait::counters[i].load(std::memory_order_relaxed));
+                }
+                Diagnostic(progress);
+                if (frames == measured_frames) {
+                    const auto snapshot = NxboxWait::recorder.Read();
+                    const auto sampled_ms = NxboxWait::NowMs();
+                    Diagnostic(fmt::format("WAIT_SNAPSHOT sampled_ms={} entries={} dropped={}",
+                                           sampled_ms, snapshot.entries.size(), snapshot.dropped));
+                    for (const auto& entry : snapshot.entries) {
+                        Diagnostic(fmt::format(
+                            "WAIT_ENTRY kind={} key={:#x} token={} label={} active={} "
+                            "age_ms={} duration_ms={} pc={:#x} lr={:#x} result={:#x} "
+                            "args={:#x},{:#x},{:#x},{:#x},{:#x},{:#x},{:#x},{:#x}",
+                            NxboxWait::KindNames[static_cast<size_t>(entry.kind)], entry.key,
+                            entry.token, entry.label.data(), !entry.ended_ms,
+                            sampled_ms - entry.began_ms,
+                            (entry.ended_ms ? entry.ended_ms : sampled_ms) - entry.began_ms,
+                            entry.pc, entry.lr, entry.result, entry.args[0], entry.args[1],
+                            entry.args[2], entry.args[3], entry.args[4], entry.args[5],
+                            entry.args[6], entry.args[7]));
+                    }
+                }
+            }
             const auto stats = system.GetAndResetPerfStats();
             Diagnostic(fmt::format("GAME_PRESENT frames={} seconds={:.3f} fps={:.2f} "
                                    "game_fps={:.2f} system_fps={:.2f} "
