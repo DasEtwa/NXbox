@@ -89,6 +89,9 @@ using namespace Common::Literals;
 template <class P>
 TextureCache<P>::TextureCache(Runtime& runtime_, Tegra::MaxwellDeviceMemoryManager& device_memory_)
     : runtime{runtime_}, device_memory{device_memory_} {
+    if constexpr (requires { runtime.TextureCacheFastpathEnabled(); }) {
+        texture_cache_fastpath = runtime.TextureCacheFastpathEnabled();
+    }
     // Configure null sampler
     TSCEntry sampler_descriptor{};
     sampler_descriptor.min_filter.Assign(Tegra::Texture::TextureFilter::Linear);
@@ -649,6 +652,16 @@ ImageViewId TextureCache<P>::VisitImageView(u32 index, bool compute) {
         return NULL_IMAGE_VIEW_ID;
     }
     auto const map_index = index | (compute ? Common::SlotId::TAGGED_VALUE : 0);
+    auto& indexed_ids = channel_state->indexed_image_view_ids[compute ? 1 : 0];
+    const auto save_id = [&](ImageViewId id) {
+        channel_state->image_view_ids.insert_or_assign(map_index, id);
+        if (texture_cache_fastpath) {
+            if (indexed_ids.size() <= index) {
+                indexed_ids.resize(size_t{index} + 1);
+            }
+            indexed_ids[index] = id;
+        }
+    };
     // Is new (on the tegra engine side)?
     auto const [descriptor, is_new] = table.Read(*gpu_memory, index);
     if (is_new) {
@@ -658,7 +671,7 @@ ImageViewId TextureCache<P>::VisitImageView(u32 index, bool compute) {
             if (is_new_tc)
                 pair->second = CreateImageView(descriptor);
             PrepareImageView(pair->second, false, false);
-            channel_state->image_view_ids.insert_or_assign(map_index, pair->second);
+            save_id(pair->second);
             return pair->second;
         }
         static const bool trace = std::getenv("NXBOX_TEXTURE_NULL_TRACE") != nullptr;
@@ -668,8 +681,15 @@ ImageViewId TextureCache<P>::VisitImageView(u32 index, bool compute) {
             LOG_ERROR(HW_GPU, "TEXTURE_INVALID_ENTRY index={} addr={:x} compute={}", index,
                       descriptor.Address(), compute);
         }
-        channel_state->image_view_ids.insert_or_assign(map_index, NULL_IMAGE_VIEW_ID);
+        save_id(NULL_IMAGE_VIEW_ID);
         return NULL_IMAGE_VIEW_ID;
+    }
+    // Read above detects guest writes and all existing deletion/rescale invalidations.
+    // Never reuse an ID solely because the bound descriptor index stayed the same.
+    if (texture_cache_fastpath && index < indexed_ids.size()) {
+        const ImageViewId id = indexed_ids[index];
+        PrepareImageView(id, false, false);
+        return id;
     }
     auto const it = channel_state->image_view_ids.find(map_index);
     if (it->second != NULL_IMAGE_VIEW_ID)
@@ -929,6 +949,9 @@ void TextureCache<P>::UnmapMemory(DAddr cpu_addr, size_t size) {
 
 template <class P>
 void TextureCache<P>::UnmapGPUMemory(size_t as_id, GPUVAddr gpu_addr, size_t size) {
+    if (texture_cache_fastpath) {
+        cached_image_lookup = {};
+    }
     boost::container::small_vector<ImageId, 16> deleted_images;
     ForEachImageInRegionGPU(as_id, gpu_addr, size,
                             [&](ImageId id, Image&) { deleted_images.push_back(id); });
@@ -1549,6 +1572,8 @@ ImageId TextureCache<P>::FindOrInsertImage(const ImageInfo& info, GPUVAddr gpu_a
 template <class P>
 ImageId TextureCache<P>::FindImage(const ImageInfo& info, GPUVAddr gpu_addr,
                                    RelaxedOptions options) {
+    // Keep the address translation: a guest can replace a mapping without changing
+    // the requested image layout. Memoize the expensive overlap/page-table search.
     std::optional<DAddr> cpu_addr = gpu_memory->GpuToCpuAddress(gpu_addr);
     if (!cpu_addr) {
         cpu_addr = gpu_memory->GpuToCpuAddress(gpu_addr, CalculateGuestSizeInBytes(info));
@@ -1556,6 +1581,10 @@ ImageId TextureCache<P>::FindImage(const ImageInfo& info, GPUVAddr gpu_addr,
             return ImageId{};
         }
     }
+    auto& cached = cached_image_lookup[(gpu_addr >> 8) % cached_image_lookup.size()];
+    const bool cache_hit = texture_cache_fastpath && cached.id && cached.memory == gpu_memory &&
+                           cached.address == gpu_addr && cached.cpu_address == *cpu_addr &&
+                           cached.options == options && SameImageLookupInfo(cached.info, info);
     const bool broken_views =
         runtime.HasBrokenTextureViewFormats() || True(options & RelaxedOptions::ForceBrokenViews);
     const bool native_bgr = runtime.HasNativeBgr();
@@ -1587,7 +1616,23 @@ ImageId TextureCache<P>::FindImage(const ImageInfo& info, GPUVAddr gpu_addr,
         }
         return false;
     };
-    ForEachImageInRegion(*cpu_addr, CalculateGuestSizeInBytes(info), lambda);
+    if (cache_hit && lambda(cached.id, slot_images[cached.id])) {
+        return image_id;
+    }
+    // A changed Strong flag can make a formerly valid pitch-linear view incompatible.
+    image_id = {};
+    image_ids.clear();
+    bool exact_match = false;
+    ForEachImageInRegion(*cpu_addr, CalculateGuestSizeInBytes(info),
+                         [&](ImageId candidate_id, ImageBase& candidate) {
+                             exact_match = lambda(candidate_id, candidate);
+                             return exact_match;
+                         });
+    // Only memoize an early exact-format match. Relaxed/multiple matches depend on
+    // modification ticks and must continue to search the complete overlap set.
+    if (texture_cache_fastpath && exact_match && image_ids.size() == 1) {
+        cached = {info, gpu_addr, *cpu_addr, options, gpu_memory, image_id};
+    }
     if (image_ids.size() <= 1) [[likely]] {
         return image_id;
     }
@@ -2490,6 +2535,9 @@ ImageViewId TextureCache<P>::FindOrEmplaceImageView(ImageId image_id, const Imag
 
 template <class P>
 void TextureCache<P>::RegisterImage(ImageId image_id) {
+    if (texture_cache_fastpath) {
+        cached_image_lookup = {};
+    }
     ImageBase& image = slot_images[image_id];
     ASSERT_MSG(False(image.flags & ImageFlagBits::Registered),
                "Trying to register an already registered image");
@@ -2530,6 +2578,9 @@ void TextureCache<P>::RegisterImage(ImageId image_id) {
 
 template <class P>
 void TextureCache<P>::UnregisterImage(ImageId image_id) {
+    if (texture_cache_fastpath) {
+        cached_image_lookup = {};
+    }
     Image& image = slot_images[image_id];
     ASSERT_MSG(True(image.flags & ImageFlagBits::Registered),
                "Trying to unregister an already registered image");
@@ -2920,8 +2971,24 @@ void TextureCache<P>::PrepareImageView(ImageViewId image_view_id, bool is_modifi
     if (!image_view_id) {
         return;
     }
-    const ImageViewBase& image_view = slot_image_views[image_view_id];
+    ImageViewBase& image_view = slot_image_views[image_view_id];
     if (image_view.IsBuffer()) {
+        return;
+    }
+    Image& image = slot_images[image_view.image_id];
+    static const bool force_refresh = std::getenv("NXBOX_FORCE_REFRESH_DIMS") != nullptr;
+    if (texture_cache_fastpath && !force_refresh && !invalidate &&
+        False(image.flags & ImageFlagBits::CpuModified) &&
+        !False(image.flags & ImageFlagBits::Tracked) && image.aliased_images.empty()) {
+        // Bound sets repeat across draws, but writes must still advance the modification
+        // tick, including the second UpdateRenderTargets after sampled alias preparation.
+        if (is_modification) {
+            MarkModification(image);
+        }
+        if (image_view.prepare_frame_tick != frame_tick) {
+            lru_cache.Touch(image.lru_index, frame_tick);
+            image_view.prepare_frame_tick = frame_tick;
+        }
         return;
     }
     PrepareImage(image_view.image_id, is_modification, invalidate);

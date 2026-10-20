@@ -15,6 +15,7 @@
 
 #include "video_core/surface.h"
 #include "video_core/texture_cache/image_base.h"
+#include "video_core/texture_cache/image_info.h"
 #include "video_core/texture_cache/types.h"
 #include "video_core/textures/texture.h"
 
@@ -29,6 +30,22 @@ struct OverlapResult {
     VAddr cpu_addr;
     SubresourceExtent resources;
 };
+
+// Compare fields, not padding or inactive union members, for exact query memoization.
+[[nodiscard]] inline bool SameImageLookupInfo(const ImageInfo& lhs, const ImageInfo& rhs) {
+    if (lhs.type != rhs.type) {
+        return false;
+    }
+    const bool same_layout =
+        lhs.type == ImageType::Linear ? lhs.pitch == rhs.pitch : lhs.block == rhs.block;
+    return lhs.format == rhs.format && lhs.resources == rhs.resources && lhs.size == rhs.size &&
+           same_layout && lhs.layer_stride == rhs.layer_stride &&
+           lhs.maybe_unaligned_layer_stride == rhs.maybe_unaligned_layer_stride &&
+           lhs.num_samples == rhs.num_samples && lhs.tile_width_spacing == rhs.tile_width_spacing &&
+           lhs.rescaleable == rhs.rescaleable && lhs.downscaleable == rhs.downscaleable &&
+           lhs.forced_flushed == rhs.forced_flushed && lhs.dma_downloaded == rhs.dma_downloaded &&
+           lhs.is_sparse == rhs.is_sparse;
+}
 
 [[nodiscard]] u32 CalculateGuestSizeInBytes(const ImageInfo& info) noexcept;
 

@@ -43,6 +43,11 @@ public:
     void FreeDeferredStagingBuffer(StagingBufferRef& ref) {
         ref = {};
     }
+    bool TextureCacheFastpathEnabled() const {
+        // Opt in until console A/B captures verify correctness and cost.
+        static const bool enabled = BisectEnabled("NXBOX_D3D12_TEXTURE_CACHE_FASTPATH");
+        return enabled;
+    }
     void TickFrame();
     void FlushDeferredClear() {}
     u64 GetDeviceLocalMemory() const {
