@@ -258,6 +258,22 @@ int main() {
     assert(total(TotalStreamingPrimitivesNeededMinusSucceeded,1)==0);
     Run(1,ZPassPixelCount); assert(Value(report,0)==0x1ffffffffULL);
     Run(2,ZPassPixelCount); Run(1,ZPassPixelCount); assert(Value(report,0)==0);
+    // Maxwell Conditional requires BOTH 32-bit words, not a nonzero uint64.
+    // Execute the production predicate shader with poisoned output and all lanes.
+    const auto saved_results = results.data;
+    const auto saved_counters = counters.data;
+    const auto saved_metadata = metadata.data;
+    for (uint low : {0u, 1u, 0x80000000u, 0xffffffffu}) {
+        for (uint high : {0u, 1u, 0x80000000u, 0xffffffffu}) {
+            results.Store2(0, {low, high});
+            report.Store2(0, {0xdeadbeef, 0xdeadbeef});
+            Run(3);
+            assert(Value(report, 0) == uint(low != 0 && high != 0));
+            assert(counters.data == saved_counters);
+            assert(metadata.data == saved_metadata);
+        }
+    }
+    results.data = saved_results;
     // Reset affects only its counter; uint2 addition/subtraction carries/borrows.
     first_slot=0; slot_count=1; results.Store2(0,{2,0}); Run(0);
     Run(1,ZPassPixelCount); assert(Value(report,0)==2);

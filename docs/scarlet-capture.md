@@ -127,3 +127,80 @@ choose a fresh dump directory, terminate/relaunch, and compare paired wait/condi
 markers there. If predication is implicated, a separate controlled run adding
 `NXBOX_D3D12_CPU_PREDICATE=1` and a new directory can distinguish GPU/CPU predicate
 coherence; it is not needed to observe predicate suppression in this run.
+
+## Local audit, 2026-10-19: evidence and a conditional-rendering defect
+
+The supplied artifact root is
+`/Users/miguel/.local/share/nxbox/artifacts/compat-2026-10-18`.
+It contains `scarlet*` and `all-scarlet`; there are no `x-scarlet*` directories.
+None of these captures contains the submission/predicate trace requested above.
+`scarlet-passdump` has 14 traced draws at frame 120, 19 distinct VS/PS hashes,
+**zero matching dumped HLSL files**, and no `.hash` sidecars. Its old manifest
+also predates the presentation mapping. The next experiment above has not been
+performed in these artifacts. A first incorrect fullscreen pass, a dropped guest
+compute dispatch, and predicated-out geometry cannot be identified from them.
+
+Across the 15 live profile windows of `scarlet-passdump`:
+
+- 2,178 frames, 30,507 draws (14.0069/frame), 119 helper/compute dispatches;
+- no recorded PSO-pending draw/dispatch drops or failed graphics entries;
+- compute setup time is zero and the guest compute pipeline cache remains empty.
+  The dispatch count is consistent with backend query reduction, not evidence of
+  guest compute execution;
+- median game fps is 29.9, GPU-thread CPU is 6.6%, and GPU-stall busy share is 20%.
+  The GPU timestamp busy measurement is 5.950 ms/frame. These are distinct metrics;
+- `sync_wait_cpu_ms` is 27.734 ms/frame, Fermi2D 1.792, submit 0.579,
+  texture-cache update 0.511, barriers 0.252, and native fence wait 0.195.
+  Phase scopes are inclusive wall times, not additive CPU costs;
+- about 7.018 forced guest-fence submissions/frame. `query_buffer_copies` is a
+  cumulative diagnostic, not a per-window count, so it must not be summed.
+
+For context, whole-run live-window measurements from the other supplied captures
+are below. These are different games/scenes, not an A/B comparison of this patch.
+`dbsz-final105` uses `eden_uwp_diag.txt`, not `diag.txt`.
+
+| Capture | Median game fps | Largest measured phase times, ms/frame |
+| --- | ---: | --- |
+| `x-botw-rec` | 12.9 | sync wait 13.234; draw recording 6.972; Maxwell methods 6.295 |
+| `x-ody-rec` | 24.7 | Maxwell methods 9.498; sync wait 4.923; draw recording 2.522 |
+| `x-mk8d-rec` | 31.8 | sync wait 5.743; Maxwell methods 3.828; draw recording 2.236 |
+| `dbsz-final105` | 18.8 | pipeline lookup 6.490; sync wait 6.278; draw recording 2.818 |
+
+The Scarlet Eden log also records a guest CPU read fault at 8.412 s:
+PC `0x812160f8`, address `0x11c422767f`, before the first captured frame.
+This is a separate lead, not proof of the gray screen's cause or of a D3D12 fault.
+No runtime or console experiment was performed during this local audit.
+
+### Exact single-condition experiment
+
+Code inspection found a definite D3D12 predicate mismatch. Maxwell's
+`ProcessQueryCondition` and Vulkan's `resolve_conditional_render.comp` require
+both `initial_sequence != 0` **and** `initial_mode != 0` for `Conditional`.
+D3D12 used a raw nonzero 64-bit predicate, implementing **or** instead of **and**;
+its forced CPU predicate path used the same incorrect whole-value comparison.
+For example, `{sequence=1, mode=0}` incorrectly rendered.
+
+`NXBOX_D3D12_EXACT_CONDITIONAL=1` enables the corrected comparison. The GPU path
+normalizes the two words to an 8-byte boolean with operation 3 of the existing
+query resolve shader, then binds native nonzero predication. It retains the input
+and output resources, invalidates overwritten graphics state, orders UAV writes,
+and uses a fresh output allocation so earlier draws keep their original predicate.
+It introduces no explicit CPU fence wait or download. The CPU predicate bisect
+uses the same two-word rule. Two-report equality and known-zero optimizations
+keep their existing whole-64-bit semantics.
+
+The switch is **off by default** pending Xbox validation of the added dispatch.
+The shader regression executes the actual HLSL body with all 16 combinations of
+zero, one, high-bit and all-one words; it failed before the change. The recording
+harness executes the production method with command mocks, nonzero buffer offsets,
+resource-state checks, repeated predicates and overflow rejection. Existing query
+reduction/reset tests continue to pass.
+
+This defect alone cannot explain missing geometry: the previous single-condition
+comparison admitted a superset of draws. It is not a confirmed Scarlet fix, does
+not establish that Legends Z-A is unlocked, and has no measured fps improvement.
+Do not remove synchronization based on `sync_wait` being the largest phase.
+Run the baseline capture above first; then repeat with a fresh dump directory and
+only `NXBOX_D3D12_EXACT_CONDITIONAL=1` added. If needed, a third run can add
+`NXBOX_D3D12_CPU_PREDICATE=1` to compare CPU and normalized GPU decisions. Build,
+DXIL compilation, console output and locked 60 fps remain unverified.

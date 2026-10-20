@@ -69,6 +69,14 @@ uint2 Sample(uint type, uint stream, uint slot, uint4 flags) {
 [numthreads(32, 1, 1)]
 void main(uint3 id : SV_DispatchThreadID) {
     uint index = id.x;
+    if (operation == 3) {
+        // Maxwell Conditional tests two words independently, unlike native 64-bit predication.
+        if (index == 0) {
+            uint2 words = results.Load2(first_slot);
+            report.Store2(0, uint2(uint(words.x != 0 && words.y != 0), 0));
+        }
+        return;
+    }
     if (index >= TYPE_COUNT * 4) return;
     uint type = index / 4, stream = index % 4;
     uint offset = index * 8;
