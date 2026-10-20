@@ -483,6 +483,12 @@ void Maxwell3D::CallMethod(Core::System& system, u32 method, u32 method_argument
     }
     const u32 argument = ProcessShadowRam(method, method_argument);
     ProcessDirtyRegisters(method, argument);
+    // Macro sends also write ordinary state registers. The DMA sink already uses
+    // this mask to bypass side-effect dispatch; do the same for scalar sends,
+    // after preserving shadow tracking and dirty bits even when the value repeats.
+    if (frontend_fastpath && !execution_mask[method]) {
+        return;
+    }
     ProcessMethodCall(method, argument, method_argument, is_last_call);
 }
 

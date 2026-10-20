@@ -102,7 +102,7 @@ struct Maxwell3D {
     std::vector<std::pair<GPUVAddr, size_t>> macro_segments;
     bool current_dirty{}, current_macro_dirty{};
     GPUVAddr current_dma_segment{};
-    unsigned effects{}, bulk_calls{}, sink_calls{}, macro_calls{};
+    unsigned effects{}, bulk_calls{}, sink_calls{}, macro_calls{}, dispatch_calls{};
     bool captured_dirty{}, refresh{};
     std::vector<u32> captured;
     std::vector<std::pair<GPUVAddr, size_t>> captured_segments;
@@ -133,6 +133,7 @@ struct Maxwell3D {
         captured_dirty = current_macro_dirty;
     }
     void ProcessMethodCall(u32 method, u32, u32, bool) {
+        ++dispatch_calls;
         effects += execution_mask[method];
     }
     void ProcessCBMultiData(const u32*, u32);
@@ -238,6 +239,31 @@ int main() {
             }
         }
     }
+    // Plain macro register sends retain shadow/dirty state without entering the
+    // method-side-effect dispatcher. The escape hatch keeps the legacy path.
+    for (bool profiling : {false, true}) {
+        Common::GpuProfile::recording_enabled = profiling;
+        for (u32 mode = 0; mode < 4; ++mode) {
+            Maxwell3D legacy{false}, fast{true};
+            legacy.shadow_state.shadow_ram_control = fast.shadow_state.shadow_ram_control =
+                static_cast<Maxwell3D::Regs::ShadowRamControl>(mode);
+            for (u32 index = 0; index < Maxwell3D::Regs::NUM_REGS; ++index) {
+                if (fast.execution_mask[index])
+                    continue;
+                for (const u32 value : {index, index + 100, index + 200, index + 200}) {
+                    legacy.CallMethod(system, index, value, true);
+                    fast.CallMethod(system, index, value, true);
+                    assert(legacy.regs.reg_array == fast.regs.reg_array);
+                    assert(legacy.shadow_state.reg_array == fast.shadow_state.reg_array);
+                    assert(legacy.dirty.flags == fast.dirty.flags);
+                }
+            }
+            assert(legacy.dispatch_calls > 0);
+            assert(fast.dispatch_calls == 0);
+            assert(legacy.effects == 0 && fast.effects == 0);
+        }
+    }
+    Common::GpuProfile::recording_enabled = false;
     Maxwell3D engine;
     const auto draw = MAXWELL3D_REG_INDEX(draw.begin);
     engine.CallMultiMethod(system, draw, values, 4, 4);

@@ -239,9 +239,20 @@ void DmaPusher::CallMethod(u32 argument) {
         if (!subchannel->execution_mask[dma_state.method]) {
             subchannel->method_sink.emplace_back(dma_state.method, argument);
         } else {
-            subchannel->ConsumeSink(system);
-            subchannel->current_dma_segment = dma_state.dma_get + dma_state.dma_word_offset;
-            subchannel->CallMethod(system, dma_state.method, argument, dma_state.is_last_call);
+            const auto dispatch = [&](auto* target_engine) {
+                target_engine->ConsumeSink(system);
+                target_engine->current_dma_segment = dma_state.dma_get + dma_state.dma_word_offset;
+                target_engine->CallMethod(system, dma_state.method, argument,
+                                          dma_state.is_last_call);
+            };
+            // Maxwell3D is final: retain the concrete type through both sink
+            // consumption and method dispatch so these calls can be devirtualized.
+            if (frontend_fastpath &&
+                subchannel_type[dma_state.subchannel] == Engines::EngineTypes::Maxwell3D) {
+                dispatch(static_cast<Engines::Maxwell3D*>(subchannel));
+            } else {
+                dispatch(subchannel);
+            }
         }
     }
 }
