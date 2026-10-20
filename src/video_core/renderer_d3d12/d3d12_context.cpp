@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: Copyright 2026 NSPX
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "common/nxbox_wait_diag.h"
 #include "video_core/renderer_d3d12/d3d12_context.h"
 
 #include <algorithm>
@@ -1051,6 +1052,7 @@ void Context::RecorderSubmit(u64 tick) {
     allocators[allocator_index].tick = tick;
     allocator_index = (allocator_index + 1) % allocators.size();
     recorder_progress.Acknowledge(tick);
+    NxboxWait::Max(NxboxWait::Counter::SubmittedTick, tick);
 }
 u64 Context::SealRecording(FrameCount reason) {
     CheckRecorder();
@@ -1099,6 +1101,7 @@ u64 Context::SealRecording(FrameCount reason) {
         static_cast<Context*>(static_cast<RecordingTarget*>(target)->owner)->RecorderSubmit(tick);
     }>(*stream, tick);
     sealed = tick;
+    NxboxWait::Max(NxboxWait::Counter::SealedTick, tick);
     recording = false;
     work.clear();
     copy_writes.clear();
@@ -1199,6 +1202,8 @@ void Context::Wait(u64 tick, std::string_view site) {
     LogInfoQueue();
 }
 void Context::WaitSubmitted(u64 tick, std::string_view site) {
+    const NxboxWait::Scope wait_scope{NxboxWait::Kind::Fence, GetCurrentThreadId(), site,
+                                      std::array<std::uint64_t, 1>{tick}};
     Acknowledge(tick);
     if (!IsFree(tick)) {
         const u64 wait_start = profile.Enabled() ? ProfileWallTime() : 0;
@@ -1251,6 +1256,7 @@ void Context::CompleteThrough(u64 tick) {
     // Detach first so reentrant waits cannot replay a batch.
     if (deferred)
         tick = std::min(tick, LastSubmittedTick());
+    NxboxWait::Max(NxboxWait::Counter::CompletedObservedTick, tick);
     std::scoped_lock lock{completion_mutex};
     while (!batches.empty() && batches.front().tick <= tick) {
         auto batch = std::move(batches.front());
@@ -1335,6 +1341,7 @@ CommandFacade* Context::Commands() {
         static std::atomic<u64> next_retention_generation{1};
         retention_generation = next_retention_generation.fetch_add(1, std::memory_order_relaxed);
         recording = true;
+        facade.graphics_root_cbvs.Reset();
         InvalidateRecordedState();
         if (gpu_time_heap && profile.Enabled()) {
             facade.EndQuery(
@@ -1448,6 +1455,8 @@ u64 Context::Submit(FrameCount reason) {
     }
     Check(queue->Signal(fence.Get(), tick), "Signal", device.Get());
     submitted = tick;
+    NxboxWait::Max(NxboxWait::Counter::SealedTick, tick);
+    NxboxWait::Max(NxboxWait::Counter::SubmittedTick, tick);
     submit_failed.store(false, std::memory_order_release);
     if (BisectEnabled("NXBOX_D3D12_SUBMIT_TRACE"))
         WaitSubmitted(tick, "submit trace");

@@ -97,6 +97,27 @@ struct RecordedSlots {
     }
 };
 
+// Independent of conservative draw-state invalidation. Only command-list reset,
+// a different root signature, or a write to the same root parameter changes CBVs.
+struct GraphicsRootCbvCache {
+    RecordedValue<std::uintptr_t> signature;
+    RecordedSlots<std::uint64_t, 64> cbvs;
+    void Reset() {
+        signature.valid = false;
+        cbvs.valid = 0;
+    }
+    void SetSignature(std::uintptr_t next) {
+        if (signature.Update(next))
+            cbvs.valid = 0;
+    }
+    void Invalidate(std::size_t slot) {
+        if (slot < 64)
+            cbvs.valid &= ~(std::uint64_t{1} << slot);
+        else
+            cbvs.valid = 0;
+    }
+};
+
 } // namespace D3D12
 
 #ifdef _WIN32

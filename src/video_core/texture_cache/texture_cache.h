@@ -19,6 +19,7 @@
 #include <boost/container/small_vector.hpp>
 #include "common/container/unordered_map.h"
 #include "common/gpu_thread_profile.h"
+#include "common/nxbox_wait_diag.h"
 
 #include "common/alignment.h"
 #include "common/nxbox_stall.h"
@@ -304,7 +305,9 @@ void TextureCache<P>::FillImageViews(std::span<ImageViewInOut> views, bool compu
                 if (view.blacklist && view.id != NULL_IMAGE_VIEW_ID) {
                     const ImageViewBase& image_view = slot_image_views[view.id];
                     auto& image = slot_images[image_view.image_id];
-                    has_blacklisted |= ScaleDown(image);
+                    if (!draw_state_fastpath || True(image.flags & ImageFlagBits::Rescaled)) {
+                        has_blacklisted |= ScaleDown(image);
+                    }
                     image.scale_rating = 0;
                 }
             }
@@ -448,6 +451,18 @@ void TextureCache<P>::SynchronizeDescriptors(bool compute) {
         }
     } else {
         const bool linked_tsc = maxwell3d->regs.sampler_binding == Tegra::Engines::Maxwell3D::Regs::SamplerBinding::ViaHeaderBinding;
+        auto& flags = maxwell3d->dirty.flags;
+        // Descriptors tracks table registers, not writes to descriptor memory. Only skip
+        // Synchronize here; VisitImageView/GetSamplerId must still read each descriptor.
+        // sampler_binding is not covered by Dirty::Descriptors.
+        if (draw_state_fastpath && !flags[Dirty::Descriptors] &&
+            channel_state->graphics_descriptors_initialized &&
+            channel_state->graphics_linked_tsc == linked_tsc) {
+            return;
+        }
+        flags[Dirty::Descriptors] = false;
+        channel_state->graphics_descriptors_initialized = true;
+        channel_state->graphics_linked_tsc = linked_tsc;
         const u32 tic_limit = maxwell3d->regs.tex_header.limit;
         const u32 tsc_limit = linked_tsc ? tic_limit : maxwell3d->regs.tex_sampler.limit;
         bool bindings_changed = false;
@@ -567,12 +582,23 @@ void TextureCache<P>::UpdateRenderTargets(bool is_clear) {
         if (PassDump::GetConfig().enabled) {
             UpdatePassDumpRenderTargets();
         }
-        for (size_t index = 0; index < NUM_RT; ++index) {
-            ImageViewId& color_buffer_id = render_targets.color_buffer_ids[index];
-            PrepareImageView(color_buffer_id, true, is_clear && IsFullClear(color_buffer_id));
+        if (draw_state_fastpath) {
+            // The clean binding set already has an active mask. Preserve slot order and
+            // every preparation of a live image (alias sync and modification ticks).
+            for (u32 active = rt_active_mask; active; active &= active - 1) {
+                const auto index = std::countr_zero(active);
+                const ImageViewId id = index == NUM_RT ? render_targets.depth_buffer_id
+                                                       : render_targets.color_buffer_ids[index];
+                PrepareImageView(id, true, is_clear && IsFullClear(id));
+            }
+        } else {
+            for (size_t index = 0; index < NUM_RT; ++index) {
+                ImageViewId& color_buffer_id = render_targets.color_buffer_ids[index];
+                PrepareImageView(color_buffer_id, true, is_clear && IsFullClear(color_buffer_id));
+            }
+            const ImageViewId depth_buffer_id = render_targets.depth_buffer_id;
+            PrepareImageView(depth_buffer_id, true, is_clear && IsFullClear(depth_buffer_id));
         }
-        const ImageViewId depth_buffer_id = render_targets.depth_buffer_id;
-        PrepareImageView(depth_buffer_id, true, is_clear && IsFullClear(depth_buffer_id));
         return;
     }
 
@@ -896,6 +922,118 @@ void TextureCache<P>::DumpPassRenderTargets() {
 }
 
 template <class P>
+void TextureCache<P>::PublishShaderImageWrites(std::span<const ImageViewId> views,
+                                               std::string_view writer, u64 program) {
+    // Publish the whole operation before any diagnostic readback can submit/wait.
+    // Descriptor lookup prepares reads, not modifications. Without this tick aliases
+    // and guest downloads can continue using the version preceding the shader store.
+    for (const auto id : views) {
+        if (id && id != NULL_IMAGE_VIEW_ID && !slot_image_views[id].IsBuffer()) {
+            MarkModification(slot_image_views[id].image_id);
+        }
+    }
+    for (const auto id : views) {
+        RecordPassDumpImageWrite(id, writer, 0, program);
+    }
+}
+
+template <class P>
+void TextureCache<P>::BeginPassDumpImageWrite() {
+    if (PassDump::GetConfig().enabled && CaptureFrame() == PassDump::GetConfig().frame) {
+        DumpPassRenderTargets();
+    }
+}
+
+template <class P>
+void TextureCache<P>::RecordPassDumpImageWrite(ImageViewId view_id, std::string_view writer,
+                                               GPUVAddr source, u64 program) {
+    if (!PassDump::GetConfig().enabled || CaptureFrame() != PassDump::GetConfig().frame ||
+        !view_id || view_id == NULL_IMAGE_VIEW_ID) {
+        return;
+    }
+    const auto& view = slot_image_views[view_id];
+    if (view.IsBuffer()) {
+        return;
+    }
+    DumpPassRenderTargets();
+    Image& image = slot_images[view.image_id];
+    const auto& info = image.info;
+    const u64 seq = ++pass_dump_sequence;
+    const auto& directory = PassDump::GetConfig().directory;
+    try {
+        std::filesystem::create_directories(directory);
+        std::ofstream manifest{directory / "manifest.jsonl", std::ios::app};
+        manifest.exceptions(std::ios::failbit | std::ios::badbit);
+        for (s32 layer = view.range.base.layer;
+             layer < view.range.base.layer + view.range.extent.layers; ++layer) {
+            for (s32 level = view.range.base.level;
+                 level < view.range.base.level + view.range.extent.levels; ++level) {
+                const u32 width = (std::max)(info.size.width >> level, 1u);
+                const u32 height = (std::max)(info.size.height >> level, 1u);
+                const auto block_width = VideoCore::Surface::DefaultBlockWidth(info.format);
+                const auto block_height = VideoCore::Surface::DefaultBlockHeight(info.format);
+                const size_t bytes = static_cast<size_t>((width + block_width - 1) / block_width) *
+                                     ((height + block_height - 1) / block_height) *
+                                     VideoCore::Surface::BytesPerBlock(info.format);
+                const std::string file =
+                    fmt::format("pass_{:04}_c0_m{}_l{}.raw", seq, level, layer);
+                // Volume writes need a depth-aware reader; report them rather than claiming a
+                // single z slice represents the whole view. Buffer images use the buffer cache.
+                const bool supported = info.num_samples == 1 &&
+                                       (info.type == ImageType::e1D || info.type == ImageType::e2D);
+                if (supported) {
+                    const std::array copies{BufferImageCopy{
+                        .buffer_offset = 0,
+                        .buffer_size = bytes,
+                        .buffer_row_length = width,
+                        .buffer_image_height = height,
+                        .image_subresource = {.base_level = level,
+                                              .base_layer = layer,
+                                              .num_layers = 1},
+                        .image_offset = {0, 0, 0},
+                        .image_extent = {width, height, 1},
+                    }};
+                    auto map = runtime.DownloadStagingBuffer(bytes);
+                    image.DownloadMemory(map, copies);
+                    runtime.Finish();
+                    std::ofstream output{directory / file, std::ios::binary};
+                    output.exceptions(std::ios::failbit | std::ios::badbit);
+                    output.write(reinterpret_cast<const char*>(map.mapped_span.data()),
+                                 static_cast<std::streamsize>(bytes));
+                    output.close();
+                    ReportPassDump(fmt::format("PASS_DUMP wrote frame={} seq={} bytes={} file={}",
+                                               CaptureFrame(), seq, bytes,
+                                               (directory / file).string()));
+                }
+                manifest << fmt::format(
+                    "{{\"seq\":{},\"slot\":0,\"writer\":\"{}\",\"frame\":{},"
+                    "\"gpu_addr\":{},\"source_gpu_addr\":{},\"program\":{},\"level\":{},\"layer\":{"
+                    "},"
+                    "\"width\":{},\"height\":{},\"format\":\"{}\",\"view_format\":\"{}\","
+                    "\"bytes\":{},\"file\":\"{}\"{}}}\n",
+                    seq, writer, CaptureFrame(), image.gpu_addr, source, program, level, layer,
+                    width, height, PassDump::FormatName(info.format),
+                    PassDump::FormatName(view.format), supported ? bytes : 0, supported ? file : "",
+                    supported ? "" : ",\"skipped\":\"volume_or_msaa\"");
+            }
+        }
+        manifest.close();
+        if (info.num_samples == 1 && (info.type == ImageType::e1D || info.type == ImageType::e2D)) {
+            pass_dump_targets.push_back({view.image_id, seq, 0, view.range.base.level,
+                                         view.range.base.layer, view.range.extent.levels,
+                                         view.range.extent.layers});
+        }
+        ReportPassDump(fmt::format(
+            "PASS_DUMP image_write frame={} seq={} writer={} gpu={:x} source={:x} program={:x}",
+            CaptureFrame(), seq, writer, image.gpu_addr, source, program));
+    } catch (const std::exception& error) {
+        ReportPassDump(
+            fmt::format("PASS_DUMP image_write failed frame={} seq={} writer={} error={}",
+                        CaptureFrame(), seq, writer, error.what()));
+    }
+}
+
+template <class P>
 void TextureCache<P>::DownloadMemory(DAddr cpu_addr, size_t size) {
     boost::container::small_vector<ImageId, 16> images;
     ForEachImageInRegion(cpu_addr, size, [this, &images](ImageId image_id, ImageBase& image) {
@@ -1084,6 +1222,7 @@ bool TextureCache<P>::BlitImage(const Tegra::Engines::Fermi2D::Surface& dst,
         scale_region(dst_region);
     }
 
+    BeginPassDumpImageWrite();
     // Always call this after src_framebuffer_id was queried, as the address might be invalidated.
     Framebuffer* const dst_framebuffer = &slot_framebuffers[dst_framebuffer_id];
     if constexpr (FRAMEBUFFER_BLITS) {
@@ -1099,6 +1238,7 @@ bool TextureCache<P>::BlitImage(const Tegra::Engines::Fermi2D::Surface& dst,
         runtime.BlitImage(dst_framebuffer, dst_view, src_view, dst_region, src_region, copy.filter,
                           copy.operation);
     }
+    RecordPassDumpImageWrite(dst_view_id, "fermi_blit", src.Address());
     return true;
 }
 
@@ -1112,7 +1252,10 @@ std::string TextureCache<P>::RecordPassDumpPresentation(DAddr cpu_addr, const Im
     int slot = -1;
     if (view) {
         for (const auto& target : pass_dump_targets) {
-            if (target.id == view->image_id) {
+            if (target.id == view->image_id && view->range.base.level >= target.level &&
+                view->range.base.level < target.level + target.levels &&
+                view->range.base.layer >= target.layer &&
+                view->range.base.layer < target.layer + target.layers) {
                 sequence = target.sequence;
                 slot = static_cast<int>(target.slot);
             }
@@ -1748,6 +1891,7 @@ void TextureCache<P>::QueueAsyncDecode(Image& image, ImageId image_id) {
     LOG_INFO(HW_GPU, "Queuing async texture decode");
 
     NxboxUpload::Record(NxboxUpload::Event::AstcQueued);
+    NxboxWait::Add(NxboxWait::Counter::DecodeQueued);
     image.flags |= ImageFlagBits::IsDecoding;
     auto decode = std::make_unique<AsyncDecodeContext>();
     auto* decode_ptr = decode.get();
@@ -1762,6 +1906,7 @@ void TextureCache<P>::QueueAsyncDecode(Image& image, ImageId image_id) {
     auto func = [out_size, copies, info = image.info,
                  input = std::move(local_unswizzle_data_buffer),
                  async_decode = decode_ptr]() mutable {
+        NxboxWait::Add(NxboxWait::Counter::DecodeStarted);
         async_decode->decoded_data.resize_destructive(out_size);
         std::span copies_span{copies.data(), copies.size()};
         ConvertImage(input, info, async_decode->decoded_data, copies_span);
@@ -1770,8 +1915,10 @@ void TextureCache<P>::QueueAsyncDecode(Image& image, ImageId image_id) {
         std::unique_lock lock{async_decode->mutex};
         async_decode->copies = std::move(copies);
         async_decode->complete = true;
+        NxboxWait::Add(NxboxWait::Counter::DecodeCompleted);
     };
     texture_decode_worker.QueueWork(std::move(func));
+    NxboxWait::Add(NxboxWait::Counter::DecodeDispatched);
 }
 
 template <class P>
@@ -1790,6 +1937,7 @@ void TextureCache<P>::QueueAsyncUnswizzle(Image& image, ImageId image_id) {
 
 template <class P>
 void TextureCache<P>::TickAsyncDecode() {
+    NxboxWait::Add(NxboxWait::Counter::DecodeTicks);
     bool has_uploads{};
     auto i = async_decodes.begin();
     while (i != async_decodes.end()) {
@@ -1800,6 +1948,7 @@ void TextureCache<P>::TickAsyncDecode() {
             continue;
         }
         if (async_decode->cancelled) {
+            NxboxWait::Add(NxboxWait::Counter::DecodeCancelled);
             lock.unlock();
             i = async_decodes.erase(i);
             continue;
@@ -1810,6 +1959,7 @@ void TextureCache<P>::TickAsyncDecode() {
                     async_decode->decoded_data.size());
         image.UploadMemory(staging, FixSmallVectorADL(async_decode->copies));
         NxboxUpload::Record(NxboxUpload::Event::AstcUploaded);
+        NxboxWait::Add(NxboxWait::Counter::DecodeUploaded);
         image.flags &= ~ImageFlagBits::IsDecoding;
         has_uploads = true;
         // Erasing destroys the mutex, so it must not still be held.
@@ -2740,6 +2890,13 @@ void TextureCache<P>::DeleteImage(ImageId image_id, bool immediate_delete) {
              std::ranges::find(pass_dump_colors, image_id) != pass_dump_colors.end())) {
             DumpPassRenderTargets();
         }
+        if (CaptureFrame() == PassDump::GetConfig().frame) {
+            const auto& retired = slot_images[image_id];
+            ReportPassDump(fmt::format(
+                "PASS_DUMP image_delete frame={} gpu={:x} tick={} modified={} aliases={}",
+                CaptureFrame(), retired.gpu_addr, retired.modification_tick,
+                True(retired.flags & ImageFlagBits::GpuModified), retired.aliased_images.size()));
+        }
         std::erase_if(pass_dump_targets,
                       [image_id](const auto& target) { return target.id == image_id; });
         std::erase(pass_dump_sampled, image_id);
@@ -2924,11 +3081,13 @@ void TextureCache<P>::SynchronizeAliases(ImageId image_id) {
     if (PassDump::GetConfig().enabled && frame_tick + 1 == PassDump::GetConfig().frame) {
         for (const AliasedImage* const aliased : aliased_images) {
             const ImageBase& source = slot_images[aliased->id];
-            LOG_ERROR(Render, "Pass dump alias sync {:x} {}x{} <- {}x{} copies={} extent={}x{}",
-                      image.gpu_addr, image.info.size.width, image.info.size.height,
-                      source.info.size.width, source.info.size.height, aliased->copies.size(),
-                      aliased->copies.empty() ? 0 : aliased->copies[0].extent.width,
-                      aliased->copies.empty() ? 0 : aliased->copies[0].extent.height);
+            ReportPassDump(fmt::format(
+                "PASS_DUMP alias_sync frame={} dst_gpu={:x} src_gpu={:x} source_tick={} "
+                "copies={} extent={}x{}",
+                CaptureFrame(), image.gpu_addr, source.gpu_addr, source.modification_tick,
+                aliased->copies.size(),
+                aliased->copies.empty() ? 0 : aliased->copies[0].extent.width,
+                aliased->copies.empty() ? 0 : aliased->copies[0].extent.height));
         }
     }
     for (const AliasedImage* const aliased : aliased_images) {

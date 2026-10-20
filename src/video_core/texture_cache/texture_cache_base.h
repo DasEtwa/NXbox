@@ -7,11 +7,13 @@
 #pragma once
 
 #include <atomic>
+#include <cstdlib>
 #include <deque>
 #include <limits>
 #include <mutex>
 #include <span>
 #include <string>
+#include <string_view>
 #include <type_traits>
 // TODO: find out which don't require stable iters
 #include <unordered_map>
@@ -84,6 +86,9 @@ public:
     DescriptorTable<TSCEntry> graphics_sampler_table;
     DescriptorTable<TICEntry> compute_image_table;
     DescriptorTable<TSCEntry> compute_sampler_table;
+
+    bool graphics_descriptors_initialized = false;
+    bool graphics_linked_tsc = false;
 
     // TODO: still relies on bad iterators :(
     std::unordered_map<TICEntry, ImageViewId> image_views;
@@ -175,6 +180,14 @@ public:
     }
 
     std::string RecordPassDumpPresentation(DAddr cpu_addr, const ImageView* view);
+    void PublishShaderImageWrites(std::span<const ImageViewId> views, std::string_view writer,
+                                  u64 program = 0);
+    void BeginPassDumpImageWrite();
+    void RecordPassDumpRenderTargetWrite(u32 slot, std::string_view writer, GPUVAddr source) {
+        RecordPassDumpImageWrite(render_targets.color_buffer_ids[slot], writer, source);
+    }
+    void RecordPassDumpImageWrite(ImageViewId view_id, std::string_view writer, GPUVAddr source = 0,
+                                  u64 program = 0);
 
     /// Return a constant reference to the given image view id
     [[nodiscard]] const ImageView& GetImageView(ImageViewId id) const noexcept;
@@ -456,6 +469,10 @@ private:
     std::deque<TextureCacheGPUMap> gpu_page_table_storage;
 
     bool texture_cache_fastpath = false;
+    const bool draw_state_fastpath = [] {
+        const char* value = std::getenv("NXBOX_TEXTURE_DRAW_STATE_FASTPATH");
+        return !value || value[0] != '0' || value[1] != '\0';
+    }();
     struct CachedImageLookup {
         ImageInfo info;
         GPUVAddr address = 0;
@@ -477,6 +494,10 @@ private:
         ImageId id;
         u64 sequence;
         u32 slot;
+        s32 level = 0;
+        s32 layer = 0;
+        s32 levels = 1;
+        s32 layers = 1;
     };
     std::vector<PassDumpTarget> pass_dump_targets;
     u32 rt_active_mask = 0;

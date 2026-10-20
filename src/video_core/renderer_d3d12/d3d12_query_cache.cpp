@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: Copyright 2026 NSPX
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "common/nxbox_wait_diag.h"
 #include "video_core/renderer_d3d12/d3d12_query_cache.h"
 
 #include <algorithm>
@@ -525,9 +526,14 @@ VideoCommon::StreamerInterface* QueryCacheRuntime::GetStreamerInterface(QueryTyp
 void QueryCacheRuntime::ReportQueryFenceWait() {
     impl->context.Profile().Count(FrameCount::QueryReportFenceWaits);
 }
-void QueryCacheRuntime::ReportPending() { ++impl->pending_reports; }
+void QueryCacheRuntime::ReportPending() {
+    ++impl->pending_reports;
+    NxboxWait::Add(NxboxWait::Counter::QueryQueued);
+}
 void QueryCacheRuntime::ReportCompleted(bool invalidated) {
     --impl->pending_reports;
+    NxboxWait::Add(invalidated ? NxboxWait::Counter::QueryInvalidated
+                               : NxboxWait::Counter::QueryWritten);
     if (invalidated)
         ++impl->invalidated_reports;
     else

@@ -136,6 +136,8 @@ struct ID3D12GraphicsCommandList : Object {
 };
 using ID3D12GraphicsCommandList1 = ID3D12GraphicsCommandList;
 using ID3D12GraphicsCommandList8 = ID3D12GraphicsCommandList;
+// Exercise root-CBV tracking while comparing every facade call to the raw list.
+namespace D3D12 { inline bool BisectEnabled(const char*) { return true; } }
 #include "video_core/renderer_d3d12/d3d12_commands.h"
 using namespace D3D12;
 int main() {

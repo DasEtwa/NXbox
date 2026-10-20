@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: Copyright 2026 NSPX
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "common/nxbox_wait_diag.h"
 #include "eden_uwp/firmware.h"
 #include "eden_uwp/game_session.h"
 #include "eden_uwp/shader_share.h"
@@ -1392,6 +1393,34 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
                     vblank.intervals[5], vblank.intervals[6]));
             }
             const auto frames = window.FrameCount();
+            if (NxboxWait::Enabled()) {
+                // Only atomics and recorder-owned copies: never enqueue a GPU task here.
+                std::string progress = "WAIT_PROGRESS";
+                for (size_t i = 0; i < NxboxWait::counters.size(); ++i) {
+                    progress += fmt::format(" {}={}", NxboxWait::CounterNames[i],
+                                            NxboxWait::counters[i].load(std::memory_order_relaxed));
+                }
+                Diagnostic(progress);
+                if (frames == measured_frames) {
+                    const auto snapshot = NxboxWait::recorder.Read();
+                    const auto sampled_ms = NxboxWait::NowMs();
+                    Diagnostic(fmt::format("WAIT_SNAPSHOT sampled_ms={} entries={} dropped={}",
+                                           sampled_ms, snapshot.entries.size(), snapshot.dropped));
+                    for (const auto& entry : snapshot.entries) {
+                        Diagnostic(fmt::format(
+                            "WAIT_ENTRY kind={} key={:#x} token={} label={} active={} "
+                            "age_ms={} duration_ms={} pc={:#x} lr={:#x} result={:#x} "
+                            "args={:#x},{:#x},{:#x},{:#x},{:#x},{:#x},{:#x},{:#x}",
+                            NxboxWait::KindNames[static_cast<size_t>(entry.kind)], entry.key,
+                            entry.token, entry.label.data(), !entry.ended_ms,
+                            sampled_ms - entry.began_ms,
+                            (entry.ended_ms ? entry.ended_ms : sampled_ms) - entry.began_ms,
+                            entry.pc, entry.lr, entry.result, entry.args[0], entry.args[1],
+                            entry.args[2], entry.args[3], entry.args[4], entry.args[5],
+                            entry.args[6], entry.args[7]));
+                    }
+                }
+            }
             const auto stats = system.GetAndResetPerfStats();
             Diagnostic(fmt::format("GAME_PRESENT frames={} seconds={:.3f} fps={:.2f} "
                                    "game_fps={:.2f} system_fps={:.2f} "
@@ -1533,11 +1562,17 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
             }
             // Brackets distinguish raw counts/bytes from duration triples and let existing
             // duration-only stall-report.py readers ignore these fields.
-            constexpr std::array<std::pair<NxboxStall::JitEvent, const char*>, 17> jit_events{{
+            constexpr std::array<std::pair<NxboxStall::JitEvent, const char*>, 26> jit_events{{
                 {NxboxStall::JitEvent::RangeCalls, "jit_inv_calls"},
                 {NxboxStall::JitEvent::RangeBytes, "jit_inv_bytes"},
                 {NxboxStall::JitEvent::ClearRequests, "jit_clear_req"},
                 {NxboxStall::JitEvent::CacheClears, "jit_clears"},
+                {NxboxStall::JitEvent::CapacityClears, "jit_clear_capacity"},
+                {NxboxStall::JitEvent::ExplicitClears, "jit_clear_explicit"},
+                {NxboxStall::JitEvent::RangeBatches, "jit_range_batches"},
+                {NxboxStall::JitEvent::FastmemFaults, "jit_fastmem_faults"},
+                {NxboxStall::JitEvent::FastmemInvalidations, "jit_fastmem_inv"},
+                {NxboxStall::JitEvent::DiskStale, "jit_disk_stale"},
                 {NxboxStall::JitEvent::ClearBlocks, "jit_clear_blocks"},
                 {NxboxStall::JitEvent::RangeBlocks, "jit_range_blocks"},
                 {NxboxStall::JitEvent::EmptyInvalidations, "jit_inv_empty"},
@@ -1548,6 +1583,9 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
                 {NxboxStall::JitEvent::NewKey, "jit_key_new"},
                 {NxboxStall::JitEvent::RepeatKey, "jit_key_repeat"},
                 {NxboxStall::JitEvent::UnknownKey, "jit_key_unknown"},
+                {NxboxStall::JitEvent::SampledNewKey, "jit_sample64_new"},
+                {NxboxStall::JitEvent::SampledRepeatKey, "jit_sample64_repeat"},
+                {NxboxStall::JitEvent::SampledUnknownKey, "jit_sample64_unknown"},
                 {NxboxStall::JitEvent::InstructionInvalidations, "jit_ic"},
                 {NxboxStall::JitEvent::PageTableInvalidations, "jit_pt"},
                 {NxboxStall::JitEvent::ProtectBytes, "jit_protect_bytes"},
@@ -1556,10 +1594,13 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
                 stall_line += fmt::format(" {}=[{}]", name, NxboxStall::TakeJit(event));
             }
             for (std::size_t core = 0; core < NxboxStall::JitCaches().size(); ++core) {
-                const auto& cache = NxboxStall::JitCaches()[core];
+                auto& cache = NxboxStall::JitCaches()[core];
                 stall_line += fmt::format(" jit_cache{}=[{}/{}]", core,
                                           cache.used.load(std::memory_order_relaxed),
                                           cache.capacity.load(std::memory_order_relaxed));
+                stall_line += fmt::format(" jit_cache_peak{}=[{}] jit_compiled{}=[{}]", core,
+                                          cache.peak.load(std::memory_order_relaxed), core,
+                                          cache.compiled.exchange(0, std::memory_order_relaxed));
             }
             Diagnostic(stall_line);
 #endif

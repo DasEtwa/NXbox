@@ -68,6 +68,8 @@ RasterizerD3D12::RasterizerD3D12(Tegra::GPU& gpu, Tegra::MaxwellDeviceMemoryMana
       transform_feedback{context}, query_runtime{context, memory, buffer_cache, transform_feedback},
       query_cache{gpu, *this, memory, query_runtime},
       fence_manager{*this, gpu, texture_cache, buffer_cache, query_cache, context}, m_gpu{gpu} {
+    // Root signatures are bounded by 64 parameters; never grow draw scratch.
+    draw_root_cbv_addresses.reserve(64);
     if (BisectEnabled("NXBOX_GPU_PIPELINE")) {
         gpu_pipeline = std::make_unique<VideoCommon::GpuDrawPipeline>();
         gpu_pipeline->Invoke([&gpu] {
@@ -984,6 +986,8 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     draw_phase.emplace(context.Profile(), FramePhase::ImageViews);
     texture_cache.FillImageViews(std::span(view_scratch.data(), view_scratch.size()), false,
                                  has_images);
+    if (has_images)
+        texture_cache.BeginPassDumpImageWrite();
     // Mark the render targets modified again, after the sampled textures synchronized their
     // aliases. Vulkan prepares textures first; here the targets were marked earlier, so a
     // texture aliasing a target (SM3DW's bloom mip chain) copied the target's pre-draw
@@ -992,6 +996,7 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     texture_cache.UpdateRenderTargets(false);
 
     draw_phase.emplace(context.Profile(), FramePhase::ResourceBindings);
+    std::vector<VideoCommon::ImageViewId> written_images;
     // Texel/image buffers are bound through the buffer cache from the resolved views.
     {
         const VideoCommon::ImageViewInOut* it = view_scratch.data();
@@ -1592,8 +1597,6 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
         PrepareZeroUniformBuffer();
     auto& root_cbv_addresses = draw_root_cbv_addresses;
     root_cbv_addresses.clear();
-    if (root_cbvs)
-        root_cbv_addresses.reserve(totals.cbv);
     const u32 cbv_size = root_cbvs ? 0u : TableSize(totals.cbv);
     const u32 srv_size = TableSize(totals.srv);
     const u32 uav_size = TableSize(totals.uav);
@@ -1818,7 +1821,10 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
                 return;
             }
             for (u32 i = 0; i < desc.count; ++i, ++uav_i) {
-                auto& view = texture_cache.GetImageView((texture_views++)->id);
+                const auto view_id = (texture_views++)->id;
+                auto& view = texture_cache.GetImageView(view_id);
+                if (desc.is_written && view_id != VideoCommon::NULL_IMAGE_VIEW_ID)
+                    written_images.push_back(view_id);
                 if (uav_i < 32 && view.IsRescaled())
                     image_scaling_mask |= 1u << uav_i;
                 const auto guest_format = format.value_or(view.format);
@@ -1950,7 +1956,8 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     // Releasing the caches here lets guest writes (OnCPUWrite) through instead of stalling the
     // game core for the whole recording; SM3DW spent ~25% of cpu0 samples waiting on this.
     // The draw trace below still reads cache views, so it keeps the locks.
-    if (!draw_trace_enabled)
+    // Shader image writes publish cache modification ticks after recording the draw.
+    if (!draw_trace_enabled && written_images.empty())
         texture_lock.unlock();
     auto* const commands = context.Commands();
     descriptors.SetHeaps(commands, true);
@@ -1992,9 +1999,17 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     bind_table(RootSrvTable - table_shift, srv_table.gpu);
     bind_table(RootUavTable - table_shift, uav_table.gpu);
     bind_table(RootSamplerTable - table_shift, sampler_table.gpu);
+    // Opt in independently: EndDraw deliberately invalidates general draw state
+    // for a known title workaround. Track actual root writes without relaxing it.
+    const bool root_cbv_reuse = commands->reuse_graphics_root_cbvs;
     for (UINT i = 0; i < root_cbv_addresses.size(); ++i) {
-        if (context.RecordState(
-                recorded.root_args.cbvs.Update(kFirstRootCbv + i, root_cbv_addresses[i]))) {
+        const bool changed =
+            recorded.root_args.cbvs.Update(kFirstRootCbv + i, root_cbv_addresses[i]);
+        const bool root_changed =
+            root_cbv_reuse
+                ? commands->graphics_root_cbvs.cbvs.Update(kFirstRootCbv + i, root_cbv_addresses[i])
+                : changed;
+        if (context.RecordState(root_cbv_reuse ? root_changed : changed)) {
             if (batch_root_bindings)
                 root_bindings[root_binding_count++] = {root_cbv_addresses[i], kFirstRootCbv + i,
                                                        false};
@@ -2435,6 +2450,9 @@ void RasterizerD3D12::PrepareDraw(bool is_indexed, Func&& draw) {
     }
     if (totals.uav)
         FragmentBarrier();
+    if (trace_submitted) {
+        texture_cache.PublishShaderImageWrites(written_images, "graphics_uav");
+    }
     // The scope guard releases these leases on every exit, including this one.
     if (!buffer_runtime.BufferFastpathEnabled()) {
         for (auto& stage : bindings.stages)
@@ -3063,10 +3081,15 @@ void RasterizerD3D12::DrawTexture() {
                                   maxwell3d->regs.zpass_pixel_count_enable != 0);
         query_runtime.BeginDraw(false);
         context.MarkWork("DrawTexture blit");
+        VideoCommon::SubmissionTrace::Log("host_draw_texture src_gpu={:x} dst_gpu={:x}",
+                                          source.GpuAddr(), target->GpuAddr());
         commands->DrawInstanced(4, 1, 0, 0);
         if (pipeline_cache)
             pipeline_cache->RecordGraphicsDraw(texture_cache.CaptureFrame());
         query_runtime.EndDraw();
+        query_runtime.PauseHostConditionalRendering();
+        texture_cache.RecordPassDumpRenderTargetWrite(framebuffer.DrawBuffer(0), "draw_texture",
+                                                      source.GpuAddr());
     };
     try {
         execute_blit();
@@ -3471,6 +3494,7 @@ void RasterizerD3D12::DispatchCompute() try {
         descriptors.WriteStorageUav(uav, uav_index++, buffer);
         use(buffer.resource, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     }
+    std::vector<VideoCommon::ImageViewId> written_images;
     const u32 image_start = uav_index;
     uav_index += Shader::NumDescriptors(info.image_descriptors);
     for (size_t i = texel_count; i < bound.texel.size(); ++i) {
@@ -3481,7 +3505,10 @@ void RasterizerD3D12::DispatchCompute() try {
     uav_index = image_start;
     for (const auto& desc : info.image_descriptors)
         for (u32 i = 0; i < desc.count; ++i) {
-            auto& view = texture_cache.GetImageView(view_scratch[view_index++].id);
+            const auto view_id = view_scratch[view_index++].id;
+            auto& view = texture_cache.GetImageView(view_id);
+            if (desc.is_written && view_id != VideoCommon::NULL_IMAGE_VIEW_ID)
+                written_images.push_back(view_id);
             if (uav_index < 32 && view.IsRescaled())
                 compute_image_scaling_mask |= 1u << uav_index;
             const auto format = PixelFormatFromImageFormat(desc.format);
@@ -3549,12 +3576,23 @@ void RasterizerD3D12::DispatchCompute() try {
     dispatch.resources = resources;
     dispatch.split_reads = split_reads;
     profile_descriptors.reset();
+    const ComputeGroups groups{qmd.grid_dim_x, qmd.grid_dim_y, qmd.grid_dim_z};
+    if (!HasComputeWork(groups)) {
+        VideoCommon::SubmissionTrace::Log("host_compute_drop reason=zero_grid");
+        bindings.stages[0].Clear();
+        TickWork();
+        return;
+    }
+    texture_cache.BeginPassDumpImageWrite();
     context.MarkWork("guest compute");
     VideoCommon::SubmissionTrace::Log("host_compute_submit program={:x} grid={},{},{}",
                                       qmd.program_start, qmd.grid_dim_x.Value(),
                                       qmd.grid_dim_y.Value(), qmd.grid_dim_z.Value());
-    compute_dispatch.Direct(dispatch, {qmd.grid_dim_x, qmd.grid_dim_y, qmd.grid_dim_z});
+    compute_dispatch.Direct(dispatch, groups);
     trace_submitted = true;
+    // VisitImageView prepares reads only. Publish UAV writes to the cache as Vulkan does,
+    // so alias synchronization and guest downloads see the dispatched version.
+    texture_cache.PublishShaderImageWrites(written_images, "compute_uav", qmd.program_start);
     bindings.stages[0].Clear();
     TickWork();
 } catch (const std::exception& error) {
@@ -3984,6 +4022,10 @@ bool RasterizerD3D12::AccelerateSurfaceCopy(const Tegra::Engines::Fermi2D::Surfa
                 src.Address(), dst.Address()));
         }
     }
+    VideoCommon::SubmissionTrace::Log(
+        "host_fermi_blit src_gpu={:x} dst_gpu={:x} src_format={} dst_format={} accelerated={}",
+        src.Address(), dst.Address(), static_cast<u32>(src.format), static_cast<u32>(dst.format),
+        accelerated);
     context.Profile().Count(accelerated ? FrameCount::FermiBlitsAccelerated
                                         : FrameCount::FermiBlitsSoftware);
     context.Profile().Count(accelerated ? FrameCount::FermiBlitAcceleratedBytes

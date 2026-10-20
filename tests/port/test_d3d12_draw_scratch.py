@@ -15,6 +15,7 @@ NATIVE = ROOT / "src/video_core/renderer_d3d12"
 MOCK = r"""
 #include "video_core/renderer_d3d12/d3d12_descriptor.h"
 using D3D12::DescriptorSources;
+using D3D12::BoundHandleTableCache;
 #include <array>
 #include <cassert>
 #include <cstdint>
@@ -57,6 +58,8 @@ struct Context {
 void TraceApiCall(Context*, const char*, void*, const void*, std::size_t) {}
 struct D3D12DescriptorAllocator {
     bool descriptor_fastpath = false;
+    bool handle_table_reuse = false;
+    std::array<BoundHandleTableCache<DescriptorTable>, 2> handle_table_cache;
     bool descriptor_table_cache = false;
     struct DescriptorKeyHash {
         size_t operator()(const DescriptorKey& key) const { return key.kind; }
@@ -84,6 +87,7 @@ struct D3D12DescriptorAllocator {
     void FlushCopies(int, CopyBatch&) {}
     bool CanReuseDrawTable(const DescriptorPlan&, bool = false) const;
     bool CanReusePreviousDrawTable(const DescriptorPlan&, bool) const;
+    const DescriptorTable* FindHandleDrawTable(const DescriptorPlan&, bool) const;
     const CachedDrawTable* FindCachedDrawTable(const DescriptorPlan&, bool) const;
     void RememberDrawTable(const DescriptorPlan&, DescriptorTable, bool);
     DescriptorTable FinishDrawTable(DescriptorPlan&, bool = false);
@@ -170,6 +174,28 @@ int main() {
     assert(!fast.CanReuseDrawTable(plan));
     fast.FinishDrawTable(plan);
     assert(fast.context.copies == 2);
+    // Nonconsecutive handle sets use the production bounded cache, with the
+    // semantic map disabled. A changed CPU generation forces fresh GPU tables.
+    D3D12DescriptorAllocator handles;
+    handles.descriptor_fastpath = true;
+    handles.handle_table_reuse = true;
+    auto handle_build = [&](u32 kind, bool sampler = false) {
+        prepare(kind, {0, 1, 0});
+        plan.sources.generation = handles.view_cache.generation;
+        plan.sources.handles[0] = kind + 10;
+        return handles.FinishDrawTable(plan, sampler).first;
+    };
+    const auto handle_first = handle_build(1);
+    assert(handle_build(2) != handle_first);
+    assert(handle_build(1) == handle_first);
+    assert(handles.allocations == 2 && handles.context.copies == 2);
+    ++handles.view_cache.generation;
+    assert(handle_build(1) != handle_first);
+    const auto generation_first = handle_build(1);
+    ++handles.context.tick;
+    assert(handle_build(1) != generation_first);
+    assert(handles.allocations == 4);
+    assert(handle_build(1, true) != handle_first);
     // Run both production copy branches with the set cache enabled. Revisited
     // tables must avoid allocation/writes; submissions and heap domains cannot alias.
     for (bool bulk : {false, true}) {
@@ -223,6 +249,7 @@ class DrawScratchTests(unittest.TestCase):
             for signature in (
                 "bool D3D12DescriptorAllocator::CanReuseDrawTable(",
                 "bool D3D12DescriptorAllocator::CanReusePreviousDrawTable(",
+                "const DescriptorTable* D3D12DescriptorAllocator::FindHandleDrawTable(",
                 "const D3D12DescriptorAllocator::CachedDrawTable* D3D12DescriptorAllocator::FindCachedDrawTable(",
                 "void D3D12DescriptorAllocator::RememberDrawTable(",
                 "DescriptorTable D3D12DescriptorAllocator::FinishDrawTable(",

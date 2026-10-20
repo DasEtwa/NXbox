@@ -61,6 +61,15 @@ public:
     bool BufferFastpathEnabled() const {
         return buffer_fastpath;
     }
+    bool BindingResolutionCacheEnabled() const {
+        return binding_resolution_cache;
+    }
+    bool TryReuseUniformBinding(const Buffer& buffer, u32 offset, u32 size, u32 read_limit);
+    bool TryReuseStorageBinding(const Buffer& buffer, u32 offset, u32 size, bool is_written);
+    bool TryReuseVertexBinding(u32 index, const Buffer& buffer, u32 offset, u32 size, u32 stride);
+    bool TryReuseIndexBinding(Tegra::Engines::Maxwell3D::Regs::PrimitiveTopology topology,
+                              Tegra::Engines::Maxwell3D::Regs::IndexFormat format,
+                              const Buffer& buffer, u32 offset, u32 size);
     bool BindingCacheEnabled() const {
         return binding_cache;
     }
@@ -161,6 +170,10 @@ private:
         const char* value = std::getenv("NXBOX_D3D12_BUFFER_FASTPATH");
         return !value || value[0] != '0' || value[1] != '\0';
     }();
+    const bool binding_resolution_cache = [] {
+        const char* value = std::getenv("NXBOX_D3D12_BUFFER_BINDINGS");
+        return !value || value[0] != '0' || value[1] != '\0';
+    }();
     const bool binding_cache{BisectEnabled("NXBOX_D3D12_BINDING_CACHE")};
     struct UniformBindingResolution {
         ResourcePtr source;
@@ -173,6 +186,8 @@ private:
     std::array<std::array<UniformBindingResolution, VideoCommon::NUM_GRAPHICS_UNIFORM_BUFFERS>,
                BindingState::NumStages>
         uniform_bindings{};
+    std::array<std::array<BoundBuffer, VideoCommon::NUM_STORAGE_BUFFERS>, BindingState::NumStages>
+        storage_bindings{};
     void InvalidateUniformBindings() {
         uniform_bindings = {};
     }

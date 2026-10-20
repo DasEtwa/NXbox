@@ -229,7 +229,11 @@ D3D12_SAMPLER_DESC MakeSamplerDesc(const Tegra::Texture::TSCEntry& entry, bool s
 
 D3D12DescriptorAllocator::D3D12DescriptorAllocator(Context& context, u32 view_capacity,
                                                    u32 sampler_capacity)
-    : descriptor_table_cache{BisectEnabled("NXBOX_D3D12_DESCRIPTOR_TABLE_CACHE")},
+    : handle_table_reuse{[] {
+          const char* value = std::getenv("NXBOX_D3D12_HANDLE_TABLE_CACHE");
+          return !value || std::strcmp(value, "0") != 0;
+      }()},
+      descriptor_table_cache{BisectEnabled("NXBOX_D3D12_DESCRIPTOR_TABLE_CACHE")},
       descriptor_fastpath{[] {
           const char* value = std::getenv("NXBOX_D3D12_DESCRIPTOR_FASTPATH");
           return !value || std::strcmp(value, "0") != 0;
@@ -246,6 +250,7 @@ D3D12DescriptorAllocator::D3D12DescriptorAllocator(Context& context, u32 view_ca
     InitCache(sampler_cache, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, 256);
     InitCache(bound_rtvs, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 8);
     InitCache(bound_dsv, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 1);
+    Diagnostic(fmt::format("D3D12 handle_table_cache={}", handle_table_reuse ? 1 : 0));
     Diagnostic(fmt::format("D3D12 descriptor_fastpath={}", descriptor_fastpath ? 1 : 0));
     Diagnostic(fmt::format("D3D12 descriptor_table_cache={}", descriptor_table_cache ? 1 : 0));
 }
@@ -313,7 +318,8 @@ void D3D12DescriptorAllocator::WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE type,
 }
 
 bool D3D12DescriptorAllocator::CanReuseDrawTable(const DescriptorPlan& plan, bool sampler) const {
-    return CanReusePreviousDrawTable(plan, sampler) || FindCachedDrawTable(plan, sampler);
+    return CanReusePreviousDrawTable(plan, sampler) || FindHandleDrawTable(plan, sampler) ||
+           FindCachedDrawTable(plan, sampler);
 }
 
 bool D3D12DescriptorAllocator::CanReusePreviousDrawTable(const DescriptorPlan& plan,
@@ -330,6 +336,16 @@ bool D3D12DescriptorAllocator::CanReusePreviousDrawTable(const DescriptorPlan& p
            previous.plan.keys == plan.keys;
 }
 
+const DescriptorTable* D3D12DescriptorAllocator::FindHandleDrawTable(const DescriptorPlan& plan,
+                                                                     bool sampler) const {
+    const auto& cache = sampler ? sampler_cache : view_cache;
+    if (!handle_table_reuse || !descriptor_fastpath || !plan.sources.Current(cache.generation))
+        return nullptr;
+    return handle_table_cache[sampler ? 1 : 0].Find(
+        context.CurrentTick(), cache.generation, plan.sizes,
+        {plan.sources.handles.data(), plan.sources.count});
+}
+
 const D3D12DescriptorAllocator::CachedDrawTable* D3D12DescriptorAllocator::FindCachedDrawTable(
     const DescriptorPlan& plan, bool sampler) const {
     if (!descriptor_table_cache)
@@ -339,6 +355,14 @@ const D3D12DescriptorAllocator::CachedDrawTable* D3D12DescriptorAllocator::FindC
 
 void D3D12DescriptorAllocator::RememberDrawTable(const DescriptorPlan& plan, DescriptorTable table,
                                                  bool sampler) {
+    const auto& cache = sampler ? sampler_cache : view_cache;
+    if (handle_table_reuse && descriptor_fastpath && plan.sources.Current(cache.generation)) {
+        // Resource transitions retain every backing resource until tick completion;
+        // cached GPU slots are immutable and never reused across that tick.
+        handle_table_cache[sampler ? 1 : 0].Remember(
+            context.CurrentTick(), cache.generation, plan.sizes,
+            {plan.sources.handles.data(), plan.sources.count}, table);
+    }
     if (descriptor_table_cache)
         draw_table_cache[sampler ? 1 : 0].Remember(context.CurrentTick(), plan.sizes, plan.keys,
                                                    {table, plan.resources});
@@ -351,6 +375,13 @@ DescriptorTable D3D12DescriptorAllocator::FinishDrawTable(DescriptorPlan& plan, 
         return previous.table;
     }
     // Recheck after Reserve: a submission retires the entire cache's GPU slots.
+    if (const auto* cached = FindHandleDrawTable(plan, sampler)) {
+        context.Profile().Count(FrameCount::DescriptorTableReuses);
+        previous.tick = context.CurrentTick();
+        std::swap(previous.plan, plan);
+        previous.table = *cached;
+        return *cached;
+    }
     if (const auto* cached = FindCachedDrawTable(plan, sampler)) {
         context.Profile().Count(FrameCount::DescriptorTableReuses);
         previous.tick = context.CurrentTick();
@@ -806,11 +837,18 @@ bool D3D12DescriptorAllocator::WriteImageSrv(const DescriptorTable& table, u32 s
             // unbound one. Other mismatches keep the unadapted view, as before: MK8D binds later
             // cubes of a cube array to cube slots, and a null SRV in their place has not been
             // checked on the console.
-            const bool no_faces = (fallback_dimension == D3D12_SRV_DIMENSION_TEXTURECUBE ||
-                                   fallback_dimension == D3D12_SRV_DIMENSION_TEXTURECUBEARRAY) &&
-                                  backing_desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
-                                  backing_desc.SampleDesc.Count == 1 &&
-                                  backing_desc.DepthOrArraySize < 6;
+            // A 3D slot needs a 3D resource and the reverse: no view can bridge resource
+            // dimensions (Mario Party binds the same 8x8 2D texture to a 3D slot, and the
+            // device was removed with DXGI_ERROR_INVALID_CALL right after).
+            const bool wrong_resource =
+                (fallback_dimension == D3D12_SRV_DIMENSION_TEXTURE3D) !=
+                (backing_desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D);
+            const bool no_faces = wrong_resource ||
+                                  ((fallback_dimension == D3D12_SRV_DIMENSION_TEXTURECUBE ||
+                                    fallback_dimension == D3D12_SRV_DIMENSION_TEXTURECUBEARRAY) &&
+                                   backing_desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
+                                   backing_desc.SampleDesc.Count == 1 &&
+                                   backing_desc.DepthOrArraySize < 6);
             if (logged_srv_mismatches.insert(desc.ViewDimension * 16 + fallback_dimension)
                     .second) {
                 Diagnostic(fmt::format(

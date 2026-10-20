@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright 2026 NSPX
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""The larger A64 cache is bounded and opt-in on memory-constrained Xbox builds."""
+"""The larger A64 cache is bounded and enabled by default on memory-constrained Xbox builds."""
 
 import os
 import subprocess
@@ -20,13 +20,13 @@ class DbszJitCapacity(unittest.TestCase):
 int main(int argc, char**) {
     constexpr unsigned MiB = 1024 * 1024;
     const auto capacity = Core::NxboxJit::UwpCodeCacheSize();
-    assert(capacity == (argc > 1 ? 192u : 128u) * MiB);
+    assert(capacity == (argc > 1 ? 128u : 192u) * MiB);
     // Four cores add at most 256 MiB; do not adopt desktop's 2 GiB total budget.
     assert(capacity * 4 <= 768u * MiB);
     // Captured core-0 high-water mark before its capacity flush needs >128 MiB.
     const auto required = 130748812u + MiB + 4u * MiB;
-    assert((required < capacity) == (argc > 1));
-    setenv("NXBOX_JIT_LARGE_CACHE", argc > 1 ? "0" : "1", 1);
+    assert((required < capacity) == (argc == 1));
+    setenv("NXBOX_JIT_LARGE_CACHE", argc > 1 ? "1" : "0", 1);
     assert(Core::NxboxJit::UwpCodeCacheSize() == capacity);
 }
 """
@@ -58,7 +58,7 @@ int main(int argc, char**) {
                 env.pop("NXBOX_JIT_LARGE_CACHE", None)
                 if value is not None:
                     env["NXBOX_JIT_LARGE_CACHE"] = value
-                arguments = [str(binary)] + (["large"] if value == "1" else [])
+                arguments = [str(binary)] + (["small"] if value == "0" else [])
                 subprocess.run(arguments, env=env, check=True, timeout=10)
 
     def test_only_uwp_a64_uses_the_policy_and_null_jit_stays_small(self):

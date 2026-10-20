@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <cstring>
 #include "common/gpu_thread_profile.h"
+#include "common/nxbox_wait_diag.h"
 
 #include <fmt/ranges.h>
 #include "common/assert.h"
@@ -188,6 +189,11 @@ NvResult nvhost_ctrl::IocCtrlEventWait(IocCtrlEventWaitParams& params, bool is_a
 
     params.value.raw = 0;
 
+    const auto wait_token = NxboxWait::Begin(
+        NxboxWait::Kind::NvEvent, reinterpret_cast<std::uintptr_t>(&event), "nvhost_event",
+        std::array<std::uint64_t, 5>{fence_id, target_value, params.timeout, slot,
+                                     syncpoint_manager.ReadSyncpointMinValue(fence_id)});
+    NxboxWait::Add(NxboxWait::Counter::NvArmed);
     event.status.store(EventState::Waiting, std::memory_order_release);
     event.assigned_syncpt = fence_id;
     event.assigned_value = target_value;
@@ -201,13 +207,15 @@ NvResult nvhost_ctrl::IocCtrlEventWait(IocCtrlEventWaitParams& params, bool is_a
 
     const auto profile_wait_start = Common::GpuProfile::Start();
     event.wait_handle = host1x_syncpoint_manager.RegisterHostAction(
-        fence_id, target_value, [this, slot, profile_wait_start]() {
+        fence_id, target_value, [this, slot, profile_wait_start, wait_token]() {
             auto& event_ = events[slot];
             if (event_.status.exchange(EventState::Signalling, std::memory_order_acq_rel) ==
                 EventState::Waiting) {
                 Common::GpuProfile::Record(Common::GpuProfile::Wait::NvdrvEvent,
                                            profile_wait_start);
                 event_.kevent->Signal(system.Kernel());
+                NxboxWait::End(wait_token);
+                NxboxWait::Add(NxboxWait::Counter::NvSignaled);
             }
             event_.status.store(EventState::Signalled, std::memory_order_release);
         });
@@ -293,6 +301,11 @@ NvResult nvhost_ctrl::IocCtrlClearEventWait(IocCtrlEventClearParams& params) {
         host1x_syncpoint_manager.DeregisterHostAction(event.assigned_syncpt, event.wait_handle);
         syncpoint_manager.UpdateMin(event.assigned_syncpt);
         event.wait_handle = {};
+    }
+    if (NxboxWait::Enabled()) {
+        NxboxWait::recorder.EndKey(NxboxWait::Kind::NvEvent,
+                                   reinterpret_cast<std::uintptr_t>(&event), 1);
+        NxboxWait::Add(NxboxWait::Counter::NvCancelled);
     }
     event.fails++;
     event.status.store(EventState::Cancelled, std::memory_order_release);

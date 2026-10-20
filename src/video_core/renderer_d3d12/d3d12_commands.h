@@ -70,6 +70,8 @@ struct RecordingTarget {
 #endif
 class CommandFacade {
 public:
+    const bool reuse_graphics_root_cbvs{BisectEnabled("NXBOX_D3D12_ROOT_CBV_REUSE")};
+    GraphicsRootCbvCache graphics_root_cbvs;
     ID3D12Device* device{};
     int32_t depth_bounds_status{}, independent_stencil_status{};
     RecordDescriptors* descriptors{};
@@ -528,6 +530,8 @@ public:
     }
     D3D12_FORWARD_INLINE void SetGraphicsRoot32BitConstants(UINT index, UINT count,
                                                             const void* data, UINT offset) {
+        if (reuse_graphics_root_cbvs)
+            graphics_root_cbvs.Invalidate(index);
         if (!stream) {
             immediate->SetGraphicsRoot32BitConstants(index, count, data, offset);
             return;
@@ -539,6 +543,8 @@ public:
     }
     D3D12_FORWARD_INLINE void SetGraphicsRootConstantBufferView(UINT index,
                                                                 D3D12_GPU_VIRTUAL_ADDRESS address) {
+        if (reuse_graphics_root_cbvs)
+            graphics_root_cbvs.cbvs.Update(index, address);
         if (!stream) {
             immediate->SetGraphicsRootConstantBufferView(index, address);
             return;
@@ -550,6 +556,8 @@ public:
     }
     D3D12_FORWARD_INLINE void SetGraphicsRootShaderResourceView(UINT index,
                                                                 D3D12_GPU_VIRTUAL_ADDRESS address) {
+        if (reuse_graphics_root_cbvs)
+            graphics_root_cbvs.Invalidate(index);
         if (!stream) {
             immediate->SetGraphicsRootShaderResourceView(index, address);
             return;
@@ -561,6 +569,8 @@ public:
     }
     D3D12_FORWARD_INLINE void SetGraphicsRootUnorderedAccessView(
         UINT index, D3D12_GPU_VIRTUAL_ADDRESS address) {
+        if (reuse_graphics_root_cbvs)
+            graphics_root_cbvs.Invalidate(index);
         if (!stream) {
             immediate->SetGraphicsRootUnorderedAccessView(index, address);
             return;
@@ -572,6 +582,8 @@ public:
     }
     D3D12_FORWARD_INLINE void SetGraphicsRootDescriptorTable(UINT index,
                                                              D3D12_GPU_DESCRIPTOR_HANDLE handle) {
+        if (reuse_graphics_root_cbvs)
+            graphics_root_cbvs.Invalidate(index);
         if (!stream) {
             immediate->SetGraphicsRootDescriptorTable(index, handle);
             return;
@@ -582,6 +594,8 @@ public:
         }>(*stream, index, handle);
     }
     D3D12_FORWARD_INLINE void SetGraphicsRootSignature(ID3D12RootSignature* signature) {
+        if (reuse_graphics_root_cbvs)
+            graphics_root_cbvs.SetSignature(reinterpret_cast<std::uintptr_t>(signature));
         if (!stream) {
             immediate->SetGraphicsRootSignature(signature);
             return;

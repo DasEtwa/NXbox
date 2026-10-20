@@ -4,6 +4,8 @@
 // SPDX-FileCopyrightText: Copyright 2020 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <string>
+#include "common/nxbox_wait_diag.h"
 #include "common/scope_exit.h"
 #include "common/settings.h"
 #include "core/core.h"
@@ -158,6 +160,17 @@ void PhysicalCore::RunThread(KernelCore& kernel, Kernel::KThread* thread) {
             std::array<u64, 8> args{};
             interface->GetSvcArguments(args);
             entry = {interface->GetSvcNumber(), args[0], 0, 0, false};
+            if (NxboxWait::Enabled()) {
+                entry.entered_ms = NxboxWait::NowMs();
+                entry.pc = thread->GetContext().pc;
+                entry.lr = thread->GetContext().lr;
+            }
+            const auto wait_token =
+                !NxboxWait::Enabled()
+                    ? 0
+                    : NxboxWait::Begin(NxboxWait::Kind::Svc, thread->GetThreadId(),
+                                       std::to_string(interface->GetSvcNumber()), args,
+                                       thread->GetContext().pc, thread->GetContext().lr);
 #endif
             Svc::Call(system, interface->GetSvcNumber());
 #ifdef NXBOX_UWP
@@ -166,6 +179,10 @@ void PhysicalCore::RunThread(KernelCore& kernel, Kernel::KThread* thread) {
             entry.output_x0 = args[0];
             entry.output_x1 = args[1];
             entry.completed = true;
+            if (NxboxWait::Enabled()) {
+                entry.finished_ms = NxboxWait::NowMs();
+            }
+            NxboxWait::End(wait_token, args[0]);
 #endif
             return;
         }

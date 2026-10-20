@@ -80,6 +80,68 @@ struct DescriptorSources {
     }
 };
 
+// Bounded direct-mapped cache: lookup and replacement never allocate. A hash
+// selects a candidate only; exact ordered handles and layout resolve collisions.
+// CPU generations prevent recycled handles from aliasing different descriptors.
+template <class Value, std::size_t Entries = 64, std::size_t MaxHandles = 128>
+class BoundHandleTableCache {
+public:
+    const Value* Find(std::uint64_t tick, std::uint64_t generation,
+                      const std::array<std::uint32_t, 3>& sizes,
+                      std::span<const std::uintptr_t> handles) const {
+        if (handles.size() > MaxHandles)
+            return nullptr;
+        const auto& entry = entries[Hash(sizes, handles) % Entries];
+        if (!entry.valid || entry.tick != tick || entry.generation != generation ||
+            entry.sizes != sizes || entry.count != handles.size() ||
+            !std::equal(handles.begin(), handles.end(), entry.handles.begin()))
+            return nullptr;
+        return &entry.value;
+    }
+    void Remember(std::uint64_t tick, std::uint64_t generation,
+                  const std::array<std::uint32_t, 3>& sizes,
+                  std::span<const std::uintptr_t> handles, Value value) {
+        if (handles.size() > MaxHandles)
+            return;
+        auto& entry = entries[Hash(sizes, handles) % Entries];
+        entry.valid = true;
+        entry.tick = tick;
+        entry.generation = generation;
+        entry.sizes = sizes;
+        entry.count = handles.size();
+        std::copy(handles.begin(), handles.end(), entry.handles.begin());
+        entry.value = value;
+    }
+    void Clear() {
+        for (auto& entry : entries)
+            entry.valid = false;
+    }
+
+private:
+    static_assert(Entries > 0);
+    static std::size_t Hash(const std::array<std::uint32_t, 3>& sizes,
+                            std::span<const std::uintptr_t> handles) {
+        std::size_t hash = handles.size();
+        const auto combine = [&](std::size_t part) {
+            hash ^= part + 0x9e3779b9u + (hash << 6) + (hash >> 2);
+        };
+        for (const auto size : sizes)
+            combine(size);
+        for (const auto handle : handles)
+            combine(handle);
+        return hash;
+    }
+    struct Entry {
+        bool valid{};
+        std::uint64_t tick{}, generation{};
+        std::array<std::uint32_t, 3> sizes{};
+        std::size_t count{};
+        std::array<std::uintptr_t, MaxHandles> handles{};
+        Value value{};
+    };
+    std::array<Entry, Entries> entries{};
+};
+
 // A recording owns immutable slots only until its submission tick changes.
 // Full semantic keys are compared; hash collisions cannot alias different tables.
 template <class Value>
@@ -241,6 +303,10 @@ struct DescriptorPlan {
     std::vector<DescriptorKey> keys;
     std::vector<ResourcePtr> resources;
     explicit DescriptorPlan(std::array<u32, 3> sizes_) {
+        // Allocate both persistent plans once, including the previous-draw swap
+        // partner. Larger future layouts can still grow through the legacy path.
+        keys.reserve(4096);
+        resources.reserve(4096);
         Reset(sizes_);
     }
     void Reset(std::array<u32, 3> sizes_) {
@@ -348,6 +414,8 @@ public:
     /// Release cached GPU tables and let the CPU view cache refresh its resource pins.
     void TickFrame() {
         new_frame = true;
+        for (auto& cache : handle_table_cache)
+            cache.Clear();
         for (auto& cache : draw_table_cache)
             cache.Clear();
         if (descriptor_table_cache) {
@@ -413,12 +481,15 @@ public:
         DescriptorTable table;
         std::vector<ResourcePtr> resources;
     };
+    const DescriptorTable* FindHandleDrawTable(const DescriptorPlan& plan, bool sampler) const;
     const CachedDrawTable* FindCachedDrawTable(const DescriptorPlan& plan, bool sampler) const;
     bool CanReusePreviousDrawTable(const DescriptorPlan& plan, bool sampler) const;
     void RememberDrawTable(const DescriptorPlan& plan, DescriptorTable table, bool sampler);
     std::array<DescriptorSetCache<DescriptorKey, CachedDrawTable, DescriptorKeyHash>, 2>
         draw_table_cache;
     std::array<PreviousDrawTable, 2> previous_draw_tables;
+    std::array<BoundHandleTableCache<DescriptorTable>, 2> handle_table_cache;
+    const bool handle_table_reuse;
     const bool descriptor_table_cache;
     const bool descriptor_fastpath;
     u64 cache_tick{};

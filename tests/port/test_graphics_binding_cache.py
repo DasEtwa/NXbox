@@ -133,7 +133,7 @@ bool IsGPUFenceBehaviorAccurate() { return accurate; }
 }
 struct FastRuntime {
     bool enabled = true;
-    bool BindingCacheEnabled() const { return enabled; }
+    bool BindingResolutionCacheEnabled() const { return enabled; }
 };
 struct LegacyRuntime {};
 struct Maxwell {
@@ -180,6 +180,7 @@ template <class Runtime> struct BufferCache {
     }
     bool BindGraphicsStorageBuffer(std::size_t, std::size_t, u32, u32, bool);
     void UpdateStorageBuffers(std::size_t);
+    BufferId ResolveBufferBinding(const Binding&, DAddr, u32);
 };
 __METHODS__
 template <class R> void Legacy(BufferCache<R>& cache) {
@@ -232,7 +233,7 @@ int main() {
     assert(cache.finds == 5);
     cache.state.storage_buffers[0][0] = Binding{.buffer_id = NULL_BUFFER_ID};
     cache.UpdateStorageBuffers(0);
-    assert(cache.finds == 6 && cache.state.storage_buffers[0][0].buffer_id == NULL_BUFFER_ID);
+    assert(cache.finds == 5 && cache.state.storage_buffers[0][0].buffer_id == NULL_BUFFER_ID);
     cache.runtime.enabled = false;
     Legacy(cache);
     BufferCache<LegacyRuntime> legacy;
@@ -241,7 +242,11 @@ int main() {
 """
         implementations = "\n".join(
             method(source, "BufferCache<P>::" + name)
-            for name in ("BindGraphicsStorageBuffer(", "UpdateStorageBuffers(")
+            for name in (
+                "BindGraphicsStorageBuffer(",
+                "UpdateStorageBuffers(",
+                "ResolveBufferBinding(",
+            )
         )
         with tempfile.TemporaryDirectory(prefix="nxbox-graphics-bindings-") as folder:
             cpp = Path(folder) / "test.cpp"

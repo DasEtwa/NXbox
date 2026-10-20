@@ -15,10 +15,15 @@ inline bool BisectEnabled(const char* name) noexcept {
 }
 
 inline std::uint32_t UwpCodeCacheSize() noexcept {
-    // DBSZ exhausts 128 MiB and recompiles hundreds of thousands of blocks after evacuation.
-    // A larger working set can avoid those resets, but costs up to 256 MiB across four cores.
-    // Keep the experiment opt-in: the captured process already peaks near its 5 GiB limit.
-    static const bool large_cache = BisectEnabled("NXBOX_JIT_LARGE_CACHE");
+    // DBSZ repeatedly evacuates ~250k blocks at 128 MiB. Retain a larger working set
+    // by default, bounded to 768 MiB across four cores (+256 MiB versus the old policy).
+    // Exact 0 restores the old budget for memory-pressure comparisons. Never use the
+    // desktop 512 MiB/core default on the 5 GiB Xbox process. This is a capacity bound,
+    // not proof that every title fits; capacity-clear telemetry must remain enabled.
+    static const bool large_cache = [] {
+        const auto* value = std::getenv("NXBOX_JIT_LARGE_CACHE");
+        return !value || std::strcmp(value, "0") != 0;
+    }();
     return (large_cache ? 192u : 128u) * 1024u * 1024u;
 }
 

@@ -20,11 +20,16 @@ struct SvcEntry {
     u64 output_x0{};
     u64 output_x1{};
     bool completed{};
+    u64 entered_ms{};
+    u64 finished_ms{};
+    u64 pc{};
+    u64 lr{};
 };
 
 // Owned by the guest thread, so history survives migration between physical cores.
 struct SvcHistory {
-    std::array<SvcEntry, 32> entries{};
+    // Retain over a minute of 500 ms fatal-handler sleeps, including their caller.
+    std::array<SvcEntry, 128> entries{};
     u64 count{};
 };
 
