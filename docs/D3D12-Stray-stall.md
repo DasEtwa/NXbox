@@ -264,3 +264,114 @@ tests in 395.641 s**, with **zero failures, 44 skips, and two environmental
 `fontTools` import errors** (`test_button_layout`, `test_xbox_button_icons`).
 `git diff --check` passed. Only this report was changed; no console replay,
 emulator patch, new regression test, or commit was made.
+
+## Query tail retirement audit and repair (October 20)
+
+This audit establishes a reproducible callback publication defect, **not a
+confirmed root cause of the Stray fatal**. In particular, an already published
+syncpoint fence does not depend on another submit for retirement with fence
+batching disabled, as it was in `r-stray`.
+
+### Ownership and progress
+
+- `QueryCacheBase::CounterReport` queues ordinary reports through
+  `RasterizerD3D12::SyncOperation`, into the fence manager's
+  `uncommitted_operations`. Reports with `IsFence` instead call `SignalFence`.
+- `VideoCommon::FenceManager::SignalFence` calls `CommitAsyncFlushes`, moves the
+  operations into a fence-owned batch, and publishes the native fence to the
+  independent fencing thread. Query commit also appends an unregister callback.
+  Query `NotifyWFI` synchronizes CPU-managed values; GPU-managed streamer snapshots
+  are put into corresponding readback batches.
+- `D3D12::InnerFence::Queue` submits immediately without fence batching. With
+  batching enabled it captures `PendingFenceTick`; `FlushCommands`, presentation,
+  DMA memory waits and forced drains submit that tick. `NotifySubmitted` wakes
+  the fencing thread; its timed backstop only rechecks submission, never submits.
+- The fencing thread waits for the submitted tick, pops cache flush batches,
+  then executes guest report writes, host syncpoint increments and unregister
+  callbacks. `CounterStreamer::PopUnsyncedQueries` copies the completed readback
+  into query values before report callbacks run. None of this requires another
+  guest command or presentation once the batch has been published and submitted.
+- The p14 query reduction is dispatched by `QueryCacheRuntimeImpl::FlushBatch`.
+  `Context::Submit` invokes `before_submit` before sealing/submitting the list;
+  this flushes the GPU reduction and readback copies. It does **not** publish
+  `uncommitted_operations` or commit the query streamer's readback batches.
+- `DmaPusher::DispatchCalls` unconditionally calls GPU `FlushCommands` at the
+  end of its pushbuffer, then `OnCommandListEnd` calls `ReleaseFences(false)`.
+  Previously these submitted native work but left the ordinary report tail
+  uncommitted. D3D12's asynchronous `WaitPendingFences(false)` is a no-op.
+  The GPU command thread can then sleep in `PopWait`. `GPU::TickWork` only
+  services sync requests; rasterizer `TickWork` delegates to that producer path.
+  `TickFrame` ages caches and destruction rings; neither publishes this tail.
+
+Thus the narrow starvation case is real: pending ordinary query callbacks,
+completed GPU work, and no later guest fence can leave guest reports unwritten
+indefinitely. A syncpoint *already published* before that tail still retires;
+this defect alone does not account for the one outstanding increment in
+`r-stray`. A blocked publication/cache retirement/callback remains possible.
+The two guest condition-variable waits cannot be tied to any of these reports
+using the existing capture.
+
+### Repair and diagnostics
+
+D3D12 `FlushCommands` now asks the fence manager to publish any uncommitted
+operations before its native submit. This commits the associated query/cache
+batches and supplies the independent completion thread with a fence owning the
+callbacks. Empty tails create no fence. Publication stays on the recording
+thread, including when the GPU pipeline consumer is enabled. The callback list
+has already been moved before `SignalFence` reenters `FlushCommands`, so that
+nested flush cannot publish recursively or reacquire the fence lock through a
+new fence. Native empty submits continue to reuse the existing tick. There is
+no new producer-side completion wait; a tail can add a native fence/submission
+when batching is disabled.
+
+With `NXBOX_WAIT_DIAG=1`, the independent five-second heartbeat now emits
+`WAIT_PENDING_SUMMARY` for queries and syncpoint increments, including count,
+oldest age and dropped records. Zero-frame windows additionally dump each
+`WAIT_PENDING` token, query CPU address or syncpoint ID, producer tick and age.
+The tick is observed when the report/increment is queued; it is **not** a claim
+that this is the later owning fence's exact tick. Ages use the same monotonic
+clock as `WAIT_ENTRY`. Query rows end on write/invalidation; syncpoint rows end
+after `IncrementHost` returns. Separate active-only storage is bounded to 8192
+rows and reports overflow without evicting guest wait observations; nonzero
+`dropped` makes the tracked counts/oldest ages incomplete. It is
+instantiated only when enabled. Disabled tracking takes the cached enable/token
+branches, without clock reads, locks, allocations or heartbeat work.
+
+New `WAIT_ENTRY` scopes cover `fence_publication`, `cache_retirement`, and
+`guest_callbacks`. A completed native fence wait followed by a growing active
+retirement/callback scope now identifies the previously uninstrumented phase.
+Publication covers cache commit and fence queueing, so a guest increment
+recorded before a blocked publication is distinguishable from an idle fencing
+thread. These scopes observe progress; they never acquire renderer locks from
+the heartbeat, force-signal guest objects, or enqueue GPU work.
+
+### Regression evidence
+
+The native fence-manager harness compiles the production D3D12 fence manager,
+shared fence manager, and extracted production `FlushCommands` tail with fake
+native completion/caches. It queues 79 ordinary callbacks, completes a native
+submission, and verifies that submission alone leaves all callbacks outstanding
+with no committed readback batch. The repaired flush retires the batch before
+the callbacks with **no later guest submit or frame**. It also exercises the
+reentrant flush and verifies an empty tail creates no further batch/submission.
+Both batching settings pass. Removing just `CommitPendingOperations()` from
+the extracted flush makes both settings fail at the 79-callback completion
+assertion. Existing cases independently verify syncpoint completion without
+another guest command, deferred submission wakeup, forced drains, and failed
+submission propagation.
+
+The diagnostic harness verifies pending query/syncpoint identities and ticks,
+growing ages with a stopped producer, retirement from another thread, owned
+snapshots, late completion, bounded overflow, and disabled tracking.
+
+The production report-publication harness also verifies that the diagnostic
+token reaches both the write and invalidation callback, while immediate payload
+reports leave no pending diagnostic operation.
+
+Final validation: `python3 -m unittest discover -s tests/port` ran **894 tests
+in 379.280 s**, with **zero failures, 44 skips, and only the two environmental
+`fontTools` import errors** (`test_button_layout`, `test_xbox_button_icons`).
+The 16 focused fence, query publication/visibility, and diagnostic tests pass;
+the native fence harness also passes with `NXBOX_WAIT_DIAG=1`. `git diff --check`
+is clean. The full suite log is `/private/tmp/nxbox-stray-port-final.log`.
+No native Windows/UWP build or Xbox replay was performed, and no commit was made.

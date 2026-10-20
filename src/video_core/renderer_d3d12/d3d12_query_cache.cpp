@@ -664,11 +664,15 @@ VideoCommon::StreamerInterface* QueryCacheRuntime::GetStreamerInterface(QueryTyp
 void QueryCacheRuntime::ReportQueryFenceWait() {
     impl->context.Profile().Count(FrameCount::QueryReportFenceWaits);
 }
-void QueryCacheRuntime::ReportPending() {
+u64 QueryCacheRuntime::ReportPending(VAddr address) {
     ++impl->pending_reports;
     NxboxWait::Add(NxboxWait::Counter::QueryQueued);
+    return NxboxWait::Enabled() ? NxboxWait::BeginPending(NxboxWait::PendingKind::Query, address,
+                                                          impl->context.PendingFenceTick())
+                                : 0;
 }
-void QueryCacheRuntime::ReportCompleted(bool invalidated) {
+void QueryCacheRuntime::ReportCompleted(bool invalidated, u64 token) {
+    NxboxWait::EndPending(token);
     --impl->pending_reports;
     NxboxWait::Add(invalidated ? NxboxWait::Counter::QueryInvalidated
                                : NxboxWait::Counter::QueryWritten);

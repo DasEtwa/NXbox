@@ -61,8 +61,13 @@ void FenceManager::SignalSyncPoint(u32 value) {
     ++pending_syncpoints;
     NxboxWait::Add(NxboxWait::Counter::SyncpointQueued);
     LogSyncpoints();
-    auto signal = [this, value] {
+    const auto diagnostic_token = NxboxWait::Enabled()
+                                      ? NxboxWait::BeginPending(NxboxWait::PendingKind::Syncpoint,
+                                                                value, context.PendingFenceTick())
+                                      : 0;
+    auto signal = [this, value, diagnostic_token] {
         syncpoint_manager.IncrementHost(value);
+        NxboxWait::EndPending(diagnostic_token);
         --pending_syncpoints;
         ++signaled_syncpoints;
         NxboxWait::Add(NxboxWait::Counter::SyncpointSignaled);

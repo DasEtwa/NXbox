@@ -75,7 +75,15 @@ struct Memory {
     std::optional<u64> GpuToCpuAddress(u64 address) { return address; }
 };
 struct GPU { u64 GetTicks() { return 1234; } };
-struct Runtime {};
+struct Runtime {
+    u64 queued{}, written{}, invalidated{};
+    u64 ReportPending(VAddr address) { assert(address == 16); return ++queued; }
+    void ReportCompleted(bool cancelled, u64 token) {
+        assert(token == queued && token != 0);
+        if (cancelled) ++invalidated;
+        else ++written;
+    }
+};
 template<class Traits> struct Impl {
     Runtime runtime;
     StreamerInterface payload,counter;
@@ -112,8 +120,10 @@ int main() {
     native.CounterReport(16,QueryType::Payload,QueryPropertiesFlags::IsAFence,42,0);
     assert(native.impl->payload.freed==0 && native.cached_queries[0].size()==1);
     assert(native.Value()==0);
+    assert(native.impl->runtime.queued == 1 && native.impl->runtime.written == 0);
     native.impl->rasterizer.pending[0]();
     assert(native.Value()==42);
+    assert(native.impl->runtime.written == 1);
     assert(True(native.impl->payload.queries[0].flags & QueryFlagBits::IsGuestSynced));
     native.Retire();
     assert(native.impl->payload.freed==1 && native.cached_queries[0].empty());
@@ -133,6 +143,13 @@ int main() {
     QueryCacheBase<Native> immediate;
     immediate.CounterReport(16,QueryType::Payload,QueryPropertiesFlags::None,99,0);
     assert(immediate.Value()==99 && immediate.impl->payload.freed==1 && immediate.cached_queries.empty());
+    assert(immediate.impl->runtime.queued == 0 && immediate.impl->runtime.written == 0);
+    QueryCacheBase<Native> invalidated;
+    invalidated.CounterReport(16,QueryType::Payload,QueryPropertiesFlags::IsAFence,55,0);
+    invalidated.impl->payload.queries[0].flags |= QueryFlagBits::IsInvalidated;
+    invalidated.impl->rasterizer.pending[0]();
+    assert(invalidated.Value() == 0 && invalidated.impl->runtime.invalidated == 1);
+    assert(invalidated.impl->runtime.written == 0);
 }
 """
 

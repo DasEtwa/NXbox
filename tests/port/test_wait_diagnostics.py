@@ -27,11 +27,33 @@ int main() {
     // Decoder completion does not require another frame; upload retirement does.
     std::thread decoder([] { Add(Counter::DecodeCompleted); });
     decoder.join();
+    const auto pending_query = BeginPending(PendingKind::Query, 0x1000, 37410);
+    const auto pending_sync = BeginPending(PendingKind::Syncpoint, 1, 37408);
     if (!Enabled()) {
+        assert(pending_query == 0 && pending_sync == 0 && Pending().Read().entries.empty());
         assert(blocked == 0 && recorder.Read().entries.empty());
         for (const auto& value : counters) assert(value == 0);
         return 0;
     }
+    // Independent heartbeat copies retain the original age while the producer is idle.
+    const auto before = Pending().Read();
+    assert(before.entries.size() == 2 && before.dropped == 0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(15));
+    auto pending = Pending().Read();
+    for (const auto& entry : pending.entries) {
+        assert(NowMs() - entry.began_ms >= 10);
+        assert(entry.tick == (entry.kind == PendingKind::Query ? 37410 : 37408));
+    }
+    std::thread retirement([&] { EndPending(pending_query); });
+    retirement.join();
+    EndPending(pending_query); // Late completion cannot close another operation.
+    pending = Pending().Read();
+    assert(pending.entries.size() == 1 && pending.entries[0].token == pending_sync);
+    assert(before.entries.size() == 2);
+    EndPending(pending_sync);
+    assert(Pending().Read().entries.empty());
+    for (unsigned i = 0; i < 8200; ++i) BeginPending(PendingKind::Query, i, 42);
+    assert(Pending().Read().entries.size() == 8192 && Pending().Read().dropped == 8);
     auto snapshot = recorder.Read();
     assert(snapshot.entries.size() == 1 && snapshot.dropped == 0);
     const auto entry = snapshot.entries.front();

@@ -3917,7 +3917,10 @@ void RasterizerD3D12::FlushCommands() {
     if (OnGpuPipeline())
         return RunGpuPipeline([&] { return FlushCommands(); });
 
-    // Cache batches and guest callbacks belong to FenceManager, never submission.
+    // DispatchCalls reaches this boundary before the GPU command queue can go idle.
+    // Submit also flushes query reduction, but only a fence publishes its CPU callbacks.
+    // SignalFence may reenter FlushCommands; its operations have already been moved then.
+    fence_manager.CommitPendingOperations();
     context.Submit(FrameCount::ForcedSubmitGuestFlush);
     fence_manager.NotifyDeferredSubmit();
     default_pipeline_cache->FlushDiskCache();

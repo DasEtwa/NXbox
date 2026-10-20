@@ -283,16 +283,19 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
         }
         sub_container.insert_or_assign(base, query_location);
     }
-    if constexpr (requires { impl->runtime.ReportPending(); }) {
+    u64 diagnostic_token{};
+    if constexpr (requires { impl->runtime.ReportPending(cpu_addr); }) {
         if (!immediate_payload)
-            impl->runtime.ReportPending();
+            diagnostic_token = impl->runtime.ReportPending(cpu_addr);
     }
     std::function<void()> operation([this, is_synced, streamer, query_base = query, query_location,
-                                     pointer, pointer_timestamp] {
+                                     pointer, pointer_timestamp, diagnostic_token] {
         std::scoped_lock lock(cache_mutex);
         const auto complete = [&](bool invalidated) {
-            if constexpr (requires { impl->runtime.ReportCompleted(invalidated); })
-                impl->runtime.ReportCompleted(invalidated);
+            if constexpr (requires {
+                              impl->runtime.ReportCompleted(invalidated, diagnostic_token);
+                          })
+                impl->runtime.ReportCompleted(invalidated, diagnostic_token);
         };
         if (True(query_base->flags & QueryFlagBits::IsInvalidated)) {
             if (!is_synced) [[likely]] {

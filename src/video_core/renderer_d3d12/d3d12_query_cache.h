@@ -70,8 +70,8 @@ public:
                                                VideoCommon::LookupData second, bool qc_dirty,
                                                bool equal_check);
     void ReportQueryFenceWait();
-    void ReportPending();
-    void ReportCompleted(bool invalidated);
+    u64 ReportPending(VAddr address);
+    void ReportCompleted(bool invalidated, u64 token);
     std::string VisibilityDiagnostics() const;
     void FlushPendingReports(DAddr address, u64 size);
     void PrepareDraw();
