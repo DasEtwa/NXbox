@@ -12,6 +12,11 @@ class FtpAutostartTests(unittest.TestCase):
         self.assertIn('exists(local_state_ / "ftp-autostart")', ctor)
         self.assertIn("ftp_.Start(local_state_)", ctor)
 
+    def test_autostart_file_can_fix_the_password(self):
+        server = (ROOT / "src/eden_uwp/ftp/ftp_server.cpp").read_text()
+        self.assertIn('std::ifstream autostart{local_state / "ftp-autostart"}', server)
+        self.assertIn("fixed.size() >= 8", server)
+
 
 if __name__ == "__main__":
     unittest.main()

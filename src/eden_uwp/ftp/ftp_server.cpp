@@ -5,6 +5,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <fstream>
 #include <mutex>
 #include <span>
 #include <stdexcept>
@@ -592,6 +593,16 @@ bool Server::Start(const fs::path& local_state) {
             random = CryptographicBuffer::GenerateRandomNumber();
         } while (random >= 4294800000u);
         state_->password = std::to_string(100000u + random % 900000u);
+        // Headless start: a password of at least 8 characters in ftp-autostart replaces the
+        // on-screen one, so a script can log in without reading the TV.
+        if (std::ifstream autostart{local_state / "ftp-autostart"}) {
+            std::string fixed;
+            std::getline(autostart, fixed);
+            while (!fixed.empty() && (fixed.back() == '\r' || fixed.back() == ' '))
+                fixed.pop_back();
+            if (fixed.size() >= 8)
+                state_->password = fixed;
+        }
         fs::create_directories(local_state / "games");
         fs::create_directories(local_state / "eden" / "keys");
         fs::create_directories(local_state / "firmware");
