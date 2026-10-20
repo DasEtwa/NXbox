@@ -42,9 +42,18 @@ Maxwell3D::Maxwell3D(MemoryManager& memory_manager_)
     execution_mask.reset();
     for (size_t i = 0; i < execution_mask.size(); i++)
         execution_mask[i] = IsMethodExecutable(u32(i));
+    InitializeRegisterWriteRuns();
 }
 
 Maxwell3D::~Maxwell3D() = default;
+
+void Maxwell3D::InitializeRegisterWriteRuns() {
+    u16 length = 0;
+    for (size_t method = register_write_runs.size(); method-- > 0;) {
+        length = execution_mask[method] ? 0 : static_cast<u16>(length + 1);
+        register_write_runs[method] = length;
+    }
+}
 
 void Maxwell3D::BindRasterizer(VideoCore::RasterizerInterface* rasterizer_) {
     rasterizer = rasterizer_;

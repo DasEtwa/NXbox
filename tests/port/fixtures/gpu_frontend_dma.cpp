@@ -54,6 +54,12 @@ struct Maxwell3D final : Engine {
         } const_buffer;
     };
     unsigned batches{}, increasing_batches{};
+    u32 GetRegisterWriteRunLength(u32 method) const {
+        u32 count = 0;
+        while (method + count < MacroRegistersStart && !execution_mask[method + count])
+            ++count;
+        return count;
+    }
     void CallMultiMethod(Core::System&, u32 first, const u32* values, u32 count) {
         ++increasing_batches;
         for (u32 i = 0; i < count; ++i)
@@ -113,6 +119,11 @@ struct DmaPusher {
     } dma_state;
     static constexpr u32 non_puller_methods = 0x40;
     bool frontend_fastpath{Tegra::GpuFrontendFastPathEnabled()};
+    bool state_runs_fastpath{[] {
+        const char* value = std::getenv("NXBOX_DMA_STATE_RUNS");
+        return !value || value[0] != '0' || value[1] != '\0';
+    }()};
+    unsigned scalar_dispatches{};
     bool dma_increment_once{};
     Core::System system;
     Engines::Maxwell3D engine;  // subchannel 0

@@ -3140,6 +3140,11 @@ public:
     void CallMultiMethod(Core::System& system, u32 method, const u32* values, u32 amount);
     void CallCBDataIncrementing(u32 method, const u32* values, u32 amount);
 
+    // The execution mask is fixed at construction. Zero denotes a side-effect method.
+    u32 GetRegisterWriteRunLength(u32 method) const {
+        return register_write_runs[method];
+    }
+
     bool ShouldExecute() const {
         return execute_on;
     }
@@ -3203,6 +3208,9 @@ public:
 
 private:
     void InitializeRegisterDefaults();
+    void InitializeRegisterWriteRuns();
+
+    std::array<u16, Regs::NUM_REGS> register_write_runs{};
 
     void ProcessMacro(Core::System& system, u32 method, const u32* base_start, u32 amount, bool is_last_call);
 
