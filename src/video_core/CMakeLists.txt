@@ -512,6 +512,7 @@ if (WIN32 AND (ENABLE_D3D12 OR CMAKE_SYSTEM_NAME STREQUAL "WindowsStore"))
         renderer_d3d12/d3d12_record_stream.h
         renderer_d3d12/d3d12_recording_progress.h
         renderer_d3d12/d3d12_context.h
+        renderer_d3d12/d3d12_memory_budget.h
         renderer_d3d12/d3d12_completion.h
         renderer_d3d12/d3d12_fence_manager.cpp
         renderer_d3d12/d3d12_fence_manager.h

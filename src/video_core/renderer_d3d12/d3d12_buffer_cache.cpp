@@ -94,8 +94,13 @@ u32 WitnessWindowNonzero(std::span<const u8> page) {
 }
 } // namespace
 void BufferCacheRuntime::TickFrame(Common::SlotVector<Buffer>& buffers) {
-    upload.Collect();
-    readback.Collect();
+    bool trim_staging = false;
+#ifdef NXBOX_UWP
+    const auto usage = context.MemoryUsage();
+    trim_staging = usage >= NativeTextureMemoryBudget(usage).critical;
+#endif
+    upload.Collect(trim_staging);
+    readback.Collect(trim_staging);
     if (witness_resource) {
         // Diagnostic: re-read the watched upload destination each frame, log content changes.
         auto probe = context.CreateBuffer(4096, D3D12_HEAP_TYPE_READBACK);

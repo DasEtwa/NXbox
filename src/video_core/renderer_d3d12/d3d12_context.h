@@ -21,6 +21,7 @@
 #include <vector>
 #include "common/gpu_thread_profile.h"
 #include "video_core/renderer_d3d12/d3d12_flush_policy.h"
+#include "video_core/renderer_d3d12/d3d12_memory_budget.h"
 #include "video_core/renderer_d3d12/d3d12_recording_progress.h"
 
 namespace D3D12 {
@@ -663,7 +664,7 @@ public:
     StagingRing(Context& context, D3D12_HEAP_TYPE heap, std::function<void()> release_leases = {})
         : context{context}, heap{heap}, release_leases{std::move(release_leases)} {}
     StagingBufferRef Request(size_t size);
-    void Collect();
+    void Collect(bool trim = false);
 
 private:
     struct Page {

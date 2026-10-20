@@ -1569,8 +1569,13 @@ void TextureCacheRuntime::CopyImage(Image& dst, Image& src,
     }
 }
 void TextureCacheRuntime::TickFrame() {
-    upload.Collect();
-    readback.Collect();
+    bool trim_staging = false;
+#ifdef NXBOX_UWP
+    const auto usage = context.MemoryUsage();
+    trim_staging = usage >= NativeTextureMemoryBudget(usage).critical;
+#endif
+    upload.Collect(trim_staging);
+    readback.Collect(trim_staging);
     ++frame_tick;
     std::erase_if(framebuffers,
                   [this](const auto& entry) { return frame_tick - entry.last_frame > 2; });

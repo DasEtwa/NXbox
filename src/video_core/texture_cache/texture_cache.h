@@ -234,6 +234,14 @@ void TextureCache<P>::TickFrame() {
     if (runtime.CanReportMemoryUsage()) {
         total_used_memory = runtime.GetDeviceMemoryUsage();
     }
+#ifdef NXBOX_UWP
+    // Guest heap/JIT growth changes the shared host budget after construction.
+    if constexpr (requires {
+                      runtime.ApplyMemoryBudgetOverride(expected_memory, critical_memory);
+                  }) {
+        runtime.ApplyMemoryBudgetOverride(expected_memory, critical_memory);
+    }
+#endif
     if (total_used_memory > minimum_memory) {
         NxboxStall::Scope stall_scope{NxboxStall::Kind::GarbageCollect};
         RunGarbageCollector();
