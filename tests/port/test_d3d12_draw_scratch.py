@@ -57,6 +57,16 @@ struct Context {
 void TraceApiCall(Context*, const char*, void*, const void*, std::size_t) {}
 struct D3D12DescriptorAllocator {
     bool descriptor_fastpath = false;
+    bool descriptor_table_cache = false;
+    struct DescriptorKeyHash {
+        size_t operator()(const DescriptorKey& key) const { return key.kind; }
+    };
+    struct CachedDrawTable {
+        DescriptorTable table;
+        std::vector<ResourcePtr> resources;
+    };
+    std::array<D3D12::DescriptorSetCache<DescriptorKey, CachedDrawTable, DescriptorKeyHash>, 2>
+        draw_table_cache;
     struct Cache { u64 generation = 1; } view_cache, sampler_cache;
     void RefreshCaches() {}
     struct CopyBatch {};
@@ -73,6 +83,9 @@ struct D3D12DescriptorAllocator {
     void WriteCached(int, const ResourcePtr&, u32, const void*, u32, u32, CopyBatch*) { ++writes; }
     void FlushCopies(int, CopyBatch&) {}
     bool CanReuseDrawTable(const DescriptorPlan&, bool = false) const;
+    bool CanReusePreviousDrawTable(const DescriptorPlan&, bool) const;
+    const CachedDrawTable* FindCachedDrawTable(const DescriptorPlan&, bool) const;
+    void RememberDrawTable(const DescriptorPlan&, DescriptorTable, bool);
     DescriptorTable FinishDrawTable(DescriptorPlan&, bool = false);
 };
 """
@@ -157,6 +170,43 @@ int main() {
     assert(!fast.CanReuseDrawTable(plan));
     fast.FinishDrawTable(plan);
     assert(fast.context.copies == 2);
+    // Run both production copy branches with the set cache enabled. Revisited
+    // tables must avoid allocation/writes; submissions and heap domains cannot alias.
+    for (bool bulk : {false, true}) {
+        D3D12DescriptorAllocator cached;
+        cached.descriptor_table_cache = true;
+        cached.descriptor_fastpath = bulk;
+        auto build = [&](u32 kind, bool sampler = false) {
+            prepare(kind, {0, 1, 0});
+            plan.sources.generation = 1;
+            plan.sources.handles[0] = kind + 10;
+            return cached.FinishDrawTable(plan, sampler).first;
+        };
+        const auto first_table = build(1);
+        assert(build(2) != first_table);
+        prepare(1, {0, 1, 0});
+        plan.sources.generation = 1;
+        plan.sources.handles[0] = 11;
+        assert(cached.CanReuseDrawTable(plan));
+        assert(cached.FinishDrawTable(plan).first == first_table);
+        assert(build(1) == first_table); // Cache hit warms the previous-table fast path.
+        assert(cached.allocations == 2);
+        assert((bulk ? cached.context.copies : cached.writes) == 2);
+        assert(build(1, true) != first_table);
+        ++cached.context.tick; // Reserve submitted after its optimistic reuse check.
+        assert(build(1) != first_table);
+        assert(cached.allocations == 4);
+        // Recycling CPU sources does not invalidate immutable GPU descriptors.
+        ++cached.view_cache.generation;
+        assert(build(2) != first_table);
+        const auto new_first = build(1);
+        assert(cached.allocations == 5);
+        assert(build(1) == new_first);
+        for (auto& domain : cached.draw_table_cache) domain.Clear();
+        for (auto& previous : cached.previous_draw_tables) previous.tick = 0;
+        assert(build(1) != new_first);
+        assert(cached.allocations == 6);
+    }
 }
 """
 
@@ -172,6 +222,9 @@ class DrawScratchTests(unittest.TestCase):
             function(source, signature)
             for signature in (
                 "bool D3D12DescriptorAllocator::CanReuseDrawTable(",
+                "bool D3D12DescriptorAllocator::CanReusePreviousDrawTable(",
+                "const D3D12DescriptorAllocator::CachedDrawTable* D3D12DescriptorAllocator::FindCachedDrawTable(",
+                "void D3D12DescriptorAllocator::RememberDrawTable(",
                 "DescriptorTable D3D12DescriptorAllocator::FinishDrawTable(",
             )
         )

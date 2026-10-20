@@ -229,7 +229,8 @@ D3D12_SAMPLER_DESC MakeSamplerDesc(const Tegra::Texture::TSCEntry& entry, bool s
 
 D3D12DescriptorAllocator::D3D12DescriptorAllocator(Context& context, u32 view_capacity,
                                                    u32 sampler_capacity)
-    : descriptor_fastpath{[] {
+    : descriptor_table_cache{BisectEnabled("NXBOX_D3D12_DESCRIPTOR_TABLE_CACHE")},
+      descriptor_fastpath{[] {
           const char* value = std::getenv("NXBOX_D3D12_DESCRIPTOR_FASTPATH");
           return !value || std::strcmp(value, "0") != 0;
       }()},
@@ -246,6 +247,7 @@ D3D12DescriptorAllocator::D3D12DescriptorAllocator(Context& context, u32 view_ca
     InitCache(bound_rtvs, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 8);
     InitCache(bound_dsv, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 1);
     Diagnostic(fmt::format("D3D12 descriptor_fastpath={}", descriptor_fastpath ? 1 : 0));
+    Diagnostic(fmt::format("D3D12 descriptor_table_cache={}", descriptor_table_cache ? 1 : 0));
 }
 
 void D3D12DescriptorAllocator::InitCache(DescriptorCache& cache, D3D12_DESCRIPTOR_HEAP_TYPE type,
@@ -311,6 +313,11 @@ void D3D12DescriptorAllocator::WriteCached(D3D12_DESCRIPTOR_HEAP_TYPE type,
 }
 
 bool D3D12DescriptorAllocator::CanReuseDrawTable(const DescriptorPlan& plan, bool sampler) const {
+    return CanReusePreviousDrawTable(plan, sampler) || FindCachedDrawTable(plan, sampler);
+}
+
+bool D3D12DescriptorAllocator::CanReusePreviousDrawTable(const DescriptorPlan& plan,
+                                                         bool sampler) const {
     const auto& previous = previous_draw_tables[sampler ? 1 : 0];
     if (descriptor_fastpath) {
         const auto& cache = sampler ? sampler_cache : view_cache;
@@ -323,11 +330,33 @@ bool D3D12DescriptorAllocator::CanReuseDrawTable(const DescriptorPlan& plan, boo
            previous.plan.keys == plan.keys;
 }
 
+const D3D12DescriptorAllocator::CachedDrawTable* D3D12DescriptorAllocator::FindCachedDrawTable(
+    const DescriptorPlan& plan, bool sampler) const {
+    if (!descriptor_table_cache)
+        return nullptr;
+    return draw_table_cache[sampler ? 1 : 0].Find(context.CurrentTick(), plan.sizes, plan.keys);
+}
+
+void D3D12DescriptorAllocator::RememberDrawTable(const DescriptorPlan& plan, DescriptorTable table,
+                                                 bool sampler) {
+    if (descriptor_table_cache)
+        draw_table_cache[sampler ? 1 : 0].Remember(context.CurrentTick(), plan.sizes, plan.keys,
+                                                   {table, plan.resources});
+}
+
 DescriptorTable D3D12DescriptorAllocator::FinishDrawTable(DescriptorPlan& plan, bool sampler) {
     auto& previous = previous_draw_tables[sampler ? 1 : 0];
-    if (CanReuseDrawTable(plan, sampler)) {
+    if (CanReusePreviousDrawTable(plan, sampler)) {
         context.Profile().Count(FrameCount::DescriptorTableReuses);
         return previous.table;
+    }
+    // Recheck after Reserve: a submission retires the entire cache's GPU slots.
+    if (const auto* cached = FindCachedDrawTable(plan, sampler)) {
+        context.Profile().Count(FrameCount::DescriptorTableReuses);
+        previous.tick = context.CurrentTick();
+        std::swap(previous.plan, plan);
+        previous.table = cached->table;
+        return cached->table;
     }
     const u32 count = static_cast<u32>(plan.keys.size());
     const auto table = sampler ? AllocateSamplers(count) : AllocateViews(count);
@@ -346,6 +375,7 @@ DescriptorTable D3D12DescriptorAllocator::FinishDrawTable(DescriptorPlan& plan, 
         TraceApiCall(context.Device(), "CopyDescriptors", nullptr, &type, sizeof(type));
         context.Profile().Count(FrameCount::DescriptorCopyCalls);
         context.Profile().Count(FrameCount::DescriptorCopies, count);
+        RememberDrawTable(plan, table, sampler);
         previous.tick = context.CurrentTick();
         std::swap(previous.plan, plan);
         previous.table = table;
@@ -370,6 +400,7 @@ DescriptorTable D3D12DescriptorAllocator::FinishDrawTable(DescriptorPlan& plan, 
     }
     if (batch)
         FlushCopies(type, *batch);
+    RememberDrawTable(plan, table, sampler);
     previous.tick = context.CurrentTick();
     // Retain the new keys/resources and return the old storage to the draw scratch.
     // Move assignment would discard that storage and allocate again on the next draw.
