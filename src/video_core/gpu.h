@@ -140,6 +140,9 @@ public:
     explicit GPU(Core::System& system, bool is_async, bool use_nvdec);
     ~GPU();
 
+    // Register renderer workers before they access core/device memory.
+    void RegisterHostThread();
+
     /// Binds a renderer to the GPU.
     void BindRenderer(std::unique_ptr<VideoCore::RendererBase> renderer);
 

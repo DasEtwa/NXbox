@@ -10,6 +10,7 @@
 #include "common/common_types.h"
 #include "video_core/control/channel_state_cache.h"
 #include "video_core/engines/maxwell_dma.h"
+#include "video_core/gpu_draw_pipeline.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/renderer_d3d12/d3d12_buffer_cache.h"
 #include "video_core/renderer_d3d12/d3d12_clear.h"
@@ -72,10 +73,38 @@ public:
     DisplayTexture FramebufferTexture(const Tegra::FramebufferConfig& config);
     ~RasterizerD3D12() override;
 
+    void DrainGpuPipeline() override;
+    bool HasGpuPipeline() const override {
+        return gpu_pipeline != nullptr;
+    }
+    bool OnGpuPipeline() const {
+        return gpu_pipeline && !gpu_pipeline->IsConsumer();
+    }
+    // Synchronous calls and presentation execute on the same consumer as draws.
+    template <class Func>
+    auto RunGpuPipeline(Func&& function) -> std::invoke_result_t<Func> {
+        if (OnGpuPipeline()) {
+            // Only the GPU producer may read frontend registers. CPU invalidation
+            // callbacks use the queue without reading the concurrently decoding engine.
+            if (pipeline_frontend_owner == this && frontend_maxwell) {
+                auto snapshot = VideoCommon::CaptureDrawSnapshot(*frontend_maxwell);
+                return gpu_pipeline->Invoke(
+                    [&, snapshot = std::move(snapshot)]() -> std::invoke_result_t<Func> {
+                        snapshot.Apply(*maxwell3d);
+                        return function();
+                    });
+            }
+            return gpu_pipeline->Invoke(std::forward<Func>(function));
+        }
+        return function();
+    }
+
     void Draw(bool is_indexed, u32 instance_count) override;
     void DrawIndirect() override;
     // Overrides the built-in guest shader pipeline cache for alternate providers.
     void SetPipelineCache(IPipelineCache* cache) {
+        if (OnGpuPipeline())
+            return RunGpuPipeline([&] { SetPipelineCache(cache); });
         pipeline_cache = cache;
     }
     void DrawTexture() override;
@@ -134,6 +163,11 @@ public:
     void ReleaseChannel(s32 channel_id) override;
 
 private:
+    Tegra::Engines::Maxwell3D* frontend_maxwell{};
+    inline static thread_local const RasterizerD3D12* pipeline_frontend_owner{};
+    s32 frontend_channel_id{-1};
+    // Destroy/join explicitly before cache and context teardown.
+    std::unique_ptr<VideoCommon::GpuDrawPipeline> gpu_pipeline;
     struct DynamicState {
         std::array<D3D12_VIEWPORT, Tegra::Engines::Maxwell3D::Regs::NumViewports> viewports{};
         std::array<D3D12_RECT, Tegra::Engines::Maxwell3D::Regs::NumViewports> scissors{};
@@ -198,6 +232,7 @@ private:
     ResourcePtr CopyFeedback(const ResourcePtr& source,
                              const VideoCommon::SubresourceRange* range = nullptr);
     void SkipDraw(const char* reason);
+    void DrawSynchronous(bool is_indexed, u32 instance_count);
     struct FeedbackTexture {
         ResourcePtr resource;
         const Resource* source{};

@@ -171,23 +171,32 @@ GPUVAddr MemoryManager::BigPageTableOp(GPUVAddr gpu_addr, [[maybe_unused]] DAddr
     return gpu_addr;
 }
 
+void MemoryManager::DrainGpuPipeline() const {
+    if (gpu_pipeline_enabled)
+        rasterizer->DrainGpuPipeline();
+}
+
 void MemoryManager::BindRasterizer(VideoCore::RasterizerInterface* rasterizer_) {
     rasterizer = rasterizer_;
+    gpu_pipeline_enabled = rasterizer && rasterizer->HasGpuPipeline();
 }
 
 GPUVAddr MemoryManager::Map(GPUVAddr gpu_addr, DAddr dev_addr, std::size_t size, PTEKind kind, bool is_big_pages) {
+    DrainGpuPipeline();
     if (is_big_pages)
         return BigPageTableOp(gpu_addr, dev_addr, size, kind, EntryType::Mapped);
     return PageTableOp(gpu_addr, dev_addr, size, kind, EntryType::Mapped);
 }
 
 GPUVAddr MemoryManager::MapSparse(GPUVAddr gpu_addr, std::size_t size, bool is_big_pages) {
+    DrainGpuPipeline();
     if (is_big_pages)
         return BigPageTableOp(gpu_addr, 0, size, PTEKind::INVALID, EntryType::Reserved);
     return PageTableOp(gpu_addr, 0, size, PTEKind::INVALID, EntryType::Reserved);
 }
 
 void MemoryManager::Unmap(GPUVAddr gpu_addr, std::size_t size) {
+    DrainGpuPipeline();
     if (size == 0) {
         return;
     }
@@ -264,6 +273,7 @@ template void MemoryManager::Write<u32>(GPUVAddr addr, u32 data);
 template void MemoryManager::Write<u64>(GPUVAddr addr, u64 data);
 
 u8* MemoryManager::GetPointer(GPUVAddr gpu_addr) {
+    DrainGpuPipeline();
     const auto address{GpuToCpuAddress(gpu_addr)};
     if (!address) {
         return {};
@@ -273,6 +283,7 @@ u8* MemoryManager::GetPointer(GPUVAddr gpu_addr) {
 }
 
 const u8* MemoryManager::GetPointer(GPUVAddr gpu_addr) const {
+    DrainGpuPipeline();
     const auto address{GpuToCpuAddress(gpu_addr)};
     if (!address) {
         return {};
@@ -352,6 +363,7 @@ inline void MemoryManager::MemoryOperation(GPUVAddr gpu_src_addr, std::size_t si
 }
 
 void MemoryManager::ReadBlockImpl(GPUVAddr gpu_src_addr, void* dest_buffer, std::size_t size, [[maybe_unused]] VideoCommon::CacheType which, bool unsafe) const {
+    DrainGpuPipeline();
     auto set_to_zero = [&]([[maybe_unused]] std::size_t page_index, [[maybe_unused]] std::size_t offset, std::size_t copy_amount) {
         std::memset(dest_buffer, 0, copy_amount);
         dest_buffer = static_cast<u8*>(dest_buffer) + copy_amount;
@@ -394,6 +406,7 @@ void MemoryManager::ReadBlockUnsafe(GPUVAddr gpu_src_addr, void* dest_buffer, co
 }
 
 void MemoryManager::WriteBlockImpl(GPUVAddr gpu_dest_addr, const void* src_buffer, std::size_t size, [[maybe_unused]] VideoCommon::CacheType which, bool unsafe) {
+    DrainGpuPipeline();
     auto just_advance = [&]([[maybe_unused]] std::size_t page_index, [[maybe_unused]] std::size_t offset, std::size_t copy_amount) {
         src_buffer = static_cast<const u8*>(src_buffer) + copy_amount;
     };
@@ -709,6 +722,7 @@ void MemoryManager::GetSubmappedRangeImpl(GPUVAddr gpu_addr, std::size_t size, b
 }
 
 void MemoryManager::FlushCaching() {
+    DrainGpuPipeline();
     // Flush from the invalidate accumulator
     if (accumulator.InvalidateAll([this](GPUVAddr addr, size_t size) {
         GetSubmappedRangeImpl<false>(addr, size, page_stash2);
@@ -719,6 +733,7 @@ void MemoryManager::FlushCaching() {
 }
 
 const u8* MemoryManager::GetSpan(const GPUVAddr src_addr, const std::size_t size) const {
+    DrainGpuPipeline();
     if (!IsContinuousRange(src_addr, size)) {
         return nullptr;
     }
@@ -730,6 +745,7 @@ const u8* MemoryManager::GetSpan(const GPUVAddr src_addr, const std::size_t size
 }
 
 u8* MemoryManager::GetSpan(const GPUVAddr src_addr, const std::size_t size) {
+    DrainGpuPipeline();
     if (!IsContinuousRange(src_addr, size)) {
         return nullptr;
     }

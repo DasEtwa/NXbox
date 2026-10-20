@@ -41,7 +41,7 @@ inline thread_local Sink* sink{};
 inline std::atomic<bool> enabled{};
 // Recording-thread-only gate. Set alongside sink on that same thread; generic
 // PhaseScope/WaitScope callers on other threads must continue to use the TLS sink.
-inline bool recording_enabled{};
+inline thread_local bool recording_enabled{};
 class RecordingScope {
 public:
     explicit RecordingScope(Phase phase) {

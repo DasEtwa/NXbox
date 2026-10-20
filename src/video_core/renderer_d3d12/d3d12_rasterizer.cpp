@@ -21,6 +21,7 @@
 #include "common/alignment.h"
 #include "common/logging.h"
 #include "common/scope_exit.h"
+#include "common/thread.h"
 #include "core/memory.h"
 #include "shader_recompiler/backend/hlsl/hlsl_draw_texture.h"
 #include "video_core/control/channel_state.h"
@@ -67,6 +68,15 @@ RasterizerD3D12::RasterizerD3D12(Tegra::GPU& gpu, Tegra::MaxwellDeviceMemoryMana
       transform_feedback{context}, query_runtime{context, memory, buffer_cache, transform_feedback},
       query_cache{gpu, *this, memory, query_runtime},
       fence_manager{*this, gpu, texture_cache, buffer_cache, query_cache, context}, m_gpu{gpu} {
+    if (BisectEnabled("NXBOX_GPU_PIPELINE")) {
+        gpu_pipeline = std::make_unique<VideoCommon::GpuDrawPipeline>();
+        gpu_pipeline->Invoke([&gpu] {
+            gpu.RegisterHostThread();
+            Common::SetCurrentThreadName("GPU draw builder");
+            Common::SetCurrentThreadPriority(Common::ThreadPriority::Critical);
+            Common::SetCurrentThreadToPerformanceCores();
+        });
+    }
     VideoCommon::SubmissionTrace::Reset();
     VideoCommon::ShaderDiscovery::Reset();
     default_pipeline_cache = std::make_unique<PipelineCache>(context, memory);
@@ -87,6 +97,11 @@ RasterizerD3D12::RasterizerD3D12(Tegra::GPU& gpu, Tegra::MaxwellDeviceMemoryMana
     };
 }
 RasterizerD3D12::~RasterizerD3D12() {
+    // Stop publication and join while snapshots, channels and caches are still alive.
+    if (gpu_pipeline) {
+        gpu_pipeline->Close();
+        gpu_pipeline.reset();
+    }
     VideoCommon::ShaderDiscovery::Shutdown();
     context.Profile().guest_visibility = {};
     // Query callbacks capture the cache. Drain while every cache/runtime is alive.
@@ -2690,11 +2705,36 @@ bool RasterizerD3D12::PrepareDrawIndices(bool is_indexed, DrawParams& params,
     return true;
 }
 
-void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) try {
+void RasterizerD3D12::DrainGpuPipeline() {
+    if (gpu_pipeline)
+        gpu_pipeline->Drain();
+}
+
+void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) {
+    if (OnGpuPipeline()) {
+        auto snapshot = VideoCommon::CaptureDrawSnapshot(*frontend_maxwell);
+        gpu_pipeline->Push([this, snapshot = std::move(snapshot), is_indexed, instance_count] {
+            snapshot.Apply(*maxwell3d);
+            DrawSynchronous(is_indexed, instance_count);
+        });
+        // Guest sync requests belong to the producer. A request that accesses
+        // memory drains the queue through the rasterizer/memory boundary.
+        m_gpu.TickWork();
+        return;
+    }
+    DrawSynchronous(is_indexed, instance_count);
+    // Indirect expansion calls Draw on the consumer and retains its per-draw
+    // sync-request cadence. Only asynchronously published draws tick on the producer.
+    if (gpu_pipeline)
+        m_gpu.TickWork();
+}
+
+void RasterizerD3D12::DrawSynchronous(bool is_indexed, u32 instance_count) try {
     const FrameProfile::Scope profile_dispatch{context.Profile(), FramePhase::DrawDispatch};
     static const bool no_draws = BisectEnabled("NXBOX_D3D12_NO_DRAWS");
     if (no_draws) {
-        m_gpu.TickWork();
+        if (!gpu_pipeline)
+            m_gpu.TickWork();
         return;
     }
     converted_indices.reset();
@@ -2703,17 +2743,20 @@ void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) try {
         MakeDrawParams(maxwell3d->draw_manager.draw_state, instance_count, is_indexed);
     PrepareDraw(is_indexed, DrawCommand{params});
     converted_indices.reset();
-    m_gpu.TickWork();
+    if (!gpu_pipeline)
+        m_gpu.TickWork();
 } catch (const std::exception& error) {
     const FrameProfile::Scope profile_failure{context.Profile(), FramePhase::DrawCleanup};
     converted_indices.reset();
     SkipDraw(error.what());
-    m_gpu.TickWork();
+    if (!gpu_pipeline)
+        m_gpu.TickWork();
 } catch (...) {
     const FrameProfile::Scope profile_failure{context.Profile(), FramePhase::DrawCleanup};
     converted_indices.reset();
     SkipDraw("unknown exception in direct draw");
-    m_gpu.TickWork();
+    if (!gpu_pipeline)
+        m_gpu.TickWork();
 }
 
 ID3D12CommandSignature* RasterizerD3D12::IndirectSignature(bool indexed) {
@@ -2734,6 +2777,9 @@ ID3D12CommandSignature* RasterizerD3D12::IndirectSignature(bool indexed) {
 }
 
 void RasterizerD3D12::DrawIndirect() try {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return DrawIndirect(); });
+
     const FrameProfile::Scope profile_dispatch{context.Profile(), FramePhase::DrawDispatch};
     static const bool no_draws = BisectEnabled("NXBOX_D3D12_NO_DRAWS");
     if (no_draws) {
@@ -2810,23 +2856,36 @@ void RasterizerD3D12::DrawIndirect() try {
     }
     m_gpu.TickWork();
 } catch (const std::exception& error) {
+    if (OnGpuPipeline())
+        throw;
     const FrameProfile::Scope profile_failure{context.Profile(), FramePhase::DrawCleanup};
     SkipDraw(error.what());
     m_gpu.TickWork();
 } catch (...) {
+    if (OnGpuPipeline())
+        throw;
     const FrameProfile::Scope profile_failure{context.Profile(), FramePhase::DrawCleanup};
     SkipDraw("unknown exception in indirect draw");
     m_gpu.TickWork();
 }
 
 bool RasterizerD3D12::AccelerateConditionalRendering() {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return AccelerateConditionalRendering(); });
+
     gpu_memory->FlushCaching();
     return query_cache.AccelerateHostConditionalRendering();
 }
 void RasterizerD3D12::PreparePresentation() {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return PreparePresentation(); });
+
     query_runtime.PauseHostConditionalRendering();
 }
 void RasterizerD3D12::DrawTexture() {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return DrawTexture(); });
+
     const auto execute_blit = [this] {
         ++feedback_draw;
         ++feedback_epoch;
@@ -2976,8 +3035,12 @@ void RasterizerD3D12::DrawTexture() {
     try {
         execute_blit();
     } catch (const std::exception& error) {
+        if (OnGpuPipeline())
+            throw;
         SkipDraw(error.what());
     } catch (...) {
+        if (OnGpuPipeline())
+            throw;
         SkipDraw("unknown exception in DrawTexture");
     }
     // Tick callbacks may throw. Let the GPU-thread boundary cancel their waiters;
@@ -2985,6 +3048,9 @@ void RasterizerD3D12::DrawTexture() {
     m_gpu.TickWork();
 }
 void RasterizerD3D12::Clear(u32 layer_count) try {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return Clear(layer_count); });
+
     ++feedback_epoch;
     transform_feedback.Unbind();
     gpu_memory->FlushCaching();
@@ -3173,13 +3239,20 @@ void RasterizerD3D12::Clear(u32 layer_count) try {
     }
     m_gpu.TickWork();
 } catch (const std::exception& error) {
+    if (OnGpuPipeline())
+        throw;
     SkipDraw(error.what());
     m_gpu.TickWork();
 } catch (...) {
+    if (OnGpuPipeline())
+        throw;
     SkipDraw("unknown exception in clear");
     m_gpu.TickWork();
 }
 void RasterizerD3D12::DispatchCompute() try {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return DispatchCompute(); });
+
     bool trace_submitted = false;
     VideoCommon::SubmissionTrace::Log("host_compute_begin");
     SCOPE_EXIT {
@@ -3443,34 +3516,57 @@ void RasterizerD3D12::DispatchCompute() try {
     bindings.stages[0].Clear();
     m_gpu.TickWork();
 } catch (const std::exception& error) {
+    if (OnGpuPipeline())
+        throw;
     SkipDraw(error.what());
     m_gpu.TickWork();
 } catch (...) {
+    if (OnGpuPipeline())
+        throw;
     SkipDraw("unknown exception in compute dispatch");
     m_gpu.TickWork();
 }
 void RasterizerD3D12::ResetCounter(VideoCommon::QueryType type) {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return ResetCounter(type); });
+
     query_cache.CounterReset(type);
 }
 void RasterizerD3D12::Query(GPUVAddr gpu_addr, VideoCommon::QueryType type,
                             VideoCommon::QueryPropertiesFlags flags, u32 payload, u32 subreport) {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return Query(gpu_addr, type, flags, payload, subreport); });
+
     query_cache.CounterReport(gpu_addr, type, flags, payload, subreport);
 }
 void RasterizerD3D12::BindGraphicsUniformBuffer(size_t stage, u32 index, GPUVAddr gpu_addr,
                                                 u32 size) {
+    if (OnGpuPipeline())
+        return RunGpuPipeline(
+            [&] { return BindGraphicsUniformBuffer(stage, index, gpu_addr, size); });
+
     std::scoped_lock lock{buffer_cache.mutex};
     buffer_cache.BindGraphicsUniformBuffer(stage, index, gpu_addr, size);
 }
 void RasterizerD3D12::DisableGraphicsUniformBuffer(size_t stage, u32 index) {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return DisableGraphicsUniformBuffer(stage, index); });
+
     std::scoped_lock lock{buffer_cache.mutex};
     buffer_cache.DisableGraphicsUniformBuffer(stage, index);
 }
 void RasterizerD3D12::FlushAll() {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return FlushAll(); });
+
     fence_manager.SignalReference();
     fence_manager.WaitPendingFences(true);
     context.Finish(FrameCount::ForcedSubmitFlushAll);
 }
 void RasterizerD3D12::FlushRegion(DAddr addr, u64 size, VideoCommon::CacheType which) {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return FlushRegion(addr, size, which); });
+
     if (!addr || !size)
         return;
     if (True(which & VideoCommon::CacheType::TextureCache)) {
@@ -3490,6 +3586,9 @@ void RasterizerD3D12::FlushRegion(DAddr addr, u64 size, VideoCommon::CacheType w
     }
 }
 bool RasterizerD3D12::MustFlushRegion(DAddr addr, u64 size, VideoCommon::CacheType which) {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return MustFlushRegion(addr, size, which); });
+
     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
     return (True(which & VideoCommon::CacheType::QueryCache) &&
             query_cache.IsRegionGpuModified(addr, size)) ||
@@ -3499,6 +3598,9 @@ bool RasterizerD3D12::MustFlushRegion(DAddr addr, u64 size, VideoCommon::CacheTy
             texture_cache.IsRegionGpuModified(addr, size));
 }
 void RasterizerD3D12::InvalidateRegion(DAddr addr, u64 size, VideoCommon::CacheType which) {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return InvalidateRegion(addr, size, which); });
+
     if (!addr || !size)
         return;
     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
@@ -3512,6 +3614,9 @@ void RasterizerD3D12::InvalidateRegion(DAddr addr, u64 size, VideoCommon::CacheT
         query_cache.InvalidateRegion(addr, size);
 }
 void RasterizerD3D12::InnerInvalidation(std::span<const std::pair<DAddr, std::size_t>> sequences) {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return InnerInvalidation(DAddr, sequences); });
+
     // FlushCaching drains guest inline writes, even when CPU inner invalidation is skipped.
     // Match Vulkan: make those bytes CPU-owned before the next buffer synchronization.
     {
@@ -3532,6 +3637,9 @@ void RasterizerD3D12::InnerInvalidation(std::span<const std::pair<DAddr, std::si
     }
 }
 bool RasterizerD3D12::OnCPUWrite(DAddr addr, u64 size) {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return OnCPUWrite(addr, size); });
+
     {
         std::scoped_lock lock{buffer_cache.mutex};
         // Defer cached CPU stores while the buffer still owns GPU-written bytes.
@@ -3546,6 +3654,9 @@ bool RasterizerD3D12::OnCPUWrite(DAddr addr, u64 size) {
     return false;
 }
 void RasterizerD3D12::OnCacheInvalidation(DAddr addr, u64 size) {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return OnCacheInvalidation(addr, size); });
+
     // Gathering cached CPU stores is not an explicit guest query overwrite.
     // Keep pending reports alive, as the OpenGL/Vulkan backends do.
     InvalidateRegion(addr, size,
@@ -3553,6 +3664,9 @@ void RasterizerD3D12::OnCacheInvalidation(DAddr addr, u64 size) {
                          VideoCommon::CacheType::ShaderCache);
 }
 VideoCore::RasterizerDownloadArea RasterizerD3D12::GetFlushArea(PAddr addr, u64 size) {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return GetFlushArea(addr, size); });
+
     {
         std::scoped_lock lock{texture_cache.mutex};
         if (const auto area = texture_cache.GetFlushArea(addr, size))
@@ -3571,12 +3685,18 @@ VideoCore::RasterizerDownloadArea RasterizerD3D12::GetFlushArea(PAddr addr, u64 
     return new_area;
 }
 void RasterizerD3D12::InvalidateGPUCache() {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return InvalidateGPUCache(); });
+
     // invalidate_texture_data_cache and fence signals make attachment writes visible to
     // texture reads: later feedback samples need a fresh copy.
     ++feedback_epoch;
     m_gpu.InvalidateGPUCache();
 }
 void RasterizerD3D12::UnmapMemory(DAddr addr, u64 size) {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return UnmapMemory(addr, size); });
+
     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
     default_pipeline_cache->InvalidateRegion(addr, size);
     query_cache.InvalidateRegion(addr, size);
@@ -3584,17 +3704,37 @@ void RasterizerD3D12::UnmapMemory(DAddr addr, u64 size) {
     buffer_cache.WriteMemory(addr, size);
 }
 void RasterizerD3D12::ModifyGPUMemory(size_t as_id, GPUVAddr addr, u64 size) {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return ModifyGPUMemory(as_id, addr, size); });
+
     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
     texture_cache.UnmapGPUMemory(as_id, addr, size);
     buffer_cache.UnmapGPUMemory(as_id, addr, size);
 }
 void RasterizerD3D12::SignalFence(std::function<void()>&& func) {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return SignalFence(std::move(func)); });
+
     fence_manager.SignalFence(std::move(func));
 }
 void RasterizerD3D12::SyncOperation(std::function<void()>&& func) {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return SyncOperation(std::move(func)); });
+
     fence_manager.SyncOperation(std::move(func));
 }
 void RasterizerD3D12::ProfileGpuThread(bool active) {
+    if (OnGpuPipeline()) {
+        if (!active) {
+            // The GPU thread exits before channel payloads are destroyed. Join
+            // here too, including after a failed job, while their snapshots are valid.
+            gpu_pipeline->Close();
+            Common::GpuProfile::enabled.store(false);
+            return;
+        }
+        return gpu_pipeline->Invoke([&] { ProfileGpuThread(active); });
+    }
+
     if (!context.Profile().Enabled())
         return;
     if (active) {
@@ -3610,12 +3750,21 @@ void RasterizerD3D12::ProfileGpuThread(bool active) {
     }
 }
 void RasterizerD3D12::SignalSyncPoint(u32 value) {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return SignalSyncPoint(value); });
+
     fence_manager.SignalSyncPoint(value);
 }
 void RasterizerD3D12::SignalReference() {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return SignalReference(); });
+
     fence_manager.SignalReference();
 }
 void RasterizerD3D12::ReleaseFences(bool force) {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return ReleaseFences(force); });
+
     // Every blocking drain (puller semaphores/syncpoints, queries) goes through here. Recorded
     // without a SyncWait phase so sync_wait stays comparable; overlaps puller_acquire.
     const auto start = force ? Common::GpuProfile::Start() : Common::GpuProfile::Tick{};
@@ -3623,10 +3772,16 @@ void RasterizerD3D12::ReleaseFences(bool force) {
     Common::GpuProfile::Record(Common::GpuProfile::Wait::ForcedDrain, start);
 }
 void RasterizerD3D12::FlushAndInvalidateRegion(DAddr addr, u64 size, VideoCommon::CacheType which) {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return FlushAndInvalidateRegion(addr, size, which); });
+
     FlushRegion(addr, size, which);
     InvalidateRegion(addr, size, which);
 }
 void RasterizerD3D12::WaitForIdle() {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return WaitForIdle(); });
+
     const Common::GpuProfile::PhaseScope gpu_profile_scope{Common::GpuProfile::Phase::SyncWait};
     ++feedback_epoch;
     query_cache.NotifyWFI();
@@ -3642,27 +3797,45 @@ void RasterizerD3D12::WaitForIdle() {
     fence_manager.SignalOrdering();
 }
 void RasterizerD3D12::FragmentBarrier() {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return FragmentBarrier(); });
+
     ++feedback_epoch;
     D3D12_RESOURCE_BARRIER barrier{};
     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
     context.Commands()->ResourceBarrier(1, &barrier);
 }
 void RasterizerD3D12::TiledCacheBarrier() {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return TiledCacheBarrier(); });
+
     FragmentBarrier();
 }
 void RasterizerD3D12::FlushCommands() {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return FlushCommands(); });
+
     // Cache batches and guest callbacks belong to FenceManager, never submission.
     context.Submit(FrameCount::ForcedSubmitGuestFlush);
     fence_manager.NotifyDeferredSubmit();
     default_pipeline_cache->FlushDiskCache();
 }
 void RasterizerD3D12::FlushDeferredFences() {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return FlushDeferredFences(); });
+
     fence_manager.FlushPendingFences();
 }
 void RasterizerD3D12::NotifyFencesSubmitted() {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return NotifyFencesSubmitted(); });
+
     fence_manager.NotifyDeferredSubmit();
 }
 void RasterizerD3D12::TickFrame() {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return TickFrame(); });
+
     default_pipeline_cache->TickFrame();
     if (VideoCommon::ShaderDiscovery::Enabled())
         VideoCommon::ShaderDiscovery::EndFrame(gpu_memory);
@@ -3698,11 +3871,18 @@ void RasterizerD3D12::TickFrame() {
     ++feedback_frame;
 }
 Tegra::Engines::AccelerateDMAInterface& RasterizerD3D12::AccessAccelerateDMA() {
+    if (OnGpuPipeline())
+        return RunGpuPipeline(
+            [&]() -> Tegra::Engines::AccelerateDMAInterface& { return AccessAccelerateDMA(); });
+
     return m_accelerate_dma;
 }
 bool RasterizerD3D12::AccelerateSurfaceCopy(const Tegra::Engines::Fermi2D::Surface& src,
                                             const Tegra::Engines::Fermi2D::Surface& dst,
                                             const Tegra::Engines::Fermi2D::Config& copy_config) {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return AccelerateSurfaceCopy(src, dst, copy_config); });
+
     const auto format =
         MaxwellFormat(VideoCore::Surface::PixelFormatFromRenderTargetFormat(dst.format));
     const u64 bytes =
@@ -3771,25 +3951,46 @@ bool RasterizerD3D12::AccelerateSurfaceCopy(const Tegra::Engines::Fermi2D::Surfa
 }
 void RasterizerD3D12::AccelerateInlineToMemory(GPUVAddr address, size_t copy_size,
                                                std::span<const u8> memory) {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return AccelerateInlineToMemory(address, copy_size, memory); });
+
     if (gpu_memory && copy_size <= memory.size()) {
         gpu_memory->WriteBlock(address, memory.data(), copy_size);
     }
 }
 void RasterizerD3D12::LoadDiskResources(u64 title_id, std::stop_token stop_loading,
                                         const VideoCore::DiskResourceLoadCallback& callback) {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return LoadDiskResources(title_id, stop_loading, callback); });
+
     default_pipeline_cache->LoadDiskResources(title_id, stop_loading, callback);
 }
 void RasterizerD3D12::LoadDiskResourcesWithPreload(
     u64 title_id, std::stop_token stop_loading, const VideoCore::DiskResourceLoadCallback& callback,
     const std::function<bool()>& skip_wait) {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] {
+            return LoadDiskResourcesWithPreload(title_id, stop_loading, callback, skip_wait);
+        });
+
     default_pipeline_cache->LoadDiskResources(title_id, stop_loading, callback, true, skip_wait);
 }
 
 void RasterizerD3D12::InitializeChannel(Tegra::Control::ChannelState& channel) {
+    if (OnGpuPipeline())
+        return gpu_pipeline->Invoke([&] { InitializeChannel(channel); });
+    if (gpu_pipeline && !channel.pipeline_maxwell) {
+        channel.pipeline_maxwell =
+            std::make_unique<Tegra::Engines::Maxwell3D>(*channel.memory_manager);
+        channel.pipeline_maxwell->BindRasterizer(this);
+    }
+
     // Preserve common cache flags while registering the native register dependencies.
     auto& dirty = channel.payload->maxwell_3d.dirty;
     StateTracker::SetupDirtyFlags(dirty.tables);
     dirty.flags.set();
+    if (channel.pipeline_maxwell)
+        channel.pipeline_maxwell->dirty = dirty;
     CreateChannel(channel);
     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
     buffer_cache.CreateChannel(channel);
@@ -3798,8 +3999,17 @@ void RasterizerD3D12::InitializeChannel(Tegra::Control::ChannelState& channel) {
     query_cache.CreateChannel(channel);
 }
 void RasterizerD3D12::BindChannel(Tegra::Control::ChannelState& channel) {
+    if (OnGpuPipeline()) {
+        DrainGpuPipeline();
+        pipeline_frontend_owner = this;
+        frontend_channel_id = channel.bind_id;
+        // Set only after the previous channel has drained.
+        frontend_maxwell = &channel.payload->maxwell_3d;
+        return gpu_pipeline->Invoke([&] { BindChannel(channel); });
+    }
+
     BindToChannel(channel.bind_id);
-    StateTracker::Bind(channel.payload->maxwell_3d);
+    StateTracker::Bind(*maxwell3d);
     context.GraphicsStateTracker().Invalidate();
     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
     buffer_cache.BindToChannel(channel.bind_id);
@@ -3809,6 +4019,15 @@ void RasterizerD3D12::BindChannel(Tegra::Control::ChannelState& channel) {
     query_runtime.Bind3DEngine(maxwell3d);
 }
 void RasterizerD3D12::ReleaseChannel(s32 channel_id) {
+    if (OnGpuPipeline()) {
+        RunGpuPipeline([&] { ReleaseChannel(channel_id); });
+        if (frontend_channel_id == channel_id) {
+            frontend_maxwell = nullptr;
+            frontend_channel_id = -1;
+        }
+        return;
+    }
+
     EraseChannel(channel_id);
     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
     buffer_cache.EraseChannel(channel_id);
@@ -3819,6 +4038,9 @@ void RasterizerD3D12::ReleaseChannel(s32 channel_id) {
 
 RasterizerD3D12::DisplayTexture RasterizerD3D12::FramebufferTexture(
     const Tegra::FramebufferConfig& config) {
+    if (OnGpuPipeline())
+        return RunGpuPipeline([&] { return FramebufferTexture(config); });
+
     std::scoped_lock lock{texture_cache.mutex};
     const auto [view, scaled] =
         texture_cache.TryFindFramebufferImageView(config, config.address + config.offset);

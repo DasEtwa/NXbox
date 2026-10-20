@@ -1,0 +1,41 @@
+# Controlled persistent method recording. Names resolve to the host register layout.
+# Covers array, indexed, deferred instances, inline indices, topology override,
+# small indexed draws, skipped conditional draws, and state changes between draws.
+vertex_buffer.first 0
+vertex_buffer.count 3
+draw.begin 4
+draw.end 0
+vertex_buffer.first 3
+draw.begin 4
+draw.end 0
+global_base_vertex_index 7
+global_base_instance_index 2
+index_buffer.first 5
+index_buffer.count 6
+draw.begin 4
+draw.end 0
+barrier 0
+draw.begin 4
+draw.end 0
+draw.begin 4000004
+draw.end 0
+draw.begin 4
+draw.end 0
+barrier 0
+draw.begin 4
+draw_inline_index 0
+draw_inline_index 2
+draw_inline_index 1
+draw.end 0
+barrier 0
+primitive_topology_control 1
+topology_override 2
+index_buffer32_first 40020003
+primitive_topology_control 0
+execute 0
+draw.begin 4
+draw.end 0
+execute 1
+draw.begin 4
+draw.end 0
+barrier 0

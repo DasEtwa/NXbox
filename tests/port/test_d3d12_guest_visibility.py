@@ -37,6 +37,8 @@ struct Cache {
     void FlushRegion(u64,u64) { guest=value; }
 };
 struct RasterizerD3D12 {
+    bool OnGpuPipeline() const { return false; }
+    template<class F> auto RunGpuPipeline(F&& function) { return function(); }
     Cache texture_cache{{},1},buffer_cache{{},2},query_cache{{},42};
     void FlushRegion(DAddr,u64,VideoCommon::CacheType);
 };
@@ -98,6 +100,8 @@ struct Cache {
     void InvalidateRegion(u64,u64) { ++writes; }
 };
 struct RasterizerD3D12 {
+    bool OnGpuPipeline() const { return false; }
+    template<class F> auto RunGpuPipeline(F&& function) { return function(); }
     Cache buffer_cache,texture_cache,pipeline;
     Cache* default_pipeline_cache=&pipeline;
     int invalidated=0;
