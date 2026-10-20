@@ -45,6 +45,7 @@
 #include "common/sparse_memory.h"
 #include "core/core.h"
 #include "core/core_timing.h"
+#include "core/hle/service/vi/vblank_timing.h"
 #include "core/cpu_manager.h"
 #include "core/file_sys/nsz.h"
 #include "core/file_sys/registered_cache.h"
@@ -1376,6 +1377,20 @@ void RunGame(MesaWindow& window, const std::string& bundled_path, const std::ato
                                    timing_sample.max_poll_gap_ms,
                                    session_ui.overlay_open.load(std::memory_order_acquire)));
             reset_timing_probe();
+            if (Service::VI::VblankProfileEnabled()) {
+                const auto vblank = Service::VI::vblank_timing.ReadAndReset();
+                Diagnostic(fmt::format(
+                    "VI_TIMING independent={} ticks={} signals={} compositions={} "
+                    "late_max_ms={:.3f} signal_gap_max_ms={:.3f} compose_ms={:.3f} "
+                    "compose_max_ms={:.3f} swap_negative={} swap_0={} swap_1={} swap_2={} "
+                    "swap_3={} swap_4={} swap_extended={}",
+                    Service::VI::IndependentVsyncEnabled() && system.IsMulticore(), vblank.ticks,
+                    vblank.signals, vblank.compositions, vblank.late_ns_max / 1e6,
+                    vblank.signal_gap_ns_max / 1e6, vblank.compose_ns / 1e6,
+                    vblank.compose_ns_max / 1e6, vblank.intervals[0], vblank.intervals[1],
+                    vblank.intervals[2], vblank.intervals[3], vblank.intervals[4],
+                    vblank.intervals[5], vblank.intervals[6]));
+            }
             const auto frames = window.FrameCount();
             const auto stats = system.GetAndResetPerfStats();
             Diagnostic(fmt::format("GAME_PRESENT frames={} seconds={:.3f} fps={:.2f} "

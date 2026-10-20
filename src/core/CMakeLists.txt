@@ -1122,6 +1122,7 @@ add_library(core STATIC
     hle/service/vi/vi.h
     hle/service/vi/vi_results.h
     hle/service/vi/vi_types.h
+    hle/service/vi/vblank_timing.h
     hle/service/vi/vsync_manager.cpp
     hle/service/vi/vsync_manager.h
     hle/service/gpio/gpio.cpp
