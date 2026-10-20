@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cstdlib>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -29,11 +30,11 @@
 #include "common/settings.h"
 #include "common/slot_vector.h"
 #include "video_core/buffer_cache/buffer_base.h"
+#include "video_core/buffer_cache/uniform_upload_cache.h"
 #include "video_core/buffer_cache/virtual_range_cache.h"
 #include "video_core/control/channel_state_cache.h"
 #include "video_core/delayed_destruction_ring.h"
 #include "video_core/dirty_flags.h"
-#include "video_core/engines/maxwell_3d.h"
 #include "video_core/engines/kepler_compute.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/memory_manager.h"
@@ -119,9 +120,13 @@ struct HostBindings {
 class BufferCacheChannelInfo : public ChannelInfo {
 public:
     BufferCacheChannelInfo() = delete;
-    BufferCacheChannelInfo(Tegra::Control::ChannelState& state) noexcept : ChannelInfo(state) {}
+    BufferCacheChannelInfo(Tegra::Control::ChannelState& state) noexcept
+        : ChannelInfo(state), uniform_upload_dedup{UniformUploadCache::Enabled(
+                                  program_id, std::getenv("NXBOX_BOTW_FASTPATH"))} {}
     BufferCacheChannelInfo(const BufferCacheChannelInfo& state) = delete;
     BufferCacheChannelInfo& operator=(const BufferCacheChannelInfo&) = delete;
+
+    const bool uniform_upload_dedup;
 
     Binding index_buffer;
     std::array<Binding, NUM_VERTEX_BUFFERS> vertex_buffers;
@@ -458,13 +463,14 @@ private:
     bool SynchronizeBuffer(Buffer& buffer, DAddr device_addr, u32 size,
                            BufferUploadSource source = BufferUploadSource::Other);
 
-    void UploadMemory(Buffer& buffer, u64 total_size_bytes, u64 largest_copy,
-                      std::span<BufferCopy> copies);
+    u64 UploadMemory(Buffer& buffer, u64 total_size_bytes, u64 largest_copy,
+                     std::span<BufferCopy> copies, bool deduplicate);
 
-    void ImmediateUploadMemory(Buffer& buffer, u64 largest_copy,
-                               std::span<const BufferCopy> copies);
+    u64 ImmediateUploadMemory(Buffer& buffer, u64 largest_copy, std::span<const BufferCopy> copies,
+                              bool deduplicate);
 
-    void MappedUploadMemory(Buffer& buffer, u64 total_size_bytes, std::span<BufferCopy> copies);
+    u64 MappedUploadMemory(Buffer& buffer, u64 total_size_bytes, std::span<BufferCopy> copies,
+                           bool deduplicate);
 
     void DownloadBufferMemory(Buffer& buffer_id);
 
@@ -515,6 +521,7 @@ private:
 
     boost::container::small_vector<BufferCopy, 4> upload_copies;
 
+    UniformUploadCache uniform_upload_cache;
     MemoryTracker memory_tracker;
     Common::RangeSet<DAddr> uncommitted_gpu_modified_ranges;
     Common::RangeSet<DAddr> gpu_modified_ranges;
