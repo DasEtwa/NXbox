@@ -511,4 +511,9 @@ void BufferCacheRuntime::BindTextureBuffer(Buffer& buffer, u32 offset, u32 size,
     bindings.stages[bindings.current_stage].texel.push_back(
         {buffer.Handle(), offset, size, false, static_cast<u32>(format)});
 }
+void BufferCacheRuntime::BindImageBuffer(Buffer& buffer, u32 offset, u32 size,
+                                         VideoCore::Surface::PixelFormat format) {
+    BindTextureBuffer(buffer, offset, size, format);
+    bindings.stages[bindings.current_stage].texel.back().image = true;
+}
 } // namespace D3D12

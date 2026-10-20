@@ -133,6 +133,8 @@ public:
     void BindStorageBuffer(const Buffer& buffer, u32 offset, u32 size, bool is_written);
     void BindTextureBuffer(Buffer& buffer, u32 offset, u32 size,
                            VideoCore::Surface::PixelFormat format);
+    void BindImageBuffer(Buffer& buffer, u32 offset, u32 size,
+                         VideoCore::Surface::PixelFormat format);
     Context& context;
 
 private:
@@ -162,7 +164,7 @@ struct BufferCacheParams {
     static constexpr bool NEEDS_BIND_UNIFORM_INDEX = false;
     static constexpr bool NEEDS_BIND_STORAGE_INDEX = false;
     static constexpr bool USE_MEMORY_MAPS = true;
-    static constexpr bool SEPARATE_IMAGE_BUFFER_BINDINGS = false;
+    static constexpr bool SEPARATE_IMAGE_BUFFER_BINDINGS = true;
     static constexpr bool USE_MEMORY_MAPS_FOR_UPLOADS = true;
 };
 using BufferCache = VideoCommon::BufferCache<BufferCacheParams>;
