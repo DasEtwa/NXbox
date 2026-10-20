@@ -23,6 +23,7 @@
 #include "core/hle/service/nvnflinger/pixel_format.h"
 #include "core/hle/service/nvnflinger/status.h"
 #include "core/hle/service/nvnflinger/window.h"
+#include "core/hle/service/vi/frame_unlock.h"
 
 namespace Kernel {
 class KernelCore;
@@ -85,6 +86,7 @@ private:
     std::shared_ptr<BufferQueueCore> core;
     BufferQueueDefs::SlotsType& slots;
     u32 sticky_transform{};
+    VI::FrameUnlock frame_unlock;
     std::mutex callback_mutex;
     s32 next_callback_ticket{};
     s32 current_callback_ticket{};
