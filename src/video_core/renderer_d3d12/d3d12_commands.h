@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 #include "video_core/renderer_d3d12/d3d12_record_args.h"
+#include "video_core/renderer_d3d12/d3d12_recorded_state.h"
 
 #include "video_core/renderer_d3d12/d3d12_record_descriptors.h"
 
@@ -74,6 +75,33 @@ public:
     RecordDescriptors* descriptors{};
     ID3D12GraphicsCommandList* immediate{};
     RecordStream<>* stream{}; // Latched once; null is the immediate path.
+    bool compact_draws{true}; // NXBOX_D3D12_COMPACT_DRAWS=0 restores EncodeCall.
+    bool reuse_draw_state{};  // NXBOX_D3D12_RECORD_STATE=1; independent of guest invalidation.
+    struct TransportState {
+        RecordedValue<D3D_PRIMITIVE_TOPOLOGY> topology;
+        RecordedArray<D3D12_VIEWPORT, 16> viewports;
+        RecordedArray<D3D12_RECT, 16> scissors;
+        RecordedValue<std::array<FLOAT, 4>> blend;
+        RecordedValue<std::array<UINT, 2>> stencil;
+        RecordedValue<D3D12_INDEX_BUFFER_VIEW> index;
+        RecordedArray<D3D12_VERTEX_BUFFER_VIEW, 32> vertices;
+        UINT vertex_start{};
+    } transport_state;
+    void ResetDrawState() {
+        transport_state = {};
+    }
+    struct DrawPacket {
+        UINT count, instances, first, first_instance;
+        INT base_vertex;
+        UINT indexed;
+        void Replay(void* target) const {
+            auto* list = static_cast<RecordingTarget*>(target)->list;
+            if (indexed)
+                list->DrawIndexedInstanced(count, instances, first, base_vertex, first_instance);
+            else
+                list->DrawInstanced(count, instances, first, first_instance);
+        }
+    };
     D3D12_FORWARD_INLINE void BeginQuery(ID3D12QueryHeap* heap, D3D12_QUERY_TYPE type, UINT index) {
         if (!stream) {
             immediate->BeginQuery(heap, type, index);
@@ -194,6 +222,11 @@ public:
                                             first_instance);
             return;
         }
+        if (compact_draws) {
+            stream->Repeat(
+                DrawPacket{indices, instances, first_index, first_instance, base_vertex, true});
+            return;
+        }
         EncodeCall<[](void* target, UINT indices, UINT instances, UINT first_index, INT base_vertex,
                       UINT first_instance) {
             static_cast<RecordingTarget*>(target)->list->DrawIndexedInstanced(
@@ -204,6 +237,10 @@ public:
                                             UINT first_instance) {
         if (!stream) {
             immediate->DrawInstanced(vertices, instances, first_vertex, first_instance);
+            return;
+        }
+        if (compact_draws) {
+            stream->Repeat(DrawPacket{vertices, instances, first_vertex, first_instance, 0, false});
             return;
         }
         EncodeCall<[](void* target, UINT vertices, UINT instances, UINT first_vertex,
@@ -220,6 +257,9 @@ public:
                                        count_offset);
             return;
         }
+        // Indirect signatures may write IA views; D3D12 clears those bindings
+        // afterwards. The signature is opaque here, so discard all transport state.
+        ResetDrawState();
         EncodeCall<[](void* target, ID3D12CommandSignature* signature, UINT count,
                       ID3D12Resource* arguments, UINT64 offset, ID3D12Resource* count_buffer,
                       UINT64 count_offset) {
@@ -232,6 +272,12 @@ public:
             immediate->IASetIndexBuffer(view);
             return;
         }
+        if (reuse_draw_state) {
+            if (!view)
+                transport_state.index.valid = false;
+            else if (!transport_state.index.Update(*view))
+                return;
+        }
         EncodeCall<[](void* target, const D3D12_INDEX_BUFFER_VIEW* view) {
             static_cast<RecordingTarget*>(target)->list->IASetIndexBuffer(view);
         }>(*stream, Snapshot(view, 1));
@@ -240,6 +286,10 @@ public:
         if (!stream) {
             immediate->IASetPrimitiveTopology(topology);
             return;
+        }
+        if (reuse_draw_state) {
+            if (!transport_state.topology.Update(topology))
+                return;
         }
         EncodeCall<[](void* target, D3D_PRIMITIVE_TOPOLOGY topology) {
             static_cast<RecordingTarget*>(target)->list->IASetPrimitiveTopology(topology);
@@ -251,6 +301,13 @@ public:
             immediate->IASetVertexBuffers(start, count, views);
             return;
         }
+        if (reuse_draw_state) {
+            if (transport_state.vertex_start != start || !views)
+                transport_state.vertices.valid = false;
+            transport_state.vertex_start = start;
+            if (views && !transport_state.vertices.Update(views, count))
+                return;
+        }
         EncodeCall<[](void* target, UINT start, UINT count, const D3D12_VERTEX_BUFFER_VIEW* views) {
             static_cast<RecordingTarget*>(target)->list->IASetVertexBuffers(start, count, views);
         }>(*stream, start, count, Snapshot(views, count));
@@ -259,6 +316,12 @@ public:
         if (!stream) {
             immediate->OMSetBlendFactor(factor);
             return;
+        }
+        if (reuse_draw_state) {
+            if (!factor)
+                transport_state.blend.valid = false;
+            else if (!transport_state.blend.Update({factor[0], factor[1], factor[2], factor[3]}))
+                return;
         }
         EncodeCall<[](void* target, const FLOAT* factor) {
             static_cast<RecordingTarget*>(target)->list->OMSetBlendFactor(factor);
@@ -286,6 +349,10 @@ public:
             return;
         }
         Check(independent_stencil_status, "D3D12 independent stencil command interface", device);
+        if (reuse_draw_state) {
+            if (!transport_state.stencil.Update({front, back}))
+                return;
+        }
         EncodeCall<[](void* target, UINT front, UINT back) {
             static_cast<RecordingTarget*>(target)->OMSetFrontAndBackStencilRef(front, back);
         }>(*stream, front, back);
@@ -322,6 +389,10 @@ public:
             immediate->OMSetStencilRef(stencil);
             return;
         }
+        if (reuse_draw_state) {
+            if (!transport_state.stencil.Update({stencil, stencil}))
+                return;
+        }
         EncodeCall<[](void* target, UINT stencil) {
             static_cast<RecordingTarget*>(target)->list->OMSetStencilRef(stencil);
         }>(*stream, stencil);
@@ -331,6 +402,12 @@ public:
             immediate->RSSetScissorRects(count, rects);
             return;
         }
+        if (reuse_draw_state) {
+            if (!rects)
+                transport_state.scissors.valid = false;
+            else if (!transport_state.scissors.Update(rects, count))
+                return;
+        }
         EncodeCall<[](void* target, UINT count, const D3D12_RECT* rects) {
             static_cast<RecordingTarget*>(target)->list->RSSetScissorRects(count, rects);
         }>(*stream, count, Snapshot(rects, count));
@@ -339,6 +416,12 @@ public:
         if (!stream) {
             immediate->RSSetViewports(count, views);
             return;
+        }
+        if (reuse_draw_state) {
+            if (!views)
+                transport_state.viewports.valid = false;
+            else if (!transport_state.viewports.Update(views, count))
+                return;
         }
         EncodeCall<[](void* target, UINT count, const D3D12_VIEWPORT* views) {
             static_cast<RecordingTarget*>(target)->list->RSSetViewports(count, views);

@@ -916,6 +916,15 @@ Context::Context() {
     Check(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence)), "CreateFence",
           device.Get());
     facade.device = device.Get();
+    facade.reuse_draw_state = BisectEnabled("NXBOX_D3D12_RECORD_STATE");
+    {
+        char value[2]{};
+        facade.compact_draws =
+            !(GetEnvironmentVariableA("NXBOX_D3D12_COMPACT_DRAWS", value, sizeof(value)) == 1 &&
+              value[0] == '0');
+    }
+    Diagnostic(fmt::format("D3D12 compact_draws={} record_state={}", facade.compact_draws,
+                           facade.reuse_draw_state));
     // On by default: +8-16% fps in BotW, MK8D and Odyssey on a Series X. =0 records inline.
     {
         char value[2]{};
@@ -1320,6 +1329,7 @@ CommandFacade* Context::Commands() {
             Check(commands->Reset(allocators[allocator_index].handle.Get(), nullptr),
                   "command list Reset", device.Get());
         }
+        facade.ResetDrawState();
         copy_writes.clear();
         // Globally unique across Context instances; never reuse a resource stamp.
         static std::atomic<u64> next_retention_generation{1};

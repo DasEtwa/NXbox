@@ -12,6 +12,7 @@
 #include <memory>
 #include <optional>
 #include <stdexcept>
+#include <type_traits>
 #include <vector>
 
 namespace D3D12 {
@@ -36,6 +37,7 @@ public:
     }
     RecordStream(const RecordStream&) = delete;
     void Write(const void* source, size_t size) {
+        repeat_replay = nullptr;
         auto* bytes = static_cast<const std::byte*>(source);
         while (size) {
             auto& chunk = chunks[write_index];
@@ -60,6 +62,7 @@ public:
         }
     }
     void Flush() {
+        repeat_replay = nullptr;
         if (!write_offset)
             return;
         chunks[write_index].used.store(write_offset, std::memory_order_release);
@@ -93,6 +96,50 @@ public:
         pending_header.reset(); // Replay releases holds even on exceptions; never retry it.
         header.replay(target, reinterpret_cast<const std::byte*>(storage.data()), execute);
         return true;
+    }
+    // Only the unpublished tail can grow. Any ordinary write or publication ends
+    // the batch, so draws never cross state, query, barrier or submission commands.
+    template <class Command>
+    void Repeat(const Command& command) {
+        static_assert(std::is_trivially_copyable_v<Command>);
+        const Replay replay = [](void* target, const std::byte* data, bool execute) {
+            if (!execute)
+                return; // Repeat packets contain values only, never COM holds.
+            uint32_t count;
+            std::memcpy(&count, data, sizeof(count));
+            data += sizeof(count);
+            for (uint32_t i = 0; i < count; ++i) {
+                Command value;
+                std::memcpy(&value, data, sizeof(value));
+                value.Replay(target);
+                data += sizeof(value);
+            }
+        };
+        if (repeat_replay == replay && ChunkSize - write_offset > sizeof(Command)) {
+            auto* const base = chunks[write_index].data.data();
+            Header header;
+            uint32_t count;
+            std::memcpy(&header, base + repeat_offset, sizeof(header));
+            std::memcpy(&count, base + repeat_offset + sizeof(header), sizeof(count));
+            header.size += sizeof(Command);
+            ++count;
+            std::memcpy(base + repeat_offset, &header, sizeof(header));
+            std::memcpy(base + repeat_offset + sizeof(header), &count, sizeof(count));
+            std::memcpy(base + write_offset, &command, sizeof(command));
+            write_offset += sizeof(command);
+            return;
+        }
+        const auto start = write_offset;
+        const Header header{replay, sizeof(uint32_t) + sizeof(Command)};
+        const uint32_t count = 1;
+        // Write handles tiny chunks and backpressure, including split packets.
+        Write(&header, sizeof(header));
+        Write(&count, sizeof(count));
+        Write(&command, sizeof(command));
+        if (sizeof(header) + sizeof(count) + sizeof(command) < ChunkSize - start) {
+            repeat_offset = start;
+            repeat_replay = replay;
+        }
     }
     template <class Command>
     void Begin(size_t extra = 0) {
@@ -169,6 +216,8 @@ private:
     std::unique_ptr<Chunk[]> chunks;
     const size_t active_chunks;
     size_t write_index{}, write_offset{}, read_index{}, read_offset{};
+    Replay repeat_replay{}; // Producer only; points only into the unpublished tail.
+    size_t repeat_offset{};
     std::atomic<uint64_t> available{};
     std::atomic<bool> closed{};
     std::optional<Header> pending_header;  // Consumer only; survives scratch allocation failure.
