@@ -117,13 +117,16 @@ int main() {
 #include <bit>
 #include <cassert>
 #include <cstdint>
+#include <compare>
+#include <limits>
 #define LOG_WARNING(...) ((void)0)
 using u32 = std::uint32_t;
 using GPUVAddr = std::uint64_t;
 using DAddr = std::uint64_t;
-using BufferId = u32;
-constexpr u32 NULL_BUFFER_ID = 0;
-struct Binding { DAddr device_addr{}; GPUVAddr gpu_addr{}; u32 size{}; BufferId buffer_id{}; };
+__SLOT_ID__
+using BufferId = SlotId;
+constexpr BufferId NULL_BUFFER_ID{0};
+__BINDING__
 namespace Settings {
 bool accurate = false;
 bool IsGPUFenceBehaviorAccurate() { return accurate; }
@@ -153,13 +156,25 @@ template <class Runtime> struct BufferCache {
     State* channel_state = &state;
     Maxwell maxwell;
     Maxwell* maxwell3d = &maxwell;
-    std::array<unsigned, 64> slot_buffers{};
+    struct Slots {
+        unsigned buffer{};
+        unsigned& operator[](BufferId id) {
+            assert(id && id.Value() < 64);
+            return buffer;
+        }
+    } slot_buffers;
     unsigned graphics_segments{}, finds{}, fences{};
-    Binding incoming{0x1000, 0x2000, 256, 0};
+    Binding incoming{0x1000, 0x2000, 256, BufferId{}};
     Binding StorageBufferBinding(GPUVAddr, u32, bool) { return incoming; }
-    BufferId FindBuffer(DAddr, u32, bool) { ++finds; return 42; }
+    BufferId FindBuffer(DAddr address, u32, bool) {
+        ++finds;
+        return address ? BufferId{42} : NULL_BUFFER_ID;
+    }
     void SynchronizeBufferWrites(unsigned&) { ++fences; }
-    void ResolveMultiRangeStorage(Binding&, bool, unsigned&) {}
+    void ResolveMultiRangeStorage(Binding& binding, bool, unsigned&) {
+        // Model the later host bind, which indexes the slot even without accurate fences.
+        (void)slot_buffers[binding.buffer_id];
+    }
     template <class F> void ForEachEnabledBit(u32 mask, F f) {
         for (u32 index = 0; mask; ++index, mask >>= 1) if (mask & 1) f(index);
     }
@@ -177,9 +192,14 @@ template <class R> void Legacy(BufferCache<R>& cache) {
 }
 int main() {
     BufferCache<FastRuntime> cache;
+    // Fresh bindings have an invalid SlotId, distinct from the valid null-buffer slot.
+    assert(!BufferId{} && BufferId{} != NULL_BUFFER_ID);
+    Settings::accurate = true;
     cache.BindGraphicsStorageBuffer(0, 0, 0, 0, false);
+    assert(!cache.state.storage_buffers[0][0].buffer_id);
     cache.UpdateStorageBuffers(0);
     assert(cache.finds == 1);
+    Settings::accurate = false;
     for (unsigned i = 0; i < 1000; ++i) {
         cache.BindGraphicsStorageBuffer(0, 0, 0, 0, false);
         cache.UpdateStorageBuffers(0);
@@ -190,16 +210,29 @@ int main() {
     assert(cache.finds == 1 && cache.fences == 1);
     cache.incoming.device_addr += 0x1000; // Guest remap must invalidate the resolved id.
     cache.BindGraphicsStorageBuffer(0, 0, 0, 0, false);
-    assert(cache.state.storage_buffers[0][0].buffer_id == 0);
+    assert(!cache.state.storage_buffers[0][0].buffer_id);
     cache.UpdateStorageBuffers(0);
     assert(cache.finds == 2);
     cache.incoming.size += 16;
     cache.BindGraphicsStorageBuffer(0, 0, 0, 0, true);
     cache.UpdateStorageBuffers(0);
     assert(cache.finds == 3 && cache.state.written_storage_buffers[0] == 1);
-    cache.state.storage_buffers[0][0].buffer_id = 0; // Deletion/merge invalidates identity.
+    // Use DeleteBuffer's production invalidation, then repeat the same guest binding.
+    const BufferId buffer_id{42};
+    __SCALAR_REPLACE__
+    scalar_replace(cache.state.storage_buffers[0][0]);
+    assert(!cache.state.storage_buffers[0][0].buffer_id);
+    cache.BindGraphicsStorageBuffer(0, 0, 0, 0, true);
     cache.UpdateStorageBuffers(0);
     assert(cache.finds == 4);
+    // Without accurate fences, the later host bind must still receive a resolved id.
+    scalar_replace(cache.state.storage_buffers[0][0]);
+    Settings::accurate = false;
+    cache.UpdateStorageBuffers(0);
+    assert(cache.finds == 5);
+    cache.state.storage_buffers[0][0] = Binding{.buffer_id = NULL_BUFFER_ID};
+    cache.UpdateStorageBuffers(0);
+    assert(cache.finds == 6 && cache.state.storage_buffers[0][0].buffer_id == NULL_BUFFER_ID);
     cache.runtime.enabled = false;
     Legacy(cache);
     BufferCache<LegacyRuntime> legacy;
@@ -213,7 +246,21 @@ int main() {
         with tempfile.TemporaryDirectory(prefix="nxbox-graphics-bindings-") as folder:
             cpp = Path(folder) / "test.cpp"
             binary = Path(folder) / "test"
-            cpp.write_text(driver.replace("__METHODS__", implementations))
+            slot_source = (ROOT / "src/common/slot_vector.h").read_text()
+            slot_begin = slot_source.index("struct SlotId {")
+            slot_id = slot_source[slot_begin : slot_source.index("\n};", slot_begin) + 3]
+            base = (ROOT / "src/video_core/buffer_cache/buffer_cache_base.h").read_text()
+            binding_begin = base.index("struct Binding {")
+            binding = base[binding_begin : base.index("\n};", binding_begin) + 3]
+            delete = method(source, "BufferCache<P>::DeleteBuffer(")
+            replace_begin = delete.index("const auto scalar_replace =")
+            scalar_replace = delete[replace_begin : delete.index("\n    };", replace_begin) + 7]
+            cpp.write_text(
+                driver.replace("__METHODS__", implementations)
+                .replace("__SLOT_ID__", slot_id)
+                .replace("__BINDING__", binding)
+                .replace("__SCALAR_REPLACE__", scalar_replace)
+            )
             result = subprocess.run(
                 [
                     "clang++",
