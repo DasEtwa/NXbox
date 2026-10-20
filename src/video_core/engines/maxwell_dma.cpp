@@ -4,6 +4,7 @@
 // SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cstdlib>
 #include <ranges>
 #include "common/algorithm.h"
 #include "common/assert.h"
@@ -126,7 +127,11 @@ void MaxwellDMA::Launch() {
                                               component_size, regs.remap_const.remap_consta_value,
                                               accelerated);
             const size_t size = static_cast<size_t>(regs.line_length_in) * component_size;
-            if (accelerated) {
+            const bool invalidate_fills = [] {
+                const char* value = std::getenv("NXBOX_DMA_FILL_INVALIDATE");
+                return !value || value[0] != '0';
+            }();
+            if (accelerated || !invalidate_fills) {
                 // The accelerated buffer cache already owns these bytes; mirror guest RAM.
                 memory_manager.WriteBlockUnsafe(regs.offset_out, read_buffer.data(), size);
             } else {

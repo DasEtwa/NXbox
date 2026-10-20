@@ -4213,7 +4213,12 @@ RasterizerD3D12::DisplayTexture RasterizerD3D12::FramebufferTexture(
     // The fallback reads guest RAM directly. An incompatible format/size alias may
     // still own newer GPU pixels; DownloadMemory writes whole images overlapping
     // the display base, ordered by modification tick, before that CPU read.
-    texture_cache.DownloadMemory(config.address + config.offset, 1);
+    const bool download_before_fallback = [] {
+        const char* value = std::getenv("NXBOX_PRESENT_FALLBACK_DOWNLOAD");
+        return !value || value[0] != '0';
+    }();
+    if (download_before_fallback)
+        texture_cache.DownloadMemory(config.address + config.offset, 1);
     auto resource = texture_runtime.UploadFramebuffer(device_memory, config);
     if (!resource)
         return {};
