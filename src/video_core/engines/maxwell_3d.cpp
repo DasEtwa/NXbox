@@ -312,16 +312,33 @@ void Maxwell3D::ConsumeSinkImpl(Core::System&) {
                 process(method, value);
         }
     };
-    if (!frontend_fastpath || Common::GpuProfile::recording_enabled) {
+    if (!frontend_fastpath ||
+        (Common::GpuProfile::recording_enabled && Common::GpuProfile::MethodProfilingEnabled())) {
         consume([&](u32 method, u32 value) { ProcessDirtyRegisters(method, value); });
     } else {
-        consume([&](u32 method, u32 value) { ProcessDirtyRegistersImpl(method, value); });
+        // No side effects or draws can observe flags until the sink is drained.
+        // Accumulate locally and merge once, preserving changed-then-restored writes.
+        decltype(dirty.flags) pending_flags{};
+        consume([&](u32 method, u32 value) {
+            if (method == MAXWELL3D_REG_INDEX(program_region.address_high) ||
+                method == MAXWELL3D_REG_INDEX(program_region.address_low)) {
+                ProcessDirtyRegistersImpl(method, value);
+                return;
+            }
+            if (regs.reg_array[method] == value)
+                return;
+            regs.reg_array[method] = value;
+            pending_flags[dirty.tables[0][method]] = true;
+            pending_flags[dirty.tables[1][method]] = true;
+        });
+        dirty.flags |= pending_flags;
     }
     method_sink.clear();
 }
 
 void Maxwell3D::ProcessDirtyRegisters(u32 method, u32 argument) {
-    if (Common::GpuProfile::recording_enabled) [[unlikely]] {
+    if (Common::GpuProfile::recording_enabled && Common::GpuProfile::MethodProfilingEnabled())
+        [[unlikely]] {
         Common::GpuProfile::MethodScope method_profile{Common::GpuProfile::MethodClass::DirtyFlags};
         if (regs.reg_array[method] == argument)
             method_profile.Skip();
@@ -356,11 +373,11 @@ void Maxwell3D::ProcessDirtyRegistersImpl(u32 method, u32 argument) {
 }
 
 void Maxwell3D::ProcessMethodCall(u32 method, u32 argument, u32 nonshadow_argument, bool is_last_call) {
-    const Common::GpuProfile::RecordingScope gpu_profile_scope{
-        Common::GpuProfile::Phase::Maxwell3DMethods};
+    // CallMethod owns the phase scope, including all side effects below.
     using MethodClass = Common::GpuProfile::MethodClass;
     std::optional<Common::GpuProfile::MethodScope> method_profile;
-    if (Common::GpuProfile::recording_enabled) [[unlikely]] {
+    if (Common::GpuProfile::recording_enabled && Common::GpuProfile::MethodProfilingEnabled())
+        [[unlikely]] {
         const auto category = [method] {
             switch (method) {
             case MAXWELL3D_REG_INDEX(report_semaphore.query):
@@ -551,8 +568,18 @@ void Maxwell3D::CallMultiMethod(Core::System& system, u32 method, const u32* bas
 void Maxwell3D::CallMultiMethod(Core::System&, u32 method, const u32* values, u32 amount) {
     // The DMA parser checks the complete range against execution_mask. Preserve
     // every intermediate write: dirty bits and shadow RAM are consumed in order.
+    if (!frontend_fastpath) {
+        for (u32 i = 0; i < amount; ++i)
+            method_sink.emplace_back(method + i, values[i]);
+        return;
+    }
+    if (amount == 0)
+        return;
+    const auto first = method_sink.size();
+    method_sink.resize(first + amount);
+    auto* output = method_sink.data() + first;
     for (u32 i = 0; i < amount; ++i)
-        method_sink.emplace_back(method + i, values[i]);
+        output[i] = {method + i, values[i]};
 }
 
 void Maxwell3D::CallCBDataIncrementing(u32 method, const u32* values, u32 amount) {

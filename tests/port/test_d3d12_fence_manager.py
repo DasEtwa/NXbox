@@ -384,9 +384,10 @@ int main() {
     // SignalFence flushes under the fence lock when batching is off; the hook must not lock.
     rasterizer.on_flush = [&] { manager.NotifyDeferredSubmit(); };
     if (D3D12::BisectEnabled("NXBOX_D3D12_FENCE_BATCHING")) {
-        // Eight guest fences share the pending command-list tick. The producer never waits.
+        // DBSZ logs ~42 guest fences/frame. They share one tick without a producer wait.
+        constexpr int fences_per_frame = 42;
         std::atomic<int> callbacks{};
-        for (int i = 0; i < 8; ++i) {
+        for (int i = 0; i < fences_per_frame; ++i) {
             manager.SignalSyncPoint(7);
             manager.SignalFence([&, i] {
                 assert(context.completed >= 1);
@@ -400,14 +401,14 @@ int main() {
             std::this_thread::yield();
         assert(context.submission_checks > 0 && context.waits == 0);
         assert(context.submitted == 0 && context.completed == 0);
-        assert(gpu.host.sync.guest == 8 && gpu.host.sync.host == 0 && callbacks == 0);
+        assert(gpu.host.sync.guest == fences_per_frame && gpu.host.sync.host == 0 && callbacks == 0);
         // Command-list end / present submits once; completion needs no new guest commands.
         context.Submit(D3D12::FrameCount::ForcedSubmitGuestFence);
         context.Complete();
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-        while (callbacks != 8 && std::chrono::steady_clock::now() < deadline)
+        while (callbacks != fences_per_frame && std::chrono::steady_clock::now() < deadline)
             std::this_thread::yield();
-        assert(callbacks == 8 && gpu.host.sync.host == 8 && context.submitted == 1);
+        assert(callbacks == fences_per_frame && gpu.host.sync.host == fences_per_frame && context.submitted == 1);
         // A real guest wait must submit pending work before sleeping on the drain marker.
         context.RecordWork();
         manager.SignalSyncPoint(7);
@@ -419,7 +420,7 @@ int main() {
             context.Complete();
         });
         manager.WaitPendingFences(true);
-        assert(gpu.host.sync.host == 9 && context.submitted == 2);
+        assert(gpu.host.sync.host == fences_per_frame + 1 && context.submitted == 2);
         assert(texture.commits == texture.pops && buffer.commits == buffer.pops);
         assert(query.commits == query.pops);
         // Fences with no new recording reuse the completed tick and need no empty submit.

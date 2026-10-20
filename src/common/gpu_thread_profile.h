@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <map>
 #include <mutex>
 
@@ -79,6 +80,16 @@ private:
     Sink* owner{};
     std::size_t previous{};
 };
+// Detailed per-method accounting is opt-in: even sampled clocks leave TLS counters
+// and scope bookkeeping on every register write. Coarse exclusive phases remain on.
+inline bool MethodProfilingEnabled() {
+    // Latch after launcher environment overrides have loaded, not at static init.
+    static const bool enabled = [] {
+        const char* value = std::getenv("NXBOX_GPU_METHOD_PROFILE");
+        return value && value[0] == '1' && value[1] == '\0';
+    }();
+    return enabled;
+}
 // Recording-thread method classes. Time one call in 64 to keep clock reads out
 // of the per-register hot path; counts/units are exact, time is an estimate.
 enum class MethodClass : std::size_t {
@@ -103,7 +114,7 @@ inline thread_local std::array<Tick, static_cast<std::size_t>(MethodClass::Count
 class MethodScope {
 public:
     explicit MethodScope(MethodClass category, Tick units = 1) {
-        if (!recording_enabled)
+        if (!recording_enabled || !MethodProfilingEnabled())
             return;
         const auto index = static_cast<std::size_t>(category);
         sample = &method_window[index];

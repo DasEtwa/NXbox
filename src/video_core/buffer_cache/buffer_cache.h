@@ -313,7 +313,11 @@ bool BufferCache<P>::DMACopy(GPUVAddr src_address, GPUVAddr dest_address, u64 am
         memory_tracker.MarkRegionAsGpuModified(*cpu_dest_address, amount);
         const bool should_sync = Settings::IsGPUFenceBehaviorBalanced() || Settings::IsGPUFenceBehaviorAccurate();
         if (should_sync) {
-            runtime.Finish();
+            if constexpr (requires { runtime.FinishDmaCopy(); }) {
+                runtime.FinishDmaCopy();
+            } else {
+                runtime.Finish();
+            }
         }
     }
 

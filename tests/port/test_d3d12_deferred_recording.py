@@ -449,6 +449,7 @@ void SetCurrentThreadName(const char*) { InjectFailure(1); }
 void SetCurrentThreadPriority(ThreadPriority) { InjectFailure(2); }
 }
 namespace D3D12 {
+inline bool BisectEnabled(const char*) { return false; }
 struct RecordingTarget { void* owner{}; int *list{}, *list1{}, *list8{}; };
 struct FakeList {
     int value{};

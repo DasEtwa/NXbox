@@ -17,7 +17,7 @@
 namespace D3D12 {
 // One producer and one consumer. Only chunk boundaries synchronize; neither a command
 // nor its variable payload needs to fit in one chunk. Published bytes are immutable.
-template <size_t ChunkSize = 256 * 1024, size_t ChunkCount = 8>
+template <size_t ChunkSize = 256 * 1024, size_t ChunkCount = 32>
 class RecordStream {
 public:
     static_assert(ChunkCount >= 2 && ChunkSize > 0);
@@ -27,7 +27,13 @@ public:
         Replay replay;
         size_t size;
     };
-    RecordStream() : chunks{std::make_unique<Chunk[]>(ChunkCount)} {}
+    // More room absorbs bursts of short submissions while the native recorder catches up.
+    // The bound still applies to payloads and COM holds; a slow consumer backpressures safely.
+    explicit RecordStream(size_t capacity = ChunkCount) : active_chunks{capacity} {
+        if (capacity < 2 || capacity > ChunkCount)
+            throw std::invalid_argument("invalid D3D12 recording capacity");
+        chunks = std::make_unique<Chunk[]>(capacity);
+    }
     RecordStream(const RecordStream&) = delete;
     void Write(const void* source, size_t size) {
         auto* bytes = static_cast<const std::byte*>(source);
@@ -58,7 +64,8 @@ public:
             return;
         chunks[write_index].used.store(write_offset, std::memory_order_release);
         write_offset = 0;
-        write_index = (write_index + 1) % ChunkCount;
+        if (++write_index == active_chunks)
+            write_index = 0;
         available.fetch_add(1, std::memory_order_release);
         available.notify_one();
     }
@@ -147,7 +154,8 @@ private:
             read_offset += count;
             if (read_offset == used) {
                 read_offset = 0;
-                read_index = (read_index + 1) % ChunkCount;
+                if (++read_index == active_chunks)
+                    read_index = 0;
                 chunk.used.store(0, std::memory_order_release);
                 chunk.used.notify_one();
             }
@@ -159,6 +167,7 @@ private:
         std::array<std::byte, ChunkSize> data;
     };
     std::unique_ptr<Chunk[]> chunks;
+    const size_t active_chunks;
     size_t write_index{}, write_offset{}, read_index{}, read_offset{};
     std::atomic<uint64_t> available{};
     std::atomic<bool> closed{};

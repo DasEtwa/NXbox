@@ -213,11 +213,35 @@ int main() {
         } else {
             assert(owner.enters > 0 && owner.enters == owner.leaves);
             const auto dirty = Common::GpuProfile::TakeMethodWindow()[0];
-            assert(dirty.count > 0 && dirty.skipped > 0 && dirty.timed_calls > 0);
+            if (Common::GpuProfile::MethodProfilingEnabled())
+                assert(dirty.count > 0 && dirty.skipped > 0 && dirty.timed_calls > 0);
+            else
+                assert(dirty.count == 0);
         }
     }
     Common::GpuProfile::recording_enabled = false;
     Common::GpuProfile::sink = nullptr;
+    // Dirty state survives a changed-then-restored batch and can be cleared
+    // between batches. Empty batches must work before vector storage exists.
+    {
+        Maxwell3D batch;
+        batch.CallMultiMethod(system, 0, nullptr, 0);
+        assert(batch.method_sink.empty());
+        u32 method = 0;
+        while (batch.execution_mask[method])
+            ++method;
+        const u32 original = batch.regs.reg_array[method];
+        batch.dirty.flags.reset();
+        batch.method_sink = {{method, original + 1}, {method, original}};
+        batch.ConsumeSinkImpl(system);
+        assert(batch.regs.reg_array[method] == original);
+        assert(batch.dirty.flags[batch.dirty.tables[0][method]]);
+        assert(batch.dirty.flags[batch.dirty.tables[1][method]]);
+        batch.dirty.flags.reset();
+        batch.method_sink = {{method, original}, {method, original}};
+        batch.ConsumeSinkImpl(system);
+        assert(batch.dirty.flags.none());
+    }
     const u32 values[]{0x1234, 0x5678, 0x9ABC, 0xDEF0};
     // Compare batched writes against the scalar path for every non-executable register,
     // all shadow modes, empty/single/multiple writes, and partial DMA submissions.

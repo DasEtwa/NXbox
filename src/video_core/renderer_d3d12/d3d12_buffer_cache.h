@@ -79,7 +79,16 @@ public:
         context.Wait(tick, "buffer_write");
     }
     void Finish() {
-        context.Finish(FrameCount::ForcedSubmitBufferDownload);
+        context.Wait(context.Submit(FrameCount::ForcedSubmitBufferDownload), "buffer_download");
+    }
+    void FinishDmaCopy() {
+        // This is a DEFAULT-to-DEFAULT copy, not a CPU readback. Subsequent GPU work
+        // uses the same ordered queue, and dirty guest ranges keep the real CPU read
+        // on DownloadBufferMemory's synchronous path. Keep deferral opt-in until
+        // console validation covers guest DMA/semaphore interactions.
+        if (!BisectEnabled("NXBOX_D3D12_ASYNC_DMA")) {
+            context.Wait(context.Submit(FrameCount::ForcedSubmitBufferDownload), "dma_copy");
+        }
     }
     u64 GetDeviceLocalMemory() const {
         return memory_target;

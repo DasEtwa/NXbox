@@ -416,12 +416,18 @@ std::size_t FrameProfile::Enter(Common::GpuProfile::Phase phase) {
                                 FramePhase::BufferCacheBind,
                                 FramePhase::TextureCacheUpdate,
                                 FramePhase::DescriptorAndPipeline};
+    const auto target = phases[static_cast<std::size_t>(phase)];
     const auto previous = timing.active;
-    Switch(phases[static_cast<std::size_t>(phase)]);
+    // Nested method/bulk dispatch often enters the already active phase. Preserve
+    // the outer boundary without two redundant clock reads for each inner scope.
+    if (previous == target)
+        return static_cast<std::size_t>(FramePhase::Count);
+    Switch(target);
     return static_cast<std::size_t>(previous);
 }
 void FrameProfile::Leave(std::size_t previous) {
-    Switch(static_cast<FramePhase>(previous));
+    if (previous != static_cast<std::size_t>(FramePhase::Count))
+        Switch(static_cast<FramePhase>(previous));
 }
 u64 FrameProfile::TakeRecorderCpu() {
     if (!recorder_thread)
@@ -769,6 +775,7 @@ void FrameProfile::EndFrame(bool presented) {
         Diagnostic(guest_line);
         const auto methods = Common::GpuProfile::TakeMethodWindow();
         std::string method_line = "D3D12_MAXWELL_METHODS timing_sample_stride=64";
+        method_line += Common::GpuProfile::MethodProfilingEnabled() ? " enabled=1" : " enabled=0";
         for (size_t i = 0; i < methods.size(); ++i) {
             const auto& sample = methods[i];
             const auto name = Common::GpuProfile::MethodNames[i];
@@ -877,7 +884,9 @@ Context::Context() {
     for (const auto* knob :
          {"NXBOX_D3D12_NO_PSO_LIBRARY", "NXBOX_D3D12_GPU_ASTC", "NXBOX_D3D12_NO_COMPUTE",
           "NXBOX_D3D12_NO_DRAWS", "NXBOX_D3D12_NO_QUERIES", "NXBOX_D3D12_SUBMIT_TRACE",
-          "NXBOX_D3D12_FENCE_BATCHING", "NXBOX_D3D12_BATCH_DESCRIPTOR_COPIES"})
+          "NXBOX_D3D12_FENCE_BATCHING", "NXBOX_D3D12_BATCH_DESCRIPTOR_COPIES",
+          "NXBOX_D3D12_ASYNC_DMA", "NXBOX_D3D12_SMALL_RECORDER_QUEUE",
+          "NXBOX_D3D12_SYNC_BUFFER_CLEARS"})
         Diagnostic(fmt::format("D3D12 bisect {}={}", knob, BisectEnabled(knob) ? 1 : 0));
     Diagnostic(fmt::format("D3D12 flush_draws={}", FlushDrawsKnob()));
     D3D12_FEATURE_DATA_SHADER_MODEL model{D3D_SHADER_MODEL_6_0};
@@ -947,7 +956,8 @@ void Context::Acknowledge(u64 tick) {
         recorder_progress.Await(tick);
 }
 void Context::StartRecorder() {
-    stream = std::make_unique<RecordStream<>>();
+    stream = std::make_unique<RecordStream<>>(
+        BisectEnabled("NXBOX_D3D12_SMALL_RECORDER_QUEUE") ? 8 : RecordStream<>::chunk_count);
     stream->metrics = profile.Enabled();
     recorder = std::thread{[this] {
         RecordingTarget target;
