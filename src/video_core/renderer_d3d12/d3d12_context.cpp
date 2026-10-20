@@ -1202,7 +1202,7 @@ void Context::Wait(u64 tick, std::string_view site) {
     LogInfoQueue();
 }
 void Context::WaitSubmitted(u64 tick, std::string_view site) {
-    const NxboxWait::Scope wait_scope{NxboxWait::Kind::Fence, GetCurrentThreadId(), site,
+    const NxboxWait::Scope wait_diag_scope{NxboxWait::Kind::Fence, GetCurrentThreadId(), site,
                                       std::array<std::uint64_t, 1>{tick}};
     Acknowledge(tick);
     if (!IsFree(tick)) {
