@@ -49,6 +49,7 @@
 #include "core/file_sys/vfs/vfs.h"
 #include "core/file_sys/vfs/vfs_real.h"
 #include "core/loader/loader.h"
+#include "core/loader/nro.h"
 #include "eden_uwp/diagnostic.h"
 #include "eden_uwp/ui/art.h"
 #include "eden_uwp/usb_library.h"
@@ -460,6 +461,42 @@ std::optional<GameEntry> LoadGame(FileSys::RealVfsFilesystem& vfs, const fs::pat
     game.path = file;
     game.size = Common::FS::GetSize(file);
     game.mtime = ModifiedSeconds(file);
+
+    // The Eden core already has an NRO loader, but the Xbox library previously filtered out
+    // homebrew before it could reach that loader. Do not parse an NRO as an NSP container.
+    if (Lowercase(file.extension().wstring()) == L".nro") {
+        const auto source = vfs.OpenFile(Common::FS::PathToUTF8String(file), FileSys::OpenMode::Read);
+        if (!source || Loader::AppLoader_NRO::IdentifyType(source) != Loader::FileType::NRO) {
+            Diagnostic("UI library invalid NRO " + Utf8(file.filename().wstring()));
+            ++stats.skipped;
+            return std::nullopt;
+        }
+        Loader::AppLoader_NRO nro(source);
+        std::string title;
+        if (nro.ReadTitle(title) == Loader::ResultStatus::Success && !title.empty()) {
+            game.name = winrt::to_hstring(title).c_str();
+        } else {
+            game.name = file.stem().wstring();
+        }
+
+        // Some NROs have no NACP/title ID. Use a stable file-path identity in the library to
+        // prevent unrelated homebrew from being deduplicated under title ID zero.
+        std::uint64_t hash = 14695981039346656037ull;
+        for (const unsigned char byte : Utf8(LibraryFiles::Fold(file.wstring()))) {
+            hash ^= byte;
+            hash *= 1099511628211ull;
+        }
+        game.title_id = fmt::format("{:016X}", hash | 0xF000000000000000ull);
+        std::vector<u8> icon;
+        if (nro.ReadIcon(icon) == Loader::ResultStatus::Success && !icon.empty()) {
+            const auto icon_file = library_dir / (game.title_id + ".control.jpg");
+            if (Art::WriteBytes(icon_file, icon))
+                game.icon = icon_file;
+        }
+        ++stats.parsed;
+        Diagnostic("UI library homebrew NRO " + Utf8(file.filename().wstring()));
+        return game;
+    }
 
     const auto hit = cached.find(file.wstring());
     bool cache_valid = hit != cached.end() && game.size != 0 && hit->second.size == game.size &&
@@ -1286,7 +1323,7 @@ std::vector<GameEntry> LibraryScan::Scan() {
     // Big games arrive from NXbox Pack as parts; join them before looking for games.
     SplitUpload::JoinSplitUploads(games_dir, [](const std::string& line) { Diagnostic(line); });
 
-    std::vector<fs::path> packages;   // .nsp and .xci
+    std::vector<fs::path> packages;   // .nsp, .xci and homebrew .nro
     std::vector<fs::path> compressed; // .nsz
     {
         std::error_code error;
@@ -1302,7 +1339,7 @@ std::vector<GameEntry> LibraryScan::Scan() {
                 continue;
             }
             const std::wstring extension = Lowercase(entry.path().extension().wstring());
-            if (extension == L".nsp" || extension == L".xci") {
+            if (extension == L".nsp" || extension == L".xci" || extension == L".nro") {
                 packages.push_back(entry.path());
             } else if (extension == L".nsz") {
                 compressed.push_back(entry.path());
