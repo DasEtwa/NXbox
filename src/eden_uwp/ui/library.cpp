@@ -465,37 +465,48 @@ std::optional<GameEntry> LoadGame(FileSys::RealVfsFilesystem& vfs, const fs::pat
     // The Eden core already has an NRO loader, but the Xbox library previously filtered out
     // homebrew before it could reach that loader. Do not parse an NRO as an NSP container.
     if (Lowercase(file.extension().wstring()) == L".nro") {
-        const auto source = vfs.OpenFile(Common::FS::PathToUTF8String(file), FileSys::OpenMode::Read);
-        if (!source || Loader::AppLoader_NRO::IdentifyType(source) != Loader::FileType::NRO) {
-            Diagnostic("UI library invalid NRO " + Utf8(file.filename().wstring()));
-            ++stats.skipped;
-            return std::nullopt;
-        }
-        Loader::AppLoader_NRO nro(source);
-        std::string title;
-        if (nro.ReadTitle(title) == Loader::ResultStatus::Success && !title.empty()) {
-            game.name = winrt::to_hstring(title).c_str();
-        } else {
-            game.name = file.stem().wstring();
-        }
+        try {
+            const auto source =
+                vfs.OpenFile(Common::FS::PathToUTF8String(file), FileSys::OpenMode::Read);
+            if (!source || Loader::AppLoader_NRO::IdentifyType(source) != Loader::FileType::NRO) {
+                Diagnostic("UI library invalid NRO " + Utf8(file.filename().wstring()));
+                ++stats.skipped;
+                return std::nullopt;
+            }
+            Loader::AppLoader_NRO nro(source);
+            std::string title;
+            if (nro.ReadTitle(title) == Loader::ResultStatus::Success && !title.empty()) {
+                game.name = winrt::to_hstring(title).c_str();
+            } else {
+                game.name = file.stem().wstring();
+            }
 
-        // Some NROs have no NACP/title ID. Use a stable file-path identity in the library to
-        // prevent unrelated homebrew from being deduplicated under title ID zero.
-        std::uint64_t hash = 14695981039346656037ull;
-        for (const unsigned char byte : Utf8(LibraryFiles::Fold(file.wstring()))) {
-            hash ^= byte;
-            hash *= 1099511628211ull;
+            // Some NROs have no NACP/title ID. Use a stable file-path identity in the library to
+            // prevent unrelated homebrew from being deduplicated under title ID zero.
+            std::uint64_t hash = 14695981039346656037ull;
+            for (const unsigned char byte : Utf8(LibraryFiles::Fold(file.wstring()))) {
+                hash ^= byte;
+                hash *= 1099511628211ull;
+            }
+            game.title_id = fmt::format("{:016X}", hash | 0xF000000000000000ull);
+            std::vector<u8> icon;
+            if (nro.ReadIcon(icon) == Loader::ResultStatus::Success && !icon.empty()) {
+                const auto icon_file = library_dir / (game.title_id + ".control.jpg");
+                if (Art::WriteBytes(icon_file, icon))
+                    game.icon = icon_file;
+            }
+            ++stats.parsed;
+            Diagnostic("UI library homebrew NRO " + Utf8(file.filename().wstring()));
+            return game;
+        } catch (const winrt::hresult_error& failure) {
+            Diagnostic("UI library NRO metadata failed " + Utf8(file.filename().wstring()) +
+                       ": " + winrt::to_string(failure.message()));
+        } catch (const std::exception& failure) {
+            Diagnostic("UI library NRO metadata failed " + Utf8(file.filename().wstring()) +
+                       ": " + failure.what());
         }
-        game.title_id = fmt::format("{:016X}", hash | 0xF000000000000000ull);
-        std::vector<u8> icon;
-        if (nro.ReadIcon(icon) == Loader::ResultStatus::Success && !icon.empty()) {
-            const auto icon_file = library_dir / (game.title_id + ".control.jpg");
-            if (Art::WriteBytes(icon_file, icon))
-                game.icon = icon_file;
-        }
-        ++stats.parsed;
-        Diagnostic("UI library homebrew NRO " + Utf8(file.filename().wstring()));
-        return game;
+        ++stats.skipped;
+        return std::nullopt;
     }
 
     const auto hit = cached.find(file.wstring());

@@ -4,6 +4,11 @@ NXBox already contains Eden's `AppLoader_NRO`. This branch exposes basic NRO dis
 in the Xbox library and USB import paths. **It is an experimental boot path, not a
 claim that individual homebrew apps run correctly.**
 
+The [2026-10-21 compatibility audit](pipensx-compatibility-audit.md) records the
+three review fixes, executable regressions, the verified PipenSX 1.6.4 NRO
+metadata, and concrete gaps in the guest installation services. Host tests do
+not establish Xbox runtime compatibility.
+
 ## First smoke test: PipenSX
 
 Source: https://github.com/i3sey/pipensx (GPL-3.0).
