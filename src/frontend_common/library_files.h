@@ -54,10 +54,13 @@ inline std::filesystem::path PackagePath(std::filesystem::path path) {
 }
 inline bool IsPackage(const std::filesystem::path& path) {
     const auto ext = Fold(PackagePath(path).extension().wstring());
-    return ext == L".nsp" || ext == L".nsz" || ext == L".xci";
+    return ext == L".nsp" || ext == L".nsz" || ext == L".xci" || ext == L".nro";
 }
 inline bool Sibling(const std::filesystem::path& base, const std::filesystem::path& candidate) {
-    return IsPackage(candidate) &&
+    // A homebrew app and an NSP with the same stem are separate library entries.
+    const bool base_nro = Fold(PackagePath(base).extension().wstring()) == L".nro";
+    const bool candidate_nro = Fold(PackagePath(candidate).extension().wstring()) == L".nro";
+    return IsPackage(candidate) && base_nro == candidate_nro &&
            Fold(base.parent_path().wstring()) == Fold(candidate.parent_path().wstring()) &&
            Fold(PackagePath(base).stem().wstring()) ==
                Fold(PackagePath(candidate).stem().wstring());

@@ -60,7 +60,7 @@ void ListGames(const StorageFolder& drive, const wchar_t* directory,
         for (const auto& file : *files) {
             const auto name = std::wstring(file.Name());
             if (name.size() > 4 &&
-                (name.ends_with(L".nsp") || name.ends_with(L".nsz") || name.ends_with(L".xci"))) {
+                (name.ends_with(L".nsp") || name.ends_with(L".nsz") || name.ends_with(L".xci") || name.ends_with(L".nro"))) {
                 out.push_back(std::wstring(directory) + L"\\" + name);
             }
         }
@@ -103,7 +103,8 @@ std::vector<std::filesystem::path> ListExternalGames() {
                         std::transform(
                             extension.begin(), extension.end(), extension.begin(),
                             [](wchar_t c) { return static_cast<wchar_t>(std::towlower(c)); });
-                        if (extension == L".nsp" || extension == L".nsz" || extension == L".xci") {
+                        if (extension == L".nsp" || extension == L".nsz" || extension == L".xci" ||
+                            extension == L".nro") {
                             result.push_back(path);
                             Diagnostic("USB_GAME " + winrt::to_string(file.Path()));
                         }

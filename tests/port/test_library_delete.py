@@ -35,6 +35,15 @@ int main(int argc, char** argv) {
     assert(!Sibling("/local/games/a.nsp", "/local/games/a.json"));
     assert(!Sibling("/local/games/a.nsp", "/local/saves/a.nsz"));
     assert(!Sibling("/local/games/a.nsp", "/local/games/a.nsp.partial.partial"));
+    assert(IsPackage("/local/games/pipensx.nro"));
+    assert(IsPackage("/local/games/PipenSX.NRO.partial"));
+    assert(Allowed("/local/games/pipensx/pipensx.nro", roots));
+    assert(Sibling("/local/games/pipensx.nro", "/local/games/PipenSX.NRO"));
+    assert(Sibling("/local/games/pipensx.nro", "/local/games/pipensx.nro.partial"));
+    assert(!Sibling("/local/games/pipensx.nro", "/local/games/pipensx.nsp"));
+    assert(!Sibling("/local/games/pipensx.nsp", "/local/games/pipensx.nro"));
+    assert(!Sibling("/local/games/pipensx.nro", "/local/games/pipensx.json"));
+    assert(!Allowed("/local/saves/pipensx.nro", roots));
     assert(Related(0x0100f2c0115b6000ull, 0x0100f2c0115b6800ull));
     assert(Related(0x0100f2c0115b6000ull, 0x0100f2c0115b7001ull));
     assert(!Related(0x0100f2c0115b6000ull, 0x0100f2c0115b8000ull));

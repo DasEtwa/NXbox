@@ -135,7 +135,7 @@ std::wstring Extension(const std::wstring& name) {
 bool IsGameName(const std::wstring& name) {
     const std::wstring extension = Extension(name);
     return extension == L".nsp" || extension == L".nsz" || extension == L".xci" ||
-           extension == L".xcz";
+           extension == L".xcz" || extension == L".nro";
 }
 
 bool IsKeyName(const std::wstring& name) {

@@ -28,11 +28,16 @@ PRELUDE = r"""
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iomanip>
 #include <map>
 #include <optional>
+#include <sstream>
+#include <stdexcept>
 #include <string>
 #include "frontend_common/library_content.h"
+#include "frontend_common/library_files.h"
 namespace fs = std::filesystem;
+using u8 = std::uint8_t;
 using EdenXbox::Ui::Text;
 namespace EdenXbox::Ui { const wchar_t* Tr(Text) { return L"label"; } }
 std::wstring Lowercase(std::wstring s) {
@@ -42,14 +47,47 @@ std::string Utf8(const std::wstring& s) { return {s.begin(), s.end()}; }
 std::string IconLanguage() { return "AmericanEnglish"; }
 void Diagnostic(const std::string&) {}
 namespace fmt {
-template<class T> std::string format(const char*, T) { return "0000000000000001"; }
+template<class T> std::string format(const char*, T value) {
+    std::ostringstream out;
+    out << std::uppercase << std::hex << std::setw(16) << std::setfill('0') << value;
+    return out.str();
+}
+}
+namespace winrt {
+std::wstring to_hstring(const std::string& s) { return {s.begin(), s.end()}; }
+std::string to_string(const std::wstring& s) { return {s.begin(), s.end()}; }
+struct hresult_error { std::wstring message() const { return L"bad title"; } };
 }
 namespace Common::FS {
 std::uint64_t GetSize(const fs::path& p) { return fs::file_size(p); }
+std::string PathToUTF8String(const fs::path& p) { return p.string(); }
 }
 std::int64_t modified = 1;
 std::int64_t ModifiedSeconds(const fs::path&) { return modified; }
-namespace FileSys { struct RealVfsFilesystem {}; }
+bool nro_open = true, nro_valid = true, nro_throw = false, nro_bad_title = false;
+std::string nro_title;
+std::vector<u8> nro_icon;
+namespace FileSys {
+enum class OpenMode { Read };
+struct RealVfsFilesystem { bool OpenFile(const std::string&, OpenMode) { return nro_open; } };
+}
+namespace Loader {
+enum class FileType { NRO, Error };
+enum class ResultStatus { Success, ErrorNoControl, ErrorNoIcon };
+struct AppLoader_NRO {
+    static FileType IdentifyType(bool) { return nro_valid ? FileType::NRO : FileType::Error; }
+    explicit AppLoader_NRO(bool) { if (nro_throw) throw std::bad_alloc(); }
+    ResultStatus ReadTitle(std::string& title) {
+        if (nro_bad_title) throw winrt::hresult_error{};
+        title = nro_title;
+        return title.empty() ? ResultStatus::ErrorNoControl : ResultStatus::Success;
+    }
+    ResultStatus ReadIcon(std::vector<u8>& icon) {
+        icon = nro_icon;
+        return icon.empty() ? ResultStatus::ErrorNoIcon : ResultStatus::Success;
+    }
+};
+}
 namespace Art {
 bool WriteBytes(const fs::path& path, const std::vector<std::uint8_t>& bytes) {
     std::ofstream out(path, std::ios::binary);
@@ -166,6 +204,45 @@ int main() {
         )
         self.compile_run(driver)
 
+    def test_nro_metadata_fallback_identity_and_failure_isolation(self):
+        driver = self.scan_driver().split("int main(int argc")[0] + r"""
+int main(int argc, char** argv) {
+    assert(argc == 2);
+    const fs::path dir(argv[1]);
+    const auto first = dir / "pipensx.nro", second = dir / "other.nro";
+    for (const auto& path : {first, second}) { std::ofstream out(path); out << "fixture"; }
+    FileSys::RealVfsFilesystem vfs;
+    ScanStats stats;
+    auto game = LoadGame(vfs, dir, {}, first, stats);
+    assert(game && game->name == L"pipensx" && game->icon.empty());
+    const auto id = game->title_id;
+    assert(id.size() == 16 && id.front() == 'F');
+    assert(LoadGame(vfs, dir, {}, first, stats)->title_id == id);
+    assert(LoadGame(vfs, dir, {}, second, stats)->title_id != id);
+    nro_title = "PipenSX";
+    nro_icon = {1, 2, 3};
+    game = LoadGame(vfs, dir, {}, first, stats);
+    assert(game && game->name == L"PipenSX" && fs::file_size(game->icon) == 3);
+    const auto skipped = stats.skipped;
+    nro_throw = true;
+    assert(!LoadGame(vfs, dir, {}, first, stats));
+    nro_throw = false;
+    nro_bad_title = true;
+    assert(!LoadGame(vfs, dir, {}, first, stats));
+    nro_bad_title = false;
+    nro_valid = false;
+    assert(!LoadGame(vfs, dir, {}, first, stats));
+    nro_valid = true;
+    nro_open = false;
+    assert(!LoadGame(vfs, dir, {}, first, stats));
+    nro_open = true;
+    assert(stats.skipped == skipped + 4);
+    // A bad homebrew file must not prevent later entries from being returned.
+    assert(LoadGame(vfs, dir, {}, second, stats));
+}
+"""
+        self.compile_run(driver)
+
     def test_failed_launch_uses_utf8_path(self):
         session = (ROOT / "src/eden_uwp/game_session.cpp").read_text()
         expression = re.search(r"Ui::LibraryFileProblem\((.+)\);", session)[1]
@@ -233,8 +310,7 @@ int main() {
         # The production fallback formats loader errors after this decision.
         driver = driver.replace(
             "namespace Loader { enum class ResultStatus { Success }; }",
-            "namespace Loader { enum class ResultStatus { Success }; "
-            'std::string GetResultStatusString(ResultStatus) { return "status"; } }',
+            'namespace Loader { std::string GetResultStatusString(ResultStatus) { return "status"; } }',
         )
         self.compile_run(driver.replace("// BLOCK", block))
 
@@ -336,11 +412,11 @@ int main() {
         self.compile_run(driver)
 
     def compile_run(self, driver, standard="c++20"):
-        compiler = shutil.which("clang++")
+        compiler = shutil.which("clang++") or shutil.which("g++")
         self.assertIsNotNone(compiler)
         with tempfile.TemporaryDirectory(prefix="library-review-") as temp:
             source, binary = Path(temp) / "test.cpp", Path(temp) / "test"
-            source.write_text(driver)
+            source.write_text(driver, encoding="utf-8")
             subprocess.run(
                 [
                     compiler,

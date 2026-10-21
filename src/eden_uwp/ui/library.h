@@ -19,7 +19,7 @@ namespace EdenXbox::Ui {
 struct GameEntry {
     std::string title_id;       // 16 upper-case hex digits
     std::wstring name;          // from the package's control.nacp
-    std::filesystem::path path; // absolute path of the .nsp or .xci
+    std::filesystem::path path; // absolute path of the .nsp, .xci or .nro
     bool incomplete = false;
     LibraryContent::Problem problem = LibraryContent::Problem::None;
     LibraryContent::Classification content;
@@ -58,7 +58,7 @@ LibraryTransfer::Result MoveLibraryGame(const GameEntry& game,
                                         const std::filesystem::path& local_state,
                                         LibraryMoveProgress& progress);
 
-// Scans LocalState\games (.nsp and .xci, not recursive) on a worker thread, so the screen keeps
+// Scans LocalState\games (.nsp, .xci and .nro, recursively) on a worker thread, so the screen keeps
 // drawing and pumping events meanwhile.
 //
 // A .nsz found there is converted to a .nsp next to it first (same name), which takes minutes for

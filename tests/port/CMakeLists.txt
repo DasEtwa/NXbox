@@ -92,6 +92,18 @@ endif()
 find_program(HLSL_DXC_EXECUTABLE dxc)
 # Exercise the same embedded FidelityFX HLSL entry points as the runtime compiler.
 find_package(Python3 QUIET COMPONENTS Interpreter)
+# These host harnesses compile extracted production scan/loader functions with Clang/GCC.
+# Keep them in CTest so the port workflow exercises NRO changes on Linux and macOS.
+if(Python3_Interpreter_FOUND AND UNIX)
+  foreach(pattern test_nro_metadata.py test_library_*.py)
+    string(REPLACE ".py" "" test_name "${pattern}")
+    string(REPLACE "*" "regressions" test_name "${test_name}")
+    add_test(NAME ${test_name}
+      COMMAND ${Python3_EXECUTABLE} -B -m unittest discover
+        -s ${CMAKE_CURRENT_SOURCE_DIR} -p "${pattern}")
+    set_tests_properties(${test_name} PROPERTIES TIMEOUT 120)
+  endforeach()
+endif()
 if(Python3_Interpreter_FOUND AND HLSL_DXC_EXECUTABLE)
   add_test(NAME d3d12-fsr-dxc
     COMMAND ${CMAKE_COMMAND} -E env "DXC=${HLSL_DXC_EXECUTABLE}"

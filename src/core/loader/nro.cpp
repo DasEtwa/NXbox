@@ -90,7 +90,10 @@ AppLoader_NRO::AppLoader_NRO(FileSys::VirtualFile file_) : AppLoader(std::move(f
         return;
     }
 
-    if (file->GetSize() >= nro_header.file_size + sizeof(AssetHeader)) {
+    const u64 file_size = file->GetSize();
+    if (nro_header.magic == Common::MakeMagic('N', 'R', 'O', '0') &&
+        nro_header.file_size >= sizeof(NroHeader) && nro_header.file_size <= file_size &&
+        file_size - nro_header.file_size >= sizeof(AssetHeader)) {
         const u64 offset = nro_header.file_size;
         AssetHeader asset_header{};
         if (file->ReadObject(&asset_header, offset) != sizeof(AssetHeader)) {
@@ -108,17 +111,26 @@ AppLoader_NRO::AppLoader_NRO(FileSys::VirtualFile file_) : AppLoader(std::move(f
             return;
         }
 
-        if (asset_header.nacp.size > 0) {
+        // Asset offsets are relative to ASET. Check by subtraction before adding offsets or
+        // letting VfsFile::ReadBytes allocate an attacker-controlled size during library scans.
+        const u64 available = file_size - offset;
+        const auto in_bounds = [available](const AssetSection& section) {
+            return section.size > 0 && section.offset >= sizeof(AssetHeader) &&
+                   section.offset <= available && section.size <= available - section.offset;
+        };
+        if (in_bounds(asset_header.nacp) && asset_header.nacp.size >= sizeof(FileSys::RawNACP)) {
             nacp = std::make_unique<FileSys::NACP>(std::make_shared<FileSys::OffsetVfsFile>(
                 file, asset_header.nacp.size, offset + asset_header.nacp.offset, "Control.nacp"));
         }
 
-        if (asset_header.romfs.size > 0) {
+        if (in_bounds(asset_header.romfs)) {
             romfs = std::make_shared<FileSys::OffsetVfsFile>(
                 file, asset_header.romfs.size, offset + asset_header.romfs.offset, "game.romfs");
         }
 
-        if (asset_header.icon.size > 0) {
+        // Homebrew icons are small JPEGs; bound even a physically present oversized asset.
+        constexpr u64 max_icon_size = 1024 * 1024;
+        if (in_bounds(asset_header.icon) && asset_header.icon.size <= max_icon_size) {
             icon_data = file->ReadBytes(asset_header.icon.size, offset + asset_header.icon.offset);
         }
     }
